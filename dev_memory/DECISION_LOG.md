@@ -31310,3 +31310,54 @@ cstarter.log` vs
 cstarter.log")`.
 - 기존 58건(493×2·477·479) 전부 PASS 유지. `--verify` PASS(편차 0.00%, 정상 34일).
 - py37_32 컴파일: constants/settings/main/db_utils/dashboard/campaign_report OK.
+
+---
+
+## 2026-08-26 (MW0602 497차 — 실시간잔고·ProfitGuard 손익 축 정합 P1·P2·P3)
+
+### 발단 — 사용자 관측: 대시보드 금일손익 446,000 vs 브로커 실측 갭
+
+딥다이브 4축 대조(11:46 FLAT): 브로커 gross 446,000(CpTd6197 today_pnl =
+매도약정 430,878천 − 매수약정 430,432천) / 브로커 net 429,636(익일가예탁 −
+예탁현금) / **엔진 net 429,644(8원 차 — 정확)** / 갭 16,364 = 당일 약정
+861,310,000 × CREON 0.0019% = 16,365(반올림 1원). **수수료 체계는 이미 옳았고
+(495차), 문제는 표시·소비 축 3건**:
+
+1. 실시간잔고 "금일손익"·"전일손익" = gross 무표기, 같은 스트립 수익율(%)은
+   net 기반 — 한 줄 안 축 혼재(계측 4원칙 ①).
+2. ProfitGuard 브로커 분기 = gross(_last_balance_realized_krw), 엔진 폴백 =
+   net — 분기별 축 상이. gross는 손실 시 덜 음수라 손실 한도가 늦게 발동(낙관).
+3. trades.commission_rate_used — 라이브 INSERT에 컬럼 누락으로 당일 8행 NULL
+   (v9-dev 원본도 동일 결함 — 493차 백필은 컬럼 신설 시 1회뿐).
+
+### 구현 (커밋: 497차. 순서 P2 → P1 → P3)
+
+- **P2**: main.py INSERT에 commission_rate_used 추가(executed_metrics 경유,
+  플레이스홀더 36→37). db_utils _migrate에 **상시** NULL 백필 신설 —
+  `NULL AND date(entry_ts) >= EFFECTIVE_FROM` 만 현행 요율로(세대 하한으로
+  구세대 오염 차단). 당일 8행 즉시 백필 완료(0.000019, NULL 0행).
+- **P1**: main이 표시 전용 키 조립 — 금일손익_표시 = FLAT이면
+  "net (g gross)"(_broker_net_today 재사용), 보유 중 "(gross·보유중)" 태그
+  폴백(④). 전일손익_표시 = fetch_prev_broker_net()(신설 — broker_net 있는
+  최근 과거 거래일, 주말 자동 건너뜀, 날짜당 1회 캐시). **원본 summary 키
+  불변** — ProfitGuard 캐시·sizer 잔고 추출이 원본을 읽는다. 패널
+  update_summary가 표시 키 우선 소비(없으면 종전 폴백), 라벨 "수익율(net%)".
+- **P3**: ProfitGuard 브로커 분기 = gross − 당일 엔진 수수료 합
+  (_ts_engine_commission_today 신설, 60초 캐시) → source="broker_net_est".
+  보유 중 미청산 진입 레그 수수료 미포함(청산 시 해소) — 주석 명기.
+  ⚠ 손실 한도 도달이 빨라지는 **의도된 변화**(후속5 예고 방향).
+
+### 검증
+
+- 신규 tests/test_497_pnl_axis_alignment.py **8/8 PASS**: INSERT 컬럼·? 개수
+  대조(471차 사고 재발 방지) · 현행 세대 NULL 0행 · 상시 백필 구조 · 전일 net
+  조회 실데이터 · 표시 조립(원본 불변) · 패널 offscreen · 수수료 헬퍼 vs DB
+  실측 16,356원 일치+캐시 · ProfitGuard net 추정식.
+- 회귀: test_495 6/6 · 493×2+477 47건 · test_485 전부 통과.
+- ⚠ **라이브 반영은 다음 재기동부터** — 오늘 장중 앱은 구 코드로 gross 표시 지속.
+
+### 라이브 검증 항목 (다음 거래일)
+
+- 스트립 금일손익이 "net (g gross)" 형식 + HTS 예탁 차와 일치하는지.
+- [ProfitGuard][DebugPnL] source=broker_net_est 출현, used = gross−수수료 확인.
+- 전일손익_표시가 오늘(08-26) net(429,636)을 보여주는지.

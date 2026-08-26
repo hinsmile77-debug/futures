@@ -17606,3 +17606,15 @@ dev_memory/NEXT_TODO.md                                 (이 절)
   수정됨으로 뜬다(`git diff --numstat CLAUDE.md` = `1077 1077`, 내용 변경 0).
   **경로를 명시해 add 할 것.** 읽기는 `git --no-optional-locks -c core.autocrlf=true …`
   (`invariants.md` §0-B unlink 금지 항목 병행).
+
+---
+
+## 2026-08-26 (MW0602 497차 — 손익 축 정합 라이브 검증)
+
+- [ ] 라이브 검증(다음 거래일, 재기동 후): ① 실시간잔고 금일손익 "net (g gross)"
+      형식 + FLAT 시 HTS(0550) 예탁 차와 일치 ② 전일손익_표시 = 08-26 net
+      +429,636 ③ `[ProfitGuard][DebugPnL] source=broker_net_est` 출현,
+      used = gross − 당일수수료 ④ 신규 청산 행 commission_rate_used=0.000019
+      기록(NULL 아님).
+- [ ] ProfitGuard 손실 한도 도달이 빨라지는 의도적 변화 — 첫 주 차단 로그
+      빈도 관찰(497차 P3. 이 PC 수수료가 작아 영향 제한적 예상).

@@ -1543,6 +1543,19 @@ def _migrate_trades_db():
                     " WHERE commission_rate_used IS NULL",
                     (FUTURES_COMMISSION_RATE_LEGACY_KIWOOM,))
 
+            # [MW0602 497차 / P2] **상시** NULL 백필 — 위 1회성 백필(컬럼 신설 시에만)
+            # 과 별개다. 라이브 INSERT에 commission_rate_used가 빠져 있던 기간
+            # (493차 마이그레이션 ~ 497차 INSERT fix)의 행이 NULL로 남는데, 그
+            # 행들은 현행 요율 세대(EFFECTIVE_FROM 이후)에 실제로 그 요율로
+            # 계산됐음이 확정이므로 채운다 — 추정이 아니라 기록이다(4원칙 ④).
+            # ⚠ EFFECTIVE_FROM **이전** NULL은 건드리지 않는다(위 1회성 백필의
+            #   몫이며, 여기서 현행 요율로 채우면 세대가 오염된다).
+            conn.execute(
+                "UPDATE trades SET commission_rate_used = ? "
+                " WHERE commission_rate_used IS NULL AND date(entry_ts) >= ?",
+                (FUTURES_COMMISSION_RATE,
+                 FUTURES_COMMISSION_RATE_EFFECTIVE_FROM))
+
             # [MW0601 417차 / ②] entry_qty 백필 — 구버전 레코드는 같은
             # (entry_ts, direction) 레그들의 quantity **단순 합**이 곧 진입 계약수다.
             # 부분청산이 진입 수량을 남김없이 분할하므로 합이 정확히 원 수량이 된다.
@@ -2851,6 +2864,30 @@ def fetch_broker_net(date: str) -> Optional[dict]:
         "next_day_deposit_cash_krw": row["next_day_deposit_cash_krw"],
         "engine_commission_krw": row["commission_krw"],
         "engine_net_krw": row["pnl_net_krw"],
+    }
+
+
+def fetch_prev_broker_net(before_date: str) -> Optional[dict]:
+    """[MW0602 497차 / P1] 직전 거래일의 브로커 net — 실시간잔고 '전일손익' 표시용.
+
+    CpTd6197 헤더의 전일손익(prev_day_pnl)은 **gross**라 대시보드가 그대로 띄우면
+    수수료만큼 브로커 실측과 어긋난다(2026-08-26 실측: gross 437,000 vs
+    net 423,049). 여기서 net을 찾으면 표시를 net으로 정렬할 수 있다.
+    달력 어제가 아니라 **broker_net이 있는 가장 최근 과거 거래일**을 찾는다 —
+    주말·휴장일을 자연스럽게 건너뛴다. 없으면 None(호출부가 gross 폴백 + 태그).
+    """
+    row = fetchone(
+        TRADES_DB,
+        """SELECT date, pnl_krw, broker_net_krw
+             FROM daily_broker_pnl
+            WHERE date < ? AND broker_net_krw IS NOT NULL
+            ORDER BY date DESC LIMIT 1""", (before_date,))
+    if row is None:
+        return None
+    return {
+        "date": row["date"],
+        "gross_krw": float(row["pnl_krw"] or 0.0),
+        "net_krw": float(row["broker_net_krw"]),
     }
 
 
