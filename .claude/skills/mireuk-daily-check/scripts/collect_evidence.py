@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import io
 import json
 import os
@@ -30,6 +31,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import time
 from datetime import date as _date
 from datetime import datetime, timedelta
 
@@ -1139,6 +1141,208 @@ def run_git(root, args, timeout=25):
         return dec(out) if p.returncode == 0 else "(git 실패 rc=%s) %s" % (p.returncode, dec(err)[:300])
     except Exception as e:
         return "(git 실행 불가) %s" % e
+
+
+# ------------------------------------------------------------------ 인덱스락 2점 샘플
+# [MW0602 498차 후속 / A-1] `.git/index.lock` 을 **실행 시작·렌더 시점 2점**으로 잰다.
+#
+# 왜 2점인가: 락이 지금 있다는 사실만으로는 **누가 만들었는지** 모른다. 시작 시점에
+# 없었는데 지금 있으면 이 수집 실행(또는 그 세션의 앞선 명령)이 만든 것이고, 시작부터
+# 있었으면 이전 명령·다른 프로세스의 소행이다. **조치가 정반대라 구분이 필요하다.**
+#
+# ⚠ **「없음」과 「못 쟀음」을 같은 값으로 표현하지 않는다**(계측 4원칙 ②).
+#   `stat` 이 EPERM 등으로 실패하면 `measured=False` 이고 그것은 「락 없음」이 아니다.
+#   2026-08-26 실측: 리눅스 샌드박스 마운트에서 `unlink` 가 `Operation not permitted` 로
+#   실패했다 — 접근이 거부되는 환경이 실재한다.
+# ⚠ **`age` 를 반드시 함께 낸다.** 0821(53.5시간)·0824(3시간21분) 사고는 존재 여부가
+#   아니라 **나이**로 스테일이 갈렸다. 갓 만들어진 락은 실행 중인 git 의 정상 상태다.
+# ⚠ 이 계측은 **절대 지우지 않는다** — 읽기 전용이다. 회수는 사람이 판단한다.
+_LOCK_AT_START = None
+
+
+def git_lock_state(root):
+    """`.git/index.lock` 의 존재·크기·나이를 잰다(읽기 전용)."""
+    path = os.path.join(root, ".git", "index.lock")
+    try:
+        st = os.stat(path)
+    except OSError as e:
+        if getattr(e, "errno", None) == errno.ENOENT:
+            return {"measured": True, "exists": False, "path": path}
+        return {"measured": False, "exists": None, "path": path, "why": str(e)}
+    except Exception as e:  # pragma: no cover
+        return {"measured": False, "exists": None, "path": path, "why": str(e)}
+    return {"measured": True, "exists": True, "path": path,
+            "size": st.st_size, "mtime": st.st_mtime,
+            "age_sec": max(0.0, time.time() - st.st_mtime)}
+
+
+def fmt_age(sec):
+    if sec is None:
+        return "?"
+    sec = int(sec)
+    if sec < 60:
+        return "%d초" % sec
+    if sec < 3600:
+        return "%d분" % (sec // 60)
+    if sec < 86400:
+        return "%d시간 %d분" % (sec // 3600, (sec % 3600) // 60)
+    return "%.1f시간" % (sec / 3600.0)
+
+
+def lock_report(start, now):
+    """(렌더 줄, 적신호) 를 낸다. 판정 4분기 — 계측 4원칙 ②·④."""
+    lines, flags = [], []
+    if start is None:
+        start = {"measured": False, "why": "시작 스냅샷 미수집(내부 오류)"}
+    if not start.get("measured") or not now.get("measured"):
+        why = start.get("why") or now.get("why") or "사유 미상"
+        lines.append("- `.git/index.lock`: ⚠ **미측정** — %s" % truncate(why, 120))
+        lines.append("  ⚠ 「미측정」은 **「락 없음」이 아니다**(계측 4원칙 ②). "
+                     "`ls -la .git/index.lock` 으로 직접 확인할 것")
+        flags.append("`.git/index.lock` **미측정** (%s) — 락 유무를 모르는 상태다. "
+                     "「없음」으로 읽지 말 것" % truncate(why, 80))
+        return lines, flags
+
+    s_has, n_has = start.get("exists"), now.get("exists")
+    if not s_has and not n_has:
+        lines.append("- `.git/index.lock`: **없음** (실행 시작·렌더 시점 **2점** 확인)")
+    elif s_has:
+        age = fmt_age(now.get("age_sec") if n_has else start.get("age_sec"))
+        size = now.get("size", start.get("size", 0)) or 0
+        lines.append("- `.git/index.lock`: 🔴 **수집기 실행 전부터 존재** "
+                     "(나이 %s · %d바이트) — 이 수집 실행이 만든 것이 **아니다**. "
+                     "세션이 앞서 친 명령이나 다른 프로세스의 소행이다" % (age, size))
+        lines.append("  → 실행 중인 git 이 있는지 먼저 확인한다. **판정이 서지 않으면 "
+                     "지우지 말고** 「사용자 조치」로 올릴 것 — 실행 중인 git 의 인덱스를 "
+                     "깨뜨린다. (`scripts/git_lock_guard.py` 는 이 브랜치에 없다)")
+        flags.append("`.git/index.lock` 이 **수집기 실행 전부터** 존재 (나이 %s · %d바이트) — "
+                     "저장소가 커밋 불가 상태일 수 있다" % (age, size))
+    else:
+        age = fmt_age(now.get("age_sec"))
+        lines.append("- `.git/index.lock`: 🔴 **이 수집 실행이 남겼다** "
+                     "(시작 시점 없음 → 렌더 시점 있음 · 나이 %s)" % age)
+        lines.append("  → git 호출 규약 위반이다. `--no-optional-locks` 가 빠진 호출을 찾을 것")
+        flags.append("🔴 **이 수집 실행이 `.git/index.lock` 을 남겼다** — "
+                     "`--no-optional-locks` 누락 호출이 있다")
+    return lines, flags
+
+
+# ------------------------------------------------------------------ 스킬 정본↔사본
+# [MW0602 498차 후속 / B-1·B-2] 점검 지침서의 세대 드리프트를 §2 에 드러낸다.
+#
+# 결함이 **둘**이다 — 한 덩어리로 보면 절반을 놓친다.
+#   β1  세션에 로드된 **앱 저장 사본이 낡음**        (2026-08-26 사고 본체)
+#   β2  **정본이 바뀌었는데 `rev:` 를 안 올림**
+#
+# 🔴 **β2 를 먼저 닫는다.** 방치하면 β1 검사가 통째로 무력화된다 — 두 rev 가 같은데
+#    내용이 다르면 대조가 「일치」를 찍는다. **검사가 있는데 거짓 안심을 주는 쪽이,
+#    검사가 없는 것보다 나쁘다.**
+#
+# β2 는 **완전 자동**이다(정본 파일과 git 만 보면 된다).
+# β1 은 사본이 계정별 저장이라 파일시스템 밖에 있어 **기계가 읽을 수 없다** — 그래서
+#    세션이 `--skill-rev` 로 제출하는 **핸드셰이크**로 가시화한다.
+#    ⚠ 이것은 자동 「검출」이 아니라 자동 「**가시화**」다. 미제출은 `미측정` 으로 남는다.
+#    🔴 제출값은 **자기 컨텍스트에 로드된 사본**에서 읽어야 한다. **정본에서 복사하면
+#       항상 「일치」가 되어 검사가 무의미해진다.**
+#    ▸ 부수효과: 예약 프롬프트에 「시작 전 3단계」가 빠지면 사본을 안 읽고 → 인자를 못 붙이고
+#      → `미제출` 이 남는다. §9 세 곳 중 **가장 검출 불가능하던 3번이 간접 관측된다.**
+SKILL_REL = ".claude/skills/mireuk-daily-check/SKILL.md"
+SKILL_REF_DIR = ".claude/skills/mireuk-daily-check/references"
+SKILL_REF_FILES = ["phases.md", "invariants.md", "evidence_map.md",
+                   "postmortem.md", "report_template.md"]
+_SKILL_REV_CLAIM = None       # --skill-rev 로 세션이 제출한 **사본** rev
+_REV_RX = re.compile(r"<!--\s*rev:\s*([0-9]{4}-[0-9]{2}-[0-9]{2}[A-Za-z0-9]*)")
+_ISO_D_RX = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _rev_date(tok):
+    """`2026-08-26b` -> `2026-08-26`. 같은 날 여러 세대를 접미사로 구분한다."""
+    return tok[:10] if tok else None
+
+
+def skill_rev_state(root, day):
+    """정본 rev 무결성(B-1/β2) + 사본 대조(B-2/β1) 를 함께 판정한다."""
+    out = {"path": SKILL_REL, "declared": None, "last_commit": None,
+           "dirty": False, "exists": False, "lines": 0,
+           "claim": _SKILL_REV_CLAIM, "verdicts": [], "flags": [], "refs": []}
+    full = os.path.join(root, SKILL_REL)
+    if not os.path.isfile(full):
+        out["verdicts"].append("🔴 **정본 없음** — `%s` 를 찾지 못했다" % SKILL_REL)
+        out["flags"].append("점검 지침서 정본 `%s` 가 없다 — 사본이 유일본이 된다" % SKILL_REL)
+        return out
+    out["exists"] = True
+    try:
+        head = []
+        with io.open(full, "r", encoding="utf-8", errors="replace") as f:
+            for i, line in enumerate(f):
+                if i < 200:
+                    head.append(line)
+                out["lines"] = i + 1
+        m = _REV_RX.search("".join(head))
+        out["declared"] = m.group(1) if m else None
+    except Exception as e:
+        out["verdicts"].append("⚠ 정본 읽기 실패 — %s" % truncate(str(e), 90))
+        out["flags"].append("점검 지침서 정본을 읽지 못했다 — %s" % truncate(str(e), 80))
+        return out
+
+    lc_raw = run_git(root, ["log", "-1", "--format=%cI", "--", SKILL_REL])
+    out["last_commit"] = lc_raw
+    st = run_git(root, ["-c", "core.autocrlf=true", "status", "--porcelain", "--", SKILL_REL])
+    out["dirty"] = bool(st.strip()) and not st.startswith("(git")
+
+    # ── B-1 (β2): 정본 rev 무결성 — 완전 자동
+    if not out["declared"]:
+        out["verdicts"].append(
+            "🔴 **`rev:` 마커 없음** — 첫 200줄에 `<!-- rev: YYYY-MM-DD -->` 가 없다. "
+            "세대 비교가 **구조적으로 불가능**하다")
+        out["flags"].append("점검 지침서 정본에 `rev:` 마커가 없다 — 사본 드리프트를 잴 수 없다")
+    else:
+        dd = _rev_date(out["declared"])
+        lc = (lc_raw or "")[:10]
+        if _ISO_D_RX.match(lc) and dd and lc > dd:
+            out["verdicts"].append(
+                "🔴 **정본이 `rev:` 이후 수정됐다** — 선언 `%s` < 최종커밋 `%s` (**rev 미갱신**). "
+                "이 상태에서는 사본 대조가 「일치」를 찍어도 내용은 다를 수 있다 — **검사 무력화**"
+                % (out["declared"], lc))
+            out["flags"].append(
+                "점검 지침서 정본 **`rev:` 미갱신** — 선언 %s < 최종커밋 %s. "
+                "사본 대조가 무력화된다" % (out["declared"], lc))
+        elif out["dirty"] and dd != day.strftime("%Y-%m-%d"):
+            out["verdicts"].append(
+                "⚠ **미커밋 수정이 있는데 `rev:` 는 `%s` 그대로다** — 고쳤으면 올릴 것(§9)"
+                % out["declared"])
+        else:
+            out["verdicts"].append(
+                "정본 rev `%s` · 최종커밋 `%s` · %d줄 — **정합**"
+                % (out["declared"], lc or "?", out["lines"]))
+
+    # ── B-2 (β1): 사본 대조 핸드셰이크
+    claim = (out["claim"] or "").strip()
+    if not claim:
+        out["verdicts"].append(
+            "⚠ **사본 대조 미제출** — 세션이 `--skill-rev` 를 주지 않았다. 이 실행이 "
+            "§0 「정본↔사본 대조」를 했는지 **확인 불가**다(**미측정 ≠ 일치**). "
+            "⚠ 예약 프롬프트 3종에 인자가 배선되기 전에는 이 줄이 **정상**이다")
+    elif out["declared"] and claim.lower() == out["declared"].lower():
+        out["verdicts"].append("사본 대조: **일치** (사본 rev `%s`)" % claim)
+    else:
+        out["verdicts"].append(
+            "🔴 **사본 드리프트** — 사본 rev `%s` ≠ 정본 `%s`. **정본을 따를 것.** "
+            "사본에는 통째로 빠진 절이 있을 수 있다(2026-08-26 사고: 장후 제4·5부 누락)"
+            % (claim, out["declared"] or "?"))
+        out["flags"].append(
+            "🔴 점검 지침서 **사본 드리프트** — 사본 `%s` ≠ 정본 `%s`. "
+            "이 세션은 낡은 지침으로 돌고 있다" % (claim, out["declared"] or "?"))
+
+    # ── 참조 파일 5종: rev 마커가 없으므로 **최종 커밋일만** 낸다(판정하지 않는다)
+    for name in SKILL_REF_FILES:
+        rel = SKILL_REF_DIR + "/" + name
+        if not os.path.isfile(os.path.join(root, rel)):
+            out["refs"].append((name, "**없음**"))
+            continue
+        d = run_git(root, ["log", "-1", "--format=%cs", "--", rel])
+        out["refs"].append((name, d if _ISO_D_RX.match(d or "") else "?"))
+    return out
 
 
 # --pc 인자 / MIREUK_PC_ID 환경변수로 들어온 PC명 override. main() 이 채운다.
@@ -3381,6 +3585,27 @@ def build(root, day, phase, cfg, discover_only=False):
         A("PC명 태그 규약: 최근 12건 모두 `[MW####]` 접두 확인")
     A("")
 
+    # [MW0602 498차 후속 / A-1] 인덱스락 2점 샘플.
+    # 0821 사고(0바이트 락 53.5시간 → 저장소 커밋 불가)가 **어떤 계측에도 안 걸린** 것이
+    # 이 줄의 존재 이유다. `git status` 는 rc=0 으로 조용히 통과했다.
+    _lock_lines, _lock_flags = lock_report(_LOCK_AT_START, git_lock_state(root))
+    A("**인덱스락**")
+    L.extend(_lock_lines)
+    A("")
+
+    # [MW0602 498차 후속 / B-1·B-2] 점검 지침서 정본↔사본 세대 대조.
+    # β2(정본 rev 미갱신)는 완전 자동, β1(사본 낡음)은 `--skill-rev` 핸드셰이크.
+    _skill = skill_rev_state(root, day)
+    _skill_flags = _skill["flags"]
+    A("**점검 지침서 세대**")
+    for _v in _skill["verdicts"]:
+        A("- %s" % _v)
+    if _skill["refs"]:
+        A("- 참조 파일 최종커밋: %s" % " · ".join(
+            "`%s` %s" % (nm, dt) for nm, dt in _skill["refs"]))
+        A("  (참조 5종에는 `rev:` 마커가 없어 **판정하지 않는다** — 날짜만 낸다)")
+    A("")
+
     # ---- 3. 절대원칙 불변식 ----
     A("## 3. 설정 불변식 — 절대원칙·한시예외 (config/settings.py)")
     A("")
@@ -3715,6 +3940,10 @@ def build(root, day, phase, cfg, discover_only=False):
     # [MW0602 470차 S3] §5 자체 검산 결과를 최우선으로 올린다 — 손익이 배너와 다르면
     # 그 아래 모든 손익 서술이 오염된다.
     flags.extend(day_summary_flags or [])
+    # [MW0602 498차 후속] §2 에서 계산한 락·지침서 드리프트를 적신호로 올린다.
+    # §2 안에만 찍으면 읽는 사람이 놓친다(3555 줄 §5→§11 승격과 같은 이유).
+    flags.extend(_lock_flags or [])
+    flags.extend(_skill_flags or [])
     if not files:
         flags.append("당일 날짜 토큰 파일 0개 — 프로그램이 안 돌았거나 탐색 경로가 틀렸다")
     if spath and rows:
@@ -4224,6 +4453,11 @@ def main(argv=None):
     ap.add_argument("--discover", action="store_true",
                     help="파일 인벤토리만 출력 — 처음 한 번 돌려 경로를 확인한다")
     ap.add_argument("--max-log-mb", type=int, default=None, help="이보다 큰 로그는 건너뛴다")
+    ap.add_argument("--skill-rev", default=None,
+                    help="이 세션에 **로드된 스킬 사본**의 rev (예: 2026-08-26b). "
+                         "정본 rev 와 대조해 사본 드리프트를 §2 에 드러낸다. "
+                         "생략하면 '미제출'(미측정)로 남는다 - 일치로 치지 않는다. "
+                         "!! 정본에서 복사하지 말 것 - 항상 일치가 되어 검사가 무의미해진다")
     ap.add_argument("--pc", default=None,
                     help="PC명을 직접 지정한다 (예: MW0602). 환경변수 MIREUK_PC_ID 로도 같다. "
                          "생략하면 호스트명에서 자동탐지 - 예약작업.컨테이너처럼 호스트명이 "
@@ -4235,6 +4469,12 @@ def main(argv=None):
 
     start = args.root if args.root else os.path.dirname(os.path.abspath(__file__))
     root = find_repo_root(start)
+
+    # [MW0602 498차 후속 / A-1·B-2] 락 **시작 스냅샷**은 다른 어떤 git 호출보다 먼저 잡는다
+    # - 이 수집기 자신이 만든 락을 "원래 있었다"로 오귀속하지 않기 위해서다.
+    global _LOCK_AT_START, _SKILL_REV_CLAIM
+    _LOCK_AT_START = git_lock_state(root)
+    _SKILL_REV_CLAIM = args.skill_rev
     day = parse_date(args.date)
     cfg = load_config(root)
     if args.max_log_mb:
