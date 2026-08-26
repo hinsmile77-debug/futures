@@ -17447,10 +17447,11 @@ dev_memory/NEXT_TODO.md                                 (이 절)
 
 ## 2026-08-26 (MW0602 495차 — 493차 후속5·후속8 체리픽 후속)
 
-- [ ] 🔴 **사용자 확인**: MW0602 CYBOS 모의 계좌의 수수료 고시/설정 화면에서
-      **0.0019%의 출처 확정** — MW0601 고시(0.0098104%)와 5.16배 다르다(33거래일
-      역산 R²=1.000000). 확인되면 `config/settings.py:BROKER_FEE_SOURCE`·
-      `BROKER_FEE_VERIFIED_ON`을 이 PC 기준으로 갱신.
+- [x] ✅ **[2026-08-26 완료] 사용자 확인**: 0.0019%의 출처 확정 — **대신증권
+      CREON 트레이딩 고시**(KOSPI200/미니 선물 0.0019%, 모의투자 고시 동일).
+      원인은 계좌가 아니라 **로그인 채널**: CREON 0.0019% / CYBOS 0.0098104%.
+      → 495차 후속이 채널 감지 파생 구조로 구현(BROKER_CHANNEL_SPECS +
+      detect_broker_channel, tests/test_495_broker_channel_rate.py).
 - [ ] 라이브 검증(다음 거래일): ① EOD `[BrokerPnl]` net 축 대사 OK/MISMATCH 확인
       ② 매분 `upsert_broker_net` 예탁현금 기록 확인 ③ ProfitGuard 수수료 반영
       (이 PC 1.27배 — MW0601 6.54배보다 영향 작음) 차단 로그 관찰.

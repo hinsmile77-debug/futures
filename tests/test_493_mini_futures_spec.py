@@ -40,9 +40,10 @@ from config.constants import (  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-#: 🔴 [MW0602 495차] 이 PC 계좌 실측 요율 — MW0601의 고시값(0.0098104%)과 다르다.
-#: 33거래일 역산(2026-08-26, R²=1.000000, 최대 잔차 1.5원, 고정비 ≈0).
-#: 이 계좌 기준 고시/설정 화면 확인은 미완(NEXT_TODO 495차) — 확인되면 출처 갱신.
+#: ✅ [MW0602 495차 후속] 대신증권 **CREON 트레이딩** 고시 (2026-08-26 사용자 확인).
+#: KOSPI200/미니 선물 0.0019% — 33거래일 역산(0.0018999%, R²=1.000000)과 일치.
+#: MW0601(CYBOS 사이버 트레이딩)은 0.0098104% — 요율은 **로그인 채널**이 정한다.
+#: 채널 감지·매핑은 tests/test_495_broker_channel_rate.py가 검증한다.
 OFFICIAL_ONE_WAY_RATE = 0.000019
 
 

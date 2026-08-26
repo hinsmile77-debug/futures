@@ -31265,3 +31265,48 @@ unlink 금지 항목과 별건이나 같은 마운트 성질에서 온다.)
   을 직접 비교하지 말 것** — 창·원천이 다르다. 전환기준 ① 원천 재정의 판정은 **주간회의 몫**.
 - ⚠ **`strategy_events` id=82 `METRIC_REDEFINITION`(2026-08-26, 수수료율 0.000015→0.000019)**
   전후 **엔진 net 시계열 직접 비교 금지**. 행별 세대는 `trades.commission_rate_used` 가 명시.
+
+---
+
+## 2026-08-26 (MW0602 495차 후속 — 수수료율 로그인 채널 파생 구조)
+
+### 사용자 고시 화면 제공으로 495차 미제가 풀렸다
+
+- **CREON 트레이딩 고시: KOSPI200/미니 선물 0.0019%** (모의투자 고시도 동일).
+  495차 역산 0.0019000%와 일치 — MW0601 패턴(역산→고시 일치)과 동일한
+  독립 이중 확인. 출처가 「33거래일 역산」→「고시」로 승격.
+- **원인 확정: 계좌가 아니라 로그인 채널이다.** 대신증권은 매체별로 고시한다 —
+  MW0602=CREON 로그인 0.0019% / MW0601=CYBOS 사이버 0.0098104%.
+  후속8의 "요율은 상품과 무관"은 채널 안에서만 참.
+- 세금 축: 선물/옵션 증권거래세·농특세 「없음」(고시) — 고정비 ≈0 실측과 부합.
+
+### 사용자 지시 — "로그인에 따라 수수료 적용하도록 코드 개선"
+
+구현(`config/constants.py` 신설 + `config/settings.py` 재배선):
+
+1. `BROKER_CHANNEL_SPECS` — 채널→{요율, 전환일, 출처} 매핑. 단일 원천.
+2. `detect_broker_channel()` — 감지 순서: ① env `MIREUK_BROKER_CHANNEL`(비상/테스트)
+   ② **스타터 로그 mtime 최신** (`C:\CREON\STARTER
+cstarter.log` vs
+   Daishin 쪽 후보 3경로 — "마지막으로 어느 채널로 사인온했나") ③ 실패 시 None.
+   settings가 None이면 CREON 폴백 + stderr 경고 + `BROKER_CHANNEL_SOURCE="fallback"`
+   (계측 4원칙 ④).
+   ⚠ **레지스트리는 쓰지 않는다** — 이 PC 실측: CREON·CYBOSPLUS 이중 설치라
+   CpUtil CLSID가 CYBOSPLUS를 가리킴(마지막 설치본 승자 — 로그인 채널과 무관).
+   ⚠ **프로세스 경로도 쓰지 않는다** — CpStart/DibServer가 관리자 권한이라
+   비관리자 CIM/wmic 조회가 ExecutablePath 공란(실측).
+   근거 로그: ncstarter.log에 "사인온 성공"·"매체구분 C8"이 남는다.
+3. `FUTURES_COMMISSION_RATE`·`EFFECTIVE_FROM`·`BROKER_FEE_SOURCE` 전부
+   `_BROKER_SPEC` 파생으로 교체 — 하드코딩 회귀 봉쇄(495차 사고의 구조적 치료).
+4. CLAUDE.md 26주 재검증 항목 갱신(채널 감지 ⓓ 추가), test_493 두 파일 출처 주석
+   고시 승격.
+
+### 검증
+
+- 신규 `tests/test_495_broker_channel_rate.py` 6/6 PASS (표준 단독 실행형):
+  매핑 고정 · settings 파생 · 감지 근거 가시화 · env 왕복 · 소비처 단일 원천 ·
+  LEGACY 보존.
+- 이 PC 감지 실측: `("CREON", "starter_log:C:\CREON\STARTER
+cstarter.log")`.
+- 기존 58건(493×2·477·479) 전부 PASS 유지. `--verify` PASS(편차 0.00%, 정상 34일).
+- py37_32 컴파일: constants/settings/main/db_utils/dashboard/campaign_report OK.

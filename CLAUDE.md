@@ -1051,7 +1051,16 @@ EOD 로그에 그 경고가 보이면 호스트명을 확인할 것.
 > 나와도 사후에 완화하지 말 것**(§9-4 검증 시계 리셋 대상).
 
 > **[2026-08-25 493차 등록 / F-1] 선물 수수료율** —
-> `config/settings.py:FUTURES_COMMISSION_RATE = 0.0000981` (편도 0.00981%).
+> `config/settings.py:FUTURES_COMMISSION_RATE` — 🔴 **[MW0602 495차 후속] 이제
+> 고정 상수가 아니라 로그인 채널 감지로 파생된다**:
+> `config/constants.py:BROKER_CHANNEL_SPECS[detect_broker_channel()]`.
+> 대신증권은 로그인 매체별로 요율을 고시한다 — **CREON 트레이딩(MW0602) 0.0019% /
+> CYBOS 사이버(MW0601) 0.0098104%** (양쪽 다 사용자 고시 화면 확인 + 각 PC 역산
+> 일치, 2026-08-26). 493차가 CYBOS 값을 하드코딩해 들여오자 MW0602에서 5.16배
+> 과대가 된 것이 파생 구조로 바꾼 계기다. 감지 근거는 스타터 로그
+> (`C:\CREON\STARTER\ncstarter.log` 등) mtime — 레지스트리·프로세스 경로는 이중
+> 설치/권한 문제로 오판한다(`constants.py` 주석). 검증:
+> `tests/test_495_broker_channel_rate.py`.
 > **성격이 다르다 — 시장 프로파일이 아니라 "브로커 계약 조건"이다.** 그래도 여기
 > 넣는 이유는 CB②·CB③-P4·FP-CRITICAL과 정확히 같다: 별도 캘린더를 만들면
 > "재검토하기로 했는데 안 함"이 된다.
@@ -1068,6 +1077,9 @@ EOD 로그에 그 경고가 보이면 호스트명을 확인할 것.
 > ⓑ 실전 계좌 요율은 모의와 다를 수 있다 — 전환기준 ⑧과 묶어 확인.
 > ⓒ 상시 감시는 F-2 net 대사가 맡는다(매 EOD `[NetRecon]`) — 이 26주 항목은
 >    그 경보가 없더라도 요율 자체를 다시 재는 이중 안전장치다.
+> ⓓ [MW0602 495차 후속] **채널 감지도 함께 재확인**: `BROKER_CHANNEL_SOURCE`가
+>    `fallback`이면 스타터 로그 경로(`constants._STARTER_LOG_CANDIDATES`)가
+>    낡은 것이다 — 대신 설치 경로 변경 시 후보 목록을 갱신할 것.
 > (근거: `docs/정기점검/매일점검/MW0601-20260825-브로커손익불일치-딥다이브.md`,
 >  `dev_memory/DECISION_LOG.md` 2026-08-25 493차)
 
