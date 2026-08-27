@@ -177,6 +177,36 @@ def test_profit_guard_uses_net_estimate():
         "구 gross 분기가 남아 있다(축 혼재 재발)"
 
 
+# ── P1 후속 (2026-08-27) ─────────────────────────────────────────────────────
+def test_display_key_block_not_gated_by_quiet():
+    """표시 키 조립이 `not quiet` 안에 갇혀 있으면 안 된다 — 2초 주기 원상복구 재발 방지.
+
+    실측 버그: `_balance_ui_timer`(2초 주기)가 `_ts_refresh_dashboard_balance_ui_only()`
+    → `_ts_push_balance_to_dashboard(..., quiet=True)`로 캐시를 재푸시한다. 표시 키
+    조립이 `if is_cybos_balance and not quiet:` 안에 있으면, 실제 새로고침 직후 잠깐
+    "net (g gross)"가 떴다가 2초 안에 quiet 재푸시가 이 블록을 건너뛰어 원본 gross
+    단독 표시로 되돌아간다(로그엔 정상 기록되는데 화면만 되돌아가 발견이 늦었다).
+    DB 기록(upsert_*)은 `not quiet`로 막아도 되지만 표시 조립은 quiet과 무관해야 한다.
+    """
+    src = _read("main.py")
+    i_key = src.index('summary["금일손익_표시"] =')
+    # "금일손익_표시" 대입 직전에 나오는 마지막 `if is_cybos_balance` 게이트를 찾는다 —
+    # 그 게이트 줄 자체에 `not quiet`가 있으면 표시 조립이 quiet에 묶인 것이다.
+    i_gate = src.rindex("if is_cybos_balance", 0, i_key)
+    gate_line = src[i_gate:src.index("\n", i_gate)]
+    assert "not quiet" not in gate_line, (
+        "표시 키 조립이 `not quiet` 게이트 안에 있다 — 2초 주기 quiet 재푸시가 "
+        "화면을 gross 단독 표시로 되돌리는 버그가 재발한다: %r" % gate_line)
+    # DB 기록 블록(upsert_broker_net)은 여전히 not quiet로 막혀 있어야 한다
+    # (매 2초 재기록되는 회귀 방지).
+    i_upsert = src.index("upsert_broker_net(")
+    i_db_gate = src.rindex("if is_cybos_balance", 0, i_upsert)
+    db_gate_line = src[i_db_gate:src.index("\n", i_db_gate)]
+    assert "not quiet" in db_gate_line, (
+        "DB 기록(upsert_broker_net)이 not quiet로 막혀 있지 않다 — "
+        "2초마다 재기록되어 DB 쓰기 폭주 위험: %r" % db_gate_line)
+
+
 def main():
     check("T1 INSERT 컬럼·플레이스홀더 정합", test_insert_includes_rate_and_placeholders_match)
     check("T2 현행 세대 NULL 요율 0행", test_live_db_has_no_null_rate_in_current_generation)
@@ -186,10 +216,11 @@ def main():
     check("T6 패널 우선 소비(offscreen)", test_panel_prefers_display_key_offscreen)
     check("T7 수수료 합 헬퍼·캐시", test_engine_commission_today_matches_db)
     check("T8 ProfitGuard net 추정", test_profit_guard_uses_net_estimate)
+    check("T9 표시 키 조립이 quiet에 안 묶임", test_display_key_block_not_gated_by_quiet)
     if FAILURES:
         print("FAILED: %s" % ", ".join(FAILURES))
         sys.exit(1)
-    print("ALL PASS (8/8)")
+    print("ALL PASS (9/9)")
 
 
 if __name__ == "__main__":

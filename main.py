@@ -16745,51 +16745,65 @@ def _ts_push_balance_to_dashboard(self, result: dict, *, quiet: bool = False) ->
                 self._broker_net_today = _next_dep - _dep_cash
                 self._refresh_pnl_history()
             upsert_daily_broker_pnl(_yesterday, _prev_pnl)
-            # ── [MW0602 497차 / P1 체리픽] 실시간잔고 스트립 축 정합 — 표시 전용 키 ──────────
-            # CpTd6197 today_pnl(gross)을 "금일손익"으로, prev_day_pnl(gross)을
-            # "전일손익"으로 라벨 없이 띄워 왔다. 같은 스트립의 수익율(%)은 예탁현금 차
-            # (net) 기반이라 **한 줄 안에서 축이 섞여 있었다**(계측 4원칙 ①). 2026-08-26
-            # 실측: 금일손익 446,000(gross) vs 브로커 net 429,636 — 갭 16,364원 전액이
-            # 수수료(약정 861.31M × 0.0019%)였다.
-            # 원본 summary 키는 건드리지 않는다 — ProfitGuard 캐시(_last_balance_realized_krw)
-            # ·sizer 잔고 추출이 그 키를 읽는다. 패널이 "*_표시" 키를 우선 소비한다.
-            try:
-                _gross_txt = str(summary.get("실현손익") or "").replace(",", "").strip()
-                _gross_val = float(_gross_txt) if _gross_txt else None
-                if _gross_val is not None:
-                    # _broker_net_today는 FLAT 잔고 push에서만 갱신된다(보유 중엔 예탁
-                    # 차액에 증거금·미실현이 섞여 net이 오염되므로). __init__/daily_close
-                    # 에서 None 초기화 — None은 "아직 모름"이다(계측 4원칙 ②).
-                    _bnet = self._broker_net_today
-                    if self.position.status == "FLAT" and _bnet is not None:
-                        summary["금일손익_표시"] = "{:+,.0f} (g {:+,.0f})".format(
-                            _bnet, _gross_val)
-                    elif self.position.status != "FLAT":
-                        # 보유 중 gross에는 미실현이 포함될 수 있다 — 폴백 가시화(④).
-                        summary["금일손익_표시"] = "{:+,.0f} (gross·보유중)".format(_gross_val)
-                    else:
-                        summary["금일손익_표시"] = "{:+,.0f} (gross)".format(_gross_val)
-
-                # 전일손익: 헤더 prev_day_pnl은 gross — daily_broker_pnl에서 직전
-                # 거래일 net을 찾아 정렬한다(주말·휴장 자동 건너뜀). 날짜당 1회 조회.
-                _today_key = datetime.date.today().isoformat()
-                _pn_cache = self._prev_broker_net_cache
-                if _pn_cache is None or _pn_cache[0] != _today_key:
-                    from utils.db_utils import fetch_prev_broker_net
-                    _pn_cache = (_today_key, fetch_prev_broker_net(_today_key))
-                    self._prev_broker_net_cache = _pn_cache
-                _prev_txt = str(summary.get("추정자산") or "").replace(",", "").strip()
-                _prev_gross = float(_prev_txt) if _prev_txt else None
-                _pn = _pn_cache[1]
-                if _pn is not None:
-                    summary["전일손익_표시"] = "{:+,.0f} (g {:+,.0f})".format(
-                        _pn["net_krw"], _pn["gross_krw"])
-                elif _prev_gross is not None:
-                    summary["전일손익_표시"] = "{:+,.0f} (gross)".format(_prev_gross)
-            except Exception as _axd_e:
-                logger.debug("[BalanceAxis] 표시 키 조립 실패(무해): %s", _axd_e)
         except Exception as _bpnl_e:
             logger.debug("[BrokerPnl] 일별 손익 저장 실패: %s", _bpnl_e)
+
+    # ── [MW0602 497차 / P1 체리픽 + 후속 fix] 실시간잔고 스트립 축 정합 — 표시 전용 키 ──
+    # CpTd6197 today_pnl(gross)을 "금일손익"으로, prev_day_pnl(gross)을 "전일손익"으로
+    # 라벨 없이 띄워 왔다. 같은 스트립의 수익율(%)은 예탁현금 차(net) 기반이라 **한 줄
+    # 안에서 축이 섞여 있었다**(계측 4원칙 ①). 2026-08-26 실측: 금일손익 446,000(gross)
+    # vs 브로커 net 429,636 — 갭 16,364원 전액이 수수료(약정 861.31M × 0.0019%)였다.
+    # 원본 summary 키는 건드리지 않는다 — ProfitGuard 캐시(_last_balance_realized_krw)
+    # ·sizer 잔고 추출이 그 키를 읽는다. 패널이 "*_표시" 키를 우선 소비한다.
+    #
+    # 🔴 [2026-08-27 후속] 이 블록을 `not quiet` 안에 두면 안 된다 — 화면 표시가
+    # 2초마다 원상복구되는 버그였다. `_balance_ui_timer`(2초 주기)가
+    # `_ts_refresh_dashboard_balance_ui_only()` → `_ts_push_balance_to_dashboard(...,
+    # quiet=True)`로 캐시(`self._last_balance_result`, 원본 raw summary — "_표시" 키
+    # 없음)를 계속 재푸시한다. 실제 새로고침 직후 잠깐 "net (g gross)"가 떴다가
+    # 2초 안에 quiet 재푸시가 이 블록을 건너뛰어 gross 단독 표시로 되돌아갔다
+    # (2026-08-27 실측: 로그엔 "금일손익_표시": "+82,285 (g +93,000)"가 정상 기록됐는데
+    # 화면은 "93,000" 단독 — DB 기록은 `not quiet`로 막아도 되지만 표시 조립까지
+    # 같이 막은 것이 원인). DB 기록(위 블록)은 그대로 `not quiet` 유지 — 여기는
+    # `self._broker_net_today`·`self._prev_broker_net_cache`(둘 다 실제 새로고침 때만
+    # 갱신되는 인스턴스 상태)와 이번 summary만 조합하므로 quiet 여부와 무관하게
+    # 매번 다시 조립해도 안전하다(추가 DB 호출은 날짜당 1회 캐시).
+    if is_cybos_balance:
+        try:
+            _gross_txt = str(summary.get("실현손익") or "").replace(",", "").strip()
+            _gross_val = float(_gross_txt) if _gross_txt else None
+            if _gross_val is not None:
+                # _broker_net_today는 FLAT 잔고 push에서만 갱신된다(보유 중엔 예탁
+                # 차액에 증거금·미실현이 섞여 net이 오염되므로). __init__/daily_close
+                # 에서 None 초기화 — None은 "아직 모름"이다(계측 4원칙 ②).
+                _bnet = self._broker_net_today
+                if self.position.status == "FLAT" and _bnet is not None:
+                    summary["금일손익_표시"] = "{:+,.0f} (g {:+,.0f})".format(
+                        _bnet, _gross_val)
+                elif self.position.status != "FLAT":
+                    # 보유 중 gross에는 미실현이 포함될 수 있다 — 폴백 가시화(④).
+                    summary["금일손익_표시"] = "{:+,.0f} (gross·보유중)".format(_gross_val)
+                else:
+                    summary["금일손익_표시"] = "{:+,.0f} (gross)".format(_gross_val)
+
+            # 전일손익: 헤더 prev_day_pnl은 gross — daily_broker_pnl에서 직전
+            # 거래일 net을 찾아 정렬한다(주말·휴장 자동 건너뜀). 날짜당 1회 조회.
+            _today_key = datetime.date.today().isoformat()
+            _pn_cache = self._prev_broker_net_cache
+            if _pn_cache is None or _pn_cache[0] != _today_key:
+                from utils.db_utils import fetch_prev_broker_net
+                _pn_cache = (_today_key, fetch_prev_broker_net(_today_key))
+                self._prev_broker_net_cache = _pn_cache
+            _prev_txt = str(summary.get("추정자산") or "").replace(",", "").strip()
+            _prev_gross = float(_prev_txt) if _prev_txt else None
+            _pn = _pn_cache[1]
+            if _pn is not None:
+                summary["전일손익_표시"] = "{:+,.0f} (g {:+,.0f})".format(
+                    _pn["net_krw"], _pn["gross_krw"])
+            elif _prev_gross is not None:
+                summary["전일손익_표시"] = "{:+,.0f} (gross)".format(_prev_gross)
+        except Exception as _axd_e:
+            logger.debug("[BalanceAxis] 표시 키 조립 실패(무해): %s", _axd_e)
 
     self.dashboard.update_account_balance(
         summary,
