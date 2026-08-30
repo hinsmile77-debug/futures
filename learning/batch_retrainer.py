@@ -1691,6 +1691,20 @@ class BatchRetrainer:
             with open(h_path, "wb") as f:
                 pickle.dump(list(feature_names), f, protocol=4)   # py37_32 호환 상한
         else:
+            # [MW0601 500차 3단계 / 결정 3] 폐기 예정 컬럼이 슈퍼셋에 다시 들어오는지
+            # 감시한다. **차단하지 않는다** — 지금 빼면 스케일러 shape 가 바뀌어
+            # 배포 모델과 어긋난다(332차·337차). 실제 제거는 P2-B 온보딩 경로다.
+            # 이 경고가 없으면 "왜 아직 있는지"를 매번 다시 조사하게 된다.
+            try:
+                from config.settings import FEATURE_SUPERSET_DEPRECATED as _DEPR
+                _hit = [n for n in feature_names if n in _DEPR]
+                if _hit:
+                    logger.info(
+                        "[Retrain] 슈퍼셋에 폐기 예정 컬럼 %d개 유지 중 "
+                        "(설계상 정상 — 제거는 P2-B 경로): %s",
+                        len(_hit), ", ".join(sorted(_hit)))
+            except Exception:
+                pass
             # 공유 pkl: 전체 피처셋 저장 (구버전 모델과의 호환성)
             feature_path = os.path.join(self.model_dir, "feature_names.pkl")
             with open(feature_path, "wb") as f:

@@ -182,7 +182,42 @@ def detect_broker_channel():
     return None, "none"
 
 # ── 고정 CORE 피처명 ──────────────────────────────────────────
-CORE_FEATURES = ["cvd_divergence", "vwap_position", "ofi_norm"]
+# 🔴 [MW0601 500차 3단계 / 주간회의 결정 2] "CORE" 의 정의가 세 곳에서 서로
+#   달랐다. 인용처마다 다른 집합을 보고 있었고, 한쪽만 바뀌어도 드러나지 않았다:
+#     · config/constants.py:CORE_FEATURES            — SHAP 심사 퇴출 면제
+#     · config/settings.py:CORE_FEATURES_BY_GROUP    — 체크리스트 게이트(실집행)
+#     · strategy/regime_fingerprint.py:_CORE_FEATURES — PSI / FP-CRITICAL
+#   앞의 둘과 셋째가 `cvd_divergence` vs `cvd_delta_norm` 으로 갈렸다.
+#
+#   이제 **`CORE_FEATURES_BY_GROUP["short"]` 를 단일 출처**로 삼고 나머지는
+#   여기서 파생한다. 단기 그룹을 기준으로 쓰는 이유: `select_entry_horizon()` 이
+#   1m/3m/5m/None 만 반환해 중기·장기 그룹은 **구조적으로 도달 불가**다(474차).
+#
+#   ⚠ `cvd_divergence` 가 빠지고 `cvd_delta_norm` 이 들어온다. 근거는 500-A/B —
+#     `cvd_divergence` 는 부호가 `-sign(price_slope_10m)`(99.92%)이고 크기가
+#     개장 후 경과시간의 함수라(08시 0.617 → 15시 0.022) CORE 로서 재는 것이
+#     이름과 다르다. `ofi_norm` → `ofi_pressure` 는 체크리스트 실소비 키를 따른
+#     것이며 `ofi_pressure ≡ sign(ofi_norm)` 이라 정보 손실은 부호 외 크기뿐이다.
+#
+#   ⚠ 순환 import 방지 — settings 가 constants 를 import 하므로 여기서는
+#     **지연 import** 로 읽고, 실패 시 하드코딩 폴백을 쓴다(폴백 사용은 로그로
+#     남긴다 — 계측 4원칙 ④).
+def _derive_core_features():
+    try:
+        from config.settings import CORE_FEATURES_BY_GROUP
+        vals = [v for v in CORE_FEATURES_BY_GROUP["short"].values()
+                if isinstance(v, str)]
+        if vals:
+            return sorted(set(vals))
+    except Exception as _e:
+        import logging
+        logging.getLogger(__name__).warning(
+            "[CORE] CORE_FEATURES_BY_GROUP 조회 실패(%s) → 폴백 사용 "
+            "(정의 통합이 깨졌는지 확인할 것 — 500차 결정 2)", _e)
+    return ["cvd_delta_norm", "ofi_pressure", "vwap_position"]
+
+
+CORE_FEATURES = _derive_core_features()
 
 # ── 전체 피처 목록 ────────────────────────────────────────────
 SUPPLY_DEMAND_FEATURES = [
