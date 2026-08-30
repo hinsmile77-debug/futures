@@ -96,7 +96,32 @@ class SessionRecoveryService:
                 _log.getLogger("SYSTEM").debug("[Restore] update_learning 실패: %s", _ue)
             _QTimer.singleShot(10, _stage2)
 
-        _QTimer.singleShot(0, _stage1)
+        # 🔴 [MW0601 504차 후속] 여기는 **워커 스레드**다(_restore_panels_bg 가
+        # threading.Thread 로 띄운다). 그 스레드에는 Qt 이벤트 루프가 없어서
+        # `QTimer.singleShot(0, _stage1)` 이 **한 번도 발화하지 않았다** — 타이머는
+        # 호출한 스레드에 붙는데 그 스레드가 이벤트 루프를 돌리지 않기 때문이다.
+        #
+        # 증상: `[LiveDBG] _apply 시작 (4단계 체인)` 은 매 기동마다 찍히는데
+        # `_apply update_learning`·`update_efficacy`·`update_trend`·`pnl_history`
+        # 완료 로그가 **전 기간 로그에 단 한 줄도 없다**(2026-08-31 전수 확인).
+        # ⇒ 기동 시 패널 4종(자가학습·효과검증·추이·손익추이)이 복원된 적이 없다.
+        # 거래일에는 이후 이벤트 구동 갱신(_record_trade_result·daily_close 등)이
+        # 채워줘서 드러나지 않았고, 거래가 없는 날에만 빈 화면으로 보였다.
+        # (재현: 워커 스레드에서 singleShot 예약 → 발화 False / 메인 → True)
+        #
+        # 고치는 방법은 304차 후속이 만든 통로(`_daily_close_ui_sig`,
+        # QueuedConnection)를 그대로 쓰는 것이다 — 새 기전을 만들지 않는다.
+        # `_stage1` 이 메인 스레드에서 돌기 시작하면 그 안의
+        # `singleShot(10, _stage2)` 는 정상 동작하므로 **체인 시작 한 줄만** 바뀌고,
+        # 단계 사이 10ms 양보 구조(14.8초 블로킹 회피 취지)는 그대로다.
+        #
+        # ⚠ [MW0602 체리픽 조정] 원 커밋(v9-dev)은 490차 F-L 이 만들어 둔
+        #   `system._dashboard_call` 을 그냥 썼지만 **이 브랜치엔 그 helper 가
+        #   없었다** — fix 만 가져왔으면 런타임 AttributeError 로 복원이 통째로
+        #   죽는다(원 버그보다 나쁘다). 그래서 helper 최소분을 `main.py` 에 함께
+        #   이식했다. 실제 클래스에 그것이 있는지는 테스트가 따로 고정한다
+        #   (스텁만 검사하면 이 구멍이 안 보인다).
+        system._dashboard_call(_stage1)
 
     def increment_session(self, system: Any) -> int:
         data = system._read_session_state()

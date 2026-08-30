@@ -12190,6 +12190,40 @@ class TradingSystem:
         # _exit_normally 미생성 → AUTO-RESTART 루프가 재시작 처리
         _qt_app.quit()
 
+    def _dashboard_call(self, fn) -> None:
+        """대시보드 갱신을 **반드시 메인 Qt 스레드에서** 실행한다.
+
+        메인 스레드에서 호출되면 즉시 실행하고, 그렇지 않으면
+        `_daily_close_ui_sig`(QueuedConnection) 로 넘긴다 — 304차 후속이 만든
+        그 통로를 그대로 재사용한다(새 기전을 만들지 않는다).
+
+        🔴 [MW0602 504차 후속 체리픽] **이 헬퍼는 이 브랜치에 없던 것이다.**
+        v9-dev 는 490차 F-L 로 이것을 만들어 뒀고, 그 위에서 504차 후속이
+        `session_recovery_service` 의 체인 시작을 `system._dashboard_call(...)`
+        으로 고쳤다. 이 브랜치는 F-L 을 가져온 적이 없어, 그 fix 만 체리픽하면
+        런타임에 **AttributeError** 가 나 기동 패널 복원이 통째로 죽는다
+        (원 버그보다 나쁘다). 그래서 fix 가 의존하는 최소분만 함께 이식한다.
+        ⚠ 490차 F-L 본편(= `_on_gbm_retrain_done` 등 다른 소비처를 이 통로로
+          옮기는 작업)은 **가져오지 않았다** — 별도 커밋이고 이 브랜치에서
+          아직 평가되지 않았다. `dev_memory/NEXT_TODO.md` 참조.
+
+        왜 필요한가: Qt 위젯을 워커 스레드에서 직접 만지면 access violation
+        (304차) 또는 GIL 을 쥔 채 반환하지 않는 데드락이 된다.
+
+        불변식은 `tests/test_504_startup_panel_restore_thread.py` 가 고정한다
+        (스텁이 아니라 **실제 TradingSystem** 에 이 메서드가 있는지까지 검사).
+        """
+        try:
+            _app = QApplication.instance()
+            _on_main = (_app is not None
+                        and QThread.currentThread() is _app.thread())
+        except Exception:
+            _on_main = False   # 판정 불가면 안전한 쪽(큐 경유)으로 보낸다
+        if _on_main:
+            fn()
+        else:
+            _daily_close_ui_sig.request.emit(fn)
+
     def _apply_dashboard_call(self, fn) -> None:
         """[304차 후속] DailyClose 스레드가 emit()한 대시보드 갱신을 메인 스레드에서 대신 실행.
 
