@@ -3,6 +3,77 @@
 
 ---
 
+## 2026-08-31 (MW0602 505차 — v9-dev 504차 후속 체리픽 · 의존물 결손 발견)
+
+**계기**: 사용자 지시 — *"v9-dev 브렌치 504차 후속 커밋 검토하고 MW0602 미륵이에
+도입 이익이 있다면 dev로 cherry pick 해줘"*
+
+### 0. 결론 — 가져왔다. 단 **원본 그대로 받으면 이 브랜치는 더 나빠졌다**
+
+원 커밋 `81096d5`(v9-dev / MW0601 / 2026-08-31). 결함은 코드에 있고 dev에도 동일.
+
+### 1. 결함 — 타이머는 "건 스레드"에 붙는다
+
+`_restore_panels_bg()`가 `threading.Thread`로 띄운 워커 안에서
+`_QTimer.singleShot(0, _stage1)`로 체인을 시작한다. 그 스레드엔 Qt 이벤트 루프가
+없어 **영영 발화하지 않는다.** 전제를 이 PC에서 독립 재현했다(py37_32/PyQt5/offscreen):
+메인 예약 → 발화 **True** / 워커 예약 → 발화 **False**.
+
+**MW0602 로그 실측**(`logs/*.log` 전수, 2026-07-29~08-30, 25파일):
+`[LiveDBG] _apply 시작 (4단계 체인)` **28회** vs 4단계 완료 로그 **각 0회**.
+⇒ 기동 시 패널 4종(자가학습·효과검증·추이·손익추이)이 **복원된 적이 없다.**
+거래일엔 이후 이벤트 구동 갱신이 채워줘 안 드러났고, 각 단계 예외는 `logger.debug`로
+삼켜져 흔적조차 없었다 — FP-CRITICAL 죽은 게이트·TOX 죽은 섀도와 같은 계열이다.
+
+### 2. 🔴 원본 fix가 부르는 helper 가 이 브랜치에 **없었다**
+
+원본은 `system._dashboard_call(_stage1)`로 고친다. 그 helper 는 v9-dev **490차 F-L**
+이 만든 것이고 dev 엔 없다(dev 의 `test_490`은 무관한 meta_scorer_hygiene).
+fix 만 체리픽했다면 런타임 **AttributeError** 로 복원이 통째로 죽는다 —
+원 버그는 "조용히 안 도는 것"인데 이건 **예외**다. 즉 **더 나빠진다.**
+
+🔴 **원 커밋의 테스트 5건은 이 구멍을 못 잡는다.** `system`을 스텁으로 넣어
+실제 `TradingSystem`에 그 메서드가 없어도 **5/5 전부 통과**한다(helper 를 지우고
+실행해 확인). 체리픽에서 **테스트 통과가 안전을 뜻하지 않는** 사례로 남긴다 —
+스텁이 브랜치 간 의존물 차이를 가린다.
+
+⇒ 조치 2가지:
+1. `main.py` 에 `_dashboard_call` **최소분 이식**. dev 가 이미 가진
+   `_daily_close_ui_sig`(304차 후속, QueuedConnection)와 이미 import 된
+   `QThread`·`QApplication` 만 쓴다 — 새 기전 없음.
+   ⚠ **490차 F-L 본편은 가져오지 않았다**(`_on_gbm_retrain_done` 등 다른 소비처를
+   이 통로로 옮기는 작업). 별도 커밋이고 이 브랜치에서 미평가.
+2. `test_real_trading_system_has_dashboard_call` 신설 — 스텁이 아니라 **실제
+   main.py 소스**에 helper 가 있고 큐 경유 + 메인 스레드 판정까지 쓰는지 고정.
+   helper 제거 후 **정확히 이 테스트만 실패**(5/6) 확인.
+
+### 3. ⚠ 작업 환경 사고 — 저장소가 `v9-dev` 로 체크아웃돼 있었다
+
+이 세션 시작 시점 HEAD 가 **`v9-dev`** 였다(내 조작 아님 — reflog
+`checkout: moving from dev to v9-dev` 가 이 세션 첫 명령 이전에 있다).
+그래서 ① 첫 체리픽이 `v9-dev` 에 커밋됐고 ② **초기 검증이 v9-dev 트리 기준**이었다.
+실제로 그 때문에 "dev 에 `_dashboard_call` 이 있다"고 잘못 확인했다(v9-dev 것이었다).
+
+복구: `v9-dev` 를 `b2f94eb`(원위치)로 되돌리고, `dev` 로 옮겨 **처음부터 재검증**했다.
+그 재검증에서 §2 의 의존물 결손이 드러났다. 작업 트리는 이제 `dev` 다.
+📌 **교훈**: 브랜치 간 체리픽 작업은 **첫 명령에서 `git branch --show-current` 를
+확인**할 것. 두 브랜치는 `config/settings.py` 만 5,476줄 차이라 파일 내용이
+조용히 다르다(CLAUDE.md 멀티PC 절).
+
+### 4. 검증
+
+- `tests/test_504_startup_panel_restore_thread.py` **6/6 OK**(원본 5 + 신설 1)
+- 회귀 pytest **35 passed**(504·452·453·497·473)
+- py37_32 py_compile OK(`main.py` · `session_recovery_service.py`)
+- ⚠ 라이브 미확인 — 다음 기동 때 `_apply update_learning` 이후 4줄이 처음으로
+  찍히는지 볼 것. MW0601 라이브 실측 총 422ms · 오류 0건.
+
+**원 커밋**: `81096d5`. **가져온 이유**: §1. **바꾼 것**: §2(helper 이식 + 테스트 신설,
+주석을 이 브랜치 사실로 정정). **가져오지 않은 것**: MW0601 DECISION_LOG,
+490차 F-L 본편.
+
+---
+
 ## 2026-08-30 (MW0602 504차 — v9-dev 500차 0~4단계 검토 · 4단계 체리픽)
 
 **계기**: 사용자 지시 — *"v9-dev 브렌치 500차 0~4단계 커밋 검토하고 MW0602 미륵이에
