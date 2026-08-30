@@ -272,6 +272,88 @@ CLAUDE.md처럼 git으로 커밋되는 문서에 적어야** 양쪽 PC 세션이
 | **중기** | 10m·15m | VWAP 위치 | `features/technical/vwap.py` | 미통과 → **강제 X** |
 | **장기** | 30m | opt_chain_pcr | `collection/options/option_chain_worker.py` | 미통과 → 등급 하락 ⚠ **미발동(도달 불가)** — 아래 488차 각주 |
 
+> 🔴 **[2026-08-30 500차 / v9-dev 체리픽] 단기 3행의 "CORE 피처" 이름은 실제 소비
+> 키가 아니다 — 이 표만 보고 인용하지 말 것.** 실소비 키는 `CORE_FEATURES_BY_GROUP["short"]`다:
+>
+> | 표의 이름 | 실제 체크리스트 소비 키 | 상태 |
+> |---|---|---|
+> | CVD 다이버전스 | **`cvd_delta_norm`** (2026-06-25 교체) | ✅ 건강 — 단 CVD가 아니다(아래) |
+> | VWAP 위치 | `vwap_position` | ✅ 일치 |
+> | OFI 불균형 | **`ofi_pressure`** | ⚠ = `sign(ofi_norm)` — 크기를 버린 부호 3값 |
+>
+> ⚠ **"CORE"의 정의가 세 곳에 있다 — 인용 전에 어느 것인지 확인할 것.**
+> `config/settings.py:CORE_FEATURES_BY_GROUP`(체크리스트 게이트, **실집행**) ·
+> `strategy/regime_fingerprint.py:_CORE_FEATURES`(PSI/FP-CRITICAL) ·
+> `config/constants.py:CORE_FEATURES`(SHAP 심사 퇴출 면제).
+> 500차 3단계에서 **앞의 둘은 실집행 정의로 통합**됐다(둘 다
+> `['cvd_delta_norm','ofi_pressure','vwap_position']`). 셋째는 **의도적으로 레거시**
+> (`['cvd_divergence','vwap_position','ofi_norm']`)로 남는다 — 468차 F-3의 SHAP
+> 보호 합집합 `operational_core_names(hz) ∪ CORE_FEATURES`의 한 축이라, 운영 이름으로
+> 바꾸면 배포 슬라이스에 남은 `cvd_divergence`·`ofi_norm`(3m)이 보호를 잃는다.
+> ⚠ **이 지점이 v9-dev와 다르다** — MW0601은 셋째도 파생으로 바꿨다(그쪽엔 합집합이
+> 없어 안전). 불변식은 `tests/test_500_stage3_decisions.py` S5a·S5a2가 고정한다.
+
+> 🔴 **[2026-08-30 500차 / v9-dev 체리픽] `cvd_divergence`는 다이버전스가 아니다 — 재인용 금지.**
+> **아래는 전부 MW0602 자체 실측이다**(`raw_features` n=5,382 · 2026-08-10~08-28).
+> MW0601 수치(n=5,289)와 거의 같지만, 두 PC는 별개 계좌·별개 DB이므로 이 브랜치에서는
+> 이 수치를 쓸 것.
+>
+> · **부호가 10분 가격방향 하나로 결정된다** — `sign(cvd_divergence) ==
+>   sign(price_slope_10m)` **5,044/5,046 = 99.96%**(raw_candles 조인 실측).
+>   `cvd.py:157`의 두 분기 중 `(가격↑ & CVD↓)`가 **구조적 도달 불가**여서
+>   `(가격↓ & CVD↑)`만 남았기 때문이다 — CVD 기여분이 사실상 0이다.
+>   ⚠ MW0601은 같은 사실을 `−sign(...)`로 적었다(부호 규약 차이). **구조가 요점이고
+>     부호 방향은 인용할 때 코드로 확인할 것.**
+> · **크기가 개장 후 경과시간의 함수다** — `|cvd_divergence|` 시각별 평균
+>   08h **0.604** → 09h 0.290 → 10h 0.079 → 15h **0.024**로 **25.7배 단조감소**.
+>   `cvd_slope_norm = (C_t − C_{t−9})/max|C|`인데 C가 단조증가라 분모가 하루 종일
+>   커지기 때문이다. ⇒ **GBM이 이 피처로 시각을 읽을 수 있다.**
+> · `|cvd_divergence| ≡ min(cvd_slope, 1)` — **5,382/5,382**(저장 자릿수 차이
+>   3자리 vs 4자리에서 오는 최대 0.0005 오차 내). 두 컬럼은 크기 1개 + 부호 1비트를
+>   나눠 가진 것이다.
+>
+> ⚠ **"SOP §2 D형(시계) 확정"이라 쓰지 말 것** — MW0601 초판의 임시 계산이었고
+> 정본 분류기(`scripts/feature_health_report.py:temporal_profile_series`)로 재면
+> `cvd`는 D형이 아니라 **상수형**이고 `cvd_slope`·`cvd_divergence`는 어느 형태로도
+> 분류되지 않는다. **오염은 실재하는데 현행 형태 분류가 못 잡는다** — 그래서 500차
+> 4단계가 `core_feature_discovery`에 CORE 우선 시계 스크린을 따로 붙였다.
+> 인용할 때는 **정본 분류기 수치 또는 위 시각별 평균**을 쓸 것.
+>
+> **한 줄의 결과다.** `cvd.py:update_from_bar()`의 `delta = buy_vol − sell_vol`에서
+> Cybos `buy_vol`이 편향돼(MW0602 실측 **buy>sell 99.2%** · 동률 6건 / n=5,382
+> `raw_candles`) **누적 CVD가 단조증가**하고, 그러면 파생 정규화가 전부 붕괴한다:
+>
+> | 파생값 | 단조증가일 때 | MW0602 실측 |
+> |---|---|---|
+> | `cvd` (=`cvd_norm`) | C_t가 곧 max → 1.0 고정 | 최빈 1.0이 **98.74%** (고유값 22개) |
+> | `cvd_direction` | 항상 +1 → 0.5 고정 | 최빈 0.5가 **99.44%**, 값이 {0.0, 0.5}뿐 |
+> | `cvd_slope` | 항상 ≥ 0 | 범위 [0.0000, 0.9775], 음수 **0건** |
+> | `cvd_delta_norm` (건강 대조군) | — | 음수 **49.8%**, [−1, +1] |
+>
+> ⚠ **2026-06-25에 이미 알고 있었다**(`settings.py`가 편향을 기록). 그때 조치는
+> **체크리스트 소비 키만 `cvd_delta_norm`으로 바꾼 것**뿐이고, 피처 자체는 스케일러·
+> PSI·TrendGate·앙상블 숏서킷에 그대로 남았다 — 500차가 그 넷을 고쳤다.
+>
+> **모델 노출 범위**(호라이즌별 배포 pkl 기준 — GBM은 97개가 아니라 8~13개로 학습한다.
+> 97개는 `X_hz` 구성과 **스케일러 fit**에만 쓰인다, `batch_retrainer.py`):
+> `cvd_divergence` → **3m·15m**, `cvd_slope` → **5m** ⇒ **앙상블 가중 0.71**.
+> `cvd`·`cvd_direction`은 GBM 밖(스케일러·라이브 게이트에만).
+> ⚠ 그래서 `CVD_DEBIAS_MODE`는 **`"shadow"` 기본**이다 — 계산만 바꾸면 EOD 재학습
+> 전까지 학습/추론 분포가 어긋난다(332차·337차 계열).
+
+> 🔴 **[2026-08-30 500차 / v9-dev 체리픽] OFI 3종의 독립 정보는 `ofi_norm` 하나뿐이다.**
+> `ofi.py:compute()`가 같은 값을 세 번 내보낸다 — MW0602 실측(n=5,382):
+> · `ofi_pressure ≡ sign(ofi_norm)` — **5,382/5,382 정확 일치**
+> · `ofi_imbalance ≡ round(ofi_norm/3, 3)` — **5,382/5,382**(불일치로 세어지는 107건은
+>   전부 `x.xxx5` 정확한 half-way tie의 반올림 방향 차이다. `ofi_norm`이 이미 ±3
+>   클립이라 `clip(±1)`은 무동작 = 항등식)
+> ⇒ 상관을 재기 전에 **소스에서 알 수 있는 항등식**이다. 재검증에서 이 셋을 독립
+> 신호 3개로 세면 Bonferroni 분모가 틀리고 계열 검정의 유효 자유도가 무너진다
+> (SOP §1 오측정 #9와 동형).
+> ⚠ 그렇다고 `ofi_pressure`를 "중복이니 삭제"하면 안 된다 — 단기 CORE **실집행 키**다
+> (`tests/test_500_stage3_decisions.py` S7이 고정).
+
+
 > `macro_vix`는 2026-06-25 CORE 강등. 일봉 VIX → 분봉 상수, ~~SHAP 기여 ≈ 0~~, 임계 VIX 27.5 평상시 항상 통과 확인. 보조 피처로 GBM 피처셋에 유지.
 > `macro_risk_off`는 2026-06-25 CORE 해제. 모든 호라이즌 feature_names_hz 미포함 확인 (GBM gain=0, ~~SHAP=0~~). 체크리스트·SGD 경로에도 없음. MacroFeatureTransformer 계산은 유지.
 >
