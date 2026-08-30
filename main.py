@@ -218,6 +218,31 @@ EFFECT_MONITOR_HISTORY_PATH = os.path.join(BASE_DIR, "effect_monitor_history.jso
 # (3중 정의 → 단일화. 경위는 settings.py의 해당 상수 주석 참조.)
 
 
+def _core_guard_keys():
+    """Guard-F1(NaN/Inf 교정)이 지켜야 할 키 — **CORE 정의에서 파생**한다.
+
+    [MW0601 500차 / D-4] 종전에는 `("vwap_position", "cvd_direction",
+    "ofi_pressure")` 를 하드코딩했는데, 체크리스트의 실소비 키는 2026-06-25부터
+    `cvd_delta_norm` 이다. 즉 **가드가 안 쓰는 값을 지키고, 실제 쓰는 값은
+    무방비**였다 — 정의가 세 곳(constants·settings·regime_fingerprint)에
+    흩어진 탓에 한쪽만 바뀌어도 드러나지 않는다.
+
+    `CORE_FEATURES_BY_GROUP` 을 단일 출처로 읽어 그 드리프트를 구조적으로 막는다.
+    ⚠ 단기 그룹만 본다 — 중기·장기는 `select_entry_horizon()` 이 1m/3m/5m/None
+      만 반환해 **도달 불가**다(474차). 도달 불가 그룹의 키까지 지키면 가드가
+      무엇을 지키는지 흐려진다.
+    """
+    try:
+        from config.settings import CORE_FEATURES_BY_GROUP
+        keys = [v for v in CORE_FEATURES_BY_GROUP["short"].values()
+                if isinstance(v, str)]
+        if keys:
+            return tuple(sorted(keys))
+    except Exception as _e:      # 설정 로드 실패가 가드를 없애면 안 된다
+        logger.warning("[Guard-F1] CORE 키 조회 실패(%s) → 폴백 사용", _e)
+    return ("cvd_delta_norm", "ofi_pressure", "vwap_position")
+
+
 def _dir_sign(v) -> int:
     """float 방향값(±0.5 등)을 -1/0/+1 정수 방향으로 안전 변환.
 
@@ -6002,7 +6027,13 @@ class TradingSystem:
 
         # ── CORE 3종 피처 NaN/Inf 가드 ──────────────────────────
         # 진입 체크리스트가 직접 사용하는 피처만 방어 (다른 피처는 앙상블에서 0으로 처리됨)
-        for _fk in ("vwap_position", "cvd_direction", "ofi_pressure"):
+        # 🔴 [MW0601 500차 / D-4] 종전에는 `cvd_direction` 을 하드코딩해 지켰는데,
+        #   체크리스트의 실소비 키는 2026-06-25부터 `cvd_delta_norm` 이다
+        #   (`CORE_FEATURES_BY_GROUP["short"]["cvd"]`). 즉 **안 쓰는 값을 지키고
+        #   실제 쓰는 값은 무방비**였다. 하드코딩을 지우고 CORE 정의에서 읽는다 —
+        #   그래야 CORE 키가 또 바뀌어도 가드가 따라간다.
+        #   불변식은 `tests/test_500_cvd_ofi_live_defects.py` T5 가 고정한다.
+        for _fk in _core_guard_keys():
             _fv = features.get(_fk)
             if _fv is None or (isinstance(_fv, float) and (math.isnan(_fv) or math.isinf(_fv))):
                 log_manager.system(
@@ -9041,8 +9072,12 @@ class TradingSystem:
             "signal_chk": "UP" if direction > 0 else ("DN" if direction < 0 else "FLAT"),
             "conf_chk":   f"{confidence:.1%}",
             "vwap_chk":   f"{float(features.get('vwap_position', 0)):+.3f}",
-            "cvd_chk":    f"{int(features.get('cvd_direction', 0)):+d}",
-            "ofi_chk":    f"{int(features.get('ofi_pressure', 0)):+d}",
+            # [MW0601 500차 / D-2] `int(cvd_direction)` → 영구 "+0" 이었다.
+            # 값이 {0.0, 0.5} 뿐인데 int() 로 절단해 부호가 통째로 사라졌다.
+            # 실소비 키(`cvd_delta_norm`)를 `_dir_sign` 으로 읽는다 — 이 함수가
+            # 애초에 그 잘림을 막으려고 만들어졌는데 여기서만 안 쓰이고 있었다.
+            "cvd_chk":    f"{_dir_sign(features.get('cvd_delta_norm', 0)):+d}",
+            "ofi_chk":    f"{_dir_sign(features.get('ofi_pressure', 0)):+d}",
             "fi_chk":     f"C{float(features.get('foreign_call_net', 0)):+.0f}",
             "candle_chk": "▲" if _prev_bar_dir > 0 else ("▼" if _prev_bar_dir < 0 else "—"),
             "time_chk":   time_zone or "—",
