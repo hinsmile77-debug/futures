@@ -1289,6 +1289,49 @@ def init_trades_db():
     """)
     execute(TRADES_DB,
             "CREATE INDEX IF NOT EXISTS idx_res_ts ON regime_exhaustion_shadow(ts)")
+    # ── [MW0602 502차 U-2 신설] 검증캠페인 [57] trend_efficiency 진입 게이트 섀도 ──
+    # hurst_gate_shadow와 같은 resolve 메커니즘이나 **모집단이 다르다**:
+    # hurst/open_gap 섀도는 "차단된 신호"를 기록하는데, 이 게이트는 아직 라이브가
+    # 아니므로 차단된 신호가 존재하지 않는다. 그래서 **실제 진입한 분봉 전량**을
+    # 기록하고 `would_skip`(te < threshold)로 가를 뿐이다 — 501차 후속2의 반사실
+    # 정의(270포지션 실진입 기준)와 모집단을 일치시키기 위함이다.
+    #
+    # 🔴 **te≥임계 행도 반드시 함께 기록한다** — 이 테이블은 두 질문을 동시에 먹인다:
+    #   ① [57] 게이트 판정      → `would_skip=1` 부분집합
+    #   ② 항목 ④ TP 확대 판정  → **고te(Q4)** 부분집합의 mfe30/mae30
+    #   ②는 후속2 §7이 "방향 지지·미검정"으로 남긴 축이고, 고te 행이 없으면 표본이
+    #   아예 안 쌓인다. te<임계만 기록하면 ②가 영구 미판정으로 굳는다.
+    #
+    # ⚠ mfe30/mae30은 **고정 30분 창**의 편위다 — 보유기간 내 MFE와 혼동 금지
+    #   (후속2 부록: 섞으면 딥다이브 §4-1 포착률이 무의미해진다).
+    # 리포트 전용 계측 테이블 — 실거래 의사결정에 관여하지 않는다.
+    execute(TRADES_DB, """
+    CREATE TABLE IF NOT EXISTS trend_efficiency_gate_shadow (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts            TEXT NOT NULL,           -- 진입 분봉 시각
+        direction     TEXT NOT NULL,           -- LONG/SHORT (실제 진입 방향)
+        grade         TEXT,                    -- 진입 당시 최종 등급
+        te            REAL,                    -- 진입 분 trend_efficiency 값
+        te_ready      INTEGER,                 -- 0=표본부족 폴백(0.5) 1=실측 (502차 U-1)
+        would_skip    INTEGER,                 -- 1 = te < threshold (게이트가 켜졌다면 스킵)
+        conf          REAL,                    -- 진입 당시 confidence
+        atr           REAL,                    -- MFE/MAE ATR 정규화 분모 (진입 시점)
+        entry_horizon TEXT,                    -- TP1 배수 결정 호라이즌
+        entry_qty     INTEGER,                 -- 실체결 수량 (증거금 캡 이후)
+        entry_price   REAL NOT NULL,           -- 진입 분봉 종가 (섀도 관례 — 실체결가 아님)
+        stop_price    REAL,                    -- 하드스톱 (게이트 무관, 실제 기하)
+        tp1_price     REAL,                    -- TP1
+        resolved      INTEGER DEFAULT 0,       -- 1=counterfactual 판정 완료
+        cf_outcome    TEXT,                    -- STOP / TP1 / NEITHER
+        cf_exit_price REAL,                    -- counterfactual 청산가
+        hyp_pnl_pts   REAL,                    -- (+)=진입이 옳았음, (-)=스킵이 옳았음
+        mfe30_atr     REAL,                    -- 고정 30분 창 최대 유리편위 (ATR 배수) — 항목 ④
+        mae30_atr     REAL,                    -- 고정 30분 창 최대 불리편위 (ATR 배수, 음수)
+        created_at    TEXT DEFAULT (datetime('now', 'localtime'))
+    )
+    """)
+    execute(TRADES_DB,
+            "CREATE INDEX IF NOT EXISTS idx_tegs_ts ON trend_efficiency_gate_shadow(ts)")
     # [384차 신설] 검증캠페인 [1] Triple-Barrier 채널 판정 이력 — 383차가 규명한
     # "평가창이 매주 재학습으로 리셋돼 5m~30m이 min_samples_hz(800) 영구 미달"
     # 구조결함의 해법(제안 (a): 재학습 주기와 평가창 분리). 호라이즌별로 실제

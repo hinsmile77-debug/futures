@@ -1462,6 +1462,222 @@ def resolve_and_eval_hurst_gate() -> dict:
 
 
 # ──────────────────────────────────────────────────────────────
+# [57] trend_efficiency 진입 게이트 — resolve + 누적 판정 (502차 U-2)
+# ──────────────────────────────────────────────────────────────
+
+def resolve_and_eval_trend_efficiency_gate() -> dict:
+    """trend_efficiency_gate_shadow(main.py에서 기록) resolve + PASS/FAIL 판정.
+
+    PASS = 현행 유지 (게이트 미도입) — 스킵 대상 코호트가 손해를 내지 않았다.
+    FAIL = **승격 검토 권고** — 스킵 대상 코호트의 누적 반사실이 왕복비용의 2배보다
+           더 나빴다(= 그 분들에 안 들어갔으면 이득이었다).
+
+    ⚠ 다른 섀도 채널과 모집단이 반대다 — hurst/open_gap은 "차단된 신호"를 기록하지만
+      이 채널은 **실제 진입한 분봉**을 기록한다(게이트가 아직 라이브가 아니므로).
+      따라서 부호 해석도 반대다: `hyp_pnl_pts < 0` = 진입이 틀렸다 = **게이트가 옳다.**
+
+    ⚠ mfe30/mae30은 **고정 30분 창**이다 — STOP/TP1 히트에서 끊지 않고 창 끝까지
+      누적한다(501차 후속2 부록: 보유기간 내 MFE와 섞으면 포착률 분석이 무의미해진다).
+    """
+    cr = VALIDATION_CAMPAIGN.get("trend_efficiency_entry_gate", {})
+    window_min = int(cr.get("cf_window_min", 30))
+    thr = float(cr.get("threshold", 0.32))
+    require_ready = bool(cr.get("require_ready", True))
+    start = (cr.get("start_date") or "2026-09-01") + " 00:00:00"
+    out = {"verdict": "INSUFFICIENT", "resolved_now": 0,
+           "threshold": thr, "start_date": cr.get("start_date")}
+
+    try:
+        with _conn(TRADES_DB) as conn:
+            unresolved = conn.execute(
+                "SELECT * FROM trend_efficiency_gate_shadow WHERE resolved = 0 ORDER BY ts"
+            ).fetchall()
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    if unresolved:
+        earliest = min(r["ts"] for r in unresolved)
+        close_map, high_map, low_map = _load_candle_maps(
+            earliest, exclude_untradeable=True)
+        now = datetime.datetime.now()
+        updates = []
+        for r in unresolved:
+            base = datetime.datetime.strptime(r["ts"], _TS_FMT)
+            if now < base + datetime.timedelta(minutes=window_min + 2):
+                continue
+            is_long = str(r["direction"]) == "LONG"
+            stop_p = float(r["stop_price"] or 0.0)
+            tp1_p = float(r["tp1_price"] or 0.0)
+            entry_p = float(r["entry_price"])
+            atr_v = float(r["atr"] or 0.0)
+            cf_outcome, cf_price = "NEITHER", None
+            last_close = None
+            mfe = mae = 0.0
+            seen_any = False
+            for m in range(1, window_min + 1):
+                mid = base + datetime.timedelta(minutes=m)
+                if mid.time() > datetime.time(15, 10):
+                    break
+                mid_ts = mid.strftime(_TS_FMT)
+                hi = high_map.get(mid_ts)
+                lo = low_map.get(mid_ts)
+                if hi is None or lo is None:
+                    continue
+                seen_any = True
+                last_close = close_map.get(mid_ts, last_close)
+                # ── 고정 30분 창 MFE/MAE — 배리어 히트와 무관하게 끝까지 누적 ──
+                if is_long:
+                    mfe = max(mfe, hi - entry_p)
+                    mae = min(mae, lo - entry_p)
+                else:
+                    mfe = max(mfe, entry_p - lo)
+                    mae = min(mae, entry_p - hi)
+                # ── 배리어 판정 — 첫 히트만 채택(누적은 위에서 계속된다) ──
+                if cf_price is None:
+                    if is_long:
+                        hit_stop = stop_p > 0 and lo <= stop_p
+                        hit_tp = tp1_p > 0 and hi >= tp1_p
+                    else:
+                        hit_stop = stop_p > 0 and hi >= stop_p
+                        hit_tp = tp1_p > 0 and lo <= tp1_p
+                    # 동시 터치 → 보수적으로 STOP 우선 (타 채널과 동일 관례)
+                    if hit_stop:
+                        cf_outcome, cf_price = "STOP", stop_p
+                    elif hit_tp:
+                        cf_outcome, cf_price = "TP1", tp1_p
+            if cf_price is None:
+                if not seen_any or last_close is None:
+                    continue  # 분봉 데이터 없음 — 다음 실행에서 재시도
+                cf_price = last_close
+            # (+) = 진입이 옳았음(게이트가 이익을 잘랐을 것), (-) = 스킵이 옳았음
+            hyp = (cf_price - entry_p) if is_long else (entry_p - cf_price)
+            # ⚠ atr<=0이면 정규화 불가 — NULL(미측정)로 둔다. 0으로 채우지 않는다
+            #   (계측 4원칙 ②: 미측정과 "편위 0"은 다른 사실이다).
+            mfe_atr = round(mfe / atr_v, 4) if atr_v > 1e-9 else None
+            mae_atr = round(mae / atr_v, 4) if atr_v > 1e-9 else None
+            updates.append((cf_outcome, cf_price, round(hyp, 4),
+                            mfe_atr, mae_atr, r["id"]))
+
+        if updates:
+            with _conn(TRADES_DB) as conn:
+                conn.executemany(
+                    """UPDATE trend_efficiency_gate_shadow
+                       SET resolved=1, cf_outcome=?, cf_exit_price=?, hyp_pnl_pts=?,
+                           mfe30_atr=?, mae30_atr=?
+                       WHERE id=?""",
+                    updates,
+                )
+                conn.commit()
+            out["resolved_now"] = len(updates)
+
+    ready_sql = " AND te_ready = 1" if require_ready else ""
+    try:
+        with _conn(TRADES_DB) as conn:
+            skip_agg = conn.execute(
+                """SELECT COUNT(*) AS n, SUM(hyp_pnl_pts) AS total_hyp,
+                          AVG(entry_price) AS avg_price,
+                          SUM(CASE WHEN hyp_pnl_pts > 0 THEN 1 ELSE 0 END) AS n_win,
+                          SUM(CASE WHEN cf_outcome='STOP' THEN 1 ELSE 0 END) AS n_stop,
+                          SUM(CASE WHEN cf_outcome='TP1' THEN 1 ELSE 0 END) AS n_tp1
+                   FROM trend_efficiency_gate_shadow
+                   WHERE resolved=1 AND would_skip=1 AND ts >= ?""" + ready_sql,
+                (start,),
+            ).fetchone()
+            keep_agg = conn.execute(
+                """SELECT COUNT(*) AS n, SUM(hyp_pnl_pts) AS total_hyp
+                   FROM trend_efficiency_gate_shadow
+                   WHERE resolved=1 AND would_skip=0 AND ts >= ?""" + ready_sql,
+                (start,),
+            ).fetchone()
+            # 🔴 사전등록 병기 의무 — 이 규칙이 **손해인 날**(스킵분 합이 양수인 날).
+            #    후속2 §3-2가 사전 실측 7일 −1,937,953원으로 경고한 축이다.
+            hurt = conn.execute(
+                """SELECT date(ts) AS d, SUM(hyp_pnl_pts) AS s
+                   FROM trend_efficiency_gate_shadow
+                   WHERE resolved=1 AND would_skip=1 AND ts >= ?""" + ready_sql + """
+                   GROUP BY date(ts) HAVING s > 0""",
+                (start,),
+            ).fetchall()
+            pending = conn.execute(
+                "SELECT COUNT(*) AS n FROM trend_efficiency_gate_shadow WHERE resolved=0"
+            ).fetchone()["n"]
+            # 계측 4원칙 ④ — 폴백(te_ready=0) 행이 몇 개인지 반드시 보인다.
+            fallback_n = conn.execute(
+                """SELECT COUNT(*) AS n FROM trend_efficiency_gate_shadow
+                   WHERE ts >= ? AND te_ready = 0""",
+                (start,),
+            ).fetchone()["n"]
+            # 항목 ④(고te 구간 TP 확대) 표본 — 후속2 §7의 미검정 축.
+            tp_rows = conn.execute(
+                """SELECT te, mfe30_atr, mae30_atr
+                   FROM trend_efficiency_gate_shadow
+                   WHERE resolved=1 AND ts >= ? AND te IS NOT NULL
+                     AND mfe30_atr IS NOT NULL""" + ready_sql,
+                (start,),
+            ).fetchall()
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+
+    n = int(skip_agg["n"] or 0)
+    total_hyp = float(skip_agg["total_hyp"] or 0.0)
+    avg_price = float(skip_agg["avg_price"] or 0.0) or 300.0
+    out.update({
+        "n_resolved_skip": n,
+        "n_resolved_keep": int(keep_agg["n"] or 0),
+        "n_pending": int(pending),
+        "n_fallback_excluded": int(fallback_n),
+        "skip_total_hyp_pnl_pts": round(total_hyp, 4),
+        "keep_total_hyp_pnl_pts": round(float(keep_agg["total_hyp"] or 0.0), 4),
+        "skip_win_rate": round((int(skip_agg["n_win"] or 0) / n), 4) if n else None,
+        "cf_stop": int(skip_agg["n_stop"] or 0),
+        "cf_tp1": int(skip_agg["n_tp1"] or 0),
+        "rule_hurt_days": len(hurt),
+        "rule_hurt_total_pts": round(sum(float(r["s"] or 0.0) for r in hurt), 4),
+    })
+
+    # 항목 ④ — 고te 분위 이상 구간의 MFE/MAE 비대칭(TP 확대 근거 표본)
+    if len(tp_rows) >= 8:
+        q = float(cr.get("tp_expansion_watch_quantile", 0.75))
+        tes = sorted(float(r["te"]) for r in tp_rows)
+        cut = tes[min(len(tes) - 1, int(q * (len(tes) - 1)))]
+        hi_rows = [r for r in tp_rows if float(r["te"]) >= cut]
+        if hi_rows:
+            out["tp_expansion_watch"] = {
+                "quantile": q,
+                "te_cut": round(cut, 4),
+                "n": len(hi_rows),
+                "mfe30_atr_avg": round(
+                    sum(float(r["mfe30_atr"]) for r in hi_rows) / len(hi_rows), 3),
+                "mae30_atr_avg": round(
+                    sum(float(r["mae30_atr"] or 0.0) for r in hi_rows) / len(hi_rows), 3),
+                "note": "미검정 — 방향 지지 표본 적립 중(후속2 §7). MFE30은 최댓값이라 "
+                        "고정 TP로 잡을 수 있는 값이 아니다.",
+            }
+
+    if n < int(cr.get("min_samples", 20)):
+        out["reason"] = ("스킵 대상 표본 부족 (%d < %d) — 판정 보류"
+                         % (n, int(cr.get("min_samples", 20))))
+        return out
+
+    cost_pt = _roundtrip_cost_pt(avg_price)
+    out["cost_pt"] = round(cost_pt, 4)
+    # 부호 주의: 스킵 대상 코호트가 **손실**이었어야 게이트가 값을 한다.
+    promote = total_hyp < -(cost_pt * float(cr.get("cost_multiple", 2.0)))
+    out["verdict"] = "FAIL" if promote else "PASS"
+    if promote:
+        out["recommendation"] = (
+            "[57] te<%.2f 진입 게이트 **승격 검토** — size_multiplier 축소(soft) 먼저, "
+            "차단(hard)은 그 다음(317차 FalseBlock 교훈). "
+            "🔴 선행: `faststop_discovery`(2026-08-03) 부분 철회 의결 필요. "
+            "🔴 병기 필수: 규칙이 손해인 날 %d일 %+.2fpt."
+            % (thr, out["rule_hurt_days"], out["rule_hurt_total_pts"])
+        )
+    return out
+
+
+# ──────────────────────────────────────────────────────────────
 # [7] JointGateBlock counterfactual — resolve + 누적 판정 (§3-7, 327차)
 # ──────────────────────────────────────────────────────────────
 
@@ -7956,6 +8172,7 @@ def build_report(days: int) -> tuple:
     cfc = eval_chase_foreign_combo_watch()
     efs = eval_exit_fill_slippage_watch(days)
     reg = resolve_and_eval_regime_exhaustion()
+    teg = resolve_and_eval_trend_efficiency_gate()   # [57] MW0602 502차 U-2
     wcw = eval_weight_collapse_watch(days)
     msz = eval_meta_size_zero_shadow()        # [34] MW0601 422차 후속
     dev = eval_direction_ev_watch()
@@ -8078,6 +8295,7 @@ def build_report(days: int) -> tuple:
         "chase_foreign_combo_watch": cfc, "exit_fill_slippage_watch": efs,
         "regime_exhaustion_watch": reg, "toxicity_block_shadow": txb,
         "weight_collapse_watch": wcw,
+        "trend_efficiency_entry_gate": teg,   # [57] MW0602 502차 U-2
         "direction_ev_watch": dev, "mfe_capture_watch": mcw,
         "guard_shadow": gsc, "intraday_cv_watch": icw,
         "tp1_protect_giveback_watch": tpg,
@@ -8376,6 +8594,26 @@ def build_report(days: int) -> tuple:
         _fmt_verdict(cb2.get("verdict", "")),
         cb2.get("headline") or cb2.get("reason", cb2.get("error", "—")),
         _dm("cb2_restore_shadow")))
+    # [MW0602 502차 U-2] [57] te 진입 게이트 — 요약행에 **손해일**을 함께 띄운다.
+    # 사전등록 병기 의무(후속2 §3-2): 평균이 양수여도 분산이 크다는 사실을 숨기지 않는다.
+    _teg_bits = []
+    if teg.get("n_resolved_skip") is not None:
+        _teg_bits.append("스킵코호트 hyp=%spt (n=%s)" % (
+            teg.get("skip_total_hyp_pnl_pts", "—"), teg.get("n_resolved_skip", 0)))
+    if teg.get("rule_hurt_days"):
+        _teg_bits.append("🔴규칙손해 %d일 %+.2fpt"
+                         % (teg["rule_hurt_days"], teg.get("rule_hurt_total_pts", 0.0)))
+    if teg.get("n_fallback_excluded"):
+        _teg_bits.append("폴백제외 %d건" % teg["n_fallback_excluded"])
+    if teg.get("reason"):
+        _teg_bits.append(teg["reason"])
+    if teg.get("error"):
+        _teg_bits.append("오류: %s" % teg["error"])
+    L.append("| [57] te 진입 게이트 (섀도) | %s | %s (판정창 %s~, 보류 %s)%s |" % (
+        _fmt_verdict(teg.get("verdict", "")),
+        " · ".join(_teg_bits) or "—",
+        teg.get("start_date", "—"), teg.get("n_pending", 0),
+        _dm("trend_efficiency_entry_gate")))
     L.append("| [23-B] TP1/손절 초기 기하 A/B | %s | %s (진입 %s건/%s일)%s |" % (
         _fmt_verdict(_g23.get("verdict", "")), _g23.get("reason", _g23.get("error", "—")),
         _g23.get("n_trades", "—"), _g23.get("n_days", "—"), _dm("tp1_geometry_shadow")))
@@ -11583,6 +11821,72 @@ def build_report(days: int) -> tuple:
     L.append("> ⚠ 단위는 **원(₩)**. `[1계약·TP1상한·미실현 시뮬]` 배지 채널과 더하지 말 것.")
     L.append("> ⚠ **CB②는 손익 장치가 아니라 실전 자본의 꼬리위험 장치다** —")
     L.append("> `RESTORE_COSTS`가 떠도 그것은 \"복원하지 말라\"가 아니라 **대가의 계량**이다.")
+    L.append("")
+    L.append("---")
+    L.append("")
+
+    # ── [MW0602 502차 U-2] [57] trend_efficiency 진입 게이트 (섀도) ──────────────
+    L.append("## [57] `trend_efficiency` 진입 게이트 (섀도) — 502차 신설")
+    L.append("")
+    L.append("| 항목 | 값 |")
+    L.append("|---|---|")
+    L.append("| 판정 | %s |" % _fmt_verdict(teg.get("verdict", "")))
+    L.append("| 임계 (사전등록·고정) | `te < %.2f` |" % teg.get("threshold", 0.32))
+    L.append("| 판정 창 | %s ~ |" % teg.get("start_date", "—"))
+    L.append("| 스킵 대상 코호트 | n=%s · 누적 hyp **%s pt** |" % (
+        teg.get("n_resolved_skip", 0), teg.get("skip_total_hyp_pnl_pts", "—")))
+    L.append("| 잔존 코호트 | n=%s · 누적 hyp %s pt |" % (
+        teg.get("n_resolved_keep", 0), teg.get("keep_total_hyp_pnl_pts", "—")))
+    L.append("| 스킵분 배리어 | STOP %s / TP1 %s |" % (
+        teg.get("cf_stop", 0), teg.get("cf_tp1", 0)))
+    L.append("| 🔴 규칙이 손해인 날 | **%s일 · %s pt** |" % (
+        teg.get("rule_hurt_days", 0), teg.get("rule_hurt_total_pts", "—")))
+    L.append("| 폴백 제외(te_ready=0) | %s건 |" % teg.get("n_fallback_excluded", 0))
+    L.append("| 미판정 보류 | %s건 |" % teg.get("n_pending", 0))
+    if teg.get("reason"):
+        L.append("| 보류 사유 | %s |" % teg["reason"])
+    if teg.get("recommendation"):
+        L.append("| 권고 | %s |" % teg["recommendation"])
+    if teg.get("error"):
+        L.append("| ⚠ 오류 | %s |" % teg["error"])
+    _tew = teg.get("tp_expansion_watch") or {}
+    if _tew:
+        L.append("")
+        L.append("**항목 ④ — 고te 구간 TP 확대 표본 (미검정 · 적립 중)**")
+        L.append("")
+        L.append("| te 분위 | 컷 | n | MFE30/ATR | MAE30/ATR |")
+        L.append("|---|---|---|---|---|")
+        L.append("| ≥ p%d | %.3f | %d | **%.2f** | %.2f |" % (
+            int(_tew["quantile"] * 100), _tew["te_cut"], _tew["n"],
+            _tew["mfe30_atr_avg"], _tew["mae30_atr_avg"]))
+    L.append("")
+    L.append("> **무엇을 묻나.** *\"최근 10분 이동거리 중 방향으로 누적된 비율")
+    L.append("> (Kaufman ER)이 낮은 분(minute)에 진입을 막으면 이득인가.\"*")
+    L.append("> 임계 0.32는 501차 후속2가 **시간분할·LODO로 고정**한 값이며")
+    L.append("> **판정이 불리해도 사후에 완화·강화하지 않는다**(§9-4 검증 시계 리셋 대상).")
+    L.append("> ")
+    L.append("> 🔴 **부호 해석이 [6]·[9]와 반대다.** 저 채널들은 *차단된* 신호를 기록하지만")
+    L.append("> 이 게이트는 아직 라이브가 아니라 차단된 신호가 없다 — **실제 진입한 분봉**을")
+    L.append("> 기록하고 `would_skip`으로 가른다. 따라서 스킵 코호트의")
+    L.append("> **`hyp < 0` = 진입이 틀렸다 = 게이트가 옳다**이다.")
+    L.append("> ")
+    L.append("> ⚠ **\"손실일 탐지기\"가 아니다** — 사전 실측에서 스킵/잔존 코호트의")
+    L.append("> 손실6일 비중이 23% vs 25%로 거의 같았다. 나쁜 *날*이 아니라 나쁜 *분*을 거른다.")
+    L.append("> ")
+    L.append("> ⚠ **노출 영향**: `te<0.32`는 전 분봉의 55%·실측 진입의 49%다. 반사실은")
+    L.append("> \"남은 거래가 그대로\"를 가정하며 **대체 진입 효과를 반영하지 않는다**.")
+    L.append("> ")
+    L.append("> ⚠ `mfe30/mae30`은 **고정 30분 창**이다 — 보유기간 내 MFE와 혼동 금지.")
+    L.append("> ⚠ 폴백(`te_ready=0`, 표본부족 0.5)은 판정 모집단에서 **제외**한다 —")
+    L.append("> 0.5 > 0.32라 \"효율적 구간\"으로 오독되기 때문이다(502차 U-1).")
+    L.append("> ")
+    L.append("> 🔴 **승격은 `faststop_discovery`(2026-08-03) 부분 철회를 요구한다** —")
+    L.append("> \"신규 진입 차단 게이트 개발 중단\"과 양립하지 않는다([18] 보류와 동일 논리).")
+    L.append("> 섀도 기록은 계측이라 충돌하지 않는다.")
+    L.append("> ")
+    L.append("> 🔴 **[18]과 이중계상하지 말 것** — 502차 실측에서 [18] 반사실 −32.81pt 중")
+    L.append("> **77%(−25.16pt)가 te<0.32 구간 19건**에 몰려 있었다. 두 채널은 같은 손실을")
+    L.append("> 다른 정의로 가리킨다. 근거: `docs/정기점검/손실6일_사전간파체계_개선방안_20260830.md` §5.")
     L.append("")
     L.append("---")
     L.append("")

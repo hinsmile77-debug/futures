@@ -450,9 +450,22 @@ class FeatureBuilder:
 
         # Trend Efficiency Ratio(Kaufman) — Hurst와 취지(추세 지속성)는 겹치나 계산방식이
         # 달라(경로비율 vs variance-scaling) 상관 1이 아닐 것으로 기대되는 보완 신호.
-        features["trend_efficiency"] = calculate_trend_efficiency(
-            list(self._close_history), window=TREND_EFFICIENCY_WINDOW,
-        )
+        # [502차 U-1] `trend_efficiency_ready` 동반 — hurst_ready 관례와 동일.
+        # 표본 부족 폴백값 0.5가 진입 게이트 후보 임계 0.32보다 **커서** 폴백이 게이트를
+        # 통과하는 결함의 선치다(계측 4원칙 ④). 소비자는 ready=False를 별도 취급할 것.
+        # 상세: features/technical/trend_efficiency.py docstring, 501차 후속2 §8-0.
+        try:
+            _te_val, _te_ready = calculate_trend_efficiency(
+                list(self._close_history), window=TREND_EFFICIENCY_WINDOW,
+                return_ready=True,
+            )
+            features["trend_efficiency"] = _te_val
+            features["trend_efficiency_ready"] = _te_ready
+        except Exception as _exc:
+            _mark_feature_error(_exc)
+            logger.warning("[FeatureBuilder] TrendEfficiency 오류 — 기본값 0.5 사용: %s", _exc)
+            features["trend_efficiency"] = 0.5
+            features["trend_efficiency_ready"] = False
 
         # [343차] 연장 추격 필터용 signed 확장폭 — (현재가 - N분전 종가) / ATR.
         # 부호는 연장 방향(양수=상승 연장, 음수=하락 연장)을 그대로 인코딩해

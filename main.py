@@ -67,6 +67,7 @@ from utils.db_utils import (
 )
 from config.settings import (
     TRADES_DB, DB_DIR, HORIZONS, HORIZON_DIR, PARTIAL_EXIT_RATIOS,
+    VALIDATION_CAMPAIGN,                  # [502차 U-2] [57] te 게이트 섀도 임계 조회
     SIGNAL_DECAY_EXIT_ENABLED,
     LOSS_TIER1_ENABLED, LOSS_TIER1_TICK_ENABLED,
     LOSS_TIER1_QTY1_ENABLED,              # [425차] qty=1 전량 조기청산 (기본 False)
@@ -9898,6 +9899,67 @@ class TradingSystem:
                                     else int(_margin_binding)),
                 "entry_executed":  int(bool(_entry_executed_this_cycle)),
             }
+
+        # ── [MW0602 502차 U-2] 검증캠페인 [57] trend_efficiency 진입 게이트 섀도 ────
+        # 🔴 **라이브 무영향** — 기록만 한다. 이 값이 진입/사이징에 관여하는 곳은 없다.
+        #
+        # 모집단이 hurst/open_gap 섀도와 다르다: 저쪽은 "차단된 신호"를 기록하는데
+        # 이 게이트는 아직 라이브가 아니라 차단된 신호가 존재하지 않는다. 그래서
+        # **실제 진입한 분봉 전량**을 기록하고 `would_skip`으로 가른다 — 501차 후속2의
+        # 반사실 정의(270포지션 실진입 기준)와 모집단을 일치시키기 위함이다.
+        #
+        # 🔴 **te≥임계 행도 반드시 함께 남긴다** — 항목 ④(고te 구간 TP 확대, 후속2 §7)의
+        # mfe30/mae30 표본이 그쪽에서만 나온다. te<임계만 기록하면 ④가 영구 미판정이 된다.
+        # ⚠ `entry_price`는 섀도 관례대로 **분봉 종가**다(실체결가 아님) — resolve가
+        #   같은 분봉 격자를 걷기 때문이다. 실체결가는 `trades`에 있다.
+        if _entry_executed_this_cycle and direction != 0:
+            try:
+                _te_val = features.get("trend_efficiency")
+                # 계측 4원칙 ②/④ — 미측정과 폴백을 값으로 뭉개지 않는다.
+                _te_ready = bool(features.get("trend_efficiency_ready", False))
+                _te_thr = float(
+                    VALIDATION_CAMPAIGN.get("trend_efficiency_entry_gate", {})
+                    .get("threshold", 0.32)
+                )
+                _te_mult = (
+                    HURST_REGIME_ATR_MULT.get(
+                        "mean-revert" if float(features.get("hurst", 0.5) or 0.5)
+                        < HURST_RANGE_THRESHOLD else "trend", {})
+                    if HURST_REGIME_ATR_MULT_ENABLED else {}
+                )
+                _te_stop_mult = ATR_STOP_MULT * _te_mult.get("stop", 1.0)
+                _te_tp1_mult = (
+                    ATR_HORIZON_TP1_MULT.get(_entry_horizon, ATR_TP1_MULT)
+                    * _te_mult.get("tp1", 1.0)
+                )
+                _te_dir_mult = 1 if direction == 1 else -1
+                execute(
+                    TRADES_DB,
+                    """INSERT INTO trend_efficiency_gate_shadow
+                       (ts, direction, grade, te, te_ready, would_skip, conf, atr,
+                        entry_horizon, entry_qty, entry_price, stop_price, tp1_price)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        datetime.datetime.now().strftime("%Y-%m-%d %H:%M:00"),
+                        "LONG" if direction == 1 else "SHORT",
+                        _final_grade,
+                        (None if _te_val is None else float(_te_val)),
+                        int(_te_ready),
+                        # ⚠ 폴백(ready=False)은 would_skip 판정에서 제외 — NULL로 둔다.
+                        #   0.5 > 0.32라 "통과"로 기록하면 U-1이 잡은 결함을 DB에 재현한다.
+                        (None if (_te_val is None or not _te_ready)
+                         else int(float(_te_val) < _te_thr)),
+                        float(confidence),
+                        float(atr),
+                        _entry_horizon,
+                        int(_qty_auto),
+                        float(close),
+                        float(close - _te_dir_mult * atr * _te_stop_mult),
+                        float(close + _te_dir_mult * atr * _te_tp1_mult),
+                    ),
+                )
+            except Exception as _tegs_e:
+                logger.warning("[TrendEffShadow] 기록 실패 (무해): %s", _tegs_e)
 
         _feat_clean = {k: round(float(v), 4) for k, v in features.items()
                        if v is not None and v == v}
