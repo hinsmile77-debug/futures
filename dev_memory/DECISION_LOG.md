@@ -34219,3 +34219,67 @@ SOP §2 D형 임계 0.05 를 인용했으나, **프로젝트 정본 분류기**
 계좌 잔고가 5천만원대(`SIZING_TARGET_CAPITAL_KRW`)로 정렬된 규모라 목표자본
 재설정에 따른 실제 입출금으로 보이나 **미확정**(`NEXT_TODO.md` 등록). 나머지
 3건(05-14→05-18 · 06-22→06-23 · 06-23→06-24)은 규모가 작아 우선순위 낮음.
+
+---
+
+## 2026-08-30 (MW0601 — dev 502차 후속 체리픽: U-1 te ready 플래그 + U-2 [57] 게이트 섀도)
+
+**원 커밋**: `8f1755b` (dev / MW0602 / 2026-08-30) — 「502차 후속: U-1 te ready
+플래그 + U-2 [57] 게이트 섀도 배선」. **라이브 동작 변경 0건 — 전부 계측이다.**
+게이트/차단 신설 0건, 매매 임계 변경 0건.
+**가져온 이유**: `features/technical/trend_efficiency.py`·`feature_builder.py`·
+`main.py`·`utils/db_utils.py`·`scripts/generate_validation_campaign_report.py`가
+전부 v9-dev와 공유하는 코드 계보이고, U-1이 잡는 결함(표본부족 폴백 0.5가 게이트
+임계 0.32보다 커서 폴백이 게이트를 통과)은 계측 4원칙 ④ 계열의 실재 버그다.
+
+**함께 검토했으나 이식 대상 없음(같은 날 dev 커밋 2건)**:
+- `1c21aa5`(502차 후속2) — 코드 변경 0건, MW0602 자기 8월 데이터 전/후 수익률
+  비교 분석 + 자기 요율 세대 혼재 정정. v9-dev에 이식할 코드가 없음.
+- `ecce0e5`(503차) — dev가 **v9-dev의 0814498을 역으로 체리픽**한 것(왕복:
+  dev 16ae05c → MW0601 74aaee6 → v9-dev 0814498 → dev ecce0e5). 확인 결과
+  v9-dev의 `main.py`·`tests/test_497_pnl_axis_alignment.py`는 **이미 그 개선분을
+  전부 갖고 있다**(`if is_cybos_balance:` 게이트, `test_` 명명, T9, 태그무관 앵커
+  전부 처음부터 존재) — dev가 자기 쪽 격차를 메운 것이라 v9-dev는 조치 불필요.
+  `diff`로 재확인: 코드부 100% 동일, 헤더 주석(브랜치 귀속 표기)만 다름.
+
+**가져온 것 (U-1, 저위험·하위호환)**:
+- `features/technical/trend_efficiency.py` — `calculate_trend_efficiency`에
+  `return_ready` 옵션 추가(기본 False로 기존 스칼라 반환 무영향). 표본부족
+  폴백(0.5)과 축퇴(0/0→0.0) 규약을 `ready` 플래그로 구분.
+- `features/feature_builder.py` — `trend_efficiency_ready` 피처 동반(hurst_ready
+  관례). `_mark_feature_error` 등 기존 v9-dev 헬퍼와 정확히 맞물림 확인.
+
+**가져온 것 (U-2, 섀도 전용 — 실측으로 통합점 전부 검증)**:
+- `config/settings.py` — `VALIDATION_CAMPAIGN["trend_efficiency_entry_gate"]`
+  채널 [57] 사전등록(임계 0.32 고정·min_samples=20·require_ready 등). MW0602
+  자기 데이터(501차 후속2)로 캘리브레이션된 값이라 **v9-dev 재검증 전에는 참고값**
+  임을 주석에 명시.
+- `utils/db_utils.py` — `trend_efficiency_gate_shadow` 테이블 신설(`init_trades_db()`
+  실행으로 생성 확인). `hurst_gate_shadow`류와 달리 **모집단이 반대**(차단된 신호가
+  아니라 실제 진입한 분봉 전량 + would_skip 플래그).
+- `main.py` — 진입 실행 분마다 섀도 기록(`try/except`로 라이브 무영향 보장).
+  `VALIDATION_CAMPAIGN` top-level import 추가(원 커밋이 지적한 대로 — 안 하면
+  NameError가 삼켜져 섀도가 조용히 죽는 TOX 죽은 섀도 패턴 재현). 삽입 전 필요
+  변수(`direction`·`features`·`_final_grade`·`confidence`·`atr`·`_entry_horizon`·
+  `_qty_auto`·`close`) 전부 `run_minute_pipeline()` 동일 스코프에 존재함을 grep으로
+  확인 후 적용.
+- `scripts/generate_validation_campaign_report.py` — `resolve_and_eval_trend_efficiency_gate()`
+  resolver + 요약행 + 상세 섹션. 앵커 위치(`resolve_and_eval_hurst_gate` 뒤,
+  `cb2`/`[23-B]` 사이 등)가 v9-dev와 다른 채널 구성이라 정확한 라인은 다르지만
+  **상대적 삽입 위치**(같은 함수·같은 순서)로 맞춰 적용.
+- `tests/test_502_trend_efficiency_gate.py` 신설 — 10/10 v9-dev에서 그대로 통과
+  (수정 없이 원본 그대로 적용됨).
+
+**검증**: `build_report(days=7)` 드라이런 — 빈 테이블 상태에서 `INSUFFICIENT`,
+오류 없이 정상 렌더링(원 커밋의 "운영 경로: INSUFFICIENT · 오류 없음" 검증과 일치).
+`tests/test_487_campaign_channel_hygiene.py`(채널 번호 유일성) 포함 30개 인접
+테스트 전부 통과. py37_32 컴파일 OK.
+
+**가져오지 않은 것**: MW0602 자기 손실6일 분석 문서 2건(`docs/정기점검/...20260830.md`)
+— 채널 [57]의 상세 섹션에서 인용하는 원 근거 문서이나 MW0602 자기 데이터 전용이라
+v9-dev에 옮기지 않고, 주석에 "이 문서는 v9-dev에 없음"으로 명시.
+
+**주의할 것**: 임계 0.32·손해일 통계 등은 전부 **MW0602 자기 데이터** 기준이다.
+v9-dev가 이 게이트를 승격 검토하려면 v9-dev 자체 거래 데이터로 501차 후속2와
+같은 절차(LODO·시간분할·부트스트랩)를 독립적으로 재현해야 한다 — 임계값을
+그대로 승격 근거로 쓰지 말 것.
