@@ -614,6 +614,11 @@ class TradingSystem:
         # "아직 안 받았다"와 "브로커가 0원이라 한다"가 구분되지 않는다
         # (계측 4원칙 ②·④ — 런타임 상태를 기본값 폴백으로 읽지 않는다는 규약).
         self._broker_net_today = None
+        # [MW0602 501차 체리픽] 당일 예탁현금 기준점 — 「예탁현금은 당일 시가
+        # 고정」이 불변식이므로, 그날 첫 판독을 잡아두고 이후 판독이 달라지면
+        # 장후 정산 롤오버로 본다(그때 `익일가 − 예탁`은 net이 아니라 −수수료다).
+        # None = 오늘 첫 판독 전(계측 4원칙 ②·④ — getattr 폴백 금지).
+        self._broker_dep_base_today = None
         # [MW0601 498차 / F-8] 마지막으로 관측한 예탁현금 헤더 스냅샷.
         #   {"date","deposit","next_deposit","ts","position_status"} 또는 None.
         # **FLAT 가드 밖에서** 갱신한다 — net 축 저장은 FLAT일 때만 하지만,
@@ -11986,6 +11991,9 @@ class TradingSystem:
         # ⚠ 0이 아니라 None으로 되돌린다 — 다음 날 첫 잔고 push 전까지는
         #   "아직 모른다"가 맞고, 0으로 두면 패널이 "브로커 0원"을 단언한다.
         self._broker_net_today = None
+        # [MW0602 501차 체리픽] 예탁현금 기준점도 날짜가 바뀌면 무효다 — 리셋하지
+        # 않으면 다음 날 첫 판독이 「롤오버」로 오탐돼 그날 net이 통째로 안 쌓인다.
+        self._broker_dep_base_today = None
         for _h in self._horizon_runtime_state:
             self._horizon_runtime_state[_h] = {
                 "verified_cycles":  0,
@@ -16775,10 +16783,35 @@ def _ts_push_balance_to_dashboard(self, result: dict, *, quiet: bool = False) ->
                 # 없던 데이터가 아니라 아무도 안 본 데이터다.
                 # ⚠ [498차 F-8] 파싱은 위 스냅샷 블록으로 올라갔다 — 여기서 다시
                 #   파싱하지 않는다(같은 헤더를 두 번 읽으면 값이 갈릴 수 있다).
-                upsert_broker_net(_today_str, _dep_cash, _next_dep, source="live")
-                # 패널 이중표기(F-5)용 캐시 — 엔진 net 옆에 브로커 net을 같이 띄운다.
-                self._broker_net_today = _next_dep - _dep_cash
-                self._refresh_pnl_history()
+                # ── [MW0602 501차 체리픽] 롤오버(장후 정산) 판독 가드 ────────────
+                # 거래일 저녁에 세션이 살아 있으면 브로커가 정산 반영 후의 값을
+                # 준다. 그때 예탁현금은 (시가+gross)로 **롤오버**되고 익일가는
+                # 거기서 수수료만 뺀 값이라 `익일가 − 예탁 = −수수료`가 된다 —
+                # 그날 net이 아니다. 그대로 upsert하면 그날 실측이 수수료로
+                # 덮어써진다(MW0602 소급 적재 경로에서 실제로 4일 발생).
+                #
+                # 판별은 「예탁현금은 당일 시가 고정」 불변식으로 한다 — 그날 첫
+                # 판독과 달라지면 롤오버다. `_broker_dep_base_today`는 __init__/
+                # daily_close에서 None으로 초기화한다(None = 아직 모름, 계측
+                # 4원칙 ②·④ — getattr 폴백 금지).
+                if _dep_cash and self._broker_dep_base_today is None:
+                    self._broker_dep_base_today = _dep_cash
+                _rolled = bool(
+                    _dep_cash and self._broker_dep_base_today is not None
+                    and abs(_dep_cash - self._broker_dep_base_today) > 1.0)
+                if _rolled:
+                    # 무음 스킵 금지(500차 F-5) — 결손 사실과 원값을 남긴다.
+                    logger.info(
+                        "[BrokerNet] state=SKIP_ROLLOVER date=%s dep=%s base=%s "
+                        "next=%s — 장후 정산 판독이라 저장하지 않는다",
+                        _today_str, "{:,.0f}".format(_dep_cash),
+                        "{:,.0f}".format(self._broker_dep_base_today),
+                        "{:,.0f}".format(_next_dep))
+                else:
+                    upsert_broker_net(_today_str, _dep_cash, _next_dep, source="live")
+                    # 패널 이중표기(F-5)용 캐시 — 엔진 net 옆에 브로커 net을 같이 띄운다.
+                    self._broker_net_today = _next_dep - _dep_cash
+                    self._refresh_pnl_history()
             upsert_daily_broker_pnl(_yesterday, _prev_pnl)
         except Exception as _bpnl_e:
             logger.debug("[BrokerPnl] 일별 손익 저장 실패: %s", _bpnl_e)

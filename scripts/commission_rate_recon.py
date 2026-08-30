@@ -58,8 +58,31 @@ def _scan_lines(lines):
 
     같은 날 여러 번 찍히므로 **마지막 값**을 쓴다 — 장중 값은 아직 체결이 안
     끝났을 수 있고, 마지막 것이 그날 확정치에 가장 가깝다.
+
+    🔴 **[MW0602 501차 체리픽] 단, 「롤오버(장후 정산) 판독」은 제외한다.**
+    거래일 저녁에 세션이 살아 있으면 브로커가 정산을 반영한 뒤의 값을 준다.
+    그때는 두 필드의 **의미가 바뀐다**:
+
+        장중     예탁현금 = 당일 시가(고정) · 익일가 = 시가 + gross − 수수료
+                 → `익일가 − 예탁` = **그날 net**            ✅
+        장후정산 예탁현금 = 시가 + gross 로 롤오버 · 익일가 = 거기서 수수료만 차감
+                 → `익일가 − 예탁` = **−수수료**             ❌ (그날 net이 아니다)
+
+    마지막 줄을 무조건 쓰면 그런 날의 net이 −수수료로 기록된다. MW0602 실측
+    4일(2026-06-30 · 07-01 · 07-14 · 08-06)이 그렇게 오염돼 있었다.
+
+    **판별은 「예탁현금은 당일 시가 고정」이라는 불변식으로 한다** — 그날 첫
+    판독과 예탁현금이 달라지면 롤오버다. MW0602 전 로그(49거래일 · 2,164줄)
+    검증에서 오탐 0 · 미탐 0.
+
+    ⚠ 「실현손익 0 && 예탁≠익일가」로는 안 된다 — 미실현이 익일가를 움직이는
+    장중 초반 줄이 걸려 33일이 오탐된다(MW0602가 설계 중 실제로 밟은 실패).
+
+    ⚠ 요율 추정에는 영향이 없다 — 어느 판독을 쓰든 `gross − net = 수수료`가
+    같은 값으로 성립한다.
     """
     dep = nxt = gross = None
+    base_dep = None          # 그날 첫 예탁현금 = 시가(불변식의 기준점)
     for line in lines:
         if "[CybosDailyPnl] account" not in line or "summary=" not in line:
             continue
@@ -68,11 +91,18 @@ def _scan_lines(lines):
             continue
         try:
             d = ast.literal_eval(m.group(1))
-            dep = float(d.get("총매매", 0) or 0)
-            nxt = float(d.get("총평가수익률", 0) or 0)   # 익일가예탁현금
-            gross = float(d.get("실현손익", 0) or 0)
+            _dep = float(d.get("총매매", 0) or 0)
+            _nxt = float(d.get("총평가수익률", 0) or 0)   # 익일가예탁현금
+            _gross = float(d.get("실현손익", 0) or 0)
         except Exception:
             continue
+        if not _dep:
+            continue                      # 빈 TR — 기준점으로도 못 쓴다
+        if base_dep is None:
+            base_dep = _dep
+        elif abs(_dep - base_dep) > 1.0:
+            continue                      # 롤오버 판독 — 채택하지 않는다
+        dep, nxt, gross = _dep, _nxt, _gross
     return gross, dep, nxt
 
 

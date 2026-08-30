@@ -2892,6 +2892,20 @@ def is_krx_trading_date(date_str: str) -> bool:
 
     한계: 시스템이 하루 종일 죽어 있던 진짜 거래일은 False가 나온다 — 그날은
     저장할 라이브 값도 없었으므로 가드로서는 올바른 방향의 오류다.
+
+    🔴 **[MW0602 501차 체리픽] 음성 결과를 영구 캐시하지 않는다 — 그게 결함이었다.**
+    종전에는 True/False를 똑같이 `_trading_date_cache`에 박았다. 그런데 이 함수의
+    첫 호출은 **장전 잔고 push**이고, 그 시점에는 당일 `predictions` 첫 행(09:00)도
+    `trades` 행도 아직 없다 — 그래서 `False`가 계산돼 **세션 내내** 굳었다.
+    귀결(MW0602 실측): 493차 F-2가 배선한 `upsert_broker_net`이 2026-08-25 이후
+    한 번도 성공하지 못했다(`[BrokerNet] state=SKIP_NON_TRADING` 로그 다발).
+    `pnl_krw`가 멀쩡했던 건 그쪽은 `_yesterday` 경로로 **다음 날** 저장돼 그때는
+    캐시가 새 프로세스라 True가 나왔기 때문이다 — 두 축이 갈린 이유가 이것이다.
+
+    규칙: **True는 영구 캐시(과거는 안 바뀐다), False는 그 날짜가 이미 지난
+    경우에만 캐시**한다. 오늘·미래 날짜의 False는 "아직 아니다"이지 "아니다"가
+    아니다(계측 4원칙 ② — 미측정 ≠ 0). 재조회 비용은 인덱스 조회 2회이며
+    호출부가 분당 1회 수준이라 무시할 수 있다.
     """
     if not date_str:
         return False
@@ -2912,7 +2926,13 @@ def is_krx_trading_date(date_str: str) -> bool:
     except Exception:
         # 판정 불가 시 저장을 막지 않는다(가드는 보조 장치다)
         ok = True
-    _trading_date_cache[date_str] = ok
+    if ok:
+        _trading_date_cache[date_str] = True
+    else:
+        import datetime as _dt
+        if date_str < _dt.date.today().isoformat():
+            # 지난 날짜의 음성은 확정이다 — 캐시해도 안전하다.
+            _trading_date_cache[date_str] = False
     return ok
 
 
