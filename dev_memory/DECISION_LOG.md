@@ -34283,3 +34283,30 @@ v9-dev에 옮기지 않고, 주석에 "이 문서는 v9-dev에 없음"으로 명
 v9-dev가 이 게이트를 승격 검토하려면 v9-dev 자체 거래 데이터로 501차 후속2와
 같은 절차(LODO·시간분할·부트스트랩)를 독립적으로 재현해야 한다 — 임계값을
 그대로 승격 근거로 쓰지 말 것.
+
+---
+
+## 2026-08-30 (MW0601 — 전체 회귀 스위트 확인 중 발견: broker_net_chain_audit.py Tier B 위반)
+
+**증상**: 501차 체리픽으로 가져온 `scripts/broker_net_chain_audit.py`가
+`tests/test_479_log_retention_tiers.py::test_no_script_retro_globs_compressed_channels`
+를 깨뜨렸다 — `*_SYSTEM.log` 와일드카드 glob이 SYSTEM(Tier B 압축 채널)을
+소급 소비하는 패턴으로 정적 검사에 걸림.
+
+**원인 — 오탐이었다**: 파일을 직접 확인하니 `_iter_log_days()`가 이미
+`commission_rate_recon.py`의 `_iter_log_sources()`와 **동일한 패턴**으로 원본
+`*_SYSTEM.log` + 월 압축본 `*_SYSTEM.zip`을 둘 다 읽고 있었다(`zipfile` import
+포함). 실제 결함이 아니라 **test_479가 이 신규 파일의 압축 대응 사실을 몰랐던 것**
+— `_COMPRESSED_AWARE`(자기 신고 아님, 실제 `.zip` glob·`zipfile` 사용을 검증하는
+등록부)에 빠져 있었다.
+
+**조치**: `tests/test_479_log_retention_tiers.py:_COMPRESSED_AWARE`에
+`broker_net_chain_audit.py` 등록(근거 명시). `test_compressed_aware_scripts_
+actually_read_archives`가 자기 신고를 검증하므로 실제로 zip을 읽지 않았다면
+이 등록만으로는 통과 못 했을 것 — 실제 코드가 이미 맞았음을 재확인.
+
+**전체 스위트 재확인**: 945→946 passed(이 fix 반영), 나머지 실패 1건
+(`test_483_git_lock_guard.py::test_sibling_copy_matches_canonical[fuoption-...]`)
+은 **이 세션의 작업과 무관** — `scripts/git_lock_guard.py`는 이번 세션에서 건드린
+적 없고(최종 수정 `91c6120`, 491차), `fuoption`은 별개 프로젝트라 손대지 않았다.
+사전 존재하던 두 저장소 간 사본 드리프트로 별도 확인 필요(fuoption 쪽 동기화).

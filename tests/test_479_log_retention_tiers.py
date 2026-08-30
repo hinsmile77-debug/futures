@@ -101,6 +101,9 @@ _RETRO_GLOB_EXEMPT = {
 _COMPRESSED_AWARE = {
     "commission_rate_recon.py":
         "[MW0601 493차 F-1] 26주 주기 재검증 — 원본 + YYYYMM_SYSTEM.zip 동시 소비",
+    "broker_net_chain_audit.py":
+        "[MW0602 501차 체리픽] D1/D2/D3 진단 — 원본 + YYYYMM_SYSTEM.zip 동시 소비"
+        "(commission_rate_recon.py의 _iter_log_sources와 동일 패턴, 자체 구현)",
 }
 
 
