@@ -16051,41 +16051,53 @@ def _ts_push_balance_to_dashboard(self, result: dict, *, quiet: bool = False) ->
     # 수수료(약정 861.31M × 0.0019%)였다.
     # 원본 summary 키는 건드리지 않는다 — ProfitGuard 캐시(_last_balance_realized_krw)
     # ·sizer 잔고 추출이 그 키를 읽는다. 패널이 "*_표시" 키를 우선 소비한다.
-    try:
-        _gross_txt = str(summary.get("실현손익") or "").replace(",", "").strip()
-        _gross_val = float(_gross_txt) if _gross_txt else None
-        if _gross_val is not None:
-            # _broker_net_today는 FLAT 잔고 push에서만 갱신된다(보유 중엔 예탁
-            # 차액에 증거금·미실현이 섞여 net이 오염되므로). __init__/daily_close
-            # 에서 None 초기화 — None은 "아직 모름"이다(계측 4원칙 ②).
-            _bnet = self._broker_net_today
-            if self.position.status == "FLAT" and _bnet is not None:
-                summary["금일손익_표시"] = "{:+,.0f} (g {:+,.0f})".format(
-                    _bnet, _gross_val)
-            elif self.position.status != "FLAT":
-                # 보유 중 gross에는 미실현이 포함될 수 있다 — 폴백 가시화(④).
-                summary["금일손익_표시"] = "{:+,.0f} (gross·보유중)".format(_gross_val)
-            else:
-                summary["금일손익_표시"] = "{:+,.0f} (gross)".format(_gross_val)
+    #
+    # 🔴 [2026-08-30 / v9-dev 0814498 체리픽] 이 블록에 `if is_cybos_balance:` 게이트를
+    # 붙였다. 이 브랜치(dev)에는 MW0601이 겪은 「2초마다 원상복구」 버그가 없었다 —
+    # 497차 원본(16ae05c)이 처음부터 이 블록을 `not quiet` 밖에 뒀기 때문이다. 가져온
+    # 것은 그 fix가 아니라 **브로커 게이트**다: 여기서 읽는 "실현손익"·"추정자산"은
+    # CpTd6197(Cybos) 전용 의미이고(477차 후속2 「키 이름 ≠ 의미」), `_broker_net_today`
+    # 도 Cybos 분기에서만 갱신된다. `BROKER_BACKEND=kiwoom`(env 전환 가능)이면 다른 축의
+    # 값으로 표시 키를 조립하게 된다 — 바로 위 DB 기록 블록과 같은 게이트로 맞춘다.
+    # ⚠ `not quiet`는 **붙이지 않는다** — `_balance_ui_timer`(2초)가 원본 raw summary를
+    #   `quiet=True`로 재푸시하므로, 그때 조립을 건너뛰면 화면이 gross 단독으로
+    #   되돌아간다(MW0601 실측). DB 기록만 `not quiet`로 막는다. 고정: T9.
+    if is_cybos_balance:
+        try:
+            _gross_txt = str(summary.get("실현손익") or "").replace(",", "").strip()
+            _gross_val = float(_gross_txt) if _gross_txt else None
+            if _gross_val is not None:
+                # _broker_net_today는 FLAT 잔고 push에서만 갱신된다(보유 중엔 예탁
+                # 차액에 증거금·미실현이 섞여 net이 오염되므로). __init__/daily_close
+                # 에서 None 초기화 — None은 "아직 모름"이다(계측 4원칙 ②).
+                _bnet = self._broker_net_today
+                if self.position.status == "FLAT" and _bnet is not None:
+                    summary["금일손익_표시"] = "{:+,.0f} (g {:+,.0f})".format(
+                        _bnet, _gross_val)
+                elif self.position.status != "FLAT":
+                    # 보유 중 gross에는 미실현이 포함될 수 있다 — 폴백 가시화(④).
+                    summary["금일손익_표시"] = "{:+,.0f} (gross·보유중)".format(_gross_val)
+                else:
+                    summary["금일손익_표시"] = "{:+,.0f} (gross)".format(_gross_val)
 
-        # 전일손익: 헤더 prev_day_pnl은 gross — daily_broker_pnl에서 직전
-        # 거래일 net을 찾아 정렬한다(주말·휴장 자동 건너뜀). 날짜당 1회 조회.
-        _today_key = datetime.date.today().isoformat()
-        _pn_cache = self._prev_broker_net_cache
-        if _pn_cache is None or _pn_cache[0] != _today_key:
-            from utils.db_utils import fetch_prev_broker_net
-            _pn_cache = (_today_key, fetch_prev_broker_net(_today_key))
-            self._prev_broker_net_cache = _pn_cache
-        _prev_txt = str(summary.get("추정자산") or "").replace(",", "").strip()
-        _prev_gross = float(_prev_txt) if _prev_txt else None
-        _pn = _pn_cache[1]
-        if _pn is not None:
-            summary["전일손익_표시"] = "{:+,.0f} (g {:+,.0f})".format(
-                _pn["net_krw"], _pn["gross_krw"])
-        elif _prev_gross is not None:
-            summary["전일손익_표시"] = "{:+,.0f} (gross)".format(_prev_gross)
-    except Exception as _axd_e:
-        logger.debug("[BalanceAxis] 표시 키 조립 실패(무해): %s", _axd_e)
+            # 전일손익: 헤더 prev_day_pnl은 gross — daily_broker_pnl에서 직전
+            # 거래일 net을 찾아 정렬한다(주말·휴장 자동 건너뜀). 날짜당 1회 조회.
+            _today_key = datetime.date.today().isoformat()
+            _pn_cache = self._prev_broker_net_cache
+            if _pn_cache is None or _pn_cache[0] != _today_key:
+                from utils.db_utils import fetch_prev_broker_net
+                _pn_cache = (_today_key, fetch_prev_broker_net(_today_key))
+                self._prev_broker_net_cache = _pn_cache
+            _prev_txt = str(summary.get("추정자산") or "").replace(",", "").strip()
+            _prev_gross = float(_prev_txt) if _prev_txt else None
+            _pn = _pn_cache[1]
+            if _pn is not None:
+                summary["전일손익_표시"] = "{:+,.0f} (g {:+,.0f})".format(
+                    _pn["net_krw"], _pn["gross_krw"])
+            elif _prev_gross is not None:
+                summary["전일손익_표시"] = "{:+,.0f} (gross)".format(_prev_gross)
+        except Exception as _axd_e:
+            logger.debug("[BalanceAxis] 표시 키 조립 실패(무해): %s", _axd_e)
 
     self.dashboard.update_account_balance(
         summary,

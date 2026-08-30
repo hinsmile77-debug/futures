@@ -7,6 +7,12 @@ net 429,636 — 갭 16,364원 전액이 수수료(약정 861.31M × CREON 0.0019
 브로커 분기(gross) ③ 라이브 INSERT의 commission_rate_used 누락(NULL) 세 개다.
 
 실행: python tests/test_497_pnl_axis_alignment.py   (pytest 불필요)
+
+🔴 [2026-08-30 / v9-dev 0814498 체리픽] 원본은 함수명이 `t1_`~`t8_`이라 **pytest가
+   수집하지 못했다** — 전체 스위트에서 한 번도 안 도는 「죽은 테스트」다(495차와 같은
+   형태를 MW0601이 자기 체리픽에서 발견). `test_`로 바꿔 수집되게 했다. 단독 실행
+   경로(main())는 그대로다. T5 블록 앵커도 태그 무관으로 완화 — 브랜치별 표기 차이
+   (`/ P1` vs `/ P1 체리픽`)로 깨지지 않게 한다.
 """
 import datetime
 import io
@@ -37,7 +43,7 @@ def _read(rel):
 
 
 # ── P2 ──────────────────────────────────────────────────────────────────────
-def t1_insert_includes_rate_and_placeholders_match():
+def test_insert_includes_rate_and_placeholders_match():
     """INSERT 컬럼에 commission_rate_used가 있고, 컬럼 수 == 플레이스홀더 수.
 
     471차 prediction_buffer 사고(컬럼 50 vs ? 54)의 재발 방지 — 개수를 실제로 센다.
@@ -53,7 +59,7 @@ def t1_insert_includes_rate_and_placeholders_match():
     assert len(cols) == ph, "컬럼 %d개 vs 플레이스홀더 %d개 불일치" % (len(cols), ph)
 
 
-def t2_live_db_has_no_null_rate_in_current_generation():
+def test_live_db_has_no_null_rate_in_current_generation():
     """현행 세대(EFFECTIVE_FROM 이후) 행에 NULL 요율이 없다 — 상시 백필 + INSERT fix
     의 합작 결과. 읽기 전용 검사."""
     from config import settings as S
@@ -68,7 +74,7 @@ def t2_live_db_has_no_null_rate_in_current_generation():
     assert n == 0, "현행 세대 NULL 요율 %d행 — 상시 백필이 죽었거나 INSERT 누락 재발" % n
 
 
-def t3_ongoing_backfill_is_outside_onetime_guard():
+def test_ongoing_backfill_is_outside_onetime_guard():
     """상시 백필 UPDATE가 1회성 가드(`if ... not in cols`) 밖에 있다.
 
     가드 안에 있으면 컬럼 신설 때 한 번만 돌고, INSERT 누락 기간의 NULL이
@@ -87,7 +93,7 @@ def t3_ongoing_backfill_is_outside_onetime_guard():
 
 
 # ── P1 ──────────────────────────────────────────────────────────────────────
-def t4_prev_broker_net_fetch():
+def test_prev_broker_net_fetch():
     """직전 거래일 브로커 net 조회 — 실데이터에서 gross와 다른 net이 나온다."""
     from utils.db_utils import fetch_prev_broker_net
     today = datetime.date.today().isoformat()
@@ -99,18 +105,18 @@ def t4_prev_broker_net_fetch():
         "net == gross — 수수료가 0일 수 없다(조회가 gross를 복제했는지 의심)"
 
 
-def t5_display_key_composition_in_main():
+def test_display_key_composition_in_main():
     """main이 표시 키를 조립하고, 원본 summary 키는 덮지 않는다."""
     src = _read("main.py")
     assert '"금일손익_표시"' in src and '"전일손익_표시"' in src
     # 원본 키 재할당 금지 — ProfitGuard 캐시·sizer가 원본 키를 읽는다.
-    seg_start = src.index("[MW0602 497차 / P1] 실시간잔고 스트립 축 정합")
+    seg_start = src.index("실시간잔고 스트립 축 정합")
     seg = src[seg_start:seg_start + 3000]
     assert 'summary["실현손익"] =' not in seg, "표시 조립부가 원본 실현손익 키를 덮는다"
     assert "(gross·보유중)" in seg, "보유 중 폴백 태그가 없다(4원칙 ④)"
 
 
-def t6_panel_prefers_display_key_offscreen():
+def test_panel_prefers_display_key_offscreen():
     """패널이 *_표시 키를 우선 소비하고, 없으면 종전 포맷 폴백. 라벨 net% 정합."""
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PyQt5.QtWidgets import QApplication
@@ -129,7 +135,7 @@ def t6_panel_prefers_display_key_offscreen():
 
 
 # ── P3 ──────────────────────────────────────────────────────────────────────
-def t7_engine_commission_today_matches_db():
+def test_engine_commission_today_matches_db():
     """수수료 합 헬퍼가 DB 실측과 일치하고 60초 캐시가 동작한다."""
     import main as M
 
@@ -154,7 +160,7 @@ def t7_engine_commission_today_matches_db():
     assert M._ts_engine_commission_today(stub, today) == 123.0, "60초 캐시가 무시된다"
 
 
-def t8_profit_guard_uses_net_estimate():
+def test_profit_guard_uses_net_estimate():
     """ProfitGuard 브로커 분기가 gross − 당일수수료(net 추정)를 쓴다."""
     src = _read("main.py")
     i = src.index('_daily_pnl_source = "broker_net_est"')
@@ -165,19 +171,50 @@ def t8_profit_guard_uses_net_estimate():
         "구 gross 분기가 남아 있다(축 혼재 재발)"
 
 
+# ── P1 후속 (2026-08-27) ─────────────────────────────────────────────────────
+def test_display_key_block_not_gated_by_quiet():
+    """표시 키 조립이 `not quiet` 안에 갇혀 있으면 안 된다 — 2초 주기 원상복구 재발 방지.
+
+    실측 버그: `_balance_ui_timer`(2초 주기)가 `_ts_refresh_dashboard_balance_ui_only()`
+    → `_ts_push_balance_to_dashboard(..., quiet=True)`로 캐시를 재푸시한다. 표시 키
+    조립이 `if is_cybos_balance and not quiet:` 안에 있으면, 실제 새로고침 직후 잠깐
+    "net (g gross)"가 떴다가 2초 안에 quiet 재푸시가 이 블록을 건너뛰어 원본 gross
+    단독 표시로 되돌아간다(로그엔 정상 기록되는데 화면만 되돌아가 발견이 늦었다).
+    DB 기록(upsert_*)은 `not quiet`로 막아도 되지만 표시 조립은 quiet과 무관해야 한다.
+    """
+    src = _read("main.py")
+    i_key = src.index('summary["금일손익_표시"] =')
+    # "금일손익_표시" 대입 직전에 나오는 마지막 `if is_cybos_balance` 게이트를 찾는다 —
+    # 그 게이트 줄 자체에 `not quiet`가 있으면 표시 조립이 quiet에 묶인 것이다.
+    i_gate = src.rindex("if is_cybos_balance", 0, i_key)
+    gate_line = src[i_gate:src.index("\n", i_gate)]
+    assert "not quiet" not in gate_line, (
+        "표시 키 조립이 `not quiet` 게이트 안에 있다 — 2초 주기 quiet 재푸시가 "
+        "화면을 gross 단독 표시로 되돌리는 버그가 재발한다: %r" % gate_line)
+    # DB 기록 블록(upsert_broker_net)은 여전히 not quiet로 막혀 있어야 한다
+    # (매 2초 재기록되는 회귀 방지).
+    i_upsert = src.index("upsert_broker_net(")
+    i_db_gate = src.rindex("if is_cybos_balance", 0, i_upsert)
+    db_gate_line = src[i_db_gate:src.index("\n", i_db_gate)]
+    assert "not quiet" in db_gate_line, (
+        "DB 기록(upsert_broker_net)이 not quiet로 막혀 있지 않다 — "
+        "2초마다 재기록되어 DB 쓰기 폭주 위험: %r" % db_gate_line)
+
+
 def main():
-    check("T1 INSERT 컬럼·플레이스홀더 정합", t1_insert_includes_rate_and_placeholders_match)
-    check("T2 현행 세대 NULL 요율 0행", t2_live_db_has_no_null_rate_in_current_generation)
-    check("T3 상시 백필 구조", t3_ongoing_backfill_is_outside_onetime_guard)
-    check("T4 전일 브로커 net 조회", t4_prev_broker_net_fetch)
-    check("T5 표시 키 조립(원본 불변)", t5_display_key_composition_in_main)
-    check("T6 패널 우선 소비(offscreen)", t6_panel_prefers_display_key_offscreen)
-    check("T7 수수료 합 헬퍼·캐시", t7_engine_commission_today_matches_db)
-    check("T8 ProfitGuard net 추정", t8_profit_guard_uses_net_estimate)
+    check("T1 INSERT 컬럼·플레이스홀더 정합", test_insert_includes_rate_and_placeholders_match)
+    check("T2 현행 세대 NULL 요율 0행", test_live_db_has_no_null_rate_in_current_generation)
+    check("T3 상시 백필 구조", test_ongoing_backfill_is_outside_onetime_guard)
+    check("T4 전일 브로커 net 조회", test_prev_broker_net_fetch)
+    check("T5 표시 키 조립(원본 불변)", test_display_key_composition_in_main)
+    check("T6 패널 우선 소비(offscreen)", test_panel_prefers_display_key_offscreen)
+    check("T7 수수료 합 헬퍼·캐시", test_engine_commission_today_matches_db)
+    check("T8 ProfitGuard net 추정", test_profit_guard_uses_net_estimate)
+    check("T9 표시 키 조립이 quiet에 안 묶임", test_display_key_block_not_gated_by_quiet)
     if FAILURES:
         print("FAILED: %s" % ", ".join(FAILURES))
         sys.exit(1)
-    print("ALL PASS (8/8)")
+    print("ALL PASS (9/9)")
 
 
 if __name__ == "__main__":
