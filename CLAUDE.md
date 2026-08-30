@@ -275,6 +275,60 @@ CLAUDE.md처럼 git으로 커밋되는 문서에 적어야** 양쪽 PC 세션이
 | **중기** | 10m·15m | VWAP 위치 | `features/technical/vwap.py` | 미통과 → **강제 X** |
 | **장기** | 30m | opt_chain_pcr ⚠ | `collection/option/option_chain.py` | 미통과 → 등급 하락 |
 
+> 🔴 **[2026-08-30 500차] 단기 3행의 "CORE 피처" 이름은 실제 소비 키가 아니다 —
+> 이 표만 보고 인용하지 말 것.** 코드의 실소비 키는 `CORE_FEATURES_BY_GROUP["short"]`다:
+>
+> | 표의 이름 | 실제 체크리스트 소비 키 | 상태 |
+> |---|---|---|
+> | CVD 다이버전스 | **`cvd_delta_norm`** (2026-06-25 교체) | ✅ 건강 — 단 CVD가 아니다(아래) |
+> | VWAP 위치 | `vwap_position` | ✅ 일치 |
+> | OFI 불균형 | **`ofi_pressure`** | ⚠ = `sign(ofi_norm)` — 크기를 버린 부호 3값 |
+>
+> ⚠ **"CORE"의 정의가 세 곳에서 서로 다르다** — 인용 전에 어느 것인지 확인할 것:
+> `config/constants.py:CORE_FEATURES`(SHAP 심사 퇴출 면제) ·
+> `config/settings.py:CORE_FEATURES_BY_GROUP`(체크리스트 게이트, **실집행**) ·
+> `strategy/regime_fingerprint.py:_CORE_FEATURES`(PSI/FP-CRITICAL). 앞의 둘과 셋째는
+> `cvd_divergence` vs `cvd_delta_norm`으로 갈린다. 통합은 500차 3단계 안건.
+
+> 🔴 **[2026-08-30 500차] `cvd_divergence`는 다이버전스가 아니다 — 재인용 금지.**
+> 실측(`raw_features` n=5,289, 2026-08-10~08-28, 14거래일):
+> · **부호 ≡ `−sign(price_slope_10m)`** (99.92%). 다이버전스 판정의 두 분기 중
+>   `(가격↑ & CVD↓)`가 **구조적으로 도달 불가**여서 `(가격↓ & CVD↑)`만 남았다.
+> · **크기 ≡ 개장 후 경과시간의 함수.** `|cvd_divergence|` 시각별 평균이
+>   08시 0.617 → 09시 0.291 → 10시 0.079 → 15시 0.022로 **28배 단조감소**한다.
+>   `cvd_slope_norm = (C_t − C_{t−9})/max|C|`인데 C가 단조증가라 분모가 하루 종일
+>   커지기 때문이다. ⇒ **GBM이 이 피처로 시각을 읽을 수 있다.**
+> · `|cvd_divergence| ≡ min(cvd_slope, 1)` — **5,289/5,289 정확 일치**. 두 컬럼은
+>   크기 1개 + 부호 1비트를 나눠 가진 것이다.
+>
+> **한 줄의 결과다.** `cvd.py:update_from_bar()`의 `delta = buy_vol − sell_vol`에서
+> Cybos `buy_vol`이 편향(buy>sell 98.6%)돼 **누적 CVD가 단조증가**하고, 그러면
+> 파생 정규화가 전부 붕괴한다:
+>
+> | 파생값 | 단조증가일 때 | 실측 |
+> |---|---|---|
+> | `cvd` (=`cvd_norm`) | C_t가 곧 max → 1.0 고정 | 최빈 1.0이 **98.8%**, L0 **CRITICAL** |
+> | `cvd_direction` | 항상 +1 → 0.5 고정 | 최빈 0.5가 **99.5%**, −0.5 **0건**, L0 **CRITICAL** |
+> | `cvd_slope` | 항상 ≥ 0 | min=0.0000, 음수 **0건** |
+> | `cvd_divergence` | 위 참조 | — |
+>
+> ⚠ **2026-06-25에 이미 알고 있었다**(`settings.py:991-994`가 편향 98.6%를 기록).
+> 그때 조치는 **체크리스트 소비 키만 `cvd_delta_norm`으로 바꾼 것**뿐이고, 피처
+> 자체는 학습 X·스케일러·PSI·TrendGate·앙상블 숏서킷에 그대로 남았다.
+>
+> **모델 노출 범위**(호라이즌별 배포 pkl 기준 — GBM은 97개가 아니라 8~13개로 학습한다.
+> 97개는 `X_hz` 구성과 **스케일러 fit**에만 쓰인다, `batch_retrainer.py:2011-2035`):
+> `cvd_divergence` → **3m·15m**, `cvd_slope` → **5m** ⇒ **앙상블 가중 0.71**.
+> `cvd`·`cvd_direction`은 GBM 밖(스케일러·라이브 게이트에만).
+
+> 🔴 **[2026-08-30 500차] OFI 3종의 독립 정보는 `ofi_norm` 하나뿐이다.**
+> `ofi.py:compute()`가 같은 값을 세 번 내보낸다 — 실측 **5,289/5,289 정확 일치**:
+> · `ofi_imbalance ≡ round(ofi_norm/3, 3)` (`ofi_norm`이 이미 ±3 클립이라 `clip(±1)`은 무동작)
+> · `ofi_pressure ≡ sign(ofi_norm)`
+> ⇒ 상관을 재기 전에 **소스에서 알 수 있는 항등식**이다. 재검증에서 이 셋을 독립
+> 신호 3개로 세면 Bonferroni 분모가 틀리고 계열 검정의 유효 자유도가 무너진다
+> (SOP §1 오측정 #9와 동형). 근거: `dev_memory/DECISION_LOG.md` 2026-08-30(500차).
+
 > ⚠ **[2026-08-12 458차] 30m 행은 현재 "지정만 존재"하는 상태다 — 실효 없음.**
 > 강등·폐지 결정이 아니라 **사실 표기**이며, 처분은 F9 심사에서 정한다.
 > 세 가지가 독립적으로 확인됐다:
