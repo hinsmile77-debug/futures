@@ -308,6 +308,49 @@ def git_hash():
         return None
 
 
+def known_registered_dates():
+    """`KNOWN` 각 항목이 등재된 날짜 — `git blame` 1회로 뽑는다.
+
+    왜 필요한가: `KNOWN` 등재는 8곳의 경보에서 그 피처를 빼지만(§2-d 참조),
+    **등재 자체에는 만료도 재검토 기한도 없다.** 그래서 "원인 규명 완료" 슬롯에
+    "미해결 등록"이라 적힌 항목이 조용히 방치될 수 있다 — 2026-08-30 실측에서
+    `cvd`·`cvd_direction`이 등재 33일째 CRITICAL 그대로였다.
+    등재일을 병기하면 **방치 기간이 리포트에 드러난다**(계측 4원칙 ④와 같은 취지:
+    억제는 유지하되 "억제되고 있다는 사실"은 보이게 한다).
+
+    ⚠ 실패해도 리포트를 막지 않는다 — 날짜는 advisory이고 §2-d 표는 등급으로 선다.
+
+    🔴 **`git blame`을 쓰지 않는다.** blame은 그 줄을 **마지막으로 손댄** 커밋을
+    가리키므로, 사유 문자열만 고쳐도 방치 시계가 0으로 리셋된다 — 재는 대상이
+    "얼마나 오래 방치됐나"인데 정반대 유인을 만든다(주석만 만지면 깨끗해진다).
+    대신 `git log -S`로 그 키가 **처음 등장한** 커밋을 찾는다. 키당 1회 호출이라
+    13건 기준 약 2초 — 주간 1회 실행이므로 무시할 수 있다.
+    """
+    src = os.path.join(ROOT, "scripts", "feature_health_report.py")
+    dates = {}
+    for name in KNOWN:
+        try:
+            out = subprocess.check_output(
+                ["git", "log", "--format=%ad", "--date=short", "--reverse",
+                 "-S", '"%s":' % name, "--", src],
+                cwd=ROOT, stderr=subprocess.STDOUT, timeout=15
+            ).decode("utf-8", "replace").split()
+        except Exception:
+            continue
+        if out:
+            dates[name] = out[0]        # --reverse → 첫 줄이 최초 등재 커밋
+    return dates
+
+
+def _age_days(datestr):
+    """YYYY-MM-DD → 오늘까지 경과일. 파싱 실패 시 None."""
+    try:
+        y, m, d = [int(x) for x in datestr.split("-")]
+        return (datetime.date.today() - datetime.date(y, m, d)).days
+    except Exception:
+        return None
+
+
 def _pc_dir_name():
     """산출물 폴더로 쓸 PC 이름 — 405차 P0-5/408차 규약과 동일(경고 포함)."""
     try:
@@ -641,6 +684,104 @@ def build_report(days, pool_days, include_backfill=False):
     metrics["shape_flagged"] = {n: shapes[n]["shape"] for n in shaped}
     L.append("")
 
+    # ── §2-d 미해결 KNOWN ────────────────────────────────────
+    # 왜 따로 보나: `KNOWN` 등재는 그 피처를 **8곳의 경보에서 뺀다**(§1 실이상 열,
+    # §2-b, §2-c, 신규이상 줄, 유령 신규 카운트, EOD 요약 …). 등급 자체는 그대로
+    # 남지만 "봐야 할 새 이상" 목록에서 사라진다.
+    #
+    # 그런데 `feature_health_report.py`의 KNOWN 부패 점검이 잡는 것은
+    #   ① 데이터에 없음(stale)  ② 등급이 OK로 해소(resolved)
+    # 둘뿐이다. **"등재됐고, 여전히 아프고, 아무도 안 고친다"** 는 상태는 잡히지
+    # 않는다 — 오히려 DEAD/CRITICAL로 남아 있는 한 영원히 조용하다.
+    # 2026-08-30 실측: KNOWN 13건 중 11건이 미결이고 전부 등재 33일째 그대로였다
+    # (`cvd`의 등재 사유가 문자 그대로 "미해결 등록"인데도 억제는 100% 작동).
+    # CB②·CB③-P4·FP-CRITICAL의 "재검토하기로 했는데 안 함"과 같은 형태다.
+    #
+    # 이 절은 **억제를 되돌리지 않는다** — 억제는 그대로 두고 "억제되고 있다는
+    # 사실"만 드러낸다(계측 4원칙 ④ 폴백 가시화와 같은 취지).
+    L.append("### 2-d. 미해결 KNOWN 등재 항목")
+    L.append("")
+    _kdates = known_registered_dates()
+    _deployed_by_feature3 = defaultdict(list)
+    for hz in hz_list:
+        for n in ((deployed.get(hz) or {}).get("names") or []):
+            _deployed_by_feature3[n].append(hz)
+
+    k_unresolved, k_resolved, k_gone = [], [], []
+    for n in sorted(KNOWN):
+        h = health.get(n)
+        lv = h["level"] if h else None
+        rec = {"feature": n, "level": lv, "reason": KNOWN[n],
+               "registered": _kdates.get(n), "age_days": None}
+        if rec["registered"]:
+            rec["age_days"] = _age_days(rec["registered"])
+        if lv is None:
+            k_gone.append(rec)
+        elif lv == OK_LEVEL:
+            k_resolved.append(rec)
+        elif lv in (DEAD_LEVEL, CRIT_LEVEL, WARN_LEVEL):
+            k_unresolved.append(rec)
+        else:
+            k_resolved.append(rec)     # 미계측 등 — 나쁘지 않으므로 정리 후보 쪽
+
+    _ages = [r["age_days"] for r in k_unresolved if r["age_days"] is not None]
+    _max_age = max(_ages) if _ages else None
+
+    if k_unresolved:
+        L.append("**%d건** — 등재됐지만 등급이 아직 나쁜 항목%s. "
+                 "등재 자체에는 만료·재검토 기한이 없으므로 여기서만 드러난다."
+                 % (len(k_unresolved),
+                    " (최장 방치 %d일)" % _max_age if _max_age is not None else ""))
+        L.append("")
+        L.append("| 등급 | 피처 | 등재일 | 방치 | 소재 | 등재 사유 |")
+        L.append("|---|---|---|---|---|---|")
+        for r in sorted(k_unresolved,
+                        key=lambda x: (_LEVEL_ORDER.get(x["level"], 9),
+                                       -(x["age_days"] or 0), x["feature"])):
+            n = r["feature"]
+            if _deployed_by_feature3.get(n):
+                where = "**배포: %s**" % ", ".join(_deployed_by_feature3[n])
+            elif sources.get(n):
+                where = "후보: %s" % ", ".join(sources[n])
+            else:
+                where = "계측만"
+            L.append("| %s | `%s` | %s | %s | %s | %s |"
+                     % (r["level"], n, r["registered"] or "—",
+                        ("%d일" % r["age_days"]) if r["age_days"] is not None else "—",
+                        where, r["reason"]))
+        L.append("")
+        L.append("> ⚠ **이 표는 등급을 바꾸지도, 억제를 되돌리지도 않는다.** "
+                 "위 항목들은 §1 `실이상`·§2-b·§2-c에서 계속 제외된다 — "
+                 "경보 피로 방지는 그대로 두고 방치 사실만 드러내는 것이 목적이다.")
+        L.append("> 방치가 길어지면 처분은 둘 중 하나다 — **고치거나, KNOWN에서 빼서 "
+                 "다시 경보로 올리거나.** 사유란에 \"미해결\"이라 적힌 항목은 "
+                 "애초에 `KNOWN`(=원인 규명 완료) 슬롯의 취지와 맞지 않는다.")
+    else:
+        L.append("없음 — KNOWN 등재 %d건이 모두 해소·소멸됐다." % len(KNOWN))
+    L.append("")
+
+    if k_resolved or k_gone:
+        _bits = []
+        if k_resolved:
+            _bits.append("등급 해소 %d건(%s)"
+                         % (len(k_resolved),
+                            ", ".join("`%s`" % r["feature"] for r in k_resolved)))
+        if k_gone:
+            _bits.append("데이터 없음 %d건(%s)"
+                         % (len(k_gone),
+                            ", ".join("`%s`" % r["feature"] for r in k_gone)))
+        L.append("**KNOWN 정리 가능**: %s — 원인이 해소됐는데 등재가 남아 있으면 "
+                 "그 항목이 앞으로의 진짜 이상을 조용히 삼킨다." % " / ".join(_bits))
+        L.append("")
+
+    metrics["known_status"] = {
+        "unresolved": k_unresolved,
+        "resolved": k_resolved,
+        "gone": k_gone,
+        "max_age_days": _max_age,
+        "total": len(KNOWN),
+    }
+
     # ── §3 L4 conf-층화 ──────────────────────────────────────
     L.append("## 3. L4 — confidence 층화 검정 요약")
     L.append("")
@@ -866,9 +1007,16 @@ def main():
     # EOD 로그에서 바로 찾아갈 수 있도록 경로와 한 줄 요약을 남긴다(407차 패턴).
     n_bad = len(metrics.get("unknown_bad") or [])
     n_sys = len(metrics.get("system_bad") or [])
+    # KNOWN 미결 — 억제되어 다른 어떤 카운터에도 안 잡히므로 여기서만 보인다(§2-d).
+    _ks = metrics.get("known_status") or {}
+    n_known = len(_ks.get("unresolved") or [])
+    _kage = _ks.get("max_age_days")
+    known_txt = "%d건%s" % (n_known,
+                            ("(최장 %d일)" % _kage) if _kage is not None else "")
     print("저장: %s / %s" % (md_path, json_path))
-    print("요약: 배포피처 실이상 %d건 | 전체 raw 신규이상 %d건 | 후보재고 %d건 | L4 %s"
-          % (n_bad, n_sys, metrics.get("candidate_stock", 0),
+    print("요약: 배포피처 실이상 %d건 | 전체 raw 신규이상 %d건 | KNOWN 미결 %s "
+          "| 후보재고 %d건 | L4 %s"
+          % (n_bad, n_sys, known_txt, metrics.get("candidate_stock", 0),
              (metrics.get("l4") or {}).get("status", "연결됨")))
 
     # 쓰기가 끝난 뒤에만 FIFO — 중간에 죽어도 이번 주 파일은 이미 디스크에 있다.
