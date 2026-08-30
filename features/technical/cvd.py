@@ -79,6 +79,12 @@ class CVDCalculator:
         """CVD 다이버전스 계산"""
         n = len(self._cvd_buf)
         if n < 3:
+            # [MW0601 500차 2단계] 워밍업 폴백을 **드러낸다**(계측 4원칙 ②·④).
+            # 종전에는 여기서 나온 0.0 이 "측정했더니 0"과 구분되지 않았다 —
+            # 실측으로 매 거래일 개장 직후 2분이 이 값이고, `raw_features` 의
+            # cvd 계열 zero 0.5%(n=7,527)가 정확히 이 구간이다.
+            # 소비처가 숫자를 요구하므로 값 자체는 0.0 을 유지하되,
+            # `measured=False` 를 **같은 반환에 동반**해 구분 가능하게 한다.
             return {
                 "cvd": self._cumulative_cvd,
                 "cvd_norm": 0.0,
@@ -88,6 +94,8 @@ class CVDCalculator:
                 "direction": 0,
                 "cvd_slope": 0.0,
                 "cvd_slope_norm": 0.0,
+                "measured": False,
+                "warmup_bars": n,
             }
 
         prices = list(self._price_buf)
@@ -124,6 +132,8 @@ class CVDCalculator:
             "price_slope":      round(price_slope, 4),
             "cvd_slope":        round(cvd_slope, 2),
             "cvd_slope_norm":   round(cvd_slope_norm, 4),
+            "measured":         True,
+            "warmup_bars":      n,
         }
 
     def reset_daily(self):

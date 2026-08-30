@@ -99,9 +99,17 @@ _BENIGN_PREFIX = ("quality_", "macro_quality_", "opt_available", "opt_chain_avai
                   "is_", "hurst_ready", "basis_ready", "vkospi_ready",
                   "rv_iv_spread_ready", "feature_degraded", "entry_ok")
 
+# [MW0601 500차 2단계] `*_measured` — 계측 4원칙 ②의 동반 플래그.
+# "미측정 ≠ 0"을 구분하려고 새로 다는 플래그인데, 정상 운영에서는 거의 항상 1이라
+# 등록하지 않으면 **신설하자마자 CRITICAL 로 뜬다**. 폴백을 드러내려고 만든 장치가
+# 경보 피로를 만들어 진짜 이상을 묻는 셈이 되므로 상태플래그로 분류한다.
+# ⚠ 등급 표에는 그대로 나온다 — 값이 갑자기 0 쪽으로 쏠리면 워밍업이 길어졌다는
+#   뜻이므로 거기서 읽으면 된다.
+_BENIGN_SUFFIX = ("_measured",)
+
 
 def is_benign_flag(name):
-    return name.startswith(_BENIGN_PREFIX)
+    return name.startswith(_BENIGN_PREFIX) or name.endswith(_BENIGN_SUFFIX)
 
 
 # ── 유령(PHANTOM) 피처 검출 ──────────────────────────────────────────────
