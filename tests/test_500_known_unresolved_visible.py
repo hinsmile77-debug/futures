@@ -47,6 +47,12 @@ from utils.runtime_mode import enable_test_mode  # noqa: E402
 
 enable_test_mode()
 
+# cp949 콘솔에서 ⏳·✅ 같은 문자가 UnicodeEncodeError 로 테스트를 죽인다
+# (455차 전례). 판정 로직과 무관한 사고이므로 출력 스트림을 먼저 고정한다.
+from utils.analysis_db import utf8_console  # noqa: E402
+
+utf8_console()
+
 import scripts.generate_featureset_health_report as R  # noqa: E402
 from scripts.feature_health_report import (  # noqa: E402
     KNOWN, DEAD_LEVEL, CRIT_LEVEL, WARN_LEVEL,

@@ -892,8 +892,15 @@ class EnsembleDecision:
                 _d2 = _s2.get("direction", 0)
                 if _d1 != 0 and _d1 == _d2:
                     # OFI 또는 CVD가 같은 방향인지 피처로 검증
+                    # 🔴 [MW0601 500차 / D-3] `cvd_direction` → `cvd_delta_norm`.
+                    #   구 키는 buy_vol 편향으로 **{0.0, 0.5} 고착**(최빈 99.5%)이라
+                    #   `_cvd > 0` 이 99.5% True, `_cvd < 0` 이 **0건**이었다.
+                    #   ⇒ UP 은 피처 확증 없이 무조건 통과 / DOWN 만 OFI 를 요구하는
+                    #     **구조적 LONG 편향**. 확증 관문이 방향에 따라 비대칭이었다.
+                    #   실측 발생률(n=7,527): UP 99.7% → 68.6% / DOWN 50.4% → 69.3%
+                    #   — 수정 후 두 방향이 같은 규칙으로 대칭(≈69%)이 된다.
                     _ofi  = (features or {}).get("ofi_norm", 0.0)
-                    _cvd  = (features or {}).get("cvd_direction", 0.0)
+                    _cvd  = (features or {}).get("cvd_delta_norm", 0.0)
                     _feat_agree = (
                         (_d1 == DIRECTION_UP   and (_ofi > 0 or _cvd > 0)) or
                         (_d1 == DIRECTION_DOWN and (_ofi < 0 or _cvd < 0))
