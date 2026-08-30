@@ -31,7 +31,46 @@ from strategy.param_drift_detector import DriftLevel
 logger = logging.getLogger(__name__)
 
 # ─── 설정 상수 ──────────────────────────────────────────────────────────────
-_CORE_FEATURES = ("cvd_divergence", "vwap_position", "ofi_norm")   # CORE 3개 피처 키
+# 🔴 [MW0601 500차 3단계 / 주간회의 결정 2] CORE 정의 통합 —
+#   종전 하드코딩 `("cvd_divergence", "vwap_position", "ofi_norm")` 은
+#   체크리스트 실집행 키와 달랐다(`cvd_delta_norm`·`ofi_pressure`). 즉 PSI 는
+#   **진입 판단에 쓰이지 않는 피처의 분포 변화**를 재고 있었다.
+#   이제 `config/constants.CORE_FEATURES`(= `CORE_FEATURES_BY_GROUP["short"]`
+#   파생)를 단일 출처로 읽는다.
+#
+#   ⚠ 특히 `cvd_divergence` 가 빠지는 것이 중요하다 — 500-B 실측상 그 값의 크기가
+#     **개장 후 경과시간의 함수**(08시 0.617 → 15시 0.022, 28배 단조감소)라,
+#     그 분포로 PSI 를 재면 "시장 구조 변화"가 아니라 **관측 시각대 구성 차이**를
+#     잰다. 371차가 균등폭 bin·라이브버퍼 결함을 고치고도 "cvd_divergence 91%
+#     점질량은 CORE 피처 자체 조사 필요, 이번 범위 밖"으로 남긴 잔여 이슈의 정체다.
+#
+#   🔴 **PSI 기준선 재생성이 필요하다.** 피처 집합이 바뀌었으므로 이전 학습분포와
+#     비교하면 무의미하다. 다음 EOD 재학습이 기준선을 다시 저장할 때까지 PSI 는
+#     신뢰할 수 없다. 안전한 이유: `FP_CRITICAL_GRADE_BLOCK_ENABLED = False` 라
+#     PSI 는 현재 **차단에 관여하지 않는 섀도**다(전환기준 ⑦).
+#   ⚠ 2026-08-30 이전 PSI 시계열과 직접 비교 금지 — 입력 집합이 다르다
+#     (461차 mdd_pct 와 같은 유형의 불연속).
+#
+#   🔴 [MW0602 체리픽 조정] 원본(MW0601)은 `config.constants.CORE_FEATURES` 를 읽는다.
+#     그쪽은 그 상수 자체를 settings 파생으로 바꿨기 때문이다. **이 브랜치는
+#     `settings.CORE_FEATURES_BY_GROUP["short"]` 를 직접 읽는다** — 여기서 constants
+#     를 경유하면, 468차 F-3 이 세운 SHAP 보호 합집합
+#     (`operational_core_names(hz) ∪ CORE_FEATURES`)을 지키려고 레거시로 남겨둔
+#     그 상수를 따라가 PSI 가 다시 `cvd_divergence` 를 재게 된다. 결정 2 의 목적은
+#     "PSI 가 **실집행** CORE 를 잰다"이므로 실집행 정의를 직접 읽는 것이 원의에 맞다.
+#     상세는 `config/constants.py` 의 같은 각주 참조.
+try:
+    from config.settings import CORE_FEATURES_BY_GROUP as _CFBG
+    _CORE_FEATURES = tuple(sorted({v for v in _CFBG["short"].values()
+                                   if isinstance(v, str) and v}))
+    if not _CORE_FEATURES:
+        raise ValueError("CORE_FEATURES_BY_GROUP['short'] 에 피처명이 없다")
+except Exception as _core_e:      # 설정 로드 실패가 PSI 계측을 없애면 안 된다
+    import logging as _lg
+    _lg.getLogger(__name__).warning(
+        "[FP] 운영 CORE 조회 실패(%s) → 폴백 사용 (500차 결정 2 통합이 "
+        "깨졌는지 확인할 것)", _core_e)
+    _CORE_FEATURES = ("cvd_delta_norm", "ofi_pressure", "vwap_position")
 _N_BINS        = 10                                  # PSI 히스토그램 구간 수
 _LIVE_WIN_MINS = 5000                                # Live 버퍼 크기 (≈ 20 거래일 × 250분)
 _EPS           = 1e-6                                # bin 경계 폭 하한(ln(0) 방지용과는 별개)

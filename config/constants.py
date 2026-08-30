@@ -192,6 +192,16 @@ def detect_broker_channel():
 # 새 코드는 `learning/shap/shap_tracker.py:operational_core_names()`처럼
 # **운영 정의를 직접 조회**할 것.
 CORE_FEATURES = ["cvd_divergence", "vwap_position", "ofi_norm"]
+# 🔴 [MW0602 500차 3단계 체리픽 / 결정 2 부분 채택] MW0601 의 500차 3단계는 이 상수를
+#   `CORE_FEATURES_BY_GROUP["short"]` 파생으로 바꿨다. **이 브랜치는 그 변경을
+#   받지 않는다** — 결정 2의 목적(PSI 가 실집행 CORE 를 재게 한다)은
+#   `strategy/regime_fingerprint.py` 를 settings 직독으로 바꿔 달성했고, 여기까지
+#   바꾸면 468차 F-3 이 세운 **보호 합집합이 무너진다**.
+#   `shap_tracker._core_protected = operational_core_names(hz) ∪ CORE_FEATURES` 인데
+#   이 상수가 운영 이름으로 바뀌면 합집합이 운영 3종으로 축소돼, 배포 슬라이스에
+#   아직 남아 있는 `cvd_divergence`·`ofi_norm`(3m)이 SHAP 교체 후보로 떨어진다 —
+#   468차 주석이 "보호를 줄이는 방향의 회귀"라고 명시적으로 막아둔 그 경로다.
+#   ⚠ v9-dev 에는 그 합집합이 없어서 MW0601 쪽에서는 안전한 변경이었다.
 
 # ── 전체 피처 목록 ────────────────────────────────────────────
 SUPPLY_DEMAND_FEATURES = [

@@ -6376,6 +6376,107 @@ MR_WEAK_SIZE_MULT = 0.5  # 약한 MR(0.60~0.70) 사이즈 축소 배수
 # 근거: docs/미륵이고도화2/Phase1_소진복구_2026-07-27.md
 EXHAUSTION_RESTORE_MODE: str = "shadow"   # "shadow" | "live"
 
+# ── [MW0601 500차 3단계 / 주간회의 결정 1] CVD 편향·시계 제거 ──────────────
+# `features/technical/cvd.py` 가 라이브 키와 **나란히** 계산하는 `*_debias` 값을
+# 라이브가 소비할지 여부. `EXHAUSTION_RESTORE_MODE` 와 같은 형태다.
+#
+# 무엇을 고치나 (500-A/B 실측, n=5,289~7,527):
+#   `delta = buy_vol - sell_vol` 의 Cybos buy_vol 편향(buy>sell 98.6%)으로
+#   누적 CVD 가 단조증가 → 파생 정규화가 전부 붕괴한다.
+#     cvd 1.0 고착(98.8%) · cvd_direction 0.5 고착(99.5%) · cvd_slope 음수 0건 ·
+#     |cvd_divergence| 가 개장 후 경과시간의 함수(08시 0.617 → 15시 0.022)
+#   교정: ① delta 를 당일 러닝 평균으로 중심화(편향 제거, 미래참조 없음)
+#         ② slope 분모를 누적 max → 롤링 변동성(sqrt(k)*sd)으로 교체(시계 제거)
+#   ⚠ 정규화만으로는 안 고쳐진다 — (buy-sell)/(buy+sell) 로 바꿔도 98.6%가
+#     여전히 양수라 단조증가가 그대로다.
+#
+# 🔴 **왜 즉시 "live" 가 아닌가**: `cvd_divergence` 는 3m·15m, `cvd_slope` 는 5m
+#   배포 pkl 에 들어 있고(앙상블 가중 합 **0.71**), 그 모델들은 **구 분포로**
+#   학습돼 있다. 계산만 바꾸면 EOD 재학습 전까지 학습/추론 분포가 어긋난다.
+#   332차·337차의 shape mismatch 와 같은 계열의 사고다.
+#
+# live 전환 조건 (사전등록):
+#   ⓐ `*_debias` 가 20거래일 이상 라이브 적재되고 `debias_measured` 결손 없음
+#   ⓑ 시계 오염이 실제로 사라졌는지 확인 — SOP §2 D형 판정식
+#      (같은 hh:mm 날짜간 sd / 전체 sd)이 0.05 를 넉넉히 넘을 것
+#      (구값: cvd 0.020 · cvd_slope/cvd_divergence 0.125)
+#   ⓒ 교정값을 포함한 EOD 재학습 1회 이상 완료 — 분포 정합
+#   ⓓ L1 일자단위 IC 가 구 경로 대비 나쁘지 않을 것
+# 근거: dev_memory/DECISION_LOG.md 2026-08-30(500-A·500-B·500-F 결정 1)
+CVD_DEBIAS_MODE: str = "shadow"   # "shadow" | "live"
+
+# ── [MW0601 500차 3단계 / 주간회의 결정 3] 97 슈퍼셋 폐기 예정 등록 ────────
+# `model/horizons/feature_names.pkl` 의 97개 동결 슈퍼셋은 ① `X_hz` 구성
+# ② **스케일러 fit** 에 쓰인다(GBM 은 호라이즌별 8~13개만 학습 —
+# `batch_retrainer.py:2011-2035`). 아래 컬럼들은 500차 실측에서 정보가 없거나
+# 중복이거나 시계를 흘리는 것으로 확인됐다.
+#
+# 🔴 **지금 삭제하지 않는다.** 슈퍼셋에서 컬럼을 빼면 스케일러 shape 가 바뀌어
+#   배포 모델과 어긋난다(332차·337차 전례, CLAUDE.md §3 이 명시적으로 경고).
+#   실제 제거는 **P2-B 피처 온보딩 경로**에서 전 호라이즌 재학습과 함께 한다.
+#   이번 등록의 목적은 두 가지뿐이다:
+#     ⓐ 왜 남아 있는지를 기록에 남긴다 — 다음 세션이 재조사하지 않도록
+#     ⓑ 슈퍼셋을 다시 만들 때 이것들이 **되돌아오지 않게** 한다
+#        (`batch_retrainer._save_feature_names()` 가 저장 시점에 경고를 찍는다)
+#
+# ⚠ `ofi_pressure` 는 `sign(ofi_norm)` 항등식이지만 **여기 없다** — 단기 그룹
+#   CORE 체크리스트의 실집행 키다(결정 2). 중복이라고 지우면 진입 게이트가 깨진다.
+FEATURE_SUPERSET_DEPRECATED = {
+    "cvd": {
+        "reason": "buy_vol 편향 → cvd_norm 1.0 고착(최빈 98.8%). L0 CRITICAL",
+        "in_gbm": [],          # 배포 호라이즌 pkl 소속 — 없으면 스케일러 전용
+        "evidence": "500-A (n=5,289) · L0 전수(n=7,527)",
+    },
+    "cvd_direction": {
+        "reason": "같은 편향 파생 → 0.5 고착(99.5%), -0.5 0건. L0 CRITICAL",
+        "in_gbm": [],
+        "evidence": "500-A",
+    },
+    "cvd_slope": {
+        "reason": "음수 0건(부호 소실) + 크기가 개장 후 경과시간의 함수(D형 0.125)",
+        "in_gbm": ["5m"],      # 🔴 배포 중 — 제거는 5m 재학습과 동시에만
+        "evidence": "500-A · 500-B",
+    },
+    "cvd_divergence": {
+        "reason": "다이버전스가 아니다 — 부호 = -sign(price_slope_10m) 99.92%, "
+                  "크기 = 시각 함수. |cvd_divergence| ≡ min(cvd_slope,1) 5,289/5,289",
+        "in_gbm": ["3m", "15m"],   # 🔴 배포 중 (앙상블 가중 0.13+0.28)
+        "evidence": "500-A · 500-B",
+    },
+    "ofi_imbalance": {
+        "reason": "ofi_imbalance ≡ round(ofi_norm/3, 3) 항등식 5,289/5,289 — "
+                  "ofi_norm 이 이미 ±3 클립이라 clip(±1) 은 무동작",
+        "in_gbm": [],
+        "evidence": "500-C",
+    },
+    "cvd_exhaustion": {
+        "reason": "bear_exhaustion 별칭(deprecated) · L0 DEAD",
+        "in_gbm": [],
+        "evidence": "L0 전수 · KNOWN 등재",
+    },
+    "cvd_exhaustion_signal": {
+        "reason": "bear_exhaustion_signal 별칭(deprecated) · L0 DEAD",
+        "in_gbm": [],
+        "evidence": "L0 전수 · KNOWN 등재",
+    },
+    "macro_risk_off": {
+        "reason": "2026-06-25 CORE 해제 후 전 호라이즌 미포함. L0 DEAD(분산 0) — "
+                  "'계산은 유지' 결정과 상수 0 이 모순",
+        "in_gbm": [],
+        "evidence": "L0 전수(n=7,527) · 500차 갈래 C",
+    },
+    "program_institution_net_krw": {
+        "reason": "원천 TR(CpSvr8111) 미제공 — 451차 폐기 집행, 과거 행 잔재",
+        "in_gbm": [],
+        "evidence": "451차 · L0 DEAD",
+    },
+    "program_individual_net_krw": {
+        "reason": "원천 TR(CpSvr8111) 미제공 — 451차 폐기 집행, 과거 행 잔재",
+        "in_gbm": [],
+        "evidence": "451차 · L0 DEAD",
+    },
+}
+
 # ── SHAP 동적 피처 관리 ────────────────────────────────────────
 SHAP_COOLDOWN_DAYS = 3  # 교체 후 재교체 금지
 SHAP_MAX_REPLACE_DAILY = 1  # 하루 최대 교체 수

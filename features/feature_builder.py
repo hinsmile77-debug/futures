@@ -41,6 +41,14 @@ micro_log = logging.getLogger("MICRO")
 # [394차] 소진 교정값을 라이브 키에 반영할지 여부. 기본 False(섀도 관측만).
 _EXHAUSTION_LIVE = str(EXHAUSTION_RESTORE_MODE).lower() == "live"
 
+# [MW0601 500차 3단계 / 결정 1] CVD 편향·시계 제거값을 라이브 키에 반영할지 여부.
+# 기본 False(섀도 관측만) — 상세와 live 전환 조건은 config/settings.py 동 상수 주석.
+try:
+    from config.settings import CVD_DEBIAS_MODE as _CVD_DEBIAS_MODE
+except Exception:
+    _CVD_DEBIAS_MODE = "shadow"
+_CVD_DEBIAS_LIVE = str(_CVD_DEBIAS_MODE).lower() == "live"
+
 
 class FeatureBuilder:
     """Assemble per-minute model features from bars and intraminute hoga updates."""
@@ -210,6 +218,20 @@ class FeatureBuilder:
             # 위 네 값이 0.0 일 때 "측정했더니 0"인지 "아직 못 쟀다"인지를
             # 이 플래그로만 구분할 수 있다. 매 거래일 개장 직후 2분이 여기다.
             features["cvd_measured"]    = 1.0 if cvd_result.get("measured") else 0.0
+
+            # [MW0601 500차 3단계 / 결정 1] 편향·시계 제거 섀도 — 항상 기록한다.
+            # 계산만 하고 아무도 소비하지 않으면 TOX 죽은 섀도(한 달 무배선)와
+            # 같은 상태가 된다. 소비 여부는 CVD_DEBIAS_MODE 가 정한다.
+            features["cvd_slope_debias"]      = float(cvd_result.get("cvd_slope_debias", 0.0))
+            features["cvd_divergence_debias"] = float(cvd_result.get("cvd_divergence_debias", 0.0))
+            features["cvd_direction_debias"]  = float(cvd_result.get("cvd_direction_debias", 0)) * 0.5
+            features["cvd_debias_measured"]   = 1.0 if cvd_result.get("debias_measured") else 0.0
+            if _CVD_DEBIAS_LIVE and cvd_result.get("debias_measured"):
+                # live 전환 시에만 라이브 키를 덮어쓴다. 섀도 키는 그대로 남겨
+                # 전환 전후 대조가 끊기지 않게 한다(461차 mdd_pct 교훈).
+                features["cvd_slope"]      = features["cvd_slope_debias"]
+                features["cvd_divergence"] = features["cvd_divergence_debias"]
+                features["cvd_direction"]  = features["cvd_direction_debias"]
             self._core_fail_streak["cvd"] = 0
             self._core_fail_notified["cvd"] = False
         except Exception as _exc:
@@ -224,7 +246,11 @@ class FeatureBuilder:
                     self._on_core_fail("CVD", streak)
             features.update({"cvd_divergence": 0.0, "cvd_direction": 0.0,
                              "cvd": 0.0, "cvd_slope": 0.0,
-                             "cvd_measured": 0.0})
+                             "cvd_measured": 0.0,
+                             "cvd_slope_debias": 0.0,
+                             "cvd_divergence_debias": 0.0,
+                             "cvd_direction_debias": 0.0,
+                             "cvd_debias_measured": 0.0})
 
         # CVD 모노톤 비율 — 최근 20구간 중 CVD가 증가한 비율 (0.0~1.0)
         # GBM 장기 학습용: 추세 지속성을 포인트 스냅샷이 아닌 시계열로 표현

@@ -13,9 +13,33 @@ CVD (Cumulative Volume Delta) 다이버전스
   CVD_t = CVD_{t-1} + tick_delta
   divergence = price_direction != cvd_direction (최근 N분)
 """
+import math
 import numpy as np
 from collections import deque
 from typing import Tuple
+
+# ── [MW0601 500차 3단계 / 주간회의 결정 1] 편향·시계 제거 섀도 ────────────
+# 아래 상수는 `compute()`가 라이브 키와 **나란히** 계산하는 `*_debias` 값의
+# 파라미터다. 라이브 경로에는 영향이 없다(모드가 "live"가 되기 전까지).
+#
+# 무엇을 고치나 — 500-A/B 실측:
+#   `delta = buy_vol - sell_vol` 의 Cybos buy_vol 편향(buy>sell 98.6%)으로
+#   누적 CVD 가 **단조증가**하고, 그러면 파생 정규화가 전부 붕괴한다.
+#     · cvd_norm = C_t/max|C| → C_t 가 곧 max → **1.0 고착(98.8%)**
+#     · cvd_slope_norm = (C_t - C_{t-9})/max|C| → 분모가 하루 종일 커져
+#       **개장 후 경과시간의 함수**(08시 0.617 → 15시 0.022, 28배 단조감소)
+#     · direction 항상 +1 → cvd_direction 0.5 고착(99.5%)
+#
+# 🔴 **정규화만으로는 안 고쳐진다.** `(buy-sell)/(buy+sell)` 로 바꿔도 98.6%가
+#    여전히 양수라 단조증가가 그대로다. 두 가지를 함께 고쳐야 한다:
+#    ① **편향 제거** — delta 에서 당일 러닝 평균을 뺀다(중심화). 미래참조 없음.
+#       중심화된 delta 의 누적은 구성상 드리프트가 없다.
+#    ② **시계 제거** — slope 정규화 분모를 "누적 max" 가 아니라 **롤링 변동성**
+#       으로 바꾼다. cvd_slope 는 결국 최근 window 개 delta 의 합이므로,
+#       sqrt(window)*std(delta_c) 로 나누면 z 스케일이 되고 시각 의존이 사라진다.
+_DEBIAS_SCALE_WIN = 60     # 롤링 변동성 추정 창(분) — 약 1시간
+_DEBIAS_MIN_OBS   = 10     # 이 미만이면 스케일을 못 재므로 measured=False
+_DEBIAS_CLIP      = 3.0    # z 클립 후 /3 → [-1, +1] (라이브 키와 같은 사거리)
 
 
 class CVDCalculator:
@@ -30,6 +54,13 @@ class CVDCalculator:
         self._cvd_buf   = deque(maxlen=window)
         self._price_buf = deque(maxlen=window)
         self._cumulative_cvd = 0.0
+
+        # [500차 3단계 / 결정 1] 편향·시계 제거 섀도 상태 — 라이브와 독립
+        self._delta_n      = 0        # 당일 delta 관측 수
+        self._delta_sum    = 0.0      # 당일 delta 합 (러닝 평균용)
+        self._delta_c_buf  = deque(maxlen=_DEBIAS_SCALE_WIN)  # 중심화 delta
+        self._cvd_c        = 0.0      # 중심화 누적 CVD
+        self._cvd_c_buf    = deque(maxlen=window)
 
     def update(self, price: float, qty: int, prev_price: float) -> dict:
         """
@@ -73,6 +104,18 @@ class CVDCalculator:
         self._cvd_buf.append(self._cumulative_cvd)
         self._price_buf.append(close)
 
+        # [500차 3단계 / 결정 1] 편향 제거 — 당일 러닝 평균 대비 중심화.
+        # 평균은 **직전까지의 관측**으로만 만든다(현재 delta 를 자기 자신의
+        # 기준선에 넣으면 첫 봉이 항상 0 이 되고 신호가 스스로를 지운다).
+        # 미래참조 없음.
+        _mean_prev = (self._delta_sum / self._delta_n) if self._delta_n else 0.0
+        delta_c = delta - _mean_prev
+        self._delta_n   += 1
+        self._delta_sum += delta
+        self._delta_c_buf.append(delta_c)
+        self._cvd_c += delta_c
+        self._cvd_c_buf.append(self._cvd_c)
+
         return self.compute()
 
     def compute(self) -> dict:
@@ -96,6 +139,12 @@ class CVDCalculator:
                 "cvd_slope_norm": 0.0,
                 "measured": False,
                 "warmup_bars": n,
+                # 워밍업 구간에도 키를 남긴다 — 그 분봉만 컬럼이 사라지면
+                # "미측정"이 다시 안 보인다(계측 4원칙 ②·③).
+                "cvd_slope_debias": 0.0,
+                "cvd_divergence_debias": 0.0,
+                "cvd_direction_debias": 0,
+                "debias_measured": False,
             }
 
         prices = list(self._price_buf)
@@ -122,7 +171,7 @@ class CVDCalculator:
         # CVD 방향 (단순)
         direction = 1 if cvd_slope > 0 else (-1 if cvd_slope < 0 else 0)
 
-        return {
+        out = {
             "cvd":              round(self._cumulative_cvd, 2),
             "cvd_norm":         round(cvd_norm, 4),
             "delta":            round(cvds[-1] - cvds[-2] if n >= 2 else 0, 2),
@@ -135,9 +184,56 @@ class CVDCalculator:
             "measured":         True,
             "warmup_bars":      n,
         }
+        out.update(self._debias_block(price_slope))
+        return out
+
+    def _debias_block(self, price_slope: float) -> dict:
+        """[500차 3단계 / 결정 1] 편향·시계 제거 섀도 값.
+
+        라이브 키와 **나란히** 계산해 `*_debias` 로 내보낸다. 소비는 하지 않는다
+        (`CVD_DEBIAS_MODE` 가 "live" 가 되기 전까지) — 배포 pkl(3m·5m·15m)이 구
+        분포로 학습돼 있어 즉시 전환하면 재학습 전까지 분포 불일치가 생긴다.
+        `EXHAUSTION_RESTORE_MODE` 선례와 같은 방식.
+
+        ⚠ 계산만 하고 아무도 안 보면 TOX 죽은 섀도가 된다 — `feature_builder` 가
+          `raw_features` 에 기록하고, `*_measured` 로 워밍업을 구분한다.
+        """
+        m = len(self._delta_c_buf)
+        n_c = len(self._cvd_c_buf)
+        if m < _DEBIAS_MIN_OBS or n_c < 3:
+            return {"cvd_slope_debias": 0.0, "cvd_divergence_debias": 0.0,
+                    "cvd_direction_debias": 0, "debias_measured": False}
+        vals = list(self._delta_c_buf)
+        mu = sum(vals) / float(m)
+        var = sum((x - mu) ** 2 for x in vals) / float(m)
+        sd = math.sqrt(var)
+        # cvd_slope 는 결국 최근 (n_c-1) 개 delta 의 합이므로 그 합의 표준편차는
+        # sqrt(k)*sd 다. 그것으로 나누면 시각 의존이 사라진 z 스케일이 된다.
+        k = max(n_c - 1, 1)
+        denom = sd * math.sqrt(k)
+        if denom <= 1e-9:
+            # 진짜 무변동 — 0 과 구분되게 measured=False 로 둔다(계측 4원칙 ②)
+            return {"cvd_slope_debias": 0.0, "cvd_divergence_debias": 0.0,
+                    "cvd_direction_debias": 0, "debias_measured": False}
+        slope_c = self._cvd_c_buf[-1] - self._cvd_c_buf[0]
+        z = max(-_DEBIAS_CLIP, min(_DEBIAS_CLIP, slope_c / denom)) / _DEBIAS_CLIP
+        # 다이버전스 — **양쪽 분기가 다 살아 있다**(구 경로는 한쪽이 도달 불가였다)
+        diverg = (price_slope > 0 and slope_c < 0) or (price_slope < 0 and slope_c > 0)
+        return {
+            "cvd_slope_debias":     round(z, 4),
+            "cvd_divergence_debias": round(-abs(z) if diverg else abs(z), 4),
+            "cvd_direction_debias": 1 if slope_c > 0 else (-1 if slope_c < 0 else 0),
+            "debias_measured":      True,
+        }
 
     def reset_daily(self):
         """일일 리셋 (장 시작 시 호출)"""
         self._cumulative_cvd = 0.0
         self._cvd_buf.clear()
         self._price_buf.clear()
+        # [500차 3단계] 편향 제거 기준선은 **당일** 러닝 평균이므로 함께 리셋한다
+        self._delta_n   = 0
+        self._delta_sum = 0.0
+        self._delta_c_buf.clear()
+        self._cvd_c     = 0.0
+        self._cvd_c_buf.clear()
