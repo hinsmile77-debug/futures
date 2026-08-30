@@ -206,6 +206,10 @@ class FeatureBuilder:
             # cvd/cvd_slope 절대값 → 일중 max 대비 정규화값으로 교체 (Phase 3-A)
             features["cvd"]             = float(cvd_result.get("cvd_norm", 0.0))
             features["cvd_slope"]       = float(cvd_result.get("cvd_slope_norm", 0.0))
+            # [MW0601 500차 2단계] 워밍업(n<3) 폴백 가시화 — 계측 4원칙 ②·④.
+            # 위 네 값이 0.0 일 때 "측정했더니 0"인지 "아직 못 쟀다"인지를
+            # 이 플래그로만 구분할 수 있다. 매 거래일 개장 직후 2분이 여기다.
+            features["cvd_measured"]    = 1.0 if cvd_result.get("measured") else 0.0
             self._core_fail_streak["cvd"] = 0
             self._core_fail_notified["cvd"] = False
         except Exception as _exc:
@@ -219,7 +223,8 @@ class FeatureBuilder:
                 if callable(self._on_core_fail):
                     self._on_core_fail("CVD", streak)
             features.update({"cvd_divergence": 0.0, "cvd_direction": 0.0,
-                             "cvd": 0.0, "cvd_slope": 0.0})
+                             "cvd": 0.0, "cvd_slope": 0.0,
+                             "cvd_measured": 0.0})
 
         # CVD 모노톤 비율 — 최근 20구간 중 CVD가 증가한 비율 (0.0~1.0)
         # GBM 장기 학습용: 추세 지속성을 포인트 스냅샷이 아닌 시계열로 표현
@@ -388,6 +393,10 @@ class FeatureBuilder:
         # VPIN — update_tick()이 매 체결 틱마다 누적한 값을 그대로 읽기만 함(버킷 미완성 시
         # 직전 완성 버킷값 유지, bucket_size=1000계약 미달 시 0.0).
         features["vpin"] = float(self.vpin_calc.get_current_vpin())
+        # [MW0601 500차 2단계] 워밍업(<10버킷) 폴백 가시화 — 계측 4원칙 ②·④.
+        # `vpin=0.0` 이 "무독성"인지 "아직 못 쟀다"인지는 이 플래그로만 갈린다.
+        # 실측 zero 6.3%(n=7,527)가 대체로 개장 직후 워밍업 구간이다.
+        features["vpin_measured"] = 1.0 if self.vpin_calc.is_measured() else 0.0
 
         # Kyle's Lambda — 분봉 단위(close·buy_vol·sell_vol)만으로 계산, 틱 배선 불필요.
         # 틱 사이즈로 정규화(브로커·미니/일반선물 tick_size 차이 흡수) 후 안전 클리핑.

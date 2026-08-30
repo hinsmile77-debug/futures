@@ -48,6 +48,10 @@ class VPINCalculator:
         # 이전 틱 가격 (틱 규칙용)
         self._prev_price: Optional[float] = None
 
+        # [500차 2단계] 직전 VPIN 이 실측인가(워밍업 폴백이 아닌가).
+        # getattr 폴백으로 읽지 않고 여기서 명시 초기화한다 — 계측 4원칙 ④.
+        self._measured: bool = False
+
     def update_tick(self, price: float, volume: float, is_buy: Optional[bool] = None) -> Optional[dict]:
         """
         체결 틱 업데이트
@@ -95,11 +99,17 @@ class VPINCalculator:
         self._bucket_buf.append(imbalance)
 
         # VPIN
-        if len(self._bucket_buf) >= 10:
+        # [MW0601 500차 2단계] 워밍업(<10버킷) 폴백을 드러낸다(계측 4원칙 ②·④).
+        # 종전 0.0 은 "측정했더니 무독성"과 구분되지 않았다 — 실측 zero 6.3%
+        # (n=7,527)가 이 구간이고, `vpin` 의 시각축 비율 0.479(개장 워밍업
+        # 성분)도 여기서 온다. 값은 0.0 을 유지하되 measured 를 동반한다.
+        measured = len(self._bucket_buf) >= 10
+        if measured:
             vpin = float(np.mean(list(self._bucket_buf))) / (self.bucket_size + 1e-9)
             vpin = float(np.clip(vpin, 0.0, 1.0))
         else:
             vpin = 0.0
+        self._measured = measured
 
         self._vpin_history.append(vpin)
 
@@ -131,13 +141,28 @@ class VPINCalculator:
             "signal_level":  signal_level,
             "alert":         alert,
             "bucket_count":  len(self._bucket_buf),
+            "measured":      measured,
         }
 
     def get_current_vpin(self) -> float:
-        """가장 최근 VPIN 값 반환 (버킷 미완성 시에도)"""
+        """가장 최근 VPIN 값 반환 (버킷 미완성 시에도)
+
+        ⚠ 반환 0.0 은 **두 가지**를 뜻할 수 있다 — ① 버킷이 아직 안 찼다(워밍업)
+        ② 실제로 무독성. 구분하려면 `is_measured()` 를 함께 읽을 것
+        (계측 4원칙 ② — 500차 2단계).
+        """
         if not self._vpin_history:
             return 0.0
         return float(self._vpin_history[-1])
+
+    def is_measured(self) -> bool:
+        """직전 VPIN 이 실제 측정값인가(워밍업 폴백이 아닌가).
+
+        `BUCKET_COUNT` 이동평균이 최소 10버킷을 요구하므로, 개장 직후와 일간
+        리셋 직후에는 버킷이 찰 때까지 `vpin=0.0` 폴백이 나간다. 실측
+        (n=7,527, 2026-07-31~08-28) zero 6.3% 가 대체로 이 구간이다.
+        """
+        return bool(self._measured and self._vpin_history)
 
     def reset_daily(self):
         self._bucket_vol_buy  = 0.0
@@ -146,6 +171,7 @@ class VPINCalculator:
         self._bucket_buf.clear()
         self._vpin_history.clear()
         self._prev_price      = None
+        self._measured        = False
 
 
 if __name__ == "__main__":
