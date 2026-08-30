@@ -34460,3 +34460,79 @@ actually_read_archives`가 자기 신고를 검증하므로 실제로 zip을 읽
 **검증**: `tests/test_504_pnl_history_creon_tab.py` **29/29** · pytest 41 passed ·
 회귀 5종(`dashboard_smoke`·`477_f4`·`477_gr3`·`497_pnl_axis`·`457_fallback`) OK ·
 `ui_prefs.json` 무결. **라이브 매매 상수 무변경** — 표시 계층만 바뀌었다.
+
+---
+
+## 2026-08-31 (MW0601 504차 후속 — 기동 패널 복원 4단계 체인이 한 번도 실행된 적이 없었다)
+
+**계기**: 504차로 붙인 손익추이2 탭에 데이터가 안 올라온다는 사용자 지적.
+조사해 보니 **신규 결함이 아니라 기동 경로의 잠복 결함**이었고, 막혀 있던 것은
+손익추이2 하나가 아니라 **패널 4종 전부**였다.
+
+### 🔴 근본 원인 — 워커 스레드에서 예약한 QTimer는 발화하지 않는다
+
+`_restore_panels_bg()`가 `threading.Thread`로 띄운 **워커 스레드** 안에서
+`_QTimer.singleShot(0, _stage1)`로 4단계 체인을 시작하고 있었다. 타이머는
+**호출한 스레드에 붙는데** 그 스레드에는 Qt 이벤트 루프가 없다 — 그래서
+`_stage1`이 한 번도 발화하지 않았다.
+
+환경에서 직접 재현했다(PyQt5 / py37_32):
+
+```
+메인 스레드에서 singleShot 예약 → 발화 True
+워커 스레드에서 singleShot 예약 → 발화 False
+```
+
+### 지문은 로그에 그대로 있었다 — 아무도 안 봤을 뿐이다
+
+```
+[LiveDBG] _apply 시작 (4단계 체인)      ← 매 기동마다 찍힌다
+[LiveDBG] _apply update_learning …ms    ← 전 기간 로그에 단 한 줄도 없다
+[LiveDBG] _apply update_efficacy …ms    ← 없다
+[LiveDBG] _apply update_trend …ms       ← 없다
+[LiveDBG] _apply pnl_history …ms        ← 없다
+```
+
+⇒ **기동 시 자가학습·효과검증·추이·손익추이 4개 패널이 복원된 적이 없다.**
+거래일에는 이후 이벤트 구동 갱신(`_record_trade_result`·`daily_close`·청산 콜백 등)이
+채워줘서 드러나지 않았고, **거래가 없는 날에만** 빈 화면으로 보였다.
+게다가 각 단계의 예외는 `logger.debug`로 삼켜져 흔적조차 남지 않는다 —
+"시작 로그는 있는데 완료 로그가 없다"가 유일한 단서였다.
+
+⚠ FP-CRITICAL 죽은 게이트(2개월 PSI=0.0)·TOX 죽은 섀도(한 달)와 **같은 계열**이다.
+코드는 있는데 실행되지 않고, 실행되지 않는다는 사실이 어디에도 안 뜬다.
+
+### 조치 — 새 기전을 만들지 않는다
+
+`system._dashboard_call(_stage1)`로 바꿨다. 304차 후속(0708 access violation
+크래시 루프)이 만들고 490차 F-L(0824 GIL 데드락)이 helper로 감싼 **그 통로를
+그대로 재사용**한다. `_stage1`이 메인 스레드에서 돌기 시작하면 그 안의
+`singleShot(10, _stage2)`는 정상 동작하므로 **체인 시작 한 줄만** 바뀐다
+(단계 사이 10ms 양보 구조도 그대로 — 14.8초 블로킹 회피 취지 보존).
+
+### 라이브 검증 — 같은 로그 파일 안에서 before/after 대조
+
+```
+00:42:25  _apply 시작            (그 뒤 없음)   ← 수정 전
+01:25:43  _apply 시작            (그 뒤 없음)   ← 수정 전
+01:35:39  _apply 시작
+01:35:39  _apply update_learning   0ms          ← 수정 후, 처음 찍힘
+01:35:39  _apply update_efficacy   0ms
+01:35:40  _apply update_trend     32ms
+01:35:40  _apply pnl_history      47ms 총422ms
+```
+
+오류 0건(`pnl_history_refresh`·Traceback·CRITICAL 없음), 총 422ms로 메인 스레드
+블로킹 없음, 하트비트 정상(`beat_age_sec=0.4`, `strikes=0`).
+
+### 회귀 고정
+
+`tests/test_504_startup_panel_restore_thread.py` 5건 — 워커 스레드에서 시작해도
+4단계 전부 실행 / 순서 유지 / **GUI 갱신이 메인 스레드에서 일어남**(304차·490차
+사고 유형) / 체인 시작이 다시 워커 타이머로 돌아가지 않음(AST 성격의 소스 검사) /
+**"워커 타이머는 발화하지 않는다"는 전제 자체**도 고정 — PyQt 동작이 바뀌면 그
+테스트가 깨져 이 항목이 낡았음을 알린다.
+
+⚠ **`logger.debug`로 예외를 삼키는 구조는 이번에 건드리지 않았다.** 그 자체가
+같은 사고를 또 숨길 수 있으므로 별도 안건으로 남긴다(`_stage1~4`·
+`restore_panels_from_history` 4곳).
