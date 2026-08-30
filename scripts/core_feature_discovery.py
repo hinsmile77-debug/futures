@@ -183,6 +183,12 @@ def build_matrix(feats, verbose=True):
         "dropped": sorted(dropped),
         "total_rows": n,
         "total_days": total_days,
+        # [500차 4단계] 구성적 중복 검사는 **탈락분까지** 봐야 한다.
+        # 사전필터(고유값>=20)가 떨어뜨리는 저해상도 피처가 바로 부호형
+        # 중복이 사는 곳이다 — `ofi_pressure ≡ sign(ofi_norm)` 이 그 예다.
+        # 통과 피처만 보면 그 항등식이 영원히 안 보인다(advisory 전용 저장).
+        "all_names": list(names),
+        "all_X": X,
     })
     if verbose:
         print_screening_report()
@@ -328,6 +334,133 @@ NOISE_N_SHUFFLE = 12
 NOISE_N_PHASE = 8
 
 
+# ── [MW0601 500차 4단계 / SOP §3] 구성적 중복 (constructive duplication) ────
+#
+# 🔴 **선형 상관은 결정론적 파생을 놓친다.** 2026-08-30 실측(n=7,527):
+#
+#     ofi_imbalance ≡ round(ofi_norm/3, 3)   |r| = 0.9999  → 아래 find_dup_groups 가 잡음
+#     ofi_pressure  ≡ sign(ofi_norm)         |r| = 0.4967  → 🔴 놓친다
+#     |cvd_divergence| ≡ min(cvd_slope, 1)   |r| = 0.0262  → 🔴 놓친다
+#
+#   뒤의 둘은 **5,289/5,289 정확 일치하는 항등식**인데 Pearson 으로는 각각 0.50,
+#   0.03 이다. 부호 함수·절대값 같은 비선형 파생은 상관이 낮게 나오기 때문이다.
+#   이걸 못 잡으면 같은 신호를 독립 신호 여러 개로 세게 되고, 계열 검정의
+#   **유효 자유도가 무너진다**(SOP §1 오측정 #9 — 수급 5피처를 5개로 세어
+#   판정 미달 p=0.1426 을 자초한 그 사례).
+#
+# ⚠ **표기 전용 — 판정에 절대 관여하지 않는다**(n_tests 에 안 들어간다).
+#   노이즈 하한선·중복 군집과 같은 취급이며 `--no-dup` 으로 함께 꺼진다.
+#
+# 검사하는 관계 4종 — 전부 "소스 5줄이면 아는 것"을 데이터로 되짚는 것이다:
+#   scale  b == k*a  (상수 k, 반올림 허용)   ← ofi_imbalance
+#   sign   b == sign(a)                      ← ofi_pressure
+#   abs    |b| == |a| 또는 min(|a|, cap)     ← cvd_divergence ~ cvd_slope
+#   round  b == round(a, d)
+_CONSTRUCT_MIN_PAIRS = 200
+_CONSTRUCT_TOL = 1.5e-3      # 반올림 자릿수(3~4자리) 를 흡수하는 허용오차
+_CONSTRUCT_PREFILTER_R = 0.90  # a·|a|·sign(a) 중 하나라도 이 이상이면 정밀검사
+
+
+def _exact_relation(a, b):
+    """b 가 a 의 결정론적 파생인가. 관계 이름 또는 None."""
+    n = len(a)
+    if n < _CONSTRUCT_MIN_PAIRS:
+        return None
+    tol = _CONSTRUCT_TOL
+    # sign — a 가 0 인 행은 반올림 경계라 제외하고 본다(그 비율도 함께 본다)
+    nz = np.abs(a) > 1e-12
+    if int(nz.sum()) >= _CONSTRUCT_MIN_PAIRS:
+        if np.all(np.abs(np.sign(a[nz]) - b[nz]) <= tol):
+            return "sign"
+    # scale — 중앙값 비율로 k 를 잡고 전 행이 맞는지 확인
+    if int(nz.sum()) >= _CONSTRUCT_MIN_PAIRS:
+        k = float(np.median(b[nz] / a[nz]))
+        if abs(k) > 1e-9 and np.all(np.abs(b - k * a) <= tol + tol * np.abs(a)):
+            return "scale(k=%.6g)" % k
+    # abs — 크기가 같다(부호만 다름). 상한 클립도 함께 본다.
+    aa, ab = np.abs(a), np.abs(b)
+    if np.all(np.abs(ab - aa) <= tol):
+        return "abs"
+    cap = float(np.max(ab))
+    if cap > 0 and np.all(np.abs(ab - np.minimum(aa, cap)) <= tol):
+        return "abs(cap=%.4g)" % cap
+    # round
+    for d in (1, 2, 3, 4):
+        if np.all(np.abs(np.round(a, d) - b) <= 1e-9):
+            return "round(%d)" % d
+    return None
+
+
+def _is_status_flag(name):
+    """상태·가용성 플래그인가 — 구성적 중복 검사에서 **대상**으로 제외한다.
+
+    `opt_atm_pcr → opt_chain_available (sign)` 같은 관계는 "값이 있으면 가용
+    플래그가 1"이라는 **구조상 당연한** 것이지 정보 중복이 아니다. 걸러내지 않으면
+    2026-08-30 실측에서 50쌍이 쏟아져(의미 있는 것은 그중 일부) 경보 피로로
+    진짜 중복이 묻힌다 — 0802 계획 Phase A 확정사항 4번이 지적한 그 실패다.
+    판정 기준은 `feature_health_report.is_benign_flag` 와 같은 출처를 쓴다.
+    """
+    try:
+        from scripts.feature_health_report import is_benign_flag
+        return is_benign_flag(name)
+    except Exception:
+        return (name.startswith(("is_", "quality_", "opt_available",
+                                 "opt_chain_available"))
+                or name.endswith(("_ready", "_available", "_measured")))
+
+
+def find_constructive_dups(names, X):
+    """결정론적 파생 쌍을 찾는다 (표기 전용).
+
+    선형 상관(find_dup_groups)이 놓치는 비선형 항등식을 잡는다. 위 주석의
+    실측 근거 참조. 반환: [(a, b, 관계이름), ...]
+    """
+    n = len(names)
+    out = []
+    # 사전필터 — a · |a| · sign(a) 세 변환 중 하나라도 상관이 높은 쌍만 정밀검사.
+    # O(n^2) 정밀검사를 전 쌍에 돌리면 월간 실행이라도 느리다.
+    cols = []
+    for j in range(n):
+        v = X[:, j]
+        cols.append((v, np.abs(v), np.sign(v)))
+    for i in range(n):
+        ai = X[:, i]
+        fi = np.isfinite(ai)
+        for j in range(n):
+            if i == j or _is_status_flag(names[j]):
+                continue
+            bj = X[:, j]
+            m = fi & np.isfinite(bj)
+            if int(m.sum()) < _CONSTRUCT_MIN_PAIRS:
+                continue
+            a, b = ai[m], bj[m]
+            if np.std(a) < 1e-12 or np.std(b) < 1e-12:
+                continue
+            # 사전필터 — a 쪽 변환(원값·절대값·부호)을 b **와 |b| 양쪽**에 대본다.
+            # ⚠ |b| 를 빠뜨리면 "크기 → 부호있는 값" 방향의 abs 관계를 놓친다.
+            #   실데이터에서는 (cvd_divergence → cvd_slope) 처럼 부호있는 쪽이 a 라
+            #   우연히 잡혔지만, a·b 가 뒤집히면 조용히 안 잡힌다(500차 4단계 C3).
+            hit = False
+            for vb in (b, np.abs(b)):
+                if np.std(vb) < 1e-12:
+                    continue
+                for va in (a, np.abs(a), np.sign(a)):
+                    if np.std(va) < 1e-12:
+                        continue
+                    r = np.corrcoef(va, vb)[0, 1]
+                    if np.isfinite(r) and abs(r) >= _CONSTRUCT_PREFILTER_R:
+                        hit = True
+                        break
+                if hit:
+                    break
+            if not hit:
+                continue
+            rel = _exact_relation(a, b)
+            if rel:
+                out.append((names[i], names[j], rel))
+    return out
+
+
 def find_dup_groups(names, X, thr=DUP_R_THRESHOLD, min_pairs=200):
     """|r| >= thr 인 피처를 군집으로 묶는다 (표기 전용).
 
@@ -431,6 +564,68 @@ def main():
     elif not args.no_dup:
         print()
         print("[중복] |r|>=%.2f 군집 없음" % DUP_R_THRESHOLD)
+
+    # ── 구성적 중복 (결정론적 파생) — [500차 4단계 / SOP §3] ─────
+    # 위 선형 상관이 **놓치는** 항등식을 잡는다. 실측 근거:
+    #   ofi_pressure ≡ sign(ofi_norm)        |r|=0.4967  ← 위에서 못 잡음
+    #   |cvd_divergence| ≡ min(cvd_slope,1)  |r|=0.0262  ← 위에서 못 잡음
+    # 둘 다 5,289/5,289 정확 일치하는 항등식이다.
+    if not args.no_dup:
+        # 탈락분 포함 전수 — 사전필터가 부호형 중복을 숨긴다(위 주석 참조)
+        _an = LAST_SCREENING_REPORT.get("all_names") or names
+        _aX = LAST_SCREENING_REPORT.get("all_X")
+        cons = find_constructive_dups(_an, _aX if _aX is not None else X)
+        print()
+        if cons:
+            print("[구성적중복] 결정론적 파생 %d쌍 — 상관이 낮아도 **같은 정보**다"
+                  % len(cons))
+            for a, b, rel in sorted(cons):
+                print("   · %s → %s  (%s)" % (a, b, rel))
+            print("   (표기 전용 — 판정·임계에 반영하지 않는다. 다만 계열 검정에서 "
+                  "이들을 독립 신호로 세면 유효 자유도가 무너진다: SOP §1 오측정 #9)")
+        else:
+            print("[구성적중복] 결정론적 파생 없음")
+
+    # ── CORE 우선 시계(D형) 스크린 — [500차 4단계 / SOP §2] ──────
+    # 왜 CORE 를 **먼저** 보나: `cvd` 는 SOP §2 의 사전등록 임계(같은 hh:mm 날짜간
+    # sd / 전체 sd < 0.05)로 **D형(시계)**이었는데(실측 0.020) 6개월간 아무도
+    # 안 쟀다. CORE 는 체크리스트 게이트라 오염되면 전 호라이즌에 번지는데,
+    # 전수 스크린 결과 안에 묻히면 눈에 안 띈다. 그래서 맨 앞에 따로 낸다.
+    # ⚠ 표기 전용 — 등급·판정에 관여하지 않는다(feature_health_report 와 같은 원칙).
+    try:
+        from scripts.feature_health_report import (
+            temporal_profile_series, SHAPE_DET_RATIO,
+        )
+        from config.constants import CORE_FEATURES as _CORE
+        _watch = list(_CORE) + ["cvd_divergence", "cvd_slope", "cvd"]
+        _days = [t[:10] for t in ts_list]
+        _mins = [int(t[11:13]) * 60 + int(t[14:16]) for t in ts_list]
+        _idx = {nm: k for k, nm in enumerate(LAST_SCREENING_REPORT["all_names"])}
+        print()
+        print("[CORE 시계] 같은 hh:mm 날짜간 sd / 전체 sd — %.2f 미만이면 D형(시계)"
+              % SHAPE_DET_RATIO)
+        _AX = LAST_SCREENING_REPORT["all_X"]
+        for nm in _watch:
+            if nm not in _idx:
+                continue
+            v = _AX[:, _idx[nm]]
+            ok = np.isfinite(v)
+            if int(ok.sum()) < MIN_DAY_ROWS:
+                continue
+            prof = temporal_profile_series(
+                list(v[ok]), [d for d, o in zip(_days, ok) if o],
+                [m for m, o in zip(_mins, ok) if o])
+            dr = prof.get("det_ratio")
+            tag = ""
+            if dr is not None and dr < SHAPE_DET_RATIO:
+                tag = "  🔴 D형 — 이 피처에 IC·수명 지표를 매기면 '시각'을 잰다"
+            role = "CORE" if nm in _CORE else "관찰"
+            print("   %-6s %-20s det_ratio=%s%s"
+                  % (role, nm, ("%.3f" % dr) if dr is not None else "—", tag))
+        print("   (표기 전용. 정본 분류·처분은 SOP §2 — 26주 재검증에서 한다)")
+    except Exception as _e:
+        print()
+        print("[CORE 시계] 스킵 (%s) — 계측 실패이지 '이상 없음'이 아니다" % _e)
 
     # ── 노이즈 하한선 (병기 전용) ───────────────────────────────
     # 455차 N3 방법론. L1'(`ic_probe_pending_features.py`)은 이미 이 하한선을 쓰는데

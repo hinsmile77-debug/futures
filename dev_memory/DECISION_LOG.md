@@ -34032,3 +34032,90 @@ PSI CORE의 `cvd_divergence` → `cvd_delta_norm` 교체(기준선 재생성 동
 (`cvd` uniq 22 · `ofi_imbalance` 199 · `cvd_slope` 1,769 · `cvd_divergence` 828).
 통과하면 IC가 "시각과 미래수익률의 관계"를 재고, OFI 3중 계수로 Bonferroni 분모가
 틀린다(SOP §1 오측정 #9와 동형).
+
+
+---
+
+## 2026-08-30 (MW0601 500차 4단계 — 재검증 SOP 보강 + 500-B 자체 정정)
+
+### 🔴 500-B 정정 — "SOP §2 D형 확정"은 임시 계산이었다. 재인용 금지.
+
+500-B 초판이 자체 계산한 비율(`cvd` 0.020 · `cvd_slope`/`cvd_divergence` 0.125)로
+SOP §2 D형 임계 0.05 를 인용했으나, **프로젝트 정본 분류기**
+(`scripts/feature_health_report.py:temporal_profile_series`)로 같은 창
+(2026-07-31~08-28, n=7,527)을 재면 값이 다르다:
+
+| 피처 | 정본 det_ratio | 정본 shape | 동률 |
+|---|---|---|---|
+| `cvd` | **0.079** (임계 0.05 초과) | **상수형** | 98.6% |
+| `cvd_slope` | 0.219 | (미분류) | 1.7% |
+| `cvd_divergence` | 0.554 | (미분류) | 11.8% |
+| `cvd_delta_norm` (건강 대조군) | 0.970 | (미분류) | 0.0% |
+
+**바뀌는 것**: `cvd` 의 정본 분류는 D형(결정론형)이 아니라 **상수형**이다.
+`cvd_slope`·`cvd_divergence` 는 어느 형태로도 분류되지 않아 §2-c 표에 안 뜬다.
+
+**바뀌지 않는 것**: 시각 의존 자체는 `|cvd_divergence|` 시각별 평균
+(08시 0.617 → 15시 0.022, **28배 단조감소**)으로 직접 관측된 사실이고, 건강한
+`cvd_delta_norm`(0.970)과의 격차도 그대로다. 500-A/C 의 항등식·상수화 실측도 무관하다.
+
+**교훈이 오히려 강해진다** — 오염은 실재하는데 **현행 §2-c 형태 분류가 그것을 못
+잡는다**(0.219·0.554 는 어느 임계에도 안 걸린다). 그래서 4단계가 형태 분류에
+기대지 않는 **CORE 우선 시계 스크린**을 따로 붙였다. `CLAUDE.md` §3 각주에 정정 반영.
+
+### 500-H. SOP §3 B-5 — 구성적 중복 (constructive duplication)
+
+**선형 상관은 결정론적 파생을 구조적으로 놓친다.** 실측(n=7,527):
+
+| 관계 | Pearson \|r\| | 기존 `find_dup_groups`(>=0.99) |
+|---|---|---|
+| `ofi_imbalance ≡ round(ofi_norm/3,3)` | 0.9999 | 잡힘 |
+| `ofi_pressure ≡ sign(ofi_norm)` | **0.4967** | 🔴 놓침 |
+| `\|cvd_divergence\| ≡ min(cvd_slope,1)` | **0.0262** | 🔴 놓침 |
+
+뒤의 둘은 5,289/5,289 정확 일치하는 **항등식**인데 상관이 0.50·0.03 이다.
+부호·절대값 같은 비선형 파생은 상관이 낮게 나오지만 정보는 완전히 같다.
+
+`core_feature_discovery.find_constructive_dups()` 신설 — scale·sign·abs·round
+4종을 데이터로 되짚는다(**표기 전용, 판정 무영향**, `--no-dup` 으로 함께 꺼짐).
+
+설계상 걸린 함정 3건:
+- **사전필터 탈락분까지 봐야 한다.** `MIN_DISTINCT=20` 이 떨어뜨리는 저해상도
+  피처가 부호형 중복이 사는 곳이다 — `ofi_pressure`(고유값 3)가 그 예. 통과분만
+  보면 그 항등식이 영원히 안 보인다.
+- **상태·가용성 플래그는 대상에서 제외.** `opt_atm_pcr → opt_chain_available` 류는
+  구조상 당연한 관계인데, 안 거르면 **50쌍**이 쏟아져(실측) 진짜 중복이 경보 피로에
+  묻힌다. 판정은 `feature_health_report.is_benign_flag` 와 같은 출처를 쓴다.
+- **사전필터가 `|b|` 를 안 보면 방향 의존이 생긴다.** 초판은 a 쪽 변환만 b 에
+  대봐서 "크기 → 부호있는 값" 방향의 abs 관계를 놓쳤다. 실데이터에서는
+  `cvd_divergence → cvd_slope` 가 우연히 반대 방향이라 잡혔는데, 회귀 테스트 C3 이
+  합성 데이터로 그 사각지대를 드러냈다. `|b|` 추가 후 16쌍(종전 13쌍).
+
+실측 결과(상태플래그 제외, 16쌍): `cvd → cvd_direction(abs)` ·
+`cvd_divergence ↔ cvd_slope(abs)` · `ofi_norm ↔ ofi_imbalance(scale)` ·
+`ofi_norm → ofi_pressure(sign)` · `mlofi_norm → mlofi_pressure(sign)` ·
+`opt_gex_bn → opt_gex_sign(sign)` · `opt_pcr_extreme_signed ↔ opt_pcr_norm(scale k=1)` 등.
+⚠ 마지막 쌍은 SOP §3 본문이 **2026-08-24에 이미 기록**한 완전 중복이다 — 검출기가
+그것을 독립적으로 재발견해 방법의 타당성이 교차 확인됐다(신규 발견이 아니다).
+
+⚠ **중복이라고 무조건 지우지 않는다** — `ofi_pressure` 는 단기 CORE 체크리스트의
+실집행 키다. 지우면 진입 게이트가 깨진다(B-5-5, 테스트 S7).
+
+### 500-I. SOP §2 A-6 — CORE 우선 시계 스크린
+
+전수 유형 분류에 CORE 가 섞여 나오면 묻힌다. CORE 는 체크리스트 게이트라 오염되면
+전 호라이즌에 번지는데, **6개월간 아무도 CORE 에 시계 스크린을 걸지 않았다**.
+`core_feature_discovery` 맨 앞에 `[CORE 시계]` 절을 신설하고, 실집행 키
+(`CORE_FEATURES`)와 **건강 대조군**을 함께 낸다(절대값만으로는 판단 불가).
+
+실측: CORE 3종 0.971·0.971·0.973(건강) vs `cvd_divergence` 0.611 ·
+`cvd_slope` 0.240 · `cvd` 0.079.
+
+### 500-J. 4단계 완료 — 이제 26주 WFA L1→L2→L3 착수 가능
+
+0단계(문서 정정) → 1단계(라이브 4건 fix) → 2단계(워밍업 폴백) →
+3단계(결정 1·2·3) → 4단계(SOP 보강)가 모두 끝났다.
+⚠ 다만 **3단계 결정 1·2 는 다음 EOD 재학습이 지나야 정합이 맞는다**:
+  · CVD debias 는 섀도라 라이브 무영향이나, 20거래일 적재 후에야 live 전환 판정 가능
+  · PSI 기준선은 CORE 집합이 바뀌어 **재생성 전까지 신뢰 불가**
+  ⇒ L1 은 지금 돌려도 되지만(입력 정제 완료), L3(purged CV)는 재학습 이후가 낫다.
