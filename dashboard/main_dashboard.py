@@ -40,8 +40,10 @@ from PyQt5.QtGui import (
     QTextCursor, QTextBlockFormat,
 )
 
-from config.constants import FUTURES_PT_VALUE
+from config.constants import FUTURES_PT_VALUE, BROKER_CHANNEL_SPECS
 from config.settings import (
+    FUTURES_COMMISSION_RATE as _LIVE_COMM_RATE,
+    FUTURES_COMMISSION_RATE_LEGACY_KIWOOM as _LEGACY_COMM_RATE,
     RAW_DATA_DB, DATA_DIR, TIME_ZONES, ENTRY_GRADE, MAX_CONTRACTS,
     HEALTH_LATENCY_WARN_MS, HEALTH_LATENCY_CRIT_MS,
     HEALTH_QUALITY_WARN, HEALTH_QUALITY_CRIT,
@@ -6524,21 +6526,113 @@ class AlphaPanel(QWidget):
 # 손익 추이 패널 — 일별·주별·월별 누적 P&L 테이블
 # ────────────────────────────────────────────────────────────
 class PnlHistoryPanel(QWidget):
-    """전문 트레이더용 손익 추이 — 일별·주별·월별 누적 테이블"""
+    """전문 트레이더용 손익 추이 — 일별·주별·월별 누적 테이블
+
+    `rate_mode`로 **같은 표를 두 요율로** 낸다:
+
+      "live"  — 실측. 브로커 net(익일가예탁현금 − 예탁현금) 우선, 없으면 엔진 net.
+      "creon" — 반사실. 거래는 그대로 두고 **수수료 요율만** CREON 채널로 바꿔 재계산.
+
+    ── 왜 반사실 탭이 필요한가 ────────────────────────────────────────────
+    대신증권은 로그인 매체별로 요율을 고시한다 — CYBOS 0.0098104% / CREON 0.0019%로
+    **5.16배** 차이다. 이 PC(MW0601)는 CYBOS 채널이라 2026-08 한 달 수수료 차이만
+    169만원이고, 그 하나로 월 net 부호가 뒤집힌다(−537,103 → +1,155,462).
+    비용 축이 전략 성과를 가리고 있는지 **상시 눈에 보이게** 하는 것이 이 탭의 목적이다.
+
+    🔴 **반사실이며 실적이 아니다.** 채널을 바꾸면 API 계열도 바뀌므로 이 값이 그대로
+      실현되지는 않는다. 판정 원천(전환기준 ①)은 언제나 "live" 탭이다.
+    """
 
     _DAILY_HEADERS   = ["날짜",  "거래", "승", "패", "승률", "P/L pt", "P/L 원",   "누적 원"]
     _WEEKLY_HEADERS  = ["주간",  "거래", "승", "패", "승률", "P/L pt", "P/L 원",   "누적 원", "MDD 원"]
     _MONTHLY_HEADERS = ["월",    "거래", "승", "패", "승률", "P/L pt", "P/L 원",   "누적 원", "샤프"]
 
-    def __init__(self):
+    # 반사실 요율 — 하드코딩하지 않는다(495차: 493차가 CYBOS 값을 박았다가
+    # MW0602에서 5.16배 틀린 전례). 채널 스펙에서 파생한다.
+    _CF_CHANNEL = "CREON"
+    _CF_RATE    = BROKER_CHANNEL_SPECS[_CF_CHANNEL]["one_way_commission_rate"]
+
+    # ── 거래 출처 3분류 ────────────────────────────────────────
+    # "미륵이가 스스로 판단해 넣고 뺀 거래"만 따로 세기 위한 축이다.
+    # 순방향/역방향과 **직교**한다(그쪽은 역진입 모드 축).
+    #
+    #   auto    : SYSTEM_AUTO 진입 + 시스템 트리거 청산(TP·스톱·시간)
+    #   manual  : 사람이 개입했거나 미륵이 밖에서 일어난 것
+    #             · 진입 OPERATOR_MANUAL(UI 버튼) / GHOST_PENDING_MISS(유령·외부)
+    #             · 청산 "수동*"(UI 버튼) / "외부체결(HTS/수동)"
+    #             · 복구 경로(pending_miss·stuck_exit·resync)도 여기 — 시스템의
+    #               정상 청산 규칙이 낸 결과가 아니다
+    #   unknown : entry_source NULL — **미측정**이다(311차 이전, ~2026-07-10 62포지션).
+    #             auto 로 붙이면 시스템 성과가 부풀고, manual 로 붙이면 사람 탓이 된다.
+    #
+    # ⚠ `GHOST_PENDING_MISS`는 "외부 진입"과 "미륵이 주문추적 실패"가 **같은 라벨에
+    #   섞인다**(main.py 15568 주석: 306차 근본원인 재발 시 사후 식별용). 그래서
+    #   라벨을 "외부"가 아니라 중립적인 「수동·외부」로 둔다 — 결함일 수도 있다.
+    #
+    # ⚠ 청산 축은 `exit_stage` 컬럼을 쓰지 않는다. 2026-08-26부터만 기록돼
+    #   367/400행이 NULL이고 소급 백필이 불가능하다(`partial_1_done`은 청산
+    #   시점에만 알 수 있다). 대신 `_classify_exit_stage()`의 MANUAL/RECOVERY
+    #   분기가 `exit_reason` 문자열만 보므로 그 규칙을 소급 적용한다 —
+    #   기록된 33건과 대조해 **불일치 0건** 확인.
+    _ORIGIN_KEYS = ("auto", "manual", "unknown")
+    _ORIGIN_LABEL = {"auto": "자동", "manual": "수동·외부", "unknown": "미측정"}
+    _ORIGIN_TIP = {
+        "auto": "미륵이가 스스로 넣고 뺀 거래.\n"
+                "진입 SYSTEM_AUTO + 청산이 TP·스톱·시간 등 시스템 트리거.",
+        "manual": "사람이 개입했거나 미륵이 밖에서 일어난 거래.\n"
+                  "· 진입 OPERATOR_MANUAL(UI 버튼) / GHOST_PENDING_MISS(유령·외부)\n"
+                  "· 청산 「수동…」(UI 버튼) / 「외부체결(HTS/수동)」\n"
+                  "· 복구 경로(pending_miss·stuck_exit·resync)\n\n"
+                  "⚠ GHOST_PENDING_MISS는 외부 진입과 미륵이 주문추적 실패가 같은\n"
+                  "  라벨에 섞인다 — 전부 사람이 한 것이라고 읽지 말 것.\n"
+                  "포지션에 한 레그라도 이 흔적이 있으면 그 포지션 전체가 여기 들어간다.",
+        "unknown": "entry_source 미기록 구간(311차 이전, ~2026-07-10).\n"
+                   "**미측정이지 자동이 아니다** — 자동에 붙이면 시스템 성과가 부푼다.",
+    }
+    # 진입 출처 중 "사람/외부" 쪽
+    _MANUAL_SOURCES = ("OPERATOR_MANUAL", "GHOST_PENDING_MISS",
+                       "BROKER_SYNC_RECOVERY", "OPERATOR_RESTORE")
+
+    @staticmethod
+    def _exit_is_manual(reason):
+        """청산 사유가 사람·외부·복구 경로인가 — `_classify_exit_stage()`와 같은 규칙."""
+        r = reason or ""
+        return ("수동" in r or "외부체결" in r
+                or "pending_miss" in r or "stuck_exit" in r or "resync" in r)
+
+    def __init__(self, rate_mode: str = "live"):
         super().__init__()
+        self._rate_mode = rate_mode if rate_mode in ("live", "creon") else "live"
         self._rows = []
         # [MW0601 493차 / F-4] date → 그 날의 **순손익(net)**.
         # 브로커 실측(익일가예탁현금 − 예탁현금) 우선, 없으면 엔진 net 폴백.
         # ⚠ 종전에는 브로커 **gross**가 들어와 엔진 net과 섞였다 — refresh() 참조.
         self._broker_pnl: dict = {}
         self._broker_pnl_src: dict = {}   # date → "broker" | "engine" (폴백 가시화)
+        # [반사실] date → 브로커 실측 gross / 실측 수수료(gross − net).
+        # 브로커가 실제로 뗀 금액이라 요율 세대 오염이 없다 — 엔진 기록과 달리
+        # 이 값은 언제나 그 날의 **실제 요율**로 계산돼 있다.
+        self._broker_gross: dict = {}
+        self._broker_comm:  dict = {}
+        # 반사실 계산에서 요율 세대를 가정한 날짜(계측 4원칙 ④ — 폴백 가시화).
+        self._cf_assumed_dates: set = set()
+        # date → 그 날의 **전체** 레그 수. 필터로 일부만 남았는지 판정하는 기준이다.
+        # ⚠ `__init__`에서 명시 초기화한다 — `getattr(self, "_x", 기본값)`으로 읽으면
+        #   refresh() 전 호출이 조용히 "전량 선택"으로 판정된다(계측 4원칙 ④).
+        self._day_total_legs: dict = {}
+        # 필터를 함께 움직일 짝 패널(실측 ↔ 반사실). link_filter()로 연결한다.
+        self._filter_peers: list = []
         self._build()
+
+    # ── 반사실 요율 배수 ───────────────────────────────────────
+    # 라이브 채널이 이미 CREON이면 1.0 — 그 경우 두 탭이 같아지는 것이 정상이다.
+    @property
+    def _cf_scale(self):
+        return (self._CF_RATE / _LIVE_COMM_RATE) if _LIVE_COMM_RATE else 1.0
+
+    @property
+    def _is_cf(self):
+        return self._rate_mode == "creon"
 
     # ── UI 구성 ────────────────────────────────────────────────
 
@@ -6546,6 +6640,32 @@ class PnlHistoryPanel(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 4, 4, 4)
         lay.setSpacing(4)
+
+        # 반사실 탭 배너 — 이 탭 전체가 실적이 아니라는 사실을 상시 띄운다.
+        # 표 모양이 실측 탭과 똑같아서 배너가 없으면 실적으로 읽힌다
+        # ("조용히 그럴듯한 값" — 계측 4원칙 ④).
+        if self._is_cf:
+            _bn = mk_label(
+                "🔶 반사실 — %s 요율(편도 %.4f%%)로 재계산. 실적이 아니다 · "
+                "판정 원천은 «📊 손익 추이» 탭 (현행 라이브 %.4f%% · 배수 %.3f)"
+                % (self._CF_CHANNEL, self._CF_RATE * 100,
+                   _LIVE_COMM_RATE * 100, self._cf_scale),
+                C['orange'], 9,
+            )
+            _bn.setStyleSheet(
+                f"color:{C['orange']};background:{C['bg3']};"
+                f"border:1px solid {C['orange']};border-radius:3px;"
+                f"padding:{S.p(3)}px {S.p(6)}px;"
+            )
+            _bn.setWordWrap(True)
+            _bn.setToolTip(
+                "거래(진입·청산·수량)는 실제 그대로이고 수수료 요율만 바꾼 값이다.\n"
+                "대신증권은 로그인 매체별로 요율을 고시한다 — CYBOS 0.0098104% vs "
+                "CREON 0.0019%, 5.16배 차이.\n\n"
+                "🔴 채널을 바꾸면 API 계열도 바뀌므로 이 값이 그대로 실현되지는 않는다.\n"
+                "🔴 실전 전환 기준 ①의 판정 원천은 언제나 실측 탭이다."
+            )
+            lay.addWidget(_bn)
 
         # 요약 카드 행
         sf = QFrame()
@@ -6623,6 +6743,34 @@ class PnlHistoryPanel(QWidget):
         _cl.addWidget(self._cb_forward)
         _cl.addWidget(self._cb_reverse)
         inner.setCornerWidget(_corner, Qt.TopRightCorner)
+
+        # ── 출처 필터 행 (방향 축과 직교) ──────────────────────
+        _of = QFrame()
+        _of.setStyleSheet(f"background:{C['bg2']};border:1px solid {C['border']};"
+                          f"border-radius:3px;")
+        _ol = QHBoxLayout(_of)
+        _ol.setContentsMargins(8, 2, 8, 2)
+        _ol.setSpacing(12)
+        _ol.addWidget(mk_label("출처", C['text2'], 9))
+        self._cb_origin = {}
+        _saved_org = self._load_origin_prefs()
+        for _k in self._ORIGIN_KEYS:
+            _cb = QCheckBox(self._ORIGIN_LABEL[_k])
+            _cb.setChecked(_saved_org.get(_k, True))
+            _cb.setStyleSheet(_cb_style)
+            _cb.setToolTip(self._ORIGIN_TIP[_k])
+            _cb.stateChanged.connect(self._on_source_changed)
+            self._cb_origin[_k] = _cb
+            _ol.addWidget(_cb)
+        _ol.addStretch(1)
+        self._approx_note = mk_label("", C['orange'], 9)
+        self._approx_note.setToolTip(
+            "브로커 실측 net은 예탁금 차액이라 **그 날 전체**의 합이고 거래별로 쪼갤 수 "
+            "없다.\n필터로 일부만 남은 날은 그 값을 쓸 수 없어 엔진 net(거래행 합계)으로 "
+            "내려간다.\n\n값 옆 ≈ 가 그 날이다. 필터를 전량 선택하면 다시 브로커 실측이 된다."
+        )
+        _ol.addWidget(self._approx_note)
+        lay.addWidget(_of)
 
         lay.addWidget(inner, 1)
 
@@ -6709,44 +6857,115 @@ class PnlHistoryPanel(QWidget):
             self._broker_pnl = {d: v["net_krw"] for d, v in _nv.items()}
             # 폴백으로 채워진 날짜 — 표시 계층이 "실측"으로 오인하지 않도록 남긴다.
             self._broker_pnl_src = {d: v["source"] for d, v in _nv.items()}
+            # [반사실] 브로커 갈래만 담는다. 엔진 갈래의 commission_krw는 요율
+            # 세대가 섞여 있어 여기서 단일 배수로 스케일하면 안 된다
+            # (_cf_day_krw가 거래행에서 행별로 환산한다).
+            self._broker_gross = {d: v["gross_krw"] for d, v in _nv.items()
+                                  if v["source"] == "broker"}
+            self._broker_comm  = {d: v["commission_krw"] for d, v in _nv.items()
+                                  if v["source"] == "broker"}
         except Exception:
             self._broker_pnl = {}
             self._broker_pnl_src = {}
+            self._broker_gross = {}
+            self._broker_comm = {}
+        self._cf_assumed_dates = set()
         self._rows = []
         for r in rows:
             try:
                 trade_ts = r["exit_ts"] or r["entry_ts"] or ""
+                _net  = float(r["pnl_krw"] or 0)
+                _comm = float(self._col(r, "commission_krw") or 0)
+                # gross 결손 행(구버전)은 net + 수수료로 복원한다 — 없는 값을
+                # 0으로 채우지 않는다(계측 4원칙 ②).
+                _graw = self._col(r, "gross_pnl_krw")
+                _rate = self._col(r, "commission_rate_used")
                 self._rows.append({
                     "entry_ts": trade_ts,
                     "pnl_pts":  float(r["pnl_pts"]  or 0),
-                    "pnl_krw":  float(r["pnl_krw"]  or 0),
+                    "pnl_krw":  _net,
                     "forward_pnl_pts": float(r["forward_pnl_pts"] or r["pnl_pts"] or 0),
                     "forward_pnl_krw": float(r["forward_pnl_krw"] or r["pnl_krw"] or 0),
                     "quantity": int(r["quantity"]    or 1),
                     "reverse_entry_enabled": int(r["reverse_entry_enabled"] or 0),
+                    # [반사실] 요율 재환산 재료.
+                    # rate=None 은 "세대 미측정"이며 0이 아니다.
+                    "gross_pnl_krw":  (float(_graw) if _graw is not None else _net + _comm),
+                    "commission_krw": _comm,
+                    "commission_rate_used": (float(_rate) if _rate else None),
+                    # [출처 축] 포지션 단위 판정을 위한 원재료. origin 은 아래에서 채운다.
+                    "entry_source": self._col(r, "entry_source"),
+                    "exit_reason":  self._col(r, "exit_reason") or "",
+                    "pos_key":      (r["entry_ts"] or trade_ts),
+                    "origin":       "unknown",
                 })
             except Exception:
                 pass
+        self._assign_origins()
+        # 브로커 일단위 값을 쓸 수 있는지 판정할 기준 — 날짜별 **전체** 레그 수.
+        # 필터로 일부만 남으면 그 날은 브로커 net을 쓸 수 없다(쪼갤 수 없는 값이다).
+        self._day_total_legs = {}
+        for r in self._rows:
+            d = r["entry_ts"][:10]
+            self._day_total_legs[d] = self._day_total_legs.get(d, 0) + 1
         self._build_daily()
         self._build_weekly()
         self._build_monthly()
         self._build_summary()
 
+    # ── 출처 판정 ──────────────────────────────────────────────
+
+    def _assign_origins(self):
+        """거래 출처를 **포지션 단위로** 판정해 각 레그에 전파한다.
+
+        🔴 레그 단위로 판정하면 한 포지션이 두 버킷으로 쪼개진다 — TP1은 시스템이
+        빼고 잔량은 사람이 뺀 포지션이 실제로 있다(계측 4원칙 ①의 이 패널 판).
+        그래서 `entry_ts`로 묶어 **한 레그라도** 사람·외부 흔적이 있으면 그 포지션
+        전체를 `manual`로 본다. 보수적 방향이다 — 시스템 성과를 부풀리지 않는다.
+        """
+        from collections import defaultdict
+        groups = defaultdict(list)
+        for r in self._rows:
+            groups[r["pos_key"]].append(r)
+
+        for _key, legs in groups.items():
+            src = next((l["entry_source"] for l in legs if l["entry_source"]), None)
+            if not src:
+                origin = "unknown"          # 미측정 — auto 도 manual 도 아니다
+            elif src in self._MANUAL_SOURCES:
+                origin = "manual"
+            elif any(self._exit_is_manual(l["exit_reason"]) for l in legs):
+                origin = "manual"           # 진입은 시스템인데 사람이 뺀 포지션
+            else:
+                origin = "auto"
+            for l in legs:
+                l["origin"] = origin
+
     # ── 그룹화 유틸 ────────────────────────────────────────────
 
+    def _active_origins(self):
+        return {k for k in self._ORIGIN_KEYS if self._cb_origin[k].isChecked()}
+
     def _active_rows(self):
-        """체크박스 상태에 따라 self._rows 필터링.
-        순방향=reverse_entry_enabled==0, 역방향=reverse_entry_enabled==1.
+        """체크박스 상태에 따라 self._rows 필터링 — **두 축을 모두** 적용한다.
+
+        축1 방향  : 순방향=reverse_entry_enabled==0 / 역방향=1
+        축2 출처  : 자동 / 수동·외부 / 미측정 (직교)
         """
         fwd = self._cb_forward.isChecked()
         rev = self._cb_reverse.isChecked()
         if fwd and rev:
-            return self._rows
-        if fwd:
-            return [r for r in self._rows if not r["reverse_entry_enabled"]]
-        if rev:
-            return [r for r in self._rows if r["reverse_entry_enabled"]]
-        return []
+            rows = self._rows
+        elif fwd:
+            rows = [r for r in self._rows if not r["reverse_entry_enabled"]]
+        elif rev:
+            rows = [r for r in self._rows if r["reverse_entry_enabled"]]
+        else:
+            return []
+        origins = self._active_origins()
+        if len(origins) == len(self._ORIGIN_KEYS):
+            return rows
+        return [r for r in rows if r["origin"] in origins]
 
     def _group(self, key_fn):
         from collections import defaultdict
@@ -6789,11 +7008,106 @@ class PnlHistoryPanel(QWidget):
 
         [493차 F-4] 두 갈래가 **같은 단위(net)** 가 된 것은 이번부터다 —
         종전 브로커 갈래는 gross였다(refresh() 주석 참조).
+
+        🔴 **이 메서드가 이 패널의 단일 관문이다.** 일별·주별·월별·요약카드·MDD·
+        샤프가 전부 여기를 지나므로, 반사실 모드 분기도 여기 한 곳에만 둔다.
+        다른 곳에서 `_broker_pnl`을 직접 읽으면 그 경로만 모드를 무시한다.
         """
-        broker_krw = self._broker_pnl.get(date_str)
-        if broker_krw is not None:
-            return broker_krw
-        return sum(r["pnl_krw"] for r in day_rows)
+        if self._is_cf:
+            return self._cf_day_krw(date_str, day_rows)
+        if self._day_is_whole(date_str, day_rows):
+            broker_krw = self._broker_pnl.get(date_str)
+            if broker_krw is not None:
+                return broker_krw
+        return sum(self._engine_net(r) for r in day_rows)
+
+    def _engine_net(self, r):
+        """거래행의 엔진 net — **현행 요율로 정규화**해서 돌려준다.
+
+        🔴 기록된 `pnl_krw`를 그냥 더하면 안 된다. 2026-08-25 이전 행은 수수료가
+        키움 잔재 요율(1.5e-05)로 계산돼 **실제의 1/6.54**만 차감돼 있다. 필터를
+        걸면 그 구간이 엔진 net으로 내려오는데, 그대로 쓰면 필터를 켤 때마다
+        과거가 낙관 쪽으로 부푼다 — "틀린 방향이 항상 낙관"이라는 493차 지적 그대로다.
+
+        `commission_rate_used`로 나누고 현행 요율을 곱해 세대를 맞춘다. 이미 현행
+        요율인 행에는 항등이고, 세대 미기록(NULL) 행은 키움 잔재로 가정한다.
+        """
+        rate = r.get("commission_rate_used") or _LEGACY_COMM_RATE
+        return r["gross_pnl_krw"] - r["commission_krw"] * (_LIVE_COMM_RATE / rate)
+
+    # ── 필터 × 브로커 일단위 값의 충돌 ─────────────────────────
+
+    def _day_is_whole(self, date_str, day_rows):
+        """그 날 거래행이 **전부** 남아 있는가.
+
+        🔴 브로커 net은 예탁금 차액(익일가예탁현금 − 예탁현금)이라 **그 날 전체**의
+        합이고 거래별로 쪼갤 수 없다. 그래서 필터로 일부만 남은 날에 그 값을 쓰면
+        표는 필터된 것처럼 보이는데 **돈만 전체값**이 된다 — 실측으로 확인했다:
+        2026-08-27에 행 0개를 넘겨도 +299,565원이 그대로 나왔다.
+
+        그건 이 프로젝트가 반복해서 당한 "조용히 그럴듯한 값"이므로, 부분 선택된
+        날은 브로커 값을 포기하고 엔진 net(행 합계)으로 내려간다. 정밀도를 잃는
+        대신 **필터가 실제로 먹는다**. 내려갔다는 사실은 `≈`로 표시한다(원칙 ④).
+
+        ⚠ 이 결함은 신규가 아니라 잠복이었다 — 순방향/역방향 필터도 같은 구조인데
+          `reverse_entry_enabled`가 400행 전부 0이라 드러난 적이 없다.
+        """
+        total = self._day_total_legs.get(date_str)
+        return total is None or len(day_rows) >= total
+
+    def _day_is_approx(self, date_str, day_rows):
+        """브로커 실측이 있는데 필터 때문에 못 쓴 날인가 — 표시용."""
+        return (not self._day_is_whole(date_str, day_rows)
+                and self._broker_pnl.get(date_str) is not None)
+
+    def _group_is_approx(self, grp):
+        day_rows = self._daily_bucket(grp)
+        return any(self._day_is_approx(d, rs) for d, rs in day_rows.items())
+
+    def _cf_day_krw(self, date_str, day_rows):
+        """그 날의 **CREON 요율 반사실 net**.
+
+        두 갈래가 있고 **요율 세대 처리가 서로 다르다** — 여기가 이 기능의 급소다:
+
+        ① 브로커 갈래 — `commission = 브로커 gross − 브로커 net`. 브로커가 실제로
+           뗀 금액이라 언제나 그 날의 **실제 요율**이다(엔진이 요율을 틀리게
+           기록하던 6개월 동안에도 브로커는 제대로 뗐다). 단일 배수면 된다.
+        ② 엔진 갈래 — `commission_krw`가 **행마다 다른 요율 세대**로 계산돼 있다
+           (2026-08-25 이전은 키움 잔재 1.5e-05). 행별 `commission_rate_used`로
+           나눈 뒤 CREON 요율을 곱해야 한다. 여기서 단일 배수를 쓰면 구 세대 행이
+           이미 6.54배 과소인 채로 더 축소돼 낙관 편향이 생긴다 — MW0602 502차
+           후속2가 겪은 함정이며, 행별 환산 후에야 브로커 실측과 33원까지 맞았다.
+        """
+        # 브로커 갈래도 일단위 값이라 필터로 일부만 남은 날에는 쓸 수 없다
+        # (_day_is_whole 참조 — 실측 탭과 같은 이유).
+        if self._day_is_whole(date_str, day_rows):
+            gross = self._broker_gross.get(date_str)
+            comm  = self._broker_comm.get(date_str)
+            if gross is not None and comm is not None:
+                return gross - comm * self._cf_scale
+
+        krw = 0.0
+        for r in day_rows:
+            rate = r.get("commission_rate_used")
+            if not rate:
+                # 세대 미기록 — 키움 잔재로 가정하되 그 사실을 남긴다(원칙 ④).
+                rate = _LEGACY_COMM_RATE
+                self._cf_assumed_dates.add(date_str)
+            krw += r["gross_pnl_krw"] - r["commission_krw"] * (self._CF_RATE / rate)
+        return krw
+
+    @staticmethod
+    def _col(row, name):
+        """sqlite3.Row에서 선택 컬럼을 안전하게 꺼낸다(없으면 None).
+
+        `fetch_pnl_history`가 주는 컬럼 집합이 세대마다 다를 수 있고, `sqlite3.Row`는
+        없는 키에 IndexError를 던진다 — 그러면 탭 전체가 빈다. 없는 것과 NULL을 같은
+        None으로 돌려주되 **0으로 채우지는 않는다**(계측 4원칙 ②).
+        """
+        try:
+            return row[name]
+        except Exception:
+            return None
 
     def _group_effective_krw(self, grp):
         """grp(여러 날짜에 걸친 거래 목록)의 날짜별 브로커 정산 우선 합계."""
@@ -6887,7 +7201,17 @@ class PnlHistoryPanel(QWidget):
             return True, True
 
     def _save_cb_prefs(self):
-        """현재 체크 상태를 ui_prefs.json에 저장."""
+        """현재 체크 상태를 ui_prefs.json에 저장.
+
+        🔴 테스트 모드에서는 **쓰지 않는다.** `ui_prefs.json`은 사용자의 살아있는
+        운영 설정이고 `setChecked()`가 곧 저장을 부르므로, 필터를 토글하는 테스트가
+        그대로 운영 화면 기본값을 바꿔버린다. 실제로 2026-08-31 이 기능을 만들다가
+        임시 스크립트가 `pnl_cb_forward`를 False로 덮어써 다음 기동 시 손익추이 탭이
+        빈 표로 뜨는 상태를 만들었다(역방향 표본이 0건이라 전부 걸러졌다).
+        """
+        from utils.runtime_mode import is_test_mode
+        if is_test_mode():
+            return
         try:
             _f = os.path.join(DATA_DIR, "ui_prefs.json")
             _p = {}
@@ -6896,18 +7220,78 @@ class PnlHistoryPanel(QWidget):
                     _p = json.load(_fp)
             _p["pnl_cb_forward"] = self._cb_forward.isChecked()
             _p["pnl_cb_reverse"] = self._cb_reverse.isChecked()
+            for _k in self._ORIGIN_KEYS:
+                _p["pnl_cb_origin_%s" % _k] = self._cb_origin[_k].isChecked()
             with open(_f, "w", encoding="utf-8") as _fp:
                 json.dump(_p, _fp, ensure_ascii=False)
         except Exception:
             pass
 
+    def _load_origin_prefs(self):
+        """출처 체크 상태 복원. 기본값: 전부 True(종전 화면과 같은 집합)."""
+        try:
+            _f = os.path.join(DATA_DIR, "ui_prefs.json")
+            if not os.path.exists(_f):
+                return {}
+            with open(_f, "r", encoding="utf-8") as _fp:
+                _p = json.load(_fp)
+            return {k: bool(_p.get("pnl_cb_origin_%s" % k, True))
+                    for k in self._ORIGIN_KEYS}
+        except Exception:
+            return {}
+
     def _on_source_changed(self):
         self._save_cb_prefs()
+        self._rebuild_tables()
+        # 실측·반사실 두 탭의 필터가 어긋나면 **거래집합이 달라져** 두 탭을 나란히
+        # 비교하는 것 자체가 무의미해진다(이 기능의 목적이 그 비교다). 짝 패널에
+        # 같은 상태를 전파한다.
+        for peer in self._filter_peers:
+            peer.apply_filter(self._cb_forward.isChecked(),
+                              self._cb_reverse.isChecked(),
+                              self._active_origins())
+
+    def _rebuild_tables(self):
         if self._rows:
             self._build_daily()
             self._build_weekly()
             self._build_monthly()
             self._build_summary()
+        self._refresh_approx_note()
+
+    def _refresh_approx_note(self):
+        """브로커 실측을 못 쓴 날이 몇 개인지 화면에 남긴다(계측 4원칙 ④)."""
+        try:
+            day_rows = self._daily_bucket(self._active_rows())
+            n = sum(1 for d, rs in day_rows.items() if self._day_is_approx(d, rs))
+            self._approx_note.setText(
+                "≈ 브로커 실측 대신 엔진 net %d일" % n if n else ""
+            )
+        except Exception:
+            pass
+
+    # ── 필터 연동 (실측 탭 ↔ 반사실 탭) ────────────────────────
+
+    def link_filter(self, peer):
+        """두 패널의 순방향/역방향 필터를 양방향으로 묶는다."""
+        if peer is not self and peer not in self._filter_peers:
+            self._filter_peers.append(peer)
+            peer.link_filter(self)
+
+    def apply_filter(self, fwd: bool, rev: bool, origins=None):
+        """짝 패널이 밀어준 상태를 적용한다 — 되쏘지 않는다(무한 재귀 방지)."""
+        origins = set(origins) if origins is not None else self._active_origins()
+        if (self._cb_forward.isChecked() == fwd
+                and self._cb_reverse.isChecked() == rev
+                and self._active_origins() == origins):
+            return
+        pairs = [(self._cb_forward, fwd), (self._cb_reverse, rev)]
+        pairs += [(self._cb_origin[k], k in origins) for k in self._ORIGIN_KEYS]
+        for cb, val in pairs:
+            cb.blockSignals(True)
+            cb.setChecked(val)
+            cb.blockSignals(False)
+        self._rebuild_tables()
 
     def _sharpe(self, daily_pnls):
         n = len(daily_pnls)
@@ -6925,24 +7309,19 @@ class PnlHistoryPanel(QWidget):
         groups = self._group(lambda ts: ts[:10])[-60:]
         cum_map, c = {}, 0.0
         for date_str, grp in groups:
-            _, _, _, _, pkrw = self._stats(grp)
-            broker_krw = self._broker_pnl.get(date_str)
-            day_krw = broker_krw if broker_krw is not None else pkrw
-            c += day_krw
+            # [반사실 탭] 단일 관문을 지나야 모드가 적용된다 — 종전에는 여기서
+            # `_broker_pnl`을 직접 읽어 주별·월별과 다른 경로였다(값은 같았다).
+            c += self._effective_day_krw(date_str, grp)
             cum_map[date_str] = c
 
         tbl = self.tbl_daily
         tbl.setRowCount(len(groups))
         for r_idx, (date_str, grp) in enumerate(reversed(groups)):
-            n, wins, losses, ppts, pkrw = self._stats(grp)
+            n, wins, losses, ppts, _pkrw = self._stats(grp)
             cum       = cum_map[date_str]
-            broker_krw = self._broker_pnl.get(date_str)
-            if broker_krw is not None:
-                disp_krw = broker_krw
-                krw_text = f"{broker_krw:+,.0f}원"
-            else:
-                disp_krw = pkrw
-                krw_text = self._fmt_single(pkrw, suffix="원")
+            disp_krw  = self._effective_day_krw(date_str, grp)
+            krw_text  = (self._fmt_single(disp_krw, suffix="원")
+                         + ("≈" if self._day_is_approx(date_str, grp) else ""))
             wr   = f"{wins/n*100:.0f}%" if n else "—"
             bg   = self._row_bg(disp_krw)
             pc   = self._pcol(disp_krw)
@@ -6979,6 +7358,7 @@ class PnlHistoryPanel(QWidget):
             mdd       = self._mdd_daily(grp)
             cum       = cum_map[wk]
             disp_krw  = pkrw
+            _apx      = "≈" if self._group_is_approx(grp) else ""
             wr   = f"{wins/n*100:.0f}%" if n else "—"
             bg   = self._row_bg(disp_krw)
             pc   = self._pcol(disp_krw)
@@ -6991,7 +7371,7 @@ class PnlHistoryPanel(QWidget):
                 self._item(str(losses),                                         fg=C['red'],   bg=bg, align=Qt.AlignRight),
                 self._item(wr,                                                  fg=C['cyan'],  bg=bg),
                 self._item(self._fmt_single(ppts, decimals=2, suffix="pt"),     fg=pc, bg=bg, align=Qt.AlignRight),
-                self._item(self._fmt_single(pkrw, suffix="원"),                 fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
+                self._item(self._fmt_single(pkrw, suffix="원") + _apx,          fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
                 self._item(self._fmt_single(cum, suffix="원"),                  fg=cc, bg=bg, align=Qt.AlignRight),
                 self._item(self._fmt_single(mdd, suffix="원"),                  fg=mc, bg=bg, align=Qt.AlignRight),
             ]
@@ -7015,6 +7395,7 @@ class PnlHistoryPanel(QWidget):
             pkrw      = self._group_effective_krw(grp)
             cum       = cum_map[mon]
             disp_krw  = pkrw
+            _apx      = "≈" if self._group_is_approx(grp) else ""
             sharpe    = self._sharpe_grp(grp)
             wr   = f"{wins/n*100:.0f}%" if n else "—"
             bg   = self._row_bg(disp_krw)
@@ -7031,7 +7412,7 @@ class PnlHistoryPanel(QWidget):
                 self._item(str(losses),                                         fg=C['red'],   bg=bg, align=Qt.AlignRight),
                 self._item(wr,                                                  fg=C['cyan'],  bg=bg),
                 self._item(self._fmt_single(ppts, decimals=2, suffix="pt"),     fg=pc, bg=bg, align=Qt.AlignRight),
-                self._item(self._fmt_single(pkrw, suffix="원"),                 fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
+                self._item(self._fmt_single(pkrw, suffix="원") + _apx,          fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
                 self._item(self._fmt_single(cum, suffix="원"),                  fg=cc, bg=bg, align=Qt.AlignRight),
                 self._item(self._fmt_single(sharpe, decimals=2),                fg=sc, bg=bg),
             ]
@@ -7379,16 +7760,36 @@ class LogPanel(QWidget):
             if key == "order":
                 self.tabs.setTabToolTip(self.tabs.count()-1, _ORDER_TAB_TIP)
 
-        # 6번째 탭: 손익 추이 (일별·주별·월별 누적 테이블)
+        # 6번째 탭: 손익 추이 (일별·주별·월별 누적 테이블) — 실측
         self.pnl_history = PnlHistoryPanel()
         self.tabs.addTab(self.pnl_history, "📊 손익 추이")
         self.tabs.tabBar().setTabTextColor(self.tabs.count() - 1, QColor(C['cyan']))
 
+        # 7번째 탭: 손익 추이2 — 같은 표를 **CREON 요율**로 재계산한 반사실.
+        # 탭 색을 주황으로 둬서 탭바에서부터 실측과 구분된다.
+        self.pnl_history_cf = PnlHistoryPanel(rate_mode="creon")
+        self.tabs.addTab(self.pnl_history_cf, "📊 손익추이2")
+        self.tabs.tabBar().setTabTextColor(self.tabs.count() - 1, QColor(C['orange']))
+        self.tabs.setTabToolTip(
+            self.tabs.count() - 1,
+            "손익추이2 — CREON 요율 반사실\n\n"
+            "거래는 실제 그대로이고 수수료 요율만 CREON(0.0019%)으로 바꿔 재계산한다.\n"
+            "이 PC는 CYBOS 채널(0.0098104%)이라 5.16배 비싸다.\n\n"
+            "🔴 실적이 아니다 — 전환기준 판정은 «📊 손익 추이» 탭이 원천이다."
+        )
+        # 두 탭의 순방향/역방향 필터를 묶는다 — 갈리면 거래집합이 달라진다.
+        self.pnl_history.link_filter(self.pnl_history_cf)
+
         lay.addWidget(self.tabs)
 
     def refresh_pnl_history(self, rows):
-        """손익 추이 탭 전체 갱신 (trades.db rows)."""
+        """손익 추이 탭 전체 갱신 (trades.db rows).
+
+        실측·반사실 두 패널을 **같은 rows로** 갱신한다 — 원천이 갈리면 두 탭의
+        거래 집합이 달라져 비교 자체가 무의미해진다.
+        """
         self.pnl_history.refresh(rows)
+        self.pnl_history_cf.refresh(rows)
 
     def update_model_cards(self, accuracy: float, sgd_weight: float, is_active: bool):
         """창5 모델 AI 카드 갱신 (정확도·SGD비중·자가학습)."""

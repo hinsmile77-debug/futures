@@ -2108,7 +2108,19 @@ def fetch_recent_raw_candles(limit: int = 60) -> List[sqlite3.Row]:
 def fetch_pnl_history(limit_days: int = 90) -> List[sqlite3.Row]:
     """최근 N일 체결 완료 거래 전체 반환 — 손익 추이 패널용.
     반환 컬럼: direction, entry_price, exit_price, quantity, pnl_pts, pnl_krw,
-               exit_reason, grade, entry_ts, exit_ts
+               exit_reason, grade, entry_ts, exit_ts,
+               gross_pnl_krw, commission_krw, commission_rate_used, entry_source
+
+    ⚠ `entry_source` NULL = **미측정**(311차 이전 행, 2026-07-10까지)이며
+      "SYSTEM_AUTO"가 아니다. 자동/수동 구분 집계에서 NULL을 자동 쪽에 붙이면
+      62포지션이 조용히 시스템 성과로 들어간다(계측 4원칙 ②).
+
+    ⚠ `commission_rate_used`는 **행마다 다른 요율 세대**를 가리킨다(계측 4원칙 ④).
+      2026-08-25 이전 행은 키움 잔재 `1.5e-05`, 이후는 감지 채널 고시 요율이다.
+      `commission_krw`를 다른 요율로 재환산하려면 반드시 이 값으로 **먼저 나눌 것** —
+      그러지 않으면 세대가 섞인 채 스케일된다(MW0602 502차 후속2가 같은 함정에서
+      8.9만원 낙관 편향을 만들었고, 행별 환산 후에야 브로커 실측과 33원까지 맞았다).
+      NULL이면 그 세대를 알 수 없다는 뜻이며 "0"이 아니다.
     """
     import datetime as _dt
     cutoff = (_dt.date.today() - _dt.timedelta(days=limit_days)).isoformat()
@@ -2122,6 +2134,7 @@ def fetch_pnl_history(limit_days: int = 90) -> List[sqlite3.Row]:
                   COALESCE(forward_pnl_pts, pnl_pts) AS forward_pnl_pts,
                   COALESCE(forward_net_pnl_krw, forward_pnl_krw, net_pnl_krw, pnl_krw) AS forward_pnl_krw,
                   gross_pnl_krw, commission_krw, formula_version,
+                  commission_rate_used, entry_source,
                   forward_gross_pnl_krw, forward_commission_krw,
                   reverse_entry_enabled,
                   exit_reason, grade, entry_ts, exit_ts
