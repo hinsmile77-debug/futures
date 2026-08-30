@@ -2,6 +2,34 @@
 
 > 검증 필요 항목, 예정된 작업, 알려진 잠재 이슈.
 
+### 504차 — v9-dev 500차 체리픽 후속 (MW0602, 2026-08-30)
+
+근거: `dev_memory/DECISION_LOG.md` 2026-08-30(504차).
+
+- **O-1 (다음 거래일)** — D-1 하드브레이크 라이브 첫 발동 확인.
+  리플레이 기대치 **4.55%(≈11분/일)**. 로그에 `hard_break` 가 뜨는지,
+  `[TrendGate]` streak OFF 가 그 직후에 오는지 대조. 6개월 사문화였던
+  안전장치라 **"코드에 있으니 돈다"를 믿지 말 것**(471차 F-1 교훈).
+- **O-2 (다음 거래일)** — D-2 섀도 EOD 줄 `[TrendGate][섀도] 조건A(CVD 동조)`
+  출력 확인. 리플레이 기대치 UP +15.3%p / DN +16.6%p.
+  ⚠ 이 값이 라이브에서 크게 다르면 리플레이 전제(일자별 reset 위치)가 틀린 것이다.
+- **O-3 (다음 거래일)** — 결정 1 섀도 키 4종(`cvd_slope_debias` ·
+  `cvd_divergence_debias` · `cvd_direction_debias` · `cvd_debias_measured`)이
+  `raw_features` 에 **매 분봉** 기록되는지. 안 남으면 TOX 죽은 섀도 재발이다.
+- **O-4 (다음 EOD 이후)** — 🔴 **PSI 기준선 재생성 확인.** 결정 2로 입력 집합이
+  바뀌어 그 전까지 PSI 는 신뢰 불가. 재생성 후 PSI 가 CLEAR~WATCH 대역에서
+  오르내리는지 볼 것 — 상시 CRITICAL 이면 303차 상태로 되돌아간 것이다.
+- **T-1 (⑦ 복원 전 필수)** — PSI 불연속에 `strategy_events`
+  `METRIC_REDEFINITION` 마커를 남긴다. 504차는 남기지 않았다(PSI 가 현재 섀도라
+  급하지 않음). 461차 `mdd_pct`(id=76) · 501차 broker net(id=86) 전례를 따를 것.
+- **T-2 (26주 WFA 시)** — `cvd` 의 `det_ratio` **0.051** 추세. D형 임계 0.05 **바로
+  위**다(MW0601 0.079). 넘어가면 §2-c 표에 D형으로 뜨기 시작한다.
+- **T-3 (주간회의 안건)** — `CVD_DEBIAS_MODE` live 전환 여부.
+  선행: 섀도 20거래일 적재 + EOD 재학습 1회 이상(배포 pkl 이 구 분포로 학습돼
+  있고 `cvd_divergence`→3m·15m / `cvd_slope`→5m = **앙상블 가중 0.71**).
+- **T-4 (주간회의 안건)** — `_TREND_CVD_COND_ENABLED` 복원 여부. 섀도 실적 근거.
+  ⚠ 이 플래그도 CB②·CB③-P4·FP-CRITICAL 계열이 될 수 있다(끄고 잊는 것).
+
 ### 502차 — 손실6일 사전 간파 체계 후속 (MW0602, 2026-08-30)
 
 근거: `dev_memory/DECISION_LOG.md` 2026-08-30(502차),
