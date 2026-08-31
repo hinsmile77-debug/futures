@@ -310,8 +310,13 @@ class RegimeFingerprint:
     def _save_fingerprint(self) -> None:
         try:
             os.makedirs(os.path.dirname(self._fp_path), exist_ok=True)
+            prev_feats, prev_core = self._peek_saved_signature()
             payload = {
                 "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                # [507차 후속 / F-11] PSI 입력 정의를 저장본 자신이 들고 다닌다.
+                # `features` 키만으로는 「CORE 정의가 바뀌었다」와 「그날 샘플이
+                # 부족해 한 피처가 빠졌다」를 구분할 수 없다(계측 4원칙 ②).
+                "core_def": list(_CORE_FEATURES),
                 "features": {
                     feat: {"edges": edges, "props": props}
                     for feat, (edges, props) in self._training.items()
@@ -321,6 +326,91 @@ class RegimeFingerprint:
                 json.dump(payload, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.warning("[RegimeFingerprint] 저장 실패: %s", e)
+            return
+
+        self._emit_redefinition_if_changed(
+            prev_feats, prev_core,
+            sorted(self._training.keys()), sorted(_CORE_FEATURES),
+        )
+
+    # ─── [507차 후속 / F-11] 기준선 정의 변경 = 시계열 불연속 ────────────────
+    #
+    # **왜.** 2026-08-31 15:47 EOD 가 PSI 감시 피처를 통째로 갈았다
+    # (`cvd_divergence,vwap_position,ofi_norm` → `cvd_delta_norm,ofi_pressure,
+    # vwap_position`, 500차 3단계 「실집행 CORE 정의 통합」). 그런데 그 사실이
+    # 어디에도 마커로 남지 않아, 26주 WFA 재검증·372차 임계 재보정·전략 리포트
+    # 배너 세 곳이 그 날 앞뒤 PSI 를 **이어 붙여 읽게** 돼 있었다.
+    #
+    # 이 시스템이 불연속 마커를 **사후에** 붙인 것이 네 번째다(461차 `mdd_pct`
+    # 분모 · 493차 수수료율 · 501차 후속 `broker_net_krw` · 그리고 이번 PSI).
+    # 461차는 그 혼동으로 **잘못된 전략 교체 권고**까지 냈다. 사람이 시계열을
+    # 나란히 놓고 읽다가 눈으로 발견하는 경로에 의존하지 않게, 저장하는 쪽이
+    # **스스로 신고**하게 만든다.
+    #
+    # ⚠ **PSI 계산·임계(`_PSI_WATCH/ALARM/CRIT`)·차단은 건드리지 않는다.**
+    #   `FP_CRITICAL_GRADE_BLOCK_ENABLED = False` 이며 이 함수는 기록 1행이다.
+    # ⚠ **무조건 발행하지 않는다** — 집합이 같으면 아무것도 남기지 않는다.
+    #   매 EOD 마커가 쌓이면 그 자체가 노이즈가 돼 계측이 죽는다.
+    def _emit_redefinition_if_changed(self, prev_feats, prev_core,
+                                      new_feats, new_core) -> None:
+        if prev_feats is None:
+            return                      # 최초 저장 — 비교 대상이 없다(불연속 아님)
+        if prev_feats == new_feats and (prev_core is None or prev_core == new_core):
+            return
+
+        # 원인 분류 — 둘 다 불연속이지만 처분이 다르다.
+        #   CORE_DEF_CHANGE  : 정의가 바뀌었다(설정·코드 변경). 영구 불연속.
+        #   SAMPLE_COVERAGE  : 정의는 같은데 그날 저장된 피처 수가 달라졌다
+        #                      (샘플 부족 스킵). 다음 저장에서 되돌아올 수 있다.
+        if prev_core is not None and prev_core != new_core:
+            cause = "CORE_DEF_CHANGE"
+        elif prev_core is None:
+            cause = "CORE_DEF_UNKNOWN"  # 구 저장본에 core_def 가 없다(미측정 ≠ 동일)
+        else:
+            cause = "SAMPLE_COVERAGE"
+
+        eff = datetime.now().strftime("%Y-%m-%d")
+        msg = ("[RegimeFingerprint] PSI 기준선 피처 집합 교체 (%s) — "
+               "%s -> %s (core_def %s -> %s). "
+               "이 날짜 이전 PSI 시계열과 직접 비교 금지." % (
+                   cause, prev_feats, new_feats,
+                   "미기록" if prev_core is None else prev_core, new_core))
+        logger.warning(msg)
+
+        try:
+            from config.strategy_registry import StrategyRegistry
+            StrategyRegistry().log_event(
+                event_type="METRIC_REDEFINITION",
+                message="[MW0602 F-11] " + msg + " effective_date=" + eff,
+                note=("자동 발행 — strategy/regime_fingerprint.py:_save_fingerprint(). "
+                      "PSI 계산·임계·차단 무변경(FP_CRITICAL_GRADE_BLOCK_ENABLED=False)."),
+                version="v1.0",
+            )
+        except Exception as e:
+            # 마커를 못 남긴 것 자체가 사건이다 — 조용히 넘기지 않는다(계측 4원칙 ④).
+            logger.warning(
+                "[RegimeFingerprint] 🔴 불연속 마커 기록 실패(%s) — "
+                "strategy_events 에 METRIC_REDEFINITION 이 없다. 수동 등록할 것.", e)
+
+    def _peek_saved_signature(self):
+        """저장 **직전** 파일의 (피처 키 정렬 리스트, core_def) 를 읽는다.
+
+        Returns:
+            (None, None)        — 파일이 없거나 읽지 못했다(비교 불가)
+            (list, None)        — 구 세대 저장본(`core_def` 이전)
+            (list, list)        — 현행 세대
+        """
+        try:
+            if not os.path.exists(self._fp_path):
+                return None, None
+            with open(self._fp_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception as e:
+            logger.warning("[RegimeFingerprint] 직전 저장본 조회 실패: %s", e)
+            return None, None
+        feats = sorted(payload.get("features", {}).keys())
+        core = payload.get("core_def")
+        return feats, (sorted(core) if isinstance(core, list) else None)
 
     def _load_fingerprint(self) -> None:
         try:

@@ -454,12 +454,34 @@ IF EXIST "data\_exit_normally" (
 
 REM ── 단일 인스턴스 보장 ────────────────────────────────────────────────
 CALL :L "[GUARD] 기존 main.py 프로세스 체크..."
+REM ---- [MW0602 507cha follow-up / F-7] Record WHAT the deciding probe SEES ----
+REM The deciding probe on the next line prints to stdout only and is followed by
+REM 2>NUL, so its evidence never reached the launcher log. That is why ten trading
+REM days of 'launcher_guard fired' stayed unexplained: '[WARN] existing process
+REM detected' and '[GUARD] kill-target count=0' contradict each other and nothing
+REM in the log could settle it (0831 report 1-4, CLAUDE.md instrumentation rule 3/4).
+REM
+REM THIS PROBE IS A RECORDER ONLY. It runs BEFORE the deciding probe, so the
+REM ERRORLEVEL that drives the branch below belongs to the deciding probe alone.
+REM GUARD BEHAVIOUR IS UNCHANGED - nothing branches on this line's exit code.
+REM
+REM WARNING: this probe must contain NO '!' character. cmd delayed expansion eats
+REM it, so 'p.pid != os.getpid()' silently becomes 'p.pid = os.getpid()' and python
+REM dies with SyntaxError (exit 1). That defect is exactly what this probe measures:
+REM 'running-probe count=0' next to 'decide=detected' proves the deciding probe
+REM never ran. The legacy lines keep the defect on purpose - see the known-defect
+REM lock in tests/test_500_guard_kill_target_log.py before touching them.
+"!PY32!" -c "import psutil, os, io, datetime; me=os.getpid(); t=[p for p in psutil.process_iter(['pid','name','cmdline','create_time']) if 'python' in (p.info.get('name') or '').lower() and any('main.py' in (c or '') for c in (p.info.get('cmdline') or [])) and p.pid not in (me,)]; L=['[GUARD] running-probe PID={} started={} cmd={}'.format(p.pid, datetime.datetime.fromtimestamp(p.info.get('create_time') or 0).isoformat(sep=' ')[:19], ' '.join(p.info.get('cmdline') or [])) for p in t]; L.append('[GUARD] running-probe count={} probe=ok'.format(len(t))); b=os.environ.get('_BLOG'); f=io.open(b,'a',encoding='utf-8') if b else None; [print(s) for s in L]; [f.write(s+chr(10)) for s in L] if f is not None else None; f.close() if f is not None else None" 2>NUL
 "!PY32!" -c "import psutil, sys, os; procs=[p for p in psutil.process_iter(['pid','name','cmdline']) if 'python' in (p.info.get('name') or '').lower() and any('main.py' in (c or '') for c in (p.info.get('cmdline') or [])) and p.pid != os.getpid()]; print('[GUARD] 실행 중 main.py: {}'.format(len(procs))); [print('  PID={} cmd={}'.format(p.pid, ' '.join(p.info.get('cmdline') or []))) for p in procs]; sys.exit(1 if procs else 0)" 2>NUL
 IF !ERRORLEVEL! EQU 0 GOTO :guard_no_existing
 
 ECHO.
 CALL :L "[WARN] 이미 실행 중인 main.py 프로세스가 감지됐습니다."
 CALL :L "[WARN] 이중 실행 시 GBM pkl 파일 경합 및 중복 주문이 발생할 수 있습니다."
+REM [MW0602 507cha follow-up / F-7] Which way the deciding probe went. Exactly one
+REM of decide=detected / decide=clear is written per run - an unconditional state
+REM sample, not a conditional log (468cha G-2 forbids the latter).
+CALL :L "[GUARD] running-probe decide=detected"
 ECHO.
 FOR /F "usebackq" %%T IN (`powershell -NoProfile -Command "Get-Date -Format HHmm"`) DO SET "_GUARD_NOW=%%T"
 IF NOT DEFINED _GUARD_NOW SET "_GUARD_NOW=0900"
@@ -492,6 +514,7 @@ CALL :L "[GUARD] 기존 프로세스 종료 완료 -- 새 인스턴스 시작."
 GOTO :guard_done
 
 :guard_no_existing
+CALL :L "[GUARD] running-probe decide=clear"
 CALL :L "[GUARD] 기존 main.py 없음 -- 단일 인스턴스 확인."
 
 :guard_done

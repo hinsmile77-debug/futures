@@ -196,6 +196,23 @@ CLAUDE.md처럼 git으로 커밋되는 문서에 적어야** 양쪽 PC 세션이
 > 또한 cvd_divergence·ofi_norm 학습표본의 91%가 정확히 0.0인 점질량은 분위수 비닝으로도
 > 완전히 해소되지 않는 잔여 이슈로 별도 등록(CORE 피처 자체 조사 필요, 이번 수정 범위 밖).
 > (근거: 371차, `dev_memory/DECISION_LOG.md` 371차 항목)
+>
+> 🔴 **[2026-08-31 507차 후속 / F-11] PSI 시계열은 2026-08-31에 불연속이다 —
+> 그 이전 값과 직접 비교 금지.**
+> 그날 15:47 EOD가 PSI 감시 피처 집합을 통째로 교체했다:
+> `['cvd_divergence','vwap_position','ofi_norm']` → **`['cvd_delta_norm','ofi_pressure','vwap_position']`**
+> (500차 3단계 「PSI가 **실집행** CORE를 재게 한다」 결정이 이 브랜치에서 처음 EOD를 탄 날).
+> 입력 집합이 다르므로 앞뒤 PSI 값·경보 등급·`_per_feature_psi` 는 **다른 지표**다 —
+> 461차 `mdd_pct`(분모 혼동으로 잘못된 전략 교체 권고) · 493차 요율 · 501차 후속
+> `broker_net_krw` 와 같은 유형이다.
+> 전환 마커: `strategy_events` `METRIC_REDEFINITION`(2026-08-31, 507차 후속 소급 1행).
+> 이후로는 `strategy/regime_fingerprint.py:_save_fingerprint()` 가 저장 때마다 직전
+> 저장본과 피처 집합·`core_def` 를 대조해 **바뀐 경우에만** 같은 마커를 자동 발행한다
+> (집합이 같으면 아무것도 남기지 않는다 — 무조건 발행은 노이즈다).
+> ⚠ **차단·임계는 무변경**이다. `FP_CRITICAL_GRADE_BLOCK_ENABLED` 는 여전히 `False` 이고
+> `_PSI_WATCH/ALARM/CRIT` 도 그대로다 — 이 항목은 기록 조치이지 전환기준 ⑦의 해제가 아니다.
+> (근거: `dev_memory/DECISION_LOG.md` 2026-08-31 507차 후속,
+>  `docs/정기점검/매일점검/MW0602-20260831-점검리포트.md` `1-12`·`F-11`)
 
 > **[2026-07-12 도입 / 2026-08-13 등재] TOX-SEVERE-SPREAD** —
 > `config/settings.py:TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED = False`
