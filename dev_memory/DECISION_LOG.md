@@ -35244,3 +35244,108 @@ F-15로 대체하며 기배포 사실을 자체 정정했다.
   모듈 끝에서 스스로 종료한다. 수집 중 자체 검사를 다 돌려 「전부 통과」를 출력했다.
   오늘 작업과 무관하며 정리 항목으로 등록.
 - `main.py` 줄바꿈 LF 보존 확인(변경 전후 CRLF 0). 전 변경 파일 `py_compile` 통과.
+
+---
+
+## 2026-08-31 (MW0601 508차 — F-6 배포: Restart Armistice 고착 해소)
+
+506차가 **F-6 (P0)** 으로 등재하고 507차 후속이 배포에서 **뺀** 항목이다
+(507차는 F-7·F-8·F-11·F-12·F-14 + G-4·G-5만 반영 — "F-6은 라이브 진입 경로를
+여는 변경이라 가장 마지막"). 사용자 지시로 이번 세션에 배포한다.
+
+### 사실 — 종일 자동진입 0건의 단일 원인
+
+`trades` 27행 전량 `entry_source=GHOST_PENDING_MISS`/`BROKER_SYNC_RECOVERY` ·
+`grade=MANUAL`/`BROKER`. **엔진이 만든 진입은 0건**이다(청산은 정상 집행 —
+하드스톱·TP1~TP3 주문은 다 나갔다. 막힌 것은 신규 진입뿐).
+
+```
+09:21:00 [차단] Restart Armistice — 재시작 유예 중 (time_ok=True sync=0/2)
+   …  47건, 09:21 → 15:08 전 구간  …
+15:08:00 [차단] Restart Armistice — 재시작 유예 중 (time_ok=True sync=0/2)
+```
+
+`time_ok=True` · `남은=0s` — 90초 시간 조건은 진작 충족됐고 **`sync=0/2` 단독**으로
+종일 막혔다. `ensemble_decisions.entry_gate_json` 전수: **비X 등급 16행 중 16행이
+`armistice_ok=False`**. 모든 후보를 빠짐없이 막은 게이트는 이것 하나뿐이다.
+
+⚠ 506차는 12:26까지 데이터로 **33건 / C 4건**이라 적었다 — 종일 실측은
+**47건 / C 16건**이다. 그 수치를 재인용하지 말 것.
+
+### 원인 — 카운터를 올리는 경로가 둘 다 도달 불가였다
+
+`_restart_armistice_sync_count` 쓰기는 실질 2곳뿐이었다:
+
+| 경로 | 조건 | 08-31 |
+|---|---|---|
+| `_ts_sync_position_from_broker()` blank-as-flat `= 2` | 기동 시 브로커 잔고가 **비어 있을 때만** | ❌ |
+| `_ts_manual_position_restore()` `+= 1` | 대시보드 **수동** 복원 전용(자동 호출자 0) | ❌ |
+
+금요일 이월 **LONG 4계약** 때문에 08:41:05 기동 sync가
+`raw rows=1 nonempty_rows=1 all_blank_rows=False` → blank-as-flat 분기 미진입 →
+카운터 **0 고정** → `_armistice_sync_ok = (0>=2)` 영구 False.
+08:45:06 하드스톱으로 FLAT이 된 뒤에도 startup sync는 기동 시 1회뿐이라
+재평가 기회가 없었다.
+
+🔴 **승격에 필요한 정보는 처음부터 다 있었다.** 같은 08:41:05에
+`[BrokerSync] status verified=True block_new_entries=False reason=synced LONG 4 @ 1068.47`
+이 찍혀 있었다 — 없던 데이터가 아니라 **아무도 안 본 데이터**다(계측 4원칙 ⑤와 동형).
+
+대조군이 원인을 확정한다:
+
+| 거래일 | `armistice cleared` | Armistice 차단 |
+|---|---|---|
+| 08-25 ~ 08-28 | 각 1건 | **0건** |
+| 08-31 | **0건** | **47건** |
+
+### 기회비용 (참고 — 손익 추정으로 쓰지 말 것)
+
+Armistice가 **단독** 차단한 5분(봉 시각): 13:22 · 14:03 · 14:11 · 14:13 · 14:14.
+전부 LONG · grade C. 3분 선도수익 +0.68 / +2.30 / +1.68 / +0.12 / +1.46pt =
+**방향 5/5 적중, 합 +6.24pt/계약**. ⚠ n=5이고 실제 청산은 TP/손절 계단이라
+손익 추정치가 아니다 — "막힌 신호가 무작위가 아니었다" 이상으로 읽지 말 것.
+나머지 11분은 `qty_ok`(10) · `mode_filter_ok`(9) · `cb_normal`(3)도 함께 걸려 있어
+유예가 풀렸어도 진입하지 않았다.
+
+### 조치
+
+**F-6** `main.py` — 인라인 블록을 **`_ts_evaluate_armistice(self, now_dt)`** 로 분리.
+인라인이면 스텁 self로 구동할 수 없어 회귀 테스트가 소스 문자열 검사로 전락한다
+(471차 F-1과 같은 이유).
+
+- **승격**: `sync_count < 2` AND `time_ok` AND `_broker_sync_verified is True`
+  AND `_broker_sync_block_new_entries is False` → `sync_count = 2`, WARNING 1회.
+- **고착 경보**: `_in_armistice` 이고 **09:30 이후**면 5분 스로틀 **ERROR**.
+  종전에는 `[차단]` INFO 한 줄뿐이라 하루를 통째로 잃고도 경보가 없었다
+  (계측 4원칙 ④). 등급과 무관하게 찍는다 — 등급이 X뿐인 것 자체가 증상일 수 있다.
+- `__init__` 에 `_armistice_promoted_logged` · `_armistice_stuck_last_log` **명시
+  초기화**(`getattr` 폴백 금지 — 계측 4원칙 ④).
+
+🔴 **90초 시간 조건은 AND로 유지했다.** 떼면 P1-a 원목적(재시작 직후 브로커 상태
+미확인 진입 차단)이 무력화된다. 테스트 T3·T8이 이 불변식을 못박는다.
+
+⚠ **안전성 손실 0.** `_broker_sync_block_new_entries` 는 이 승격과 무관하게 최종
+진입 조건에서 따로 평가된다 — 승격 후 브로커가 나빠지면 그쪽이 막는다.
+
+### 검증
+
+- `tests/test_506_armistice_release.py` 신설 — **33항목 전부 통과**.
+  T1 정방향 / T2 역방향(sync 미검증 → 3시간 뒤에도 미해제) /
+  **T3 90초 AND 불변식** / **T4 08-31 재현**(non-blank 기동이어도 해제, 단독 차단
+  5분이 모두 열림) / T5·T5b 고착 ERROR + 스로틀 + 오탐 없음 / T6 승격 로그 1회 /
+  T7 `block_new_entries=True` 면 미승격 / T8 소스·배선·`__init__` 불변식.
+- 전체 스위트 **1,033 통과 / 3 실패 / 1 skip / 4 xfail** (6분 58초).
+  실패 3건 전량 **선행 실패** — `git stash push -- main.py` 로 되돌린 뒤 같은
+  3건이 **동일하게 실패**하는 것을 실측했다
+  (`test_483_git_lock_guard[fuoption]` · `test_504_pnl_history_creon_tab` 2건).
+- `test_500_*` 5파일은 507차가 등록한 대로 pytest 수집 시 `SystemExit: 0`
+  (단독 실행 스크립트) — `--ignore` 로 제외. 오늘 작업과 무관.
+- `main.py` CRLF 18,463/18,463 보존(변경 전과 동일). AST 파싱 통과.
+
+### 부수 사실 — 갭 손실과 자동매매 정지는 같은 뿌리다
+
+이월 LONG 4계약이 1068.47 → 1041.18 갭에 맞아 08:45:06 하드스톱 **-5,461,928원**.
+당일 총 -6,389,518원의 **85.5%**다. 절대원칙 §1(15:10 강제청산)은 엔진이 연
+포지션을 전제하는데 **외부에서 들어와 이월된 포지션에는 장전 강제청산 경로가 없다.**
+그리고 바로 그 포지션이 Armistice 고착의 방아쇠였다.
+⇒ 「장전 이월 포지션 처리」는 F-6과 **별개 안건**으로 NEXT_TODO에 남긴다.

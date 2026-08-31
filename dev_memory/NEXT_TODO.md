@@ -17993,12 +17993,26 @@ docs/정기점검/매일점검/evidence_MW0601-20260826_post.md
 
 **Fix (장후 15:45 이후 적용 — 505차 F-1~F-5 다음)**
 
-- [ ] **F-6 (P0) Restart Armistice 고착 해소** `main.py:8537~8556`
-      탈출 조건: `_armistice_time_ok` AND `_broker_sync_verified is True` AND
-      `_broker_sync_block_new_entries is False` → `sync_count = 2` **세션당 1회** 승격 +
-      WARNING 1회(계측 4원칙 ④). 추가로 개장 후 **30분 이상 연속 차단** 시 5분 스로틀
-      **ERROR**. ⚠ 90초 시간 조건을 AND로 **반드시 유지**(P1-a 원목적 보존)
-- [ ] **F-6 테스트** `tests/test_506_armistice_release.py` — 정방향/역방향/오늘 로그 리플레이
+- [x] **F-6 (P0) Restart Armistice 고착 해소** — **[MW0601 508차 배포 완료]**
+      설계대로 배선했다. 다만 위치는 인라인이 아니라 새 모듈 함수
+      **`main.py:_ts_evaluate_armistice(self, now_dt)`** 다 — 인라인이면 스텁 self로
+      구동할 수 없어 회귀 테스트가 소스 문자열 검사로 전락한다(471차 F-1과 같은 이유).
+      승격 조건 4중 AND · 승격 WARNING 1회 · 09:30 이후 고착 시 5분 스로틀 ERROR ·
+      `__init__` 명시 초기화 2종. 90초 시간 조건 AND 유지(T3·T8이 못박음).
+      근거: `dev_memory/DECISION_LOG.md` 2026-08-31(508차).
+- [x] **F-6 테스트** `tests/test_506_armistice_release.py` — **33항목 전부 통과**
+      (T1 정방향 / T2 역방향 / T3 90초 AND 불변식 / T4 08-31 재현 / T5·T5b 고착
+      ERROR·스로틀·오탐없음 / T6 로그 1회 / T7 block_new_entries / T8 소스·배선 불변식)
+- [ ] 🔴 **[508차 신설 / F-6 후속] 장전 이월 포지션 처리 — 별개 안건**
+      08-31 손실 -6,389,518원의 **85.5%**(-5,461,928원)가 금요일 이월 LONG 4계약의
+      갭이었고, **그 포지션이 Armistice 고착의 방아쇠**이기도 했다(기동 잔고가
+      non-blank라 blank-as-flat 경로 미진입). F-6은 고착만 풀었지 **이월 자체는
+      그대로 남는다.**
+      절대원칙 §1(15:10 강제청산)은 엔진이 연 포지션을 전제해서, 외부에서 들어와
+      이월된 포지션에는 **장전 강제청산 경로가 없다.**
+      ⚠ 자동 청산 승격은 **주간회의 안건** — 480차 F-2(프로세스 밖 FLAT 가드)를
+      알림 전용으로 둔 것과 같은 이중 청산 위험이 있다. 먼저 **경보만** 붙이는
+      단계를 검토할 것(기동 시 이월 포지션 감지 → ERROR + 알림).
 - [ ] **F-7 (P1) PSI 기준선 키 불일치 흡수** `strategy/regime_fingerprint.py`
       ⓐ `_load_fingerprint()`(`:314~322`)에서 `_CORE_FEATURES` 밖 키 폐기 + 개수·사유
       WARNING(4원칙 ③) ⓑ `_live_buf` defaultdict **또는** `update_live()` `.get()` 스킵

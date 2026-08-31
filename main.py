@@ -213,6 +213,14 @@ _PARAM_FEAT_MAP = {
 # 매분 전량 계산이 S6 병목의 실질 전량이었음(07-30 헬스 CRITICAL 딥다이브).
 _SHAP_RR_HORIZONS = ("1m", "3m", "5m")
 
+# [MW0601 506차 F-6] Restart Armistice 고착 감시 임계.
+# 09:30 = config/settings.py MARKET_OPEN("09:00") + 30분. utils/time_utils.is_market_open()
+# 도 개장 시각을 datetime.time(9, 0) 리터럴로 두고 있어 같은 관례를 따른다.
+# ⚠ 이 둘은 **경보 임계일 뿐 차단 조건이 아니다** — 진입 허용 여부는 아래
+#   `_armistice_time_ok AND _armistice_sync_ok` 가 단독으로 정한다.
+_ARMISTICE_STUCK_AFTER = datetime.time(9, 30)
+_ARMISTICE_STUCK_LOG_THROTTLE_SEC = 300
+
 EFFECT_MONITOR_HISTORY_PATH = os.path.join(BASE_DIR, "effect_monitor_history.json")
 # [432차] TP1_PROTECT_PLUS_ALPHA_PTS / TP1_PROTECT_ATR_LOCK_MULT는 여기서 리터럴로
 # 정의하지 않는다 — config/settings.py가 정본이고 위 import 블록에서 가져온다.
@@ -990,6 +998,10 @@ class TradingSystem:
             datetime.datetime.now() + datetime.timedelta(seconds=90)
         )
         self._restart_armistice_sync_count: int = 0
+        # [506차 F-6] 고착 감시 — 승격 1회 로그 / 30분 초과 ERROR 5분 스로틀.
+        # None = 아직 한 번도 찍지 않음(미기록). 0.0 같은 폴백 금지 — 계측 4원칙 ②·④.
+        self._armistice_promoted_logged: bool = False
+        self._armistice_stuck_last_log: object = None
 
         # ── P1-b: Position Integrity Checksum ─────────────────────────────────
         self._integrity_broker_qty:  int  = 0   # 최근 balance chejan/TR에서 갱신
@@ -8601,13 +8613,11 @@ class TradingSystem:
         )
 
         # ── P1-a: Restart Armistice ───────────────────────────────────────────
+        # [MW0601 506차 F-6] 승격·고착경보는 _ts_evaluate_armistice()로 분리했다
+        # (인라인이면 스텁 self로 구동할 수 없어 회귀 테스트가 소스 문자열 검사로
+        #  전락한다 — 471차 F-1과 같은 이유).
         _now_dt = datetime.datetime.now()
-        _armistice_time_ok = (
-            self._restart_armistice_until is None
-            or _now_dt >= self._restart_armistice_until
-        )
-        _armistice_sync_ok = self._restart_armistice_sync_count >= 2
-        _in_armistice = not (_armistice_time_ok and _armistice_sync_ok)
+        _armistice_time_ok, _in_armistice = _ts_evaluate_armistice(self, _now_dt)
         if _in_armistice and _final_grade not in ("X",):
             _remain_sec = max(
                 0,
@@ -15077,6 +15087,88 @@ def _ts_apply_exit_cooldown(self, result: dict, filled_at: datetime.datetime = N
     )
     logger.warning(msg)
     log_manager.system(msg, "WARNING")
+
+
+def _ts_evaluate_armistice(self, now_dt):
+    """P1-a Restart Armistice 평가 — 승격 · 고착 경보 · 판정.
+
+    Returns:
+        (time_ok, in_armistice) — `in_armistice=True` 면 신규 진입 차단.
+
+    ────────────────────────────────────────────────────────────────────────
+    [MW0601 506차 F-6] sync 카운터 승격 (2026-08-31 사고 대응)
+    ────────────────────────────────────────────────────────────────────────
+    종전에 `_restart_armistice_sync_count` 를 올리는 경로는 실질 2개뿐이었고,
+    둘 다 정상 운영에서 도달하지 못하는 경우가 있었다:
+
+      · `= 2` 직접 대입 — `_ts_sync_position_from_broker()` 의 blank-as-flat 확정.
+        기동 시 **브로커 잔고가 비어 있을 때만** 실행된다.
+      · `+= 1`         — `_ts_manual_position_restore()`. 대시보드 **수동** 복원
+        전용이라 자동 호출자가 없다(`TradingSystem._manual_position_restore`).
+
+    2026-08-31: 금요일 이월 LONG 4계약 때문에 기동 시 잔고가 non-blank였고
+    (`all_blank_rows=False`), 그래서 앞의 경로가 실행되지 않아 카운터가 **0에
+    고정**됐다. 09:21~15:08 **47분 전 구간** 자동진입이 막혔다 — 그날 비X 등급
+    후보 16분이 16/16 모두 `armistice_ok=False`였고, 그중 5분은 Armistice가
+    **단독** 차단 사유였다. 08:45 하드스톱으로 FLAT이 된 뒤에도 startup sync는
+    기동 시 1회뿐이라 재평가 기회가 없었다.
+
+    `_ts_sync_position_from_broker()` 의 주석이 이미 같은 실패 양식을 적어 뒀다
+    — 그때는 카운터가 1에서 멈추는 변종이었고, 이번엔 0에서 멈췄다.
+
+    ⚠ 90초 시간 조건(`time_ok`)은 AND로 **반드시 유지**한다 — 떼면 P1-a의
+      원목적(재시작 직후 브로커 상태 미확인 진입 차단)이 무력화된다.
+    ⚠ 안전성 손실 없음 — `_broker_sync_block_new_entries` 는 이 승격과 무관하게
+      최종 진입 조건에서 따로 평가된다. 승격 후 브로커가 다시 나빠지면 그쪽이 막는다.
+    """
+    time_ok = (
+        self._restart_armistice_until is None
+        or now_dt >= self._restart_armistice_until
+    )
+
+    if (
+        self._restart_armistice_sync_count < 2
+        and time_ok
+        and self._broker_sync_verified is True
+        and self._broker_sync_block_new_entries is False
+    ):
+        prev_sync = self._restart_armistice_sync_count
+        self._restart_armistice_sync_count = 2
+        # 세션당 1회만 찍는다 — 승격 자체가 1회성이라 `< 2` 가드로도 충분하지만,
+        # 외부에서 카운터를 되돌리는 경로가 생겨도 로그가 폭주하지 않게 못박는다.
+        if not self._armistice_promoted_logged:
+            self._armistice_promoted_logged = True
+            log_manager.system(
+                "[Armistice] 브로커 sync 검증 완료 → 재시작 유예 해제 "
+                "(sync %d→2 승격 | time_ok=True verified=True "
+                "block_new_entries=False)" % prev_sync,
+                "WARNING",
+            )
+
+    sync_ok = self._restart_armistice_sync_count >= 2
+    in_armistice = not (time_ok and sync_ok)
+
+    # 고착 경보 — 개장 30분 뒤에도 유예가 안 풀렸으면 ERROR(5분 스로틀).
+    # 종전에는 `[차단] Restart Armistice` INFO 한 줄뿐이라 하루를 통째로 잃고도
+    # 아무 경보가 뜨지 않았다(계측 4원칙 ④ — 폴백이 정상값처럼 보인다).
+    # 등급과 무관하게 찍는다 — 등급이 X뿐인 것 자체가 증상일 수 있다.
+    if in_armistice and now_dt.time() >= _ARMISTICE_STUCK_AFTER:
+        stuck_last = self._armistice_stuck_last_log
+        if (
+            stuck_last is None
+            or (now_dt - stuck_last).total_seconds() >= _ARMISTICE_STUCK_LOG_THROTTLE_SEC
+        ):
+            self._armistice_stuck_last_log = now_dt
+            log_manager.system(
+                "[Armistice] 🔴 개장 30분 초과 고착 — 자동진입 전면 차단 중 "
+                "(time_ok=%s sync=%d/2 broker_verified=%s block_new_entries=%s) "
+                "— 2026-08-31 47분 전 구간 차단 사고와 동일 양식"
+                % (time_ok, self._restart_armistice_sync_count,
+                   self._broker_sync_verified, self._broker_sync_block_new_entries),
+                "ERROR",
+            )
+
+    return time_ok, in_armistice
 
 
 def _ts_check_position_integrity(self) -> bool:
