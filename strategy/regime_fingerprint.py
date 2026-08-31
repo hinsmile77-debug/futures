@@ -94,9 +94,14 @@ class RegimeFingerprint:
         self._live_buf:    Dict[str, deque] = {
             feat: deque(maxlen=_LIVE_WIN_MINS) for feat in _CORE_FEATURES
         }
-        self._current_psi   = 0.0
+        # 🔴 [MW0601 507차 후속 / F-12] 초기값은 `0.0` 이 아니라 **`None`** 이다 —
+        #   「미측정」과 「측정했더니 0」을 같은 값으로 표현하지 않는다(계측 4원칙 ②).
+        #   2026-08-31에 `update_live()` 가 하루 종일 예외로 죽었는데도 EOD 패널이
+        #   `PSI : 0.000 (CLEAR)` 로 찍혀, **가장 조용한 정상**처럼 보였다.
+        #   `_per_feature_psi` 도 같은 이유로 0 채움이 아니라 빈 dict 로 시작한다.
+        self._current_psi: Optional[float] = None
         self._current_level = DriftLevel.CLEAR
-        self._per_feature_psi: Dict[str, float] = {f: 0.0 for f in _CORE_FEATURES}
+        self._per_feature_psi: Dict[str, float] = {}
 
         self._load_fingerprint()
 
@@ -131,7 +136,7 @@ class RegimeFingerprint:
             list(self._training.keys()),
         )
 
-    def update_live(self, features: dict) -> float:
+    def update_live(self, features: dict) -> Optional[float]:
         """
         매분 호출 — Live 피처 값을 버퍼에 추가하고 PSI를 계산·반환.
 
@@ -139,7 +144,10 @@ class RegimeFingerprint:
             features: 피처 dict (feature_builder.build() 반환값)
 
         Returns:
-            현재 대표 PSI (CORE 3개 피처 중 중앙값 — 아래 "Why 중앙값" 참조)
+            현재 대표 PSI (CORE 3개 피처 중 중앙값 — 아래 "Why 중앙값" 참조).
+            **기준선이 없거나 라이브 표본이 모자라면 `None`**(= 미측정).
+            🔴 [507차 후속 / F-12] 종전 `0.0` 반환은 「분포가 완전히 같다」와
+            구분되지 않았다 — 호출부는 `is not None` 으로 먼저 걸러야 한다.
         """
         for feat in _CORE_FEATURES:
             val = features.get(feat)
@@ -149,12 +157,25 @@ class RegimeFingerprint:
         if not self._training:
             self._try_bootstrap_baseline()
         if not self._training:
-            return 0.0
+            self._current_psi = None
+            self._current_level = DriftLevel.CLEAR
+            return None
 
         min_live = _N_BINS * 5   # 구간당 최소 5개
         psi_vals: List[float] = []
         for feat, (edges, train_props) in self._training.items():
-            live_vals = list(self._live_buf[feat])
+            # [MW0601 507차 후속 / F-7] `_training` 은 **디스크 파일**에서 온다.
+            # `_live_buf` 는 **코드 상수** `_CORE_FEATURES` 로 만든다. 두 집합이
+            # 갈리면 종전 `self._live_buf[feat]` 는 KeyError 로 터졌고, 호출부가
+            # 그것을 5분 스로틀 WARNING 으로만 삼켜 **하루 종일 PSI 가 죽어 있어도
+            # 아무도 몰랐다**(2026-08-31, 파일=cvd_divergence/ofi_norm ·
+            # 코드=cvd_delta_norm/ofi_pressure — 500차 CORE 통합 뒤 기준선 미갱신).
+            # `_load_fingerprint()` 가 이미 걸러내지만, 여기도 방어한다 —
+            # 한쪽만 고치면 다음 집합 교체 때 같은 사고가 재발한다.
+            _buf = self._live_buf.get(feat)
+            if _buf is None:
+                continue
+            live_vals = list(_buf)
             if len(live_vals) < min_live:
                 continue
             live_props = _compute_proportions(live_vals, edges)
@@ -179,7 +200,13 @@ class RegimeFingerprint:
         # 구간에서 WATCHLIST~ALARM로 시장 상황에 맞춰 오르내림을 확인.
         # 참고: 개별 피처의 원값은 get_per_feature_psi()로 그대로 조회 가능 —
         # ofi_norm이 유독 시끄럽다는 진단 정보 자체는 숨기지 않는다.
-        psi_rep = _median(psi_vals) if psi_vals else 0.0
+        # [507차 후속 / F-12] 계산에 쓸 피처가 하나도 없으면 **미측정**이다 —
+        # 0.0(=완전 동일 분포)으로 위장하지 않는다.
+        if not psi_vals:
+            self._current_psi = None
+            self._current_level = DriftLevel.CLEAR
+            return None
+        psi_rep = _median(psi_vals)
 
         self._current_psi   = psi_rep
         self._current_level = _psi_to_level(psi_rep)
@@ -198,15 +225,31 @@ class RegimeFingerprint:
         return psi_rep
 
     def get_level(self) -> int:
-        """현재 경보 수준 (DriftLevel 호환)."""
+        """현재 경보 수준 (DriftLevel 호환).
+
+        ⚠ [507차 후속 / F-12] 미측정일 때도 `CLEAR`(0)를 돌려준다 — 소비처
+        (`compute_action` 등)의 타입을 바꾸지 않기 위해서다. **`CLEAR` 를
+        「정상 확인됨」으로 읽지 말 것**: 측정 여부는 `psi_measured()` 로 물어라.
+        """
         return self._current_level
 
-    def get_psi(self) -> float:
-        """현재 대표 PSI 값 (CORE 3개 중 중앙값)."""
+    def get_psi(self) -> Optional[float]:
+        """현재 대표 PSI 값 (CORE 3개 중 중앙값). **미측정이면 `None`**.
+
+        [507차 후속 / F-12] 종전에는 미측정도 `0.0` 이었다. 렌더링·저장 쪽이
+        그것을 `0.000 (CLEAR)` 로 찍어 「가장 조용한 정상」처럼 보였다.
+        """
         return self._current_psi
 
+    def psi_measured(self) -> bool:
+        """이번 세션에서 PSI 가 실제로 계산된 적이 있는가(계측 4원칙 ②)."""
+        return self._current_psi is not None
+
     def get_per_feature_psi(self) -> Dict[str, float]:
-        """피처별 PSI 값 반환(원값 — 대표값 집계 전, 진단용)."""
+        """피처별 PSI 값 반환(원값 — 대표값 집계 전, 진단용).
+
+        **미측정이면 빈 dict** — 0 채움 dict 를 돌려주지 않는다.
+        """
         return dict(self._per_feature_psi)
 
     def reset_to_live_baseline(self) -> bool:
@@ -301,6 +344,11 @@ class RegimeFingerprint:
             os.makedirs(os.path.dirname(self._fp_path), exist_ok=True)
             payload = {
                 "saved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                # [MW0601 507차 후속 / F-7] 저장 당시의 **코드 CORE 집합**을 함께
+                # 박는다. 이것이 없으면 로드 쪽은 "키가 왜 다른가"를 말할 수 없고,
+                # 2026-08-31처럼 「파일은 500차 이전 세대」라는 사실이 로그에 한 줄도
+                # 남지 않는다(계측 4원칙 ⑤ — 대사는 모든 축을 걸어라).
+                "core_features": list(_CORE_FEATURES),
                 "features": {
                     feat: {"edges": edges, "props": props}
                     for feat, (edges, props) in self._training.items()
@@ -312,20 +360,85 @@ class RegimeFingerprint:
             logger.warning("[RegimeFingerprint] 저장 실패: %s", e)
 
     def _load_fingerprint(self) -> None:
+        """저장된 학습 분포 로드.
+
+        [MW0601 507차 후속 / F-7] **코드 CORE 집합에 없는 키는 버린다.**
+        파일은 디스크에 남고 코드 상수는 배포로 바뀌므로 두 세대가 갈릴 수 있다 —
+        2026-08-31 실측: 파일 `cvd_divergence`/`vwap_position`/`ofi_norm`(08-28 저장)
+        vs 코드 `cvd_delta_norm`/`vwap_position`/`ofi_pressure`(500차 통합).
+        걸러내지 않으면 `update_live()` 가 `_live_buf[feat]` 에서 KeyError 로 죽고,
+        그 예외가 5분 스로틀 WARNING 으로만 삼켜져 **하루 종일 PSI 가 없는데도
+        패널은 `0.000 (CLEAR)`** 였다.
+        """
         try:
             if not os.path.exists(self._fp_path):
                 return
             with open(self._fp_path, "r", encoding="utf-8") as f:
                 payload = json.load(f)
+            _saved_at = payload.get("saved_at", "?")
+            _saved_core = payload.get("core_features")   # 507차 이전 파일은 None
+            dropped = []
             for feat, info in payload.get("features", {}).items():
+                if feat not in _CORE_FEATURES:
+                    dropped.append(feat)
+                    continue
                 self._training[feat] = (info["edges"], info["props"])
+            if dropped:
+                # 계측 4원칙 ③ — 탈락은 **개수와 사유**를 남긴다. 절단하지 않는다
+                # (전부 나열해도 CORE 규모라 길지 않다).
+                logger.warning(
+                    "[RegimeFingerprint] 기준선 키 불일치 — 무시: %s "
+                    "(파일 저장일 %s / 파일 core=%s / 코드 core=%s). "
+                    "다음 EOD 재학습이 기준선을 다시 저장할 때까지 PSI 는 "
+                    "남은 %d개 피처로만 계산된다",
+                    ", ".join(dropped), _saved_at,
+                    ",".join(_saved_core) if _saved_core else "미표기(507차 이전 파일)",
+                    ",".join(_CORE_FEATURES), len(self._training),
+                )
             logger.info(
-                "[RegimeFingerprint] 저장된 분포 로드 — %s (저장일: %s)",
-                list(self._training.keys()),
-                payload.get("saved_at", "?"),
+                "[RegimeFingerprint] 저장된 분포 로드 — %s (저장일: %s%s)",
+                list(self._training.keys()), _saved_at,
+                (", 무시 %d개" % len(dropped)) if dropped else "",
             )
         except Exception as e:
             logger.warning("[RegimeFingerprint] 로드 실패 (신규 시작): %s", e)
+
+    def baseline_key_recon(self) -> Dict[str, object]:
+        """[MW0601 507차 후속 / G-4] 기준선 파일 ↔ 코드 CORE 집합 세대 대사.
+
+        기동 시 1회 호출해 「파일 하나와 코드 하나가 서로 다른 세대」를 **그 자리에서**
+        드러낸다. 판정하지 않고 **보고만** 한다 — PSI 는 차단에 관여하지 않는
+        섀도이므로(`FP_CRITICAL_GRADE_BLOCK_ENABLED = False`) 여기서 무언가를
+        막으면 안전장치가 새 사고를 만든다.
+
+        반환 dict: `file_exists` · `saved_at` · `file_core` · `code_core` ·
+                   `missing`(코드에는 있는데 파일에 없음) ·
+                   `extra`(파일에는 있는데 코드에 없음 — 로드에서 버려진 것) ·
+                   `loaded`(실제로 살아남은 키)
+        """
+        info: Dict[str, object] = {
+            "file_exists": os.path.exists(self._fp_path),
+            "saved_at": None,
+            "file_core": [],
+            "code_core": list(_CORE_FEATURES),
+            "missing": [],
+            "extra": [],
+            "loaded": sorted(self._training.keys()),
+        }
+        if not info["file_exists"]:
+            info["missing"] = list(_CORE_FEATURES)
+            return info
+        try:
+            with open(self._fp_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            info["saved_at"] = payload.get("saved_at")
+            file_core = sorted((payload.get("features") or {}).keys())
+            info["file_core"] = file_core
+            info["missing"] = [f for f in _CORE_FEATURES if f not in file_core]
+            info["extra"] = [f for f in file_core if f not in _CORE_FEATURES]
+        except Exception as e:
+            info["saved_at"] = "읽기 실패: %s" % e
+        return info
 
 
 # ─── PSI 계산 유틸리티 ──────────────────────────────────────────────────────

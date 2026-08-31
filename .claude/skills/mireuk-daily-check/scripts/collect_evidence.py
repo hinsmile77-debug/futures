@@ -130,7 +130,24 @@ DEFAULT_CONFIG = {
     "day_summary_patterns": {
         "entry_check": r"\[진입체크\]\s*(?P<dir>\S+)\s+(?P<qty>\d+)계약\s+(?P<grade>[A-Z]급(?:\(원시[A-Z]\))?)\s*\|\s*(?P<checks>[^|]+?)\s*\|\s*conf=(?P<conf>[\d.]+)%",
         "entry": r"\[Position\] 진입 (?P<dir>\w+) (?P<qty>\d+)계약 @ (?P<px>[\d.]+).*?horizon=(?P<hz>\w+)\s+hurst=(?P<hurst>\S+)",
-        "fill_entry": r"\[체결진입\]\s*(?P<dir>\w+)\s+(?P<qty>\d+)계약.*?보유=(?P<held>\d+)계약",
+        # [MW0601 507차 후속 / F-8] 체결진입은 **두 형식**으로 찍힌다.
+        #   · `[체결진입]`          — main.py:15272 · :17804 (log_manager.trade)
+        #   · `[Position] 체결진입`  — position_tracker.py:752 (logger.info)
+        # 종전 정규식은 앞쪽만 잡았다. 실측(TRADE 로그 건수):
+        #   08-27 `[체결진입]`=1 / `[Position] 체결진입`=9,
+        #   08-28 0/24, 08-31 0/36 — 즉 **최근 사흘은 전량 미매칭**이었고
+        #   08-31 리포트 헤드라인이 「진입 0건」으로 나갔다(1-14).
+        # ⚠ `[체결진입보정]`(main.py:17770)은 **잡으면 안 된다** — 이미 열린 포지션의
+        #   평균가 보정이라 세면 진입이 이중 계상된다. 첫 대안은 `\]`로 닫혀 있어
+        #   구조적으로 매칭되지 않고, 둘째 대안에는 `(?!보정)`을 명시해 둔다.
+        "fill_entry": r"(?:\[체결진입\]|\[Position\]\s*체결진입(?!보정))"
+                      r"\s+(?P<dir>\w+)\s+(?P<qty>\d+)계약.*?보유=(?P<held>\d+)계약",
+        # [MW0601 507차 후속 / F-8] 외부(계좌 직접) 진입 표식 — 같은 체결에 대해
+        # `[Position] 체결진입`과 **같은 초**에 찍힌다(main.py 체결동기화 경로).
+        # 포지션 행의 「출처」 칸이 이 값으로 결정된다. 2026-08-31은 36/36이
+        # 외부였는데 요약이 그것을 「엔진 성적」으로 읽히게 냈다(1-14).
+        "ext_entry": r"\[체결동기화\]\s*외부진입\s+(?P<dir>\w+)\s+(?P<qty>\d+)계약"
+                     r".*?보유=(?P<held>\d+)계약",
         "exit": r"\[Position\] 체결청산 (?P<dir>\w+) @ (?P<px>[\d.]+)\s*\|\s*PnL=(?P<pt>[+-][\d.]+)pt\s*\((?P<won>[+-][\d,]+)원\)\s*\|\s*(?P<reason>.+?)\s*$",
         # [MW0601 482차 / F-4] 부분청산 레그 — 계측 4원칙 ①(포지션 단위가 기본).
         # `체결청산`만 세면 TP1 부분청산·손절1차 조기축소로 빠져나간 레그가 통째로
@@ -1089,6 +1106,37 @@ def _rec_seconds(rec):
     return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
 
 
+def dedup_fill_entries(merged):
+    """[MW0601 507차 후속 / F-8] 체결진입 레코드를 접어서 돌려준다.
+
+    F-8이 `fill_entry` 정규식을 **두 형식**(`[체결진입]` · `[Position] 체결진입`)에
+    열어주면서 같은 체결이 두 번 잡히는 날이 생겼다 — 08-27 실측으로 `[체결진입]`
+    1건이 `[Position] 체결진입` 9건 중 하나와 같은 초·같은 값이다. 접지 않으면
+    그날만 진입이 1건 부풀어 **이중 계상**이 된다.
+
+    접는 키는 `(초, 방향, 수량, 보유)` 다. 같은 초에 벌어지는 **진짜** 연속 체결은
+    `보유`가 1→2→3으로 달라 살아남는다(08-31 09:35:05 실측 2건).
+
+    반환: `(kept, dropped)`
+      kept    : [(sec, qty, held, rec)] — 시각순 보장 없음(호출부가 정렬한다)
+      dropped : 중복으로 접힌 건수 (계측 4원칙 ③ — 탈락을 숫자로 남긴다)
+    """
+    seen, kept, dropped = set(), [], 0
+    for rec in merged.get("fill_entry", []):
+        try:
+            q, h = int(rec.get("qty") or 0), int(rec.get("held") or 0)
+        except (TypeError, ValueError):
+            continue
+        sec = _rec_seconds(rec)
+        key = (sec, rec.get("dir"), q, h)
+        if key in seen:
+            dropped += 1
+            continue
+        seen.add(key)
+        kept.append((sec, q, h, rec))
+    return kept, dropped
+
+
 def _won(rec):
     try:
         return int((rec.get("won") or "0").replace(",", ""))
@@ -1150,15 +1198,15 @@ def assemble_positions(merged):
     ev = []
     for rec in merged.get("entry", []):
         ev.append((_rec_seconds(rec), 0, "entry", rec))
-    for rec in merged.get("fill_entry", []):
-        try:
-            _q, _h = int(rec.get("qty") or 0), int(rec.get("held") or 0)
-        except (TypeError, ValueError):
-            continue
+    # [MW0601 507차 후속 / F-8] 외부진입이 찍힌 「초」 집합 — 포지션 출처 판정용.
+    ext_secs = set()
+    for rec in merged.get("ext_entry", []):
+        ext_secs.add(_rec_seconds(rec))
+    for _sec, _q, _h, rec in dedup_fill_entries(merged)[0]:
         if _q > 0 and _q == _h:
-            ev.append((_rec_seconds(rec), 1, "fill_open", rec))
+            ev.append((_sec, 1, "fill_open", rec))
         elif _q > 0 and _h > _q:
-            ev.append((_rec_seconds(rec), 1, "fill_add", rec))
+            ev.append((_sec, 1, "fill_add", rec))
     for rec in merged.get("partial_exit", []):
         ev.append((_rec_seconds(rec), 2, "partial", rec))
     for rec in merged.get("exit", []):
@@ -1178,7 +1226,9 @@ def assemble_positions(merged):
                    "entry_qty": _eq, "hz": rec.get("hz"), "grade": None,
                    "legs": [], "net_won": 0, "net_pt": 0.0,
                    "closed": False, "exit_reason": None, "_rem": _eq,
-                   "inferred": False}
+                   "inferred": False,
+                   # [F-8] `[Position] 진입`이 있으면 엔진이 낸 자리다.
+                   "src": "엔진"}
             continue
         if kind in ("fill_open", "fill_add"):
             # [F-X] 체결 기반 보조 경로.
@@ -1193,7 +1243,12 @@ def assemble_positions(merged):
                        "entry_qty": _h, "hz": None, "grade": None,
                        "legs": [], "net_won": 0, "net_pt": 0.0,
                        "closed": False, "exit_reason": None, "_rem": _h,
-                       "inferred": True}
+                       "inferred": True,
+                       # [F-8] 같은 초에 `[체결동기화] 외부진입`이 있으면 **계좌에서
+                       # 먼저 들어온 자리**다 — 엔진 성적으로 세면 안 된다.
+                       # 없으면 "추정"(엔진인지 외부인지 로그로 판별 불가) —
+                       # 「외부 아님」이 아니라 **미측정**이다(계측 4원칙 ②).
+                       "src": "외부" if _sec in ext_secs else "추정"}
             elif cur is not None and cur.get("inferred"):
                 # 추정 포지션의 추가 체결 — 진입 수량을 실측 보유로 끌어올린다.
                 # ⚠ `[Position] 진입` 으로 연 포지션에는 손대지 않는다(그쪽이 원천이다).
@@ -1275,13 +1330,25 @@ def day_summary(digests, cfg, out):
 
     A("| 항목 | 건수 |")
     A("|---|---|")
+    # [MW0601 507차 후속 / F-8] 「엔진이 낸 진입」과 「계좌에 들어온 체결」을 한 칸에
+    # 섞지 않는다. 2026-08-31은 엔진 0 / 체결 36(전량 외부)이었는데 종전 표는
+    # 체결 줄이 통째로 0으로 나와 그 사실 자체가 안 보였다.
+    _fi_kept, _fi_dups = dedup_fill_entries(merged)
+    _ext = merged.get("ext_entry", [])
     A("| 진입체크 통과(`[진입체크]`) | %d |" % len(ec))
-    A("| 진입 등록(`[Position] 진입`) | %d |" % len(en))
-    A("| 체결(`[체결진입]`) | %d |" % len(fi))
+    A("| 진입 등록(`[Position] 진입`) — **엔진** | %d |" % len(en))
+    A("| 체결(`[체결진입]`·`[Position] 체결진입`) | %d%s |"
+      % (len(_fi_kept),
+         ("  ※ 두 형식 중복 %d건 접음" % _fi_dups) if _fi_dups else ""))
+    A("| └ 그중 외부(`[체결동기화] 외부진입`) — **계좌** | %d |" % len(_ext))
     A("| 청산(`체결청산`) | %d |" % len(ex))
     A("| 차단(`[차단]`) | %d |" % len(bl))
     A("| 사이저 호출(`[Sizer]`) | %d |" % len(sz))
     A("")
+    if _ext and not en:
+        A("> 🔴 **엔진 진입 0건인데 계좌 체결 %d건** — 이 날의 손익은 엔진 성적이"
+          " 아니다. 아래 포지션 표의 「출처」 칸을 반드시 볼 것." % len(_ext))
+        A("")
 
     # --- 손익 — **포지션 단위가 기본**(계측 4원칙 ①) [MW0601 482차 / F-4] ---
     pe = merged.get("partial_exit", [])
@@ -1304,16 +1371,34 @@ def day_summary(digests, cfg, out):
           " 4건 승 1(25%) −230,004원 vs **포지션 기준 4건 승 2(50%) −348,018원** —"
           " 손익 34% 과소, 승률 25%p 과소였다(계측 4원칙 ①).")
         A("")
-        A("| 진입 | 방향 | 진입수량 | hz | 레그 | 포지션 pt | 포지션 net(원) | 최종 청산사유 |")
-        A("|---|---|---|---|---|---|---|---|")
+        A("| 진입 | 출처 | 방향 | 진입수량 | hz | 레그 | 포지션 pt | 포지션 net(원) | 최종 청산사유 |")
+        A("|---|---|---|---|---|---|---|---|---|")
         for q in positions:
             # [F-X] 폴백으로 조립된 포지션은 그 사실을 행에 남긴다(계측 4원칙 ④).
             _open_txt = q["open_hhmm"] + (" (추정귀속)" if q.get("inferred") else "")
-            A("| %s | %s | %s | %s | %d | %+.2f | %s | %s |" % (
-                _open_txt, q.get("dir"), q.get("entry_qty"), q.get("hz") or "—",
+            A("| %s | %s | %s | %s | %s | %d | %+.2f | %s | %s |" % (
+                _open_txt, q.get("src") or "추정",
+                q.get("dir"), q.get("entry_qty"), q.get("hz") or "—",
                 len(q["legs"]), q["net_pt"], format(q["net_won"], "+,d"),
                 q["exit_reason"] if q["closed"] else "**미청산(보유 중)**"))
         A("")
+        # [MW0601 507차 후속 / F-8] 출처별 소계 — 헤드라인이 「엔진 성적」으로
+        # 오독되는 것을 구조적으로 막는다(1-14).
+        _by_src = {}
+        for q in closed:
+            s = q.get("src") or "추정"
+            b = _by_src.setdefault(s, {"n": 0, "won": 0})
+            b["n"] += 1
+            b["won"] += q["net_won"]
+        if len(_by_src) > 1 or "엔진" not in _by_src:
+            A("**출처별 소계** — " + " · ".join(
+                "%s %d건 %s원" % (s, b["n"], format(b["won"], "+,d"))
+                for s, b in sorted(_by_src.items())))
+            A("")
+            A("> ⚠ 「외부」는 `[체결동기화] 외부진입`이 동반된 자리다 — 엔진 판단이"
+              " 만든 것이 아니므로 **엔진 성적·승률에 넣지 말 것**. 「추정」은"
+              " 판별 불가(미측정)이지 「외부 아님」이 아니다(계측 4원칙 ②).")
+            A("")
         _inferred = [q for q in positions if q.get("inferred")]
         if _inferred:
             A("> ⚠ **(추정귀속) %d건** — `[Position] 진입` 로그가 없어 `[체결진입]`(FLAT→보유)"
@@ -2291,7 +2376,13 @@ def build(root, day, phase, cfg, discover_only=False):
     bl = merged.get("block", [])
     sz = merged.get("sizer", [])
     if phase in ("post", "all"):
-        if not en and not ex:
+        # [MW0601 507차 후속 / F-8] 「엔진 진입」과 「계좌 진입」을 쪼갠다.
+        # 종전은 `not en and not ex` 라, 계좌에서 20포지션이 만들어졌다 사라진 날에도
+        # `ex`가 차서 적신호가 **아예 뜨지 않았다**(08-31). 반대로 엔진이 0인
+        # 사실은 어디에도 안 남았다. 두 값이 갈리는 날 한 칸에 섞으면 안 된다.
+        _acct_n = len(dedup_fill_entries(merged)[0])
+        _ext_n = len(merged.get("ext_entry", []))
+        if not en:
             top_bl = ""
             if bl:
                 bd = {}
@@ -2299,7 +2390,11 @@ def build(root, day, phase, cfg, discover_only=False):
                     r = truncate(b.get("reason") or "?", 60)
                     bd[r] = bd.get(r, 0) + 1
                 top_bl = " 최다 차단 사유: `%s`" % sorted(bd.items(), key=lambda kv: -kv[1])[0][0]
-            flags.append("**진입 0건** — 차단 %d건.%s (진입0 딥다이브 절차를 따르라)" % (len(bl), top_bl))
+            flags.append(
+                "**엔진 진입 0건 / 계좌 진입 %d건**(그중 외부표식 %d건) — 차단 %d건.%s "
+                "(진입0 딥다이브 절차를 따르라. 계좌 진입이 있으면 그 손익을 "
+                "**엔진 성적으로 집계하지 말 것**)"
+                % (_acct_n, _ext_n, len(bl), top_bl))
         # [MW0601 482차 / F-4] 포지션 단위로 센다. 종전은 `체결청산` 레그만 세어
         # 2026-08-20에 "4건 100% 하드스톱"이라 찍었으나 실제는 하드스톱 4 ·
         # 손절1차 조기축소 2 · TP1 부분청산 1(레그 7 / 포지션 4)이었다.

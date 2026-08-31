@@ -3232,6 +3232,178 @@ def reconcile_daily_net(date: str, engine_gross: float,
     }
 
 
+def decompose_net_residual(rec: dict, broker_gross_measured: bool) -> dict:
+    """[MW0601 507차 후속 / F-14] net 잔차를 **축으로 쪼갠다**.
+
+    종전 `[NetRecon]` ERROR 는 *"gross가 일치하는데 net만 어긋나면 원인은
+    수수료율이다"* 라는 **고정 진단**을 조건 없이 붙였다. 2026-08-31 실측에서
+    그것이 틀렸다 — 잔차 −91,461원의 **77%가 gross 축**이었고, 같은 초에
+    `[BrokerPnl] gross 불일치` WARNING 이 따로 떠 있었다. 두 로그가 서로 다른
+    결론을 말한 것이다(계측 4원칙 ⑤).
+
+    항등식이라 반올림 오차 없이 정확히 더해진다::
+
+        잔차 = 엔진net − 브로커net
+             = (엔진gross − 브로커gross) + (브로커수수료 − 엔진수수료)
+
+    ⚠ `broker_gross_measured=False` 면 gross 축은 **미측정**이다(0이 아니다).
+      `update_daily_broker_pnl_net()` 이 행이 없을 때 엔진 gross 로 행을 만들기
+      때문에, 그 값을 브로커로 읽으면 자기참조 대사가 된다(498차 F-9).
+
+    반환 dict: `gross_axis`(미측정이면 None) · `comm_axis` · `residual` ·
+               `gross_share`/`comm_share`(%, 미측정이면 None) ·
+               `dominant`("gross"/"commission"/None)
+    """
+    resid = float(rec["residual"])
+    comm_axis = float(rec["broker_commission"]) - float(rec["engine_commission"])
+    if not broker_gross_measured:
+        return {"gross_axis": None, "comm_axis": comm_axis, "residual": resid,
+                "gross_share": None, "comm_share": None, "dominant": None}
+    gross_axis = float(rec["engine_gross"]) - float(rec["broker_gross"])
+    if resid == 0:
+        return {"gross_axis": gross_axis, "comm_axis": comm_axis, "residual": resid,
+                "gross_share": None, "comm_share": None, "dominant": None}
+    return {
+        "gross_axis": gross_axis,
+        "comm_axis": comm_axis,
+        "residual": resid,
+        "gross_share": 100.0 * abs(gross_axis) / abs(resid),
+        "comm_share": 100.0 * abs(comm_axis) / abs(resid),
+        "dominant": "gross" if abs(gross_axis) >= abs(comm_axis) else "commission",
+    }
+
+
+def format_net_recon_mismatch(rec: dict, broker_gross_measured: bool) -> str:
+    """[MW0601 507차 후속 / F-14] `[NetRecon]` 불일치 로그 본문 — 축 분해판.
+
+    문자열만 만든다. `scripts/commission_rate_recon.py --verify` 의 판정식은
+    건드리지 않는다(사전등록 유지).
+    """
+    d = decompose_net_residual(rec, broker_gross_measured)
+    ratio = rec.get("commission_ratio")
+    if d["gross_axis"] is None:
+        gross_txt = ("브로커 gross 미수신 — **미측정**(0이 아니다). "
+                     "이 잔차를 축으로 쪼갤 수 없다")
+        comm_txt = ("엔진 {:,.0f} vs 브로커 {:,.0f} → 차 {:+,.0f}".format(
+            rec["engine_commission"], rec["broker_commission"], d["comm_axis"])
+            + (" (배수 {:.2f})".format(ratio) if ratio else ""))
+        verdict = ("⇒ 지배 축 판정 불가 — 브로커 gross 축이 없다. "
+                   "CpTd6197 gross 수신 여부를 먼저 확인할 것")
+    else:
+        gross_txt = "엔진 {:+,.0f} vs 브로커 {:+,.0f} → 기여 {:+,.0f}{}".format(
+            rec["engine_gross"], rec["broker_gross"], d["gross_axis"],
+            "" if d["gross_share"] is None else " ({:.0f}%)".format(d["gross_share"]))
+        comm_txt = "엔진 {:,.0f} vs 브로커 {:,.0f} → 기여 {:+,.0f}{}{}".format(
+            rec["engine_commission"], rec["broker_commission"], d["comm_axis"],
+            "" if d["comm_share"] is None else " ({:.0f}%".format(d["comm_share"]),
+            ("" if d["comm_share"] is None
+             else ((", 배수 {:.2f})".format(ratio)) if ratio else ")")))
+        if d["dominant"] == "gross":
+            verdict = ("⇒ 지배 축 = gross. **수수료율 재보정 전에 체결 대사를 먼저 볼 것** "
+                       "(같은 초의 `[BrokerPnl] gross 불일치` 를 함께 읽어라)")
+        elif d["dominant"] == "commission":
+            verdict = ("⇒ 지배 축 = 수수료. scripts/commission_rate_recon.py --verify 로 "
+                       "실효 요율을 재산출할 것")
+        else:
+            verdict = "⇒ 잔차 0 — 지배 축 없음"
+    return (
+        "[NetRecon] 🔴 net 불일치 — 엔진 {:+,.0f}원 vs 브로커 {:+,.0f}원 "
+        "(잔차 {:+,.0f}원, 허용 ±{:,.0f})\n"
+        "           ├ gross 축  : {}\n"
+        "           └ 수수료 축 : {}\n"
+        "           {}".format(
+            rec["engine_net"], rec["broker_net"], d["residual"], rec["tolerance"],
+            gross_txt, comm_txt, verdict)
+    )
+
+
+_TP_STAGES = ("TP1", "TP2", "TP3")
+
+
+def recon_exit_stage_labels(date: str) -> dict:
+    """[MW0601 507차 후속 / G-5] 청산 사유 라벨의 **자기대사** — 섀도, 차단 없음.
+
+    2026-08-31 이상점 1-19: `exit_stage='TRAIL_AFTER_TP1'`(=TP1 뒤 트레일 = 이익
+    청산) 라벨이 붙은 레그 13건 중 5건이 **TP1이 난 적 없는 포지션**이었다.
+    합계 −6,977,391원이 「진짜 손절」이 아니라 「이익 청산」으로 분류돼, 손절률·
+    손절폭 초과율·CB② 후보 산정의 분모와 분자가 통째로 오염됐다.
+
+    원인은 `_sync_partial_progress()` 가 **청산 사유를 안 보고** 누적 청산수량만으로
+    `partial_1_done` 을 세우기 때문이다(다레그 하드스톱이 TP1 목표수량을 넘어선다).
+    ⚠ **여기서 고치지 않는다** — 그 수정(F-10)은 `is_tp1_hit` 재발동 가드와 같은
+    플래그를 쓰므로 청산 트리거 경로 변경이고, 사전에 섀도 10거래일 관찰을 요구한다
+    (P5-06). 이 함수는 **그 관찰을 만드는 계측**이다.
+
+    🔴 정답지는 처음부터 DB에 있었다 — 두 축을 맞춰보기만 하면 된다.
+      축 ① `trades.exit_stage` 가 `TRAIL_AFTER_TP1` 인가
+      축 ② 그 포지션(같은 `entry_ts`)에 **실제 TP 레그**가 있었는가
+    새 계산 0회 · 새 수집 0회. 계측 4원칙 ⑤("이미 받고 있는데 안 보고 있는 것")의
+    교과서적 사례다.
+
+    ⚠ **단일계약 1레그 포지션은 의심에서 뺀다.** 그쪽은 `arm_tp1_single_contract*()`
+      가 사유를 명시하고 세우는 설계된 경로라 TP 레그가 없는 것이 정상이다
+      (2026-08-31 실측 3건 — 이걸 안 빼면 8건으로 부풀어 F-10 판정이 흐려진다).
+
+    반환 dict (전부 **포지션 단위**, 금액은 net 원):
+      · `trail_legs`        TRAIL_AFTER_TP1 레그 수
+      · `trail_positions`   그 라벨을 가진 포지션 수
+      · `corresponded`      TP 레그가 실제로 있었던 포지션 수
+      · `single_armed`      단일계약 1레그(설계상 정상) 포지션 수
+      · `suspect`           의심 포지션 수 — F-10 이 뒤집을 대상
+      · `suspect_net_krw`   의심 포지션 net 합계
+      · `suspect_entries`   의심 포지션의 entry_ts 목록(진단용)
+      · `unmeasured`        exit_stage 가 전부 NULL 이라 판정 불가한 포지션 수
+                            (490차 이전 행 — 0이 아니라 **미측정**이다)
+    """
+    rows = fetchall(
+        TRADES_DB,
+        """SELECT entry_ts, exit_reason, exit_stage, quantity,
+                  COALESCE(net_pnl_krw, pnl_krw) AS net_krw
+             FROM trades
+            WHERE entry_ts LIKE ? AND exit_price IS NOT NULL
+            ORDER BY entry_ts""", (date + "%",))
+
+    groups: Dict[str, dict] = {}
+    for r in rows:
+        ts = str(r["entry_ts"] or "")
+        if not ts:
+            continue
+        g = groups.setdefault(ts, {"legs": 0, "qty": 0, "net": 0.0,
+                                   "trail": 0, "tp": 0, "staged": 0})
+        stage = (r["exit_stage"] or "").strip()
+        reason = (r["exit_reason"] or "")
+        g["legs"] += 1
+        g["qty"] += int(r["quantity"] or 0)
+        g["net"] += float(r["net_krw"] or 0.0)
+        if stage:
+            g["staged"] += 1
+        if stage == "TRAIL_AFTER_TP1":
+            g["trail"] += 1
+        if stage in _TP_STAGES or "TP" in reason:
+            g["tp"] += 1
+
+    out = {"trail_legs": 0, "trail_positions": 0, "corresponded": 0,
+           "single_armed": 0, "suspect": 0, "suspect_net_krw": 0.0,
+           "suspect_entries": [], "unmeasured": 0}
+    for ts, g in sorted(groups.items()):
+        if g["staged"] == 0:
+            out["unmeasured"] += 1
+            continue
+        if not g["trail"]:
+            continue
+        out["trail_legs"] += g["trail"]
+        out["trail_positions"] += 1
+        if g["tp"]:
+            out["corresponded"] += 1
+        elif g["legs"] == 1 and g["qty"] <= 1:
+            out["single_armed"] += 1
+        else:
+            out["suspect"] += 1
+            out["suspect_net_krw"] += g["net"]
+            out["suspect_entries"].append(ts)
+    return out
+
+
 def fetch_prev_broker_net(before_date: str) -> Optional[dict]:
     """[MW0602 497차 / P1] 직전 거래일의 브로커 net — 실시간잔고 '전일손익' 표시용.
 

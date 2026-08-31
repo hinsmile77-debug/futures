@@ -144,9 +144,19 @@ class DailyExporter:
             fp  = get_fingerprint()
             psi = fp.get_psi()
             pli = fp.get_level()
-            lines.append(
-                "  PSI     : %.3f (%s)" % (psi, {0:"CLEAR",1:"WATCHLIST",2:"ALARM",3:"CRITICAL"}.get(pli,"?"))
-            )
+            # 🔴 [MW0601 507차 후속 / F-12] 미측정을 `0.000 (CLEAR)` 로 찍지 않는다.
+            #   2026-08-31에 `update_live()` 가 하루 종일 예외로 죽었는데(기준선 키
+            #   불일치 — F-7) 이 줄이 `PSI : 0.000 (CLEAR)` 를 찍어, 실제로는
+            #   **계측이 통째로 없는 날**이 「가장 조용한 정상」으로 보고됐다.
+            #   `CLEAR` 는 「정상 확인됨」이 아니라 그냥 초기값이다(계측 4원칙 ②·④).
+            if psi is None:
+                lines.append(
+                    "  PSI     : 미측정 (오늘 update_live 성공 0회 — 0.000이 아니다)"
+                )
+            else:
+                lines.append(
+                    "  PSI     : %.3f (%s)" % (psi, {0:"CLEAR",1:"WATCHLIST",2:"ALARM",3:"CRITICAL"}.get(pli,"?"))
+                )
             feat_psi = fp.get_per_feature_psi()
             if feat_psi:
                 lines.append(
@@ -155,6 +165,8 @@ class DailyExporter:
                         for k, v in feat_psi.items()
                     )
                 )
+            else:
+                lines.append("  PSI/feat: 미측정")
         except Exception as e:
             lines.append("  PSI     : [조회 실패: %s]" % e)
 

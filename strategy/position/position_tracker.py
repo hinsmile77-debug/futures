@@ -193,6 +193,14 @@ class PositionTracker:
         self._daily_pnl_pts:   float = 0.0
         self._daily_trades:    int   = 0
         self._daily_wins:      int   = 0
+        # [MW0601 507차 후속 / F-11] 승패 **축**을 병기한다 — 판정 축은 바꾸지 않는다.
+        # `_daily_wins` 는 포지션 누적 **gross pt** 가 양수인지로 센다(변경 금지 —
+        # 소비처가 많고 461차 mdd_pct 유형의 조용한 재정의가 된다).
+        # 그런데 마감 로그는 그 승패 옆에 **net** PnL 을 붙여 찍었다. 2026-08-31
+        # 실측으로 gross 12승 8패 / net 9승 11패 — 같은 줄에서 승률이 60% 와 45%
+        # 로 갈린다. 1계약 왕복 수수료 약 10,220원이 손익분기 0.204pt 를 만들기
+        # 때문이다. 두 축을 **함께** 보여주는 것이 이 필드의 전부다(계측 4원칙 ①).
+        self._daily_wins_net:  int   = 0
         self._daily_commission: float = 0.0
         self._daily_forward_pnl_pts: float = 0.0
         self._daily_forward_trades: int = 0
@@ -535,6 +543,10 @@ class PositionTracker:
         self._daily_trades += 1
         if self._pos_realized_pnl_pts > 0:
             self._daily_wins += 1
+        # [507차 후속 / F-11] net 축 — `_pos_realized_pnl_krw` 는 이미 레그마다
+        # 수수료를 뺀 값을 쌓는다(위 `pnl_krw`). 동률은 패(gross 축과 같은 규약).
+        if self._pos_realized_pnl_krw > 0:
+            self._daily_wins_net += 1
         self._daily_forward_trades += 1
         if self._pos_realized_fwd_pnl_pts > 0:
             self._daily_forward_wins += 1
@@ -827,6 +839,9 @@ class PositionTracker:
             # (위 619-620행, 625-626행) 항상 같은 값이다 — 판정은 한쪽만 쓴다.
             if self._pos_realized_pnl_pts > 0:
                 self._daily_wins += 1
+            # [507차 후속 / F-11] net 축 병기 — 판정 축(gross)은 무변경.
+            if self._pos_realized_pnl_krw > 0:
+                self._daily_wins_net += 1
             self._daily_forward_trades += 1
             if self._pos_realized_fwd_pnl_pts > 0:
                 self._daily_forward_wins += 1
@@ -1654,6 +1669,14 @@ class PositionTracker:
             "pnl_krw":    round(gross_krw - self._daily_commission, 0),  # 수수료 차감 순손익
             "gross_krw":  gross_krw,
             "commission": round(self._daily_commission, 0),
+            # [MW0601 507차 후속 / F-11] **추가만 한다** — 위 3키(wins/losses/
+            # win_rate)는 소비처가 많아 무변경이다. 아래 3키가 net 축이다.
+            # ⚠ `wins` 는 gross pt 축, `wins_net` 은 수수료 차감 후 원 단위 축.
+            #   실전 전환 기준 ③의 「승률 ≥ 53%」가 어느 축인지 문서에 없다 —
+            #   그 정의는 **주간회의 안건**이며 여기서 정하지 않는다.
+            "wins_net":     self._daily_wins_net,
+            "losses_net":   self._daily_trades - self._daily_wins_net,
+            "win_rate_net": self._daily_wins_net / max(self._daily_trades, 1),
         }
 
     def daily_forward_stats(self) -> dict:
@@ -1729,16 +1752,23 @@ class PositionTracker:
             )
             self._daily_forward_commission += forward_commission
 
+            # [MW0601 507차 후속 / F-11] net 축도 같은 단위로 복원한다 — 라이브
+            # 경로(`_pos_realized_pnl_krw`)와 같은 정의여야 재시작 전후 값이 안 갈린다.
+            leg_net_krw = pnl_pts * self._pt_value * qty - commission
+
             entry_ts = str(row["entry_ts"] or "") if "entry_ts" in keys else ""
             if entry_ts:
-                g = groups.setdefault(entry_ts, {"pnl": 0.0, "fwd": 0.0})
+                g = groups.setdefault(entry_ts, {"pnl": 0.0, "fwd": 0.0, "krw": 0.0})
                 g["pnl"] += pnl_pts * qty
                 g["fwd"] += forward_pnl_pts * qty
+                g["krw"] += leg_net_krw
             else:
                 # 포지션 귀속 불가 — 종전대로 행 단위 1트레이드
                 self._daily_trades += 1
                 if pnl_pts > 0:
                     self._daily_wins += 1
+                if leg_net_krw > 0:
+                    self._daily_wins_net += 1
                 self._daily_forward_trades += 1
                 if forward_pnl_pts > 0:
                     self._daily_forward_wins += 1
@@ -1749,6 +1779,8 @@ class PositionTracker:
             self._daily_trades += 1
             if g["pnl"] > 0:
                 self._daily_wins += 1
+            if g["krw"] > 0:
+                self._daily_wins_net += 1
             self._daily_forward_trades += 1
             if g["fwd"] > 0:
                 self._daily_forward_wins += 1
@@ -1757,6 +1789,7 @@ class PositionTracker:
         self._daily_pnl_pts = 0.0
         self._daily_trades  = 0
         self._daily_wins    = 0
+        self._daily_wins_net = 0      # [507차 후속 / F-11]
         self._daily_commission = 0.0
         self._daily_forward_pnl_pts = 0.0
         self._daily_forward_trades = 0

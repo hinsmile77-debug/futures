@@ -1120,6 +1120,11 @@ class TradingSystem:
         # (471차 sizing_trace 관례). update_live 예외 시 None으로 갱신해 이전 분
         # 값이 유령으로 남지 않게 한다(계측 4원칙 ④). None → DB NULL = 미측정.
         self._fp_last_psi: Optional[tuple] = None
+        # [MW0601 507차 후속 / F-12] 오늘 PSI 가 **실제로 계산된 분 수**.
+        # 0 은 폴백이 아니라 실측이다 — 마감에서 "성공 0회"를 WARNING 으로
+        # 1회 보고한다. 2026-08-31에는 이 값이 하루 종일 0이었는데 어디에도
+        # 남지 않았고, 패널만 `0.000 (CLEAR)` 로 조용했다.
+        self._fp_measured_count_today: int = 0
         self._health_degraded_mode: bool = False
         self._health_warn_streak: int = 0
         self._health_info_streak: int = 0
@@ -1771,6 +1776,47 @@ class TradingSystem:
             _fp_warmed = _get_fp_restore().warm_live_buffer(_fp_feat_rows)
         except Exception as _fpe:
             logger.warning("[AnalysisRestore] RegimeFingerprint 라이브버퍼 복원 실패 — cold start 유지: %s", _fpe)
+
+        # ── [MW0601 507차 후속 / G-4] 상태파일 ↔ 코드 상수 **세대 대사** ────────
+        #
+        # 2026-08-31 사고는 「파일 하나와 코드 하나가 서로 다른 세대」여서 생겼고,
+        # 그 사실이 기동 로그에 한 줄도 남지 않았다. 493차가 계측 4원칙 ⑤를 세운
+        # 계기(수수료 축 미대사)와 구조가 같다 — 이번에 빠진 축은 **피처 집합 축**이다.
+        #
+        # 🔴 **보고만 한다.** 판정하지 않고 아무것도 막지 않는다 — PSI 는 차단에
+        #   관여하지 않는 섀도이고(`FP_CRITICAL_GRADE_BLOCK_ENABLED = False`),
+        #   여기서 무언가를 막으면 안전장치가 새 사고를 만든다.
+        # ⚠ `model/horizons/feature_names.pkl` 의 97개 동결 슈퍼셋은 **의도된 설계**다
+        #   (CLAUDE.md 절대원칙 §3, 458차) — 대사 대상에 넣더라도 불일치를 이상으로
+        #   판정하지 않는다. 이번 배선은 `regime_fingerprint.json` 축만 본다.
+        try:
+            from strategy.regime_fingerprint import get_fingerprint as _get_fp_recon
+            _sr = _get_fp_recon().baseline_key_recon()
+            if not _sr["file_exists"]:
+                logger.warning(
+                    "[StateRecon] regime_fingerprint.json 없음 — 기준선 미보유"
+                    "(신규 시작). 다음 EOD 재학습이 저장할 때까지 PSI 는 미측정이다"
+                )
+            elif _sr["missing"] or _sr["extra"]:
+                logger.warning(
+                    "[StateRecon] regime_fingerprint.json: 코드 CORE %d종 중 %d종 불일치 "
+                    "(파일에만=%s / 코드에만=%s / 살아남은 키=%s) 저장일=%s. "
+                    "다음 EOD 재학습이 기준선을 다시 저장하면 해소된다",
+                    len(_sr["code_core"]),
+                    len(_sr["missing"]) + len(_sr["extra"]),
+                    ",".join(_sr["extra"]) or "—",
+                    ",".join(_sr["missing"]) or "—",
+                    ",".join(_sr["loaded"]) or "없음",
+                    _sr["saved_at"],
+                )
+            else:
+                logger.info(
+                    "[StateRecon] regime_fingerprint.json: 코드 CORE %s 와 일치 "
+                    "(저장일=%s)",
+                    ",".join(_sr["code_core"]), _sr["saved_at"],
+                )
+        except Exception as _sr_e:
+            logger.warning("[StateRecon] 기준선 세대 대사 실패 (무해): %s", _sr_e)
 
         logger.info(
             "[AnalysisRestore] live_corr=%d restored_corr=%s live_shap=%d live_ready=%s shap_features=%d vp_bars=%d fp_live=%d",
@@ -6438,7 +6484,12 @@ class TradingSystem:
             _fp_psi  = _fp.update_live(features)
             _fp_lv   = _fp.get_level()
             # [477차 후속 / 476차 F-5] STEP 9 저장용 스냅샷 — 매분 갱신
-            self._fp_last_psi = (float(_fp_psi), _fp_lv)
+            # [MW0601 507차 후속 / F-12] `update_live()` 는 미측정일 때 **None** 을
+            # 돌려준다(기준선 없음·라이브 표본 미달). NULL 로 저장해야 `fp_psi`
+            # 시계열이 「0.0 = 분포 동일」과 섞이지 않는다(계측 4원칙 ②).
+            self._fp_last_psi = (
+                (float(_fp_psi), _fp_lv) if _fp_psi is not None else None
+            )
             # 레벨이 유지되는 동안 매분 동일 WARN이 반복 적재되는 것을 방지 —
             # 레벨 전환 시점은 즉시 로그, 그 외에는 5분 간격 하트비트로 축소.
             _fp_lv_changed = _fp_lv != self._fp_last_logged_level
@@ -6450,15 +6501,24 @@ class TradingSystem:
             #   경보를 파묻는다(333차 후속5와 동일 취지).
             if _ts_should_emit_throttled(self, "fp_psi_heartbeat", min_interval_sec=300.0):
                 logger.info(
-                    "[RegimeFingerprint] PSI=%.3f level=%s (heartbeat)",
-                    _fp_psi, _fp_lv,
+                    "[RegimeFingerprint] PSI=%s level=%s (heartbeat)",
+                    ("%.3f" % _fp_psi) if _fp_psi is not None
+                    else "미측정(기준선 없음 또는 라이브 표본 미달)",
+                    _fp_lv,
                 )
             # [303차] PSI 계측 결함(균등폭 10-bin 첨봉 분포)으로 CRITICAL/ALARM이
             # 상시 고착 — 차단은 이미 비활성(FP_CRITICAL_GRADE_BLOCK_ENABLED=False)이고
             # 실제로 라이브에 반영되지 않는 계측치이므로 대시보드 경보 탭에는 올리지
             # 않는다(오탐지성 반복 경보로 실제 이상 신호를 파묻음). file 로거로만 남겨
             # 셰도우 모니터링(사후 grep·재설계 검증용)은 유지 — CLAUDE.md FP-CRITICAL 참조.
-            if _fp_psi > 0.30:
+            # [507차 후속 / F-12] 측정 성공 횟수를 하루 단위로 센다 — 마감에서
+            # "오늘 update_live 성공 0회"를 말할 수 있어야 한다. 0 은 폴백이
+            # 아니라 실측 카운터이므로 `__init__` 에서 명시 초기화한다(계측 4원칙 ④).
+            if _fp_psi is not None:
+                self._fp_measured_count_today += 1
+            if _fp_psi is None:
+                pass          # 미측정 — 경보 대상 아님(마감에서 1회 보고)
+            elif _fp_psi > 0.30:
                 if _fp_lv_changed or _ts_should_emit_throttled(
                     self, "fp_psi_critical", min_interval_sec=300.0
                 ):
@@ -7607,18 +7667,24 @@ class TradingSystem:
         # PSI 계산·로그는 그대로 유지(모니터링 단절 없음).
         try:
             from strategy.regime_fingerprint import get_fingerprint as _get_fp2
-            if _get_fp2().get_level() >= 3:  # DriftLevel.CRITICAL = 3
+            _fp2 = _get_fp2()
+            # [507차 후속 / F-12] `get_psi()` 는 미측정이면 None 이다. 이 분기는
+            # level>=3 일 때만 도달하므로 실제로는 항상 실값이지만, 포맷 문자열이
+            # None 에서 터지지 않게 명시적으로 다룬다.
+            _fp2_psi = _fp2.get_psi()
+            _fp2_txt = ("%.3f" % _fp2_psi) if _fp2_psi is not None else "미측정"
+            if _fp2.get_level() >= 3:  # DriftLevel.CRITICAL = 3
                 if runtime_settings.FP_CRITICAL_GRADE_BLOCK_ENABLED:
                     direction = 0
                     grade     = "X"
                     decision["checklist_reason"] = "FP-CRITICAL"
                     log_manager.signal(
-                        f"[RegimeFingerprint] PSI={_get_fp2().get_psi():.3f} CRITICAL "
+                        f"[RegimeFingerprint] PSI={_fp2_txt} CRITICAL "
                         f"— 시장 구조 변화로 진입 차단"
                     )
                 else:
                     log_manager.signal(
-                        f"[RegimeFingerprint] PSI={_get_fp2().get_psi():.3f} CRITICAL "
+                        f"[RegimeFingerprint] PSI={_fp2_txt} CRITICAL "
                         f"— 감시전용(차단 비활성), 계측만 기록"
                     )
         except Exception as _fp2_e:
@@ -11653,10 +11719,35 @@ class TradingSystem:
         stats = self.position.daily_stats()
         forward_stats = self.position.daily_forward_stats()
         logger.info(f"[Daily] 마감 통계: {stats}")
+        # [MW0601 507차 후속 / F-11] 승패에 **축**을 박는다. 종전 문구는
+        # `승=12 패=8 PnL=-6,389,508원` — 승패는 **gross pt** 축인데 PnL 은 **net**
+        # 축이라 한 줄에서 단위가 갈렸다(2026-08-31 실측: net 축으로 세면 9승 11패,
+        # 승률 60% → 45%). 판정 축은 바꾸지 않는다 — 표기만 양쪽을 병기한다.
+        # ⚠ 실전 전환 기준 ③의 「승률 ≥ 53%」가 어느 축인지는 문서에 없다(주간회의 안건).
         log_manager.system(
-            f"일일 마감 | 승={stats['wins']} 패={stats['losses']} "
-            f"PnL={stats['pnl_krw']:+,.0f}원"
+            f"일일 마감 | 승={stats['wins']} 패={stats['losses']} (gross pt 기준) "
+            f"| net 기준 {stats.get('wins_net', '?')}승 {stats.get('losses_net', '?')}패 "
+            f"| PnL={stats['pnl_krw']:+,.0f}원(net)"
         )
+
+        # [MW0601 507차 후속 / F-12] 오늘 PSI 가 한 번도 계산되지 않았으면 마감에
+        # 그 사실을 남긴다. 2026-08-31에는 매분 예외 로그(5분 스로틀)만 있었고
+        # **마감에는 아무 표시가 없었으며**, EOD 패널은 `0.000 (CLEAR)` 였다.
+        # "조용함"과 "죽어 있음"을 로그로 구분할 수 있어야 한다(계측 4원칙 ②·④).
+        if self._fp_measured_count_today == 0:
+            log_manager.system(
+                "[RegimeFingerprint] 🔴 오늘 PSI 측정 성공 0회 — 하루 종일 미측정이다"
+                "(0.000/CLEAR 가 아니다). 기준선 키 불일치·라이브 표본 미달·"
+                "update_live 예외 중 하나다. `[RegimeFingerprint] 기준선 키 불일치` "
+                "WARNING 이 기동 로그에 있는지 먼저 확인할 것",
+                "WARNING",
+            )
+        else:
+            log_manager.system(
+                f"[RegimeFingerprint] 오늘 PSI 측정 {self._fp_measured_count_today}분",
+                "INFO",
+            )
+        self._fp_measured_count_today = 0
 
         # [269차] EXIT Chejan 이벤트 유실 일별 집계 보고 후 리셋
         _miss_cnt = getattr(self, "_chejan_exit_miss_count", 0)
@@ -12132,13 +12223,17 @@ class TradingSystem:
         # 같은 행에 기입해 단위를 명시한다(계측 4원칙 ①). 실전 전환 기준 ①은
         # pnl_net_krw 기준. gross − commission = net 원 단위 대사를 로그로 남긴다
         # (0818 실측: 685,000 − 23,332 = 661,668).
+        # [MW0601 507차 후속 / F-14] 아래 두 블록이 공유하는 값이라 **try 밖에서**
+        # 먼저 잡는다 — 위쪽 try 가 실패해도 net 대사가 NameError 로 죽지 않는다
+        # (`_ccf_today`·`_mh_snap_eod` 와 같은 관례). None = 미측정.
+        _f4_gross = float(stats.get("gross_krw", 0.0) or 0.0)
+        _f4_comm = float(stats.get("commission", 0.0) or 0.0)
+        _f4_net = float(stats.get("pnl_krw", 0.0) or 0.0)
+        _f4_broker = None
         try:
             from utils.db_utils import (update_daily_broker_pnl_net,
                                        fetch_broker_gross_origin,
                                        reconcile_daily_net)
-            _f4_gross = float(stats.get("gross_krw", 0.0) or 0.0)
-            _f4_comm = float(stats.get("commission", 0.0) or 0.0)
-            _f4_net = float(stats.get("pnl_krw", 0.0) or 0.0)
             # ── [MW0601 498차 / F-9] 대사 대상을 **쓰기 전에** 읽는다 ────────────
             # 종전 순서는 `update_daily_broker_pnl_net()` → 되읽기였다. 그 함수는
             # 행이 없으면 **엔진 gross로 행을 만든다.** 그래서 되읽은 값이 절대
@@ -12247,7 +12342,10 @@ class TradingSystem:
         # 일정 배수의 잔차가 보였을 것이다. 수수료·세금·기타 현금흐름 계열의
         # 미래 결함도 같은 그물에 걸린다.
         try:
-            _rec = reconcile_daily_net(today_str, _f4_gross, _f4_comm, _f4_net)
+            # [507차 후속 / F-14] 위 블록이 실패해도 net 대사는 살아 있어야 한다 —
+            # 이름을 여기서 다시 가져온다(중복 import 는 무해).
+            from utils.db_utils import reconcile_daily_net as _f14_recon
+            _rec = _f14_recon(today_str, _f4_gross, _f4_comm, _f4_net)
             if _rec["status"] == "NO_BROKER":
                 # ⚠ "차이 0"이 아니라 "측정 못 함"이다 — 구분해서 남긴다(계측 4원칙 ②).
                 log_manager.system(
@@ -12256,16 +12354,20 @@ class TradingSystem:
                     "WARNING",
                 )
             elif _rec["status"] == "MISMATCH":
-                _ratio = _rec["commission_ratio"]
+                # 🔴 [MW0601 507차 후속 / F-14] 종전 문구는 *"gross가 일치하는데
+                #   net만 어긋나면 원인은 수수료율이다"* 라는 **고정 진단**을
+                #   조건 없이 붙였다. 2026-08-31 실측에서는 그것이 틀렸다 —
+                #   잔차 -91,461원의 **77%가 gross 축**이었고, 같은 초에
+                #   `[BrokerPnl] gross 불일치` WARNING 이 따로 떠 있었다.
+                #   두 로그가 서로 다른 결론을 말한 것이다(계측 4원칙 ⑤).
+                #   문자열 조립은 `format_net_recon_mismatch()` 에 있다(테스트 가능).
+                # ⚠ `_f4_broker is None` 이면 gross 축은 **미측정**이다 —
+                #   `update_daily_broker_pnl_net()` 이 행이 없을 때 엔진 gross 로
+                #   행을 만들기 때문에 그 값을 브로커로 읽으면 자기참조 대사가 된다
+                #   (498차 F-9). 0이 아니라 미측정으로 적는다.
+                from utils.db_utils import format_net_recon_mismatch as _f14_fmt
                 log_manager.system(
-                    f"[NetRecon] 🔴 net 불일치 — 엔진 {_rec['engine_net']:+,.0f}원 vs "
-                    f"브로커 {_rec['broker_net']:+,.0f}원 (잔차 {_rec['residual']:+,.0f}원, "
-                    f"허용 ±{_rec['tolerance']:,.0f}). "
-                    f"수수료: 엔진 {_rec['engine_commission']:,.0f} vs 브로커 실측 "
-                    f"{_rec['broker_commission']:,.0f}원"
-                    + (f" (배수 {_ratio:.2f})" if _ratio else "")
-                    + ". gross가 일치하는데 net만 어긋나면 원인은 **수수료율**이다 — "
-                      "scripts/commission_rate_recon.py --verify 로 재보정할 것",
+                    _f14_fmt(_rec, _f4_broker is not None),
                     "ERROR",
                 )
             else:
@@ -12281,6 +12383,38 @@ class TradingSystem:
                 )
         except Exception as _nr_e:
             logger.warning("[NetRecon] net 대사 실패 (무해): %s", _nr_e)
+
+        # ── [MW0601 507차 후속 / G-5] 청산 사유 라벨 자기대사 (섀도) ────────────
+        # 🔴 **차단하지 않는다. 보고만 한다.** 라벨을 고치는 것은 F-10이고 그쪽은
+        #   청산 트리거 경로 변경이라 섀도 10거래일 관찰이 선행조건이다(P5-06).
+        #   여기서 만드는 것이 바로 그 관찰이다. 새 계산·새 수집 0회 —
+        #   두 축이 이미 `trades` 에 있는데 아무도 맞춰보지 않았을 뿐이다(계측 4원칙 ⑤).
+        try:
+            from utils.db_utils import recon_exit_stage_labels as _g5_recon
+            _g5 = _g5_recon(today_str)
+            if _g5["trail_positions"] or _g5["unmeasured"]:
+                _g5_tail = ""
+                if _g5["suspect"]:
+                    _g5_tail = (
+                        f" ⚠ 미대응 합계 {_g5['suspect_net_krw']:+,.0f}원 "
+                        f"(진입 {', '.join(t[11:19] for t in _g5['suspect_entries'][:5])}"
+                        + (f" 외 {len(_g5['suspect_entries']) - 5}건"
+                           if len(_g5["suspect_entries"]) > 5 else "")
+                        + "). 이 레그들은 라벨상 「TP1 뒤 트레일(이익 청산)」이지만 "
+                          "그 포지션에 TP가 난 적이 없다 — 손절률 분모·분자가 오염된다"
+                    )
+                log_manager.system(
+                    f"[ExitStageRecon] 오늘 TRAIL_AFTER_TP1 {_g5['trail_legs']}레그 / "
+                    f"{_g5['trail_positions']}포지션 중 TP 이벤트 대응 {_g5['corresponded']} · "
+                    f"단일계약 보호전환(설계) {_g5['single_armed']} · "
+                    f"미대응 {_g5['suspect']}"
+                    + (f" · 판정불가(exit_stage 미측정) {_g5['unmeasured']}"
+                       if _g5["unmeasured"] else "")
+                    + _g5_tail,
+                    "WARNING" if _g5["suspect"] else "INFO",
+                )
+        except Exception as _g5_e:
+            logger.warning("[ExitStageRecon] 라벨 대사 실패 (무해): %s", _g5_e)
 
         # 섹션 8: scaler_daily EOD 집계 저장
         # [MW0601 483차 / P1-A] ⚠ 스냅샷을 try **밖에서** 먼저 잡는다. 아래 try 가

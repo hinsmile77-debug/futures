@@ -71,6 +71,39 @@ RECON_INVENTORY = {
         "owner": "main.py: daily_close() / utils.db_utils.fetch_broker_gross_origin()",
         "note": "gross 0 인 행은 `net_only` 로 갈라 「브로커가 0원이라고 했다」로 읽지 않는다",
     },
+    # ── [MW0601 507차 후속] 아래 둘은 이번에 신설한 대사다 ──────────────────
+    "StateRecon": {
+        "compares": ("디스크 기준선 파일 `regime_fingerprint.json` 의 피처 키 집합 vs "
+                     "코드 상수 `config.constants.CORE_FEATURES`"),
+        "independent": True,
+        "why_independent": (
+            "한쪽은 지난 EOD 재학습이 디스크에 남긴 파일이고 다른 쪽은 이번 배포의 "
+            "코드 상수다. 서로를 참조하지 않으므로 세대가 갈리면 그대로 드러난다 — "
+            "2026-08-31에 실제로 갈려 있었다(파일 08-28 저장 · 코드 500차 통합)"),
+        "missing_literal": "regime_fingerprint.json 없음 — 기준선 미보유",
+        "owner": ("main.py: _restore_analysis_state() / "
+                  "strategy.regime_fingerprint.RegimeFingerprint.baseline_key_recon()"),
+        "note": ("507차 후속 G-4. **보고만 한다 — 차단 없음.** PSI 는 "
+                 "`FP_CRITICAL_GRADE_BLOCK_ENABLED = False` 라 섀도이며, 여기서 "
+                 "무언가를 막으면 안전장치가 새 사고를 만든다. "
+                 "`feature_names.pkl` 97개 동결 슈퍼셋은 의도된 설계라 대사 대상 밖"),
+    },
+    "ExitStageRecon": {
+        "compares": ("`trades.exit_stage` 가 TRAIL_AFTER_TP1 인가 vs "
+                     "그 포지션(같은 entry_ts)에 실제 TP 레그가 있었는가"),
+        "independent": True,
+        "why_independent": (
+            "라벨(`exit_stage`)은 청산 시점에 `partial_1_done` 로 붙고, TP 레그의 "
+            "존재는 그와 별개로 기록된 청산 사유·단계다. 라벨이 라벨을 확인하지 "
+            "않는다 — 2026-08-31에 13레그 중 5포지션이 갈렸다(이상점 1-19)"),
+        "missing_literal": "판정불가(exit_stage 미측정)",
+        "owner": ("main.py: daily_close() / "
+                  "utils.db_utils.recon_exit_stage_labels()"),
+        "note": ("507차 후속 G-5. **섀도 — 차단·수정 없음.** 라벨을 고치는 것은 "
+                 "F-10이고 그쪽은 `is_tp1_hit` 재발동 가드와 같은 플래그를 쓰는 "
+                 "청산 트리거 경로 변경이라 섀도 10거래일 관찰이 선행조건이다(P5-06). "
+                 "단일계약 1레그는 `arm_tp1_single_contract*()` 설계 경로라 의심에서 뺀다"),
+    },
 }
 
 
