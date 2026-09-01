@@ -46,6 +46,19 @@ C = {
     "yellow": "#E3B341", "gold": "#FFD700",
 }
 
+# ── 파라미터 조정 단위 (대시보드 입력 격자) ──────────────────────
+#  금액: 10만원 단위 / 비율: 5%부터 5% 단위 / 시간·횟수·연속수: 1 단위
+KRW_STEP_MAN   = 10     # 만원 — 스핀박스 표시 단위가 '만원'이므로 10 = 10만원
+RATIO_MIN_PCT  = 5
+RATIO_MAX_PCT  = 60
+RATIO_STEP_PCT = 5
+
+
+def _snap(v, lo, hi, step):
+    """v를 [lo, hi] 범위의 step 격자로 반올림."""
+    return int(max(lo, min(hi, round(float(v) / step) * step)))
+
+
 TIER_COLORS = ["#39D3BB", "#58A6FF", "#D29922", "#F85149", "#8B0000"]
 TIER_LABELS = ["Tier 0 정상", "Tier 1 B급↑", "Tier 2 A급↑", "Tier 3 A+전용", "Tier 4 거래중단"]
 
@@ -301,6 +314,10 @@ class _SettingsSection(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        # 사용자 조작만 5% 격자로 스냅한다. 디스크/설정에서 불러온 격자 밖 값
+        #  (구 UI는 1% 단위였다)을 조용히 바꾸면 UI가 라이브 config와 어긋난다
+        #  — 계측 4원칙 ④(폴백 가시화)와 같은 이유로 금지.
+        self._ratio_snap = True
         self._setup()
 
     def _setup(self):
@@ -314,19 +331,22 @@ class _SettingsSection(QWidget):
         fl1.setSpacing(4)
 
         self._trail_act = QSpinBox()
-        self._trail_act.setRange(50, 2000)
-        self._trail_act.setSingleStep(50)
+        self._trail_act.setRange(KRW_STEP_MAN, 2000)
+        self._trail_act.setSingleStep(KRW_STEP_MAN)
         self._trail_act.setSuffix(" 만원")
         self._trail_act.setValue(200)
         self._trail_act.setStyleSheet(self._spin_style())
 
         self._trail_ratio = QSlider(Qt.Horizontal)
-        self._trail_ratio.setRange(15, 60)
+        self._trail_ratio.setRange(RATIO_MIN_PCT, RATIO_MAX_PCT)
+        self._trail_ratio.setSingleStep(RATIO_STEP_PCT)
+        self._trail_ratio.setPageStep(RATIO_STEP_PCT)
+        self._trail_ratio.setTickInterval(RATIO_STEP_PCT)
+        self._trail_ratio.setTickPosition(QSlider.TicksBelow)
         self._trail_ratio.setValue(35)
         self._trail_ratio_lbl = _lbl("35%", C["orange"], bold=True)
-        self._trail_ratio.valueChanged.connect(
-            lambda v: self._trail_ratio_lbl.setText(f"{v}%")
-        )
+        # 마우스 드래그는 singleStep을 따르지 않으므로 5% 격자로 스냅한다.
+        self._trail_ratio.valueChanged.connect(self._on_ratio_changed)
         row_trail = QHBoxLayout()
         row_trail.addWidget(self._trail_ratio)
         row_trail.addWidget(self._trail_ratio_lbl)
@@ -344,8 +364,8 @@ class _SettingsSection(QWidget):
         tier_defs = [(100, "C급 이상"), (200, "B급 이상"), (300, "A급 이상"), (400, "거래중단")]
         for krw, label in tier_defs:
             sp = QSpinBox()
-            sp.setRange(50, 2000)
-            sp.setSingleStep(50)
+            sp.setRange(KRW_STEP_MAN, 2000)
+            sp.setSingleStep(KRW_STEP_MAN)
             sp.setSuffix(" 만원")
             sp.setValue(krw)
             sp.setStyleSheet(self._spin_style())
@@ -364,19 +384,21 @@ class _SettingsSection(QWidget):
 
         self._aft_hour = QSpinBox()
         self._aft_hour.setRange(11, 15)
+        self._aft_hour.setSingleStep(1)
         self._aft_hour.setValue(13)
         self._aft_hour.setSuffix(" 시")
         self._aft_hour.setStyleSheet(self._spin_style())
 
         self._aft_max = QSpinBox()
         self._aft_max.setRange(1, 10)
+        self._aft_max.setSingleStep(1)
         self._aft_max.setValue(3)
         self._aft_max.setSuffix(" 회")
         self._aft_max.setStyleSheet(self._spin_style())
 
         self._aft_min_pnl = QSpinBox()
-        self._aft_min_pnl.setRange(50, 1000)
-        self._aft_min_pnl.setSingleStep(50)
+        self._aft_min_pnl.setRange(KRW_STEP_MAN, 1000)
+        self._aft_min_pnl.setSingleStep(KRW_STEP_MAN)
         self._aft_min_pnl.setValue(100)
         self._aft_min_pnl.setSuffix(" 만원")
         self._aft_min_pnl.setStyleSheet(self._spin_style())
@@ -397,14 +419,15 @@ class _SettingsSection(QWidget):
         self._pcb_enabled.setStyleSheet(f"color:{C['text']};")
 
         self._pcb_min_pnl = QSpinBox()
-        self._pcb_min_pnl.setRange(50, 1000)
-        self._pcb_min_pnl.setSingleStep(50)
+        self._pcb_min_pnl.setRange(KRW_STEP_MAN, 1000)
+        self._pcb_min_pnl.setSingleStep(KRW_STEP_MAN)
         self._pcb_min_pnl.setValue(150)
         self._pcb_min_pnl.setSuffix(" 만원")
         self._pcb_min_pnl.setStyleSheet(self._spin_style())
 
         self._pcb_consec = QSpinBox()
         self._pcb_consec.setRange(1, 5)
+        self._pcb_consec.setSingleStep(1)
         self._pcb_consec.setValue(2)
         self._pcb_consec.setSuffix(" 연속")
         self._pcb_consec.setStyleSheet(self._spin_style())
@@ -424,6 +447,21 @@ class _SettingsSection(QWidget):
         btn_row.addWidget(self._btn_reset)
         layout.addLayout(btn_row)
         layout.addStretch()
+
+    def _on_ratio_changed(self, v):
+        """하락 허용율 슬라이더 — 5% 격자 스냅 + 라벨 갱신.
+
+        QSlider는 마우스 드래그 시 singleStep을 무시하므로 여기서 되돌린다.
+        같은 값으로의 setValue는 Qt가 valueChanged를 재발행하지 않으므로 재귀 없음.
+        """
+        if not self._ratio_snap:
+            self._trail_ratio_lbl.setText(f"{v}%")
+            return
+        snapped = _snap(v, RATIO_MIN_PCT, RATIO_MAX_PCT, RATIO_STEP_PCT)
+        if snapped != v:
+            self._trail_ratio.setValue(snapped)   # 재진입 → 아래 라벨 갱신
+            return
+        self._trail_ratio_lbl.setText(f"{snapped}%")
 
     def _spin_style(self):
         return (
@@ -476,7 +514,12 @@ class _SettingsSection(QWidget):
     def load_config(self, cfg):
         """현재 config 값을 UI에 반영."""
         self._trail_act.setValue(int(cfg.trail_activation_krw // 10_000))
-        self._trail_ratio.setValue(int(cfg.trail_ratio * 100))
+        # 격자 밖 저장값도 있는 그대로 표시한다(스냅은 사용자 조작 때만).
+        self._ratio_snap = False
+        try:
+            self._trail_ratio.setValue(int(round(cfg.trail_ratio * 100)))
+        finally:
+            self._ratio_snap = True
         self._aft_enabled.setChecked(cfg.afternoon_enabled)
         self._aft_hour.setValue(cfg.afternoon_cutoff_hour)
         self._aft_max.setValue(cfg.afternoon_max_trades)
