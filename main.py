@@ -71,6 +71,9 @@ from config.settings import (
     LOSS_TIER1_ENABLED, LOSS_TIER1_TICK_ENABLED,
     LOSS_TIER1_QTY1_ENABLED,              # [425차] qty=1 전량 조기청산 (기본 False)
     LOSS_TIER1_QTY1_TICK_ENABLED,         # [425차] 위의 틱 확장분 별도 킬스위치
+    EXIT_REJECT_BACKOFF_SEC, EXIT_REJECT_WINDOW_SEC,      # [511차 F-21] 청산 거부 백오프
+    EXIT_REJECT_ALERT_STREAK, EXIT_REJECT_QTY_REDUCE_SHADOW,
+    EXIT_CLOSABLE_QTY_FRESH_SEC,
     TP1_TICK_ENABLED,                     # [403차 종합 P1-5] tick-level TP1 킬스위치
     TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED, TOXICITY_SEVERE_SPREAD_BLOCK_TICKS,
     TOXICITY_REDUCE_MULT_SHADOW_HI, TOXICITY_REDUCE_MULT_SHADOW_LO,
@@ -990,6 +993,17 @@ class TradingSystem:
         self._canary_1m_last_run_date: object = None  # [331차 후속2] 1일 1회 실행 게이트
         self._entry_cooldown_until: object = None  # [B53] ENTRY 타임아웃 후 재진입 쿨다운
         self._exit_cooldown_until:  object = None  # 청산 후 즉각 재진입 차단 쿨다운
+
+        # ── [511차 F-17·F-21·G-6] 청산 주문 거부 상태 ──────────────────────────
+        # 계측 4원칙 ④ — getattr 폴백으로 읽지 않도록 여기서 명시 초기화한다.
+        # `_broker_closable_qty`는 "미측정"과 "0"을 구분해야 하므로 None으로 둔다(원칙 ②).
+        self._exit_reject_streak:      int    = 0
+        self._exit_reject_kind:        str    = ""
+        self._exit_reject_last_at:     object = None
+        self._exit_reject_alerted:     bool   = False
+        self._exit_retry_block_until:  object = None
+        self._broker_closable_qty:     object = None   # None = 미측정 (0과 구분)
+        self._broker_closable_qty_at:  object = None
 
         # ── P1-a: Restart Armistice ────────────────────────────────────────────
         # 재시작 직후 90초간 + broker sync 2회 clean 전까지 신규 진입 차단.
@@ -3444,6 +3458,10 @@ class TradingSystem:
                 f"[ManualExit] 주문 실패 ret={ret} pct={percent} qty={send_qty}",
                 "ERROR",
             )
+            _ts_on_exit_order_reject(
+                self, kind="수동청산", direction=self.position.status,
+                qty=send_qty, ret=ret,
+            )
             return
 
         log_manager.system(
@@ -4520,6 +4538,19 @@ class TradingSystem:
         if not getattr(self, "_tick_stop_triggered", False):
             return
         self._tick_stop_triggered = False           # 중복 처리 방지 — 결과 무관 즉시 해제
+        # [511차 F-21] 직전 거부 백오프 — **pending 등록 전에** 거른다.
+        # 여기가 2026-09-01 폭주(144초 163회, 평균 1.13회/초)의 발원지였다.
+        # 뒤쪽(_send_broker_exit_order)에서 걸러도 되지만, 그러면 호출자가 매번
+        # `[Exit] … 주문 실패` ERROR를 남겨 exceptions_10m을 밀어 올린다 —
+        # 안전장치가 헬스 degraded를 자체 유발하는 두 번째 사고가 된다.
+        # 스톱이 계속 히트 중이면 다음 틱이 플래그를 다시 세우므로 기회를 잃지 않는다.
+        _tk_block = _ts_exit_retry_block_remaining(self)
+        if _tk_block > 0:
+            logger.warning(
+                "[ExitRejectBackoff] 하드스톱(틱) %.1fs 보류 — 이번 틱 건너뜀 "
+                "(연속 거부 %d회)", _tk_block, self._exit_reject_streak,
+            )
+            return
         _tk_px   = self._tick_stop_price
         _tk_stop = self.position.stop_price
         if (self.position.status != "FLAT"
@@ -4562,6 +4593,10 @@ class TradingSystem:
             else:
                 self._clear_pending_order()
                 log_manager.system(f"[Exit] 하드스톱(틱) 주문 실패 ret={ret}", "ERROR")
+                _ts_on_exit_order_reject(
+                    self, kind="하드스톱(틱)", direction=_tk_direction,
+                    qty=_tk_qty, ret=ret,
+                )
 
     def _process_tick_loss_tier1(self) -> None:
         """[363차] 손절 계단화 1차 tick-level 처리 — 메인 스레드에서만 호출.
@@ -10902,14 +10937,31 @@ class TradingSystem:
         self._pending_limit_is_active = False
         self._clear_pending_order()
 
-    def _send_broker_exit_order(self, qty: int) -> int:
-        """선물 청산 시장가 주문. 0=성공, 음수=오류, -99=BlockRequest 타임아웃"""
+    def _send_broker_exit_order(self, qty: int, *, throttle: bool = True) -> int:
+        """선물 청산 시장가 주문. 0=성공, 음수=오류, -99=BlockRequest 타임아웃,
+        -98=자체 백오프 보류(브로커 거부 아님, [511차 F-21]).
+
+        `throttle=False`는 **절대원칙 §1 경로 전용**이다(15:10 시간청산 ·
+        15:18 FINAL_CLOSE). 오버나이트를 막는 주문을 우리 쪽 억제 장치가
+        늦추면 안 된다 — 그쪽은 매분 파이프라인이 알아서 재시도한다.
+        """
         code = getattr(self, "_futures_code", "")
         if not code or self.position.status == "FLAT":
             return -1
         account_no = self._get_active_account_no()
         if not account_no:
             return -1
+        # [511차 F-21] 직전 거부 백오프 — 안전망. 폭주의 주 발원지(틱 하드스톱)는
+        # _process_tick_stop 쪽에서 pending 등록 전에 먼저 걸러 ERROR 로그 자체를
+        # 만들지 않는다. 여기는 분당 1회 도는 STEP8 경로들을 위한 2차 방어다.
+        if throttle:
+            _rem = _ts_exit_retry_block_remaining(self)
+            if _rem > 0:
+                logger.warning(
+                    "[ExitRejectBackoff] 직전 거부로 %.1fs 보류 — 전송 생략 qty=%s status=%s",
+                    _rem, qty, self.position.status,
+                )
+                return EXIT_RET_THROTTLED
         side = "SELL" if self.position.status == "LONG" else "BUY"
         ret = self.broker.send_market_order(
             account_no=account_no,
@@ -10930,6 +10982,9 @@ class TradingSystem:
                 self.circuit_breaker.check_api_delay(10.0)  # CB 트리거 ⑤
             except Exception as _cb_delay_e:
                 logger.warning("[CB] check_api_delay 예외 (스킵): %s", _cb_delay_e)
+        # [511차 F-21] 한 번이라도 정상 전송되면 거부 연쇄를 끊는다.
+        if ret == 0:
+            _ts_reset_exit_reject_state(self, reason="qty=%s" % (qty,))
         return ret
 
     def _log_exec_1m_shadow(
@@ -14461,6 +14516,10 @@ def _ts_execute_partial_exit(self, price: float, stage: int) -> None:
             f"[Exit] 청산 주문 실패 ret={ret} stage={stage} qty={send_qty} — pending 롤백",
             "ERROR",
         )
+        _ts_on_exit_order_reject(
+            self, kind=f"TP{stage}", direction=self.position.status,
+            qty=send_qty, ret=ret,
+        )
         return
     log_manager.trade(
         f"[주문요청] TP{stage} 청산 {self.position.status} {send_qty}계약 @ {price} 체결대기"
@@ -14592,6 +14651,9 @@ def _ts_execute_loss_tier1_exit(self, price: float) -> None:
     else:
         self._clear_pending_order()
         log_manager.system(f"[Exit] 손절1차 주문 실패 ret={ret}", "ERROR")
+        _ts_on_exit_order_reject(
+            self, kind="손절1차", direction=direction, qty=cut_qty, ret=ret,
+        )
 
 
 def _ts_execute_loss_tier1_qty1_exit(self, price: float) -> None:
@@ -14635,6 +14697,9 @@ def _ts_execute_loss_tier1_qty1_exit(self, price: float) -> None:
     else:
         self._clear_pending_order()
         log_manager.system(f"[Exit] 손절1차 qty1 주문 실패 ret={ret}", "ERROR")
+        _ts_on_exit_order_reject(
+            self, kind="손절1차qty1", direction=direction, qty=1, ret=ret,
+        )
 
 
 def _position_elapsed_sec(position) -> "Optional[float]":
@@ -14751,6 +14816,168 @@ def _ts_record_loss_tier2_shadow(self, price: float) -> None:
         )
     except Exception as _lt2_e:
         logger.warning("[LossTier2Shadow] 기록 실패 (무해): %s", _lt2_e)
+
+
+# ── [MW0601 511차] 청산 주문 "브로커 거부" 공통 처리 (F-19·F-21·F-22) ──────────
+# 2026-09-01 13:28:09~13:30:33에 하드스톱 전량청산이 163회 연속 거부됐는데
+#   ① 실패가 TRADE 로그에 한 줄도 안 남았고(은닉률 97.6%)
+#   ② 재시도에 상한·백오프가 없어 144초에 163회를 쏴 브로커 요청 제한(ret=4 21건)을
+#      스스로 유발했다.
+# 아래 세 함수가 그 두 가지를 한곳에서 처리한다. 성공 경로는 건드리지 않는다.
+EXIT_RET_THROTTLED = -98   # 우리가 스스로 보류한 것 — **브로커 거부가 아니다**
+
+# ⚠ 음수(-1/-98/-99)는 이 저장소 코드가 정의한 값이라 확정이다.
+#   양수 1~4는 Cybos BlockRequest 규약으로 알려진 값이나 **이 저장소에 근거가 없다**
+#   (`docs/CyBos ref/`·코드 전수 grep 0건). 그래서 문구에 「⚠미검증」을 박아 둔다 —
+#   로그 주석 전용이며 **제어 흐름에 절대 쓰지 않는다**. 공식 문서 확인 후 갱신할 것(F-22).
+EXIT_ORDER_RET_MEANING = {
+    0:   "정상",
+    -1:  "브로커 거부",
+    -98: "자체 백오프 보류(브로커 거부 아님)",
+    -99: "BlockRequest 타임아웃",
+    1:   "통신 오류(⚠미검증)",
+    2:   "주문 확인창 거부(⚠미검증)",
+    3:   "계좌 비밀번호 오류(⚠미검증)",
+    4:   "주문 요청 제한 초과(⚠미검증)",
+}
+
+
+def _ts_exit_ret_text(ret) -> str:
+    try:
+        r = int(ret)
+    except (TypeError, ValueError):
+        return "%s(미상)" % (ret,)
+    return "%d(%s)" % (r, EXIT_ORDER_RET_MEANING.get(r, "미상"))
+
+
+def _ts_last_order_error_msg(self) -> str:
+    """브로커가 준 거부 사유 원문. 없으면 빈 문자열(추측으로 채우지 않는다)."""
+    try:
+        err = self.broker.get_last_order_error() or {}
+    except Exception as _loe:
+        logger.warning("[ExitReject] get_last_order_error 실패 (무해): %s", _loe)
+        return ""
+    return " ".join(str(err.get("msg") or "").split())[:160]
+
+
+def _ts_closable_qty_snapshot(self):
+    """(청산가능수량, 관측경과초). 미측정·낡음은 (None, age|None) — 계측 4원칙 ②.
+
+    "미측정"과 "0"을 같은 값으로 표현하지 않는다. 2026-09-01 13:26:41 실측처럼
+    balance 미포함 Chejan 행에서는 `closable_qty=0`이 실제 보유(LONG 2계약)와
+    무관하게 들어온다 — 그래서 낡은 값은 None으로 떨어뜨린다.
+    """
+    q = self._broker_closable_qty
+    at = self._broker_closable_qty_at
+    if q is None or at is None:
+        return None, None
+    age = (datetime.datetime.now() - at).total_seconds()
+    if age > EXIT_CLOSABLE_QTY_FRESH_SEC:
+        return None, age
+    return int(q), age
+
+
+def _ts_exit_retry_block_remaining(self) -> float:
+    """직전 거부 백오프의 잔여 초. 0이면 지금 보내도 된다."""
+    until = self._exit_retry_block_until
+    if until is None:
+        return 0.0
+    return max(0.0, (until - datetime.datetime.now()).total_seconds())
+
+
+def _ts_reset_exit_reject_state(self, *, reason: str = "") -> None:
+    """청산 주문이 정상 전송되면 거부 연쇄를 끊는다."""
+    if self._exit_reject_streak:
+        log_manager.trade(
+            "[주문실패복구] 청산 주문 정상 전송 — 직전 연속 거부 %d회에서 회복%s"
+            % (self._exit_reject_streak, (" (%s)" % reason) if reason else "")
+        )
+    self._exit_reject_streak = 0
+    self._exit_reject_kind = ""
+    self._exit_reject_last_at = None
+    self._exit_reject_alerted = False
+    self._exit_retry_block_until = None
+
+
+def _ts_on_exit_order_reject(self, *, kind: str, direction: str, qty: int, ret) -> None:
+    """청산 주문이 성공하지 못했을 때의 공통 후처리.
+
+    반드시 `_clear_pending_order()` **뒤에** 호출한다(pending 선등록 규약을 깨지
+    않기 위함 — 305차 2026-07-09 유령포지션 사고 재발방지).
+
+    ⚠ 이 함수는 **주문을 내지 않는다.** 기록·카운트·백오프 설정·경보만 한다.
+    수량 축소 재시도(F-17 ②)는 아직 섀도이고, 미체결 주문 취소(F-18)는
+    자동조치 C등급이라 주간회의 승인 전까지 배선하지 않는다.
+    """
+    # 우리가 스스로 보류한 건은 세지 않는다 — 세면 백오프가 자기 자신을 키운다.
+    if ret == EXIT_RET_THROTTLED:
+        return
+
+    now = datetime.datetime.now()
+    _last = self._exit_reject_last_at
+    if (self._exit_reject_kind != kind
+            or _last is None
+            or (now - _last).total_seconds() > EXIT_REJECT_WINDOW_SEC):
+        self._exit_reject_streak = 0
+        self._exit_reject_alerted = False
+    self._exit_reject_kind = kind
+    self._exit_reject_last_at = now
+    self._exit_reject_streak += 1
+    streak = self._exit_reject_streak
+
+    # 백오프 — 상한이 있고 **영구 차단은 없다**(마지막 값을 계속 쓴다).
+    backoff = 0.0
+    if EXIT_REJECT_BACKOFF_SEC:
+        backoff = float(EXIT_REJECT_BACKOFF_SEC[
+            min(streak, len(EXIT_REJECT_BACKOFF_SEC)) - 1
+        ])
+        self._exit_retry_block_until = now + datetime.timedelta(seconds=backoff)
+
+    _msg = _ts_last_order_error_msg(self)
+    _cq, _age = _ts_closable_qty_snapshot(self)
+
+    # [F-19] 이 한 줄이 이번 사건의 핵심 결손이었다 — TRADE 채널에 실패를 남긴다.
+    log_manager.trade(
+        "[주문실패] %s 청산 %s %s계약 ret=%s 연속=%d회 다음시도보류=%.0fs "
+        "청산가능=%s 사유=%s"
+        % (kind, direction, qty, _ts_exit_ret_text(ret), streak, backoff,
+           ("미측정" if _cq is None else _cq),
+           (_msg or "(브로커 메시지 없음)"))
+    )
+
+    # [F-17 ②단계 — 섀도] 수량 축소 재시도 후보. 에피소드당 1줄만, INFO로 남긴다
+    # (WARNING으로 두면 exceptions_10m을 밀어 올려 헬스 degraded를 자체 유발한다 —
+    #  오늘 09시대에 실제로 그 경로로 자동진입이 19분 막혔다).
+    if EXIT_REJECT_QTY_REDUCE_SHADOW and streak == 1:
+        if _cq is not None and 0 < _cq < int(qty or 0):
+            log_manager.system(
+                "[ExitRejectShadow] 수량축소 재시도 후보 %s %s %s계약 → %s계약 "
+                "(closable=%s age=%.1fs) — 섀도, 라이브 미적용"
+                % (kind, direction, qty, _cq, _cq, (_age or 0.0)),
+                "INFO",
+            )
+        else:
+            log_manager.system(
+                "[ExitRejectShadow] 수량축소 후보 없음 %s %s %s계약 (closable=%s) "
+                "— 섀도, 라이브 미적용"
+                % (kind, direction, qty, ("미측정" if _cq is None else _cq)),
+                "INFO",
+            )
+
+    # 연속 상한 도달 → **1회만** 경보. 스팸을 내면 아무도 안 본다.
+    if streak >= EXIT_REJECT_ALERT_STREAK and not self._exit_reject_alerted:
+        self._exit_reject_alerted = True
+        log_manager.system(
+            "[ExitRejectAlert] 청산 주문 %d회 연속 거부 — %s %s %s계약 ret=%s 사유=%s. "
+            "포지션이 열린 채 남아 있다. 외부 미체결 주문이 청산가능수량을 선점 중인지 "
+            "확인할 것 — 15:10 강제청산도 같은 사유로 막힐 수 있다."
+            % (streak, kind, direction, qty, _ts_exit_ret_text(ret), (_msg or "(없음)")),
+            "ERROR",
+        )
+        log_manager.trade(
+            "[청산경보] 청산 주문 %d회 연속 거부 — 사람이 확인해야 한다. %s %s계약 미청산"
+            % (streak, direction, qty)
+        )
 
 
 def _ts_check_exit_triggers(self, price: float, features: dict, decision: dict, bar: dict = None):
@@ -14904,6 +15131,10 @@ def _ts_check_exit_triggers(self, price: float, features: dict, decision: dict, 
         else:
             self._clear_pending_order()
             log_manager.system(f"[Exit] 하드스톱 주문 실패 ret={ret}", "ERROR")
+            _ts_on_exit_order_reject(
+                self, kind="하드스톱", direction=_hs_direction,
+                qty=_hs_qty, ret=ret,
+            )
         return
 
     # [360차] 손절 계단화 1차 — 하드스톱(위 블록)이 우선이라 return으로 이미 빠지지
@@ -15028,7 +15259,11 @@ def _ts_check_exit_triggers(self, price: float, features: dict, decision: dict, 
                 price_hint=round(price, 2),  # [B50] float 오차 방지
                 reason="15:10 강제청산",
             )
-            ret = self._send_broker_exit_order(_force_qty)
+            # [511차 F-21] 절대원칙 §1 경로 — 자체 백오프 **면제**.
+            # 오버나이트를 막는 주문을 우리 억제 장치가 늦추면 안 된다.
+            # 이 블록은 매분 파이프라인이 15:10~15:18 동안 반복 진입하므로
+            # 재시도는 그쪽이 담당한다(약 8회) → 15:18 FINAL_CLOSE가 최후 방어.
+            ret = self._send_broker_exit_order(_force_qty, throttle=False)
             log_manager.system(
                 f"[ExitSendOrderResult] ret={ret} kind=시간청산 "
                 f"direction={_force_direction} qty={_force_qty}",
@@ -15041,6 +15276,10 @@ def _ts_check_exit_triggers(self, price: float, features: dict, decision: dict, 
             else:
                 self._clear_pending_order()
                 log_manager.system(f"[Exit] 시간청산 주문 실패 ret={ret}", "ERROR")
+                _ts_on_exit_order_reject(
+                    self, kind="15:10 강제청산", direction=_force_direction,
+                    qty=_force_qty, ret=ret,
+                )
         elif _broker_cached > 0:
             # 폴백: 내부 FLAT이지만 broker 캐시에 잔량 → broker 직접 조회 후 청산
             log_manager.system(
@@ -16509,6 +16748,15 @@ def _ts_broker_direct_force_exit(self, price: float, reason: str = "강제청산
         f"[BrokerDirectExit] send_market_order ret={ret} {broker_side} {broker_qty}계약 reason={reason}",
         "ERROR" if ret != 0 else "WARNING",
     )
+    # [511차 F-19] 최후 방어선(15:18 FINAL_CLOSE 등)이 실패하면 그 사실이 TRADE에
+    # 남아야 한다 — 지금까지는 SYSTEM에만 남아 운영자 화면에서 보이지 않았다.
+    if ret != 0:
+        _ts_on_exit_order_reject(
+            self, kind=f"브로커직접청산({reason})", direction=broker_side,
+            qty=broker_qty, ret=ret,
+        )
+    else:
+        _ts_reset_exit_reject_state(self, reason="BrokerDirectExit")
     return ret == 0
 
 
@@ -17507,6 +17755,14 @@ def _ts_sync_from_balance_payload(self, payload: dict) -> None:
     )
     # P1-b: balance 이벤트에서 브로커 보유수량 갱신 (integrity checksum용)
     self._integrity_broker_qty = closable_qty if closable_qty > 0 else qty
+    # [511차 G-6] 청산가능수량 스냅샷 — 브로커가 잔고 Chejan에 이미 매번 실어
+    # 보내던 값인데 지금까지 **아무도 보관하지 않았다**(FP-CRITICAL 죽은 게이트·
+    # TOX 죽은 섀도와 같은 계열: 없던 데이터가 아니라 안 본 데이터).
+    # 여기(잔고 Chejan)는 balance 행이라 값이 유효하다 — 주문접수 Chejan의
+    # closable_qty=0(2026-09-01 13:26:41 실측, 실제 보유는 LONG 2계약)과 다르다.
+    # 소비처: _ts_closable_qty_snapshot() → 청산 거부 시 진단·섀도. 라이브 판단 무관.
+    self._broker_closable_qty = closable_qty
+    self._broker_closable_qty_at = datetime.datetime.now()
     side = _ts_order_side_to_direction(payload)
     before = _ts_get_position_snapshot(self)
     logger.warning(
