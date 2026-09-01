@@ -91,7 +91,8 @@ SIG_SYSLOG = "SYSTEM.log"
 
 # ── 판정 (순수 함수 — 테스트가 여기를 고정한다) ────────────────────────────
 
-def judge(ages, stall_sec=300.0, exit_flag_age=None, close_done_age=None):
+def judge(ages, stall_sec=300.0, exit_flag_age=None, close_done_age=None,
+          shutdown_age=None):
     """3신호의 나이(초)로 동결을 판정한다. 파일 IO 없이 값만 본다.
 
     Args:
@@ -103,6 +104,10 @@ def judge(ages, stall_sec=300.0, exit_flag_age=None, close_done_age=None):
               None = 플래그 없음 또는 읽기 실패(**미측정**).
         close_done_age: [MW0601 498차 / F-10] `data/daily_close_done_<date>.txt` 의
               **나이(초)**. None = 마커 없음(**미측정**).
+        shutdown_age: [MW0601 513차] `data/shutdown_normal_<date>.txt` 의 **나이(초)**.
+              `_exit_normally` 와 같은 뜻(프로세스가 스스로 종료했다)이되 **런처가
+              지우지 않는** 날짜본이라 판정 시점에 실제로 존재한다.
+              None = 마커 없음(**미측정**).
 
     Returns:
         dict(level, rc, headline, details[], stale[], unmeasured[], state)
@@ -111,6 +116,7 @@ def judge(ages, stall_sec=300.0, exit_flag_age=None, close_done_age=None):
       ① 측정된 신호가 하나도 없다            → UNKNOWN (조용히 OK로 넘기지 않는다)
       ② 측정된 신호가 **전부** 정체
          · 정상 종료 플래그가 신호보다 **뒤**  → NOT_APPLICABLE (state=EXITED)
+         · 종료 마커가 **가장 오래된** 신호보다 뒤 → NOT_APPLICABLE (state=EXITED)
          · 마감 완료 마커가 신호보다 **뒤**    → INFO           (state=NORMAL_CLOSE)
          · 그 외                              → CRITICAL       (state=FROZEN)
       ③ 그 외(하나라도 신선)                  → OK             (state=WATCHING)
@@ -178,19 +184,43 @@ def judge(ages, stall_sec=300.0, exit_flag_age=None, close_done_age=None):
         # `exit_flag_age`(초)가 정체 신호들의 최소 나이보다 **작다** = 플래그가 더
         # 최근이다. 어제 남은 플래그는 나이가 훨씬 크므로 여기서 걸러진다.
         _min_stale_age = min(ages[n] for n in stale)
+        _max_stale_age = max(ages[n] for n in stale)
         if exit_flag_age is not None and exit_flag_age < _min_stale_age:
             details.append(
-                "%-16s %.0fs 전 — 정상 종료 플래그(가장 오래된 정체 신호 %.0fs 보다 뒤)"
+                "%-16s %.0fs 전 — 정상 종료 플래그(가장 최근 정체 신호 %.0fs 보다 뒤)"
                 % ("_exit_normally", exit_flag_age, _min_stale_age))
             return {"level": "NOT_APPLICABLE", "rc": RC_NOT_APPLICABLE,
                     "state": "EXITED",
                     "headline": "정상 종료 확인 — 감시 종료 (동결이 아니다)",
                     "details": details, "stale": stale, "unmeasured": unmeasured}
+        # [MW0601 513차] **종료 마커** — 위 플래그와 같은 사실을 재는데, 런처가
+        # 지우지 않으므로 판정 시점에 실제로 존재한다(그 플래그는 사실상 항상 없다).
+        #
+        # ⚠ **비교 기준이 위 축과 다르다 — `max`(가장 오래된 정체 신호)다.**
+        #   이 마커는 「프로세스가 종료한 시각」이므로, 가장 오래된 신호보다 뒤이기만
+        #   하면 「정체 신호 전부가 이 종료 이전의 것」이 성립한다. 여기에 `min`(가장
+        #   최근 신호)을 쓰면 **종료 직후에 남는 로그 한 줄**(`[System] 자동 종료 실행`
+        #   — 마커보다 수백 ms 뒤)에 매번 걸려 실패한다. 498차 F-10 이 실전에서 한
+        #   번도 성립하지 못한 원인이 정확히 그 기준 선택이었다(2026-08-25~09-01
+        #   매일 45회 가짜 CRITICAL — 마커 15:40:11 vs 마지막 신호 15:40:26).
+        #
+        # 🔴 **08-19 형은 그대로 지킨다.** 그날은 13:41 동결이라 프로세스가 종료하지
+        #   않았고 마커 자체가 없다 → 미측정 → CRITICAL. 그리고 **존재만으로 판정하지
+        #   않는다** — 오전에 한 번 정상 종료(마커 기록)한 뒤 재기동한 세션이 오후에
+        #   얼어붙으면 마커가 신호들보다 **먼저**라 여기서 걸러진다.
+        if shutdown_age is not None and shutdown_age < _max_stale_age:
+            details.append(
+                "%-16s %.0fs 전 — 종료 마커(가장 오래된 정체 신호 %.0fs 보다 뒤)"
+                % ("shutdown_normal", shutdown_age, _max_stale_age))
+            return {"level": "NOT_APPLICABLE", "rc": RC_NOT_APPLICABLE,
+                    "state": "EXITED",
+                    "headline": "정상 종료 확인(종료 마커) — 감시 종료 (동결이 아니다)",
+                    "details": details, "stale": stale, "unmeasured": unmeasured}
         # [MW0601 498차 / F-10] 두 번째 독립 증거 — 마감 완료 마커.
         # `_exit_normally` 와 **같은 시각 비교 규칙**이다(존재만으로 판정하지 않는다).
         if close_done_age is not None and close_done_age < _min_stale_age:
             details.append(
-                "%-16s %.0fs 전 — 일일 마감 완료 마커(가장 오래된 정체 신호 %.0fs 보다 뒤)"
+                "%-16s %.0fs 전 — 일일 마감 완료 마커(가장 최근 정체 신호 %.0fs 보다 뒤)"
                 % ("daily_close_done", close_done_age, _min_stale_age))
             return {"level": "INFO", "rc": RC_NOT_APPLICABLE, "state": "NORMAL_CLOSE",
                     "headline": "정상 마감 후 정지 — 동결이 아니다 (감시는 계속하되 "
@@ -208,6 +238,14 @@ def judge(ages, stall_sec=300.0, exit_flag_age=None, close_done_age=None):
                 % ("_exit_normally", exit_flag_age, _min_stale_age))
         # [498차 F-10] 마감 마커 축도 **어느 쪽이든 한 줄 남긴다** — 미측정을
         # 침묵으로 처리하면 "왜 CRITICAL 인가"가 판정문에서 사라진다(계측 4원칙 ②·③).
+        if shutdown_age is None:
+            details.append("%-16s **미측정**(마커 없음) — 동결 판정 유지"
+                           % "shutdown_normal")
+        else:
+            details.append(
+                "%-16s %.0fs 전 — 가장 오래된 정체 신호(%.0fs)보다 **먼저**다"
+                "(이 세션의 종료가 아니다)"
+                % ("shutdown_normal", shutdown_age, _max_stale_age))
         if close_done_age is None:
             details.append("%-16s **미측정**(마커 없음) — 동결 판정 유지"
                            % "daily_close_done")
@@ -364,6 +402,34 @@ def close_done_age(root, now, day):
     """
     path = os.path.join(root, "data",
                         "daily_close_done_%s.txt" % day.strftime("%Y%m%d"))
+    try:
+        mtime = os.path.getmtime(path)
+    except Exception:
+        return None
+    try:
+        return max(0.0, (now - datetime.datetime.fromtimestamp(mtime)).total_seconds())
+    except Exception:
+        return None
+
+
+def shutdown_marker_age(root, now, day):
+    """[MW0601 513차] `data/shutdown_normal_<date>.txt` 의 나이(초).
+
+    `main.py:_write_exit_normally_flag()` 가 `_exit_normally` 와 **함께** 쓰는
+    날짜본 사본이다. 런처(`start_mireuk.bat:597~598`)가 `_exit_normally` 를 읽은
+    직후 지우므로, 프로세스 밖 센티넬이 판정 시점에 볼 수 있는 정상 종료의 증거는
+    사실상 이것뿐이다.
+
+    ⚠ 없거나 읽기 실패면 **None(미측정)** — `exit_flag_age()` 와 같은 규약이다.
+      미측정은 `judge()` 에서 **동결 판정 유지**로 처리된다(감시자가 조용해지는
+      것이 오탐보다 나쁘다).
+    ⚠ 파일 mtime 을 쓴다(내용이 아니라) — 형식이 바뀌면 파싱 실패 → 미측정 →
+      가짜 CRITICAL 로 되돌아가기 때문이다.
+    ⚠ 날짜가 파일명에 박혀 있어 어제 마커가 오늘 판정에 끼어들지 않는다. 그래도
+      `judge()` 는 **시각을 비교**한다 — 이중 안전장치다.
+    """
+    path = os.path.join(root, "data",
+                        "shutdown_normal_%s.txt" % day.strftime("%Y%m%d"))
     try:
         mtime = os.path.getmtime(path)
     except Exception:
@@ -551,7 +617,8 @@ def main(argv=None):
         #   입력을 주는 것이 맞다. 판정 함수를 고치는 것이 아니라 **입력 결손**이었다.
         verdict = judge(collect(root, now, now.date()), stall_sec=stall,
                         exit_flag_age=exit_flag_age(root, now),
-                        close_done_age=close_done_age(root, now, now.date()))
+                        close_done_age=close_done_age(root, now, now.date()),
+                        shutdown_age=shutdown_marker_age(root, now, now.date()))
         emit(root, now.date(), verdict, popup=popup, manual=True)
         return verdict["rc"]
 
@@ -578,7 +645,8 @@ def main(argv=None):
 
         verdict = judge(collect(root, now, now.date()), stall_sec=stall,
                         exit_flag_age=exit_flag_age(root, now),
-                        close_done_age=close_done_age(root, now, now.date()))
+                        close_done_age=close_done_age(root, now, now.date()),
+                        shutdown_age=shutdown_marker_age(root, now, now.date()))
         last_rc = verdict["rc"]
         if verdict.get("state") == "NORMAL_CLOSE":
             # [MW0601 498차 / F-10] 정상 마감 뒤 정지 — **감시는 계속하되** 최고

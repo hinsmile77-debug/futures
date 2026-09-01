@@ -1758,6 +1758,19 @@ FREEZE_WATCHDOG_HEARTBEAT_PATH = "data/heartbeat_{pc}_{date}.json"
 #    같은 "켜진 적 없는 게이트"가 된다. 차단 게이트가 아니므로 섀도 단계가 곧 이것이다.
 FORCE_FLAT_GUARD_ENABLED = True
 FORCE_FLAT_GUARD_AT = "15:12"           # 판정 시각(KST). 15:10 집행 + 여유 2분
+# [MW0601 514차 / 장후 고도화①] **추가** 판정 시각 — 15:12 단발은 그 뒤에 생기는
+# 위험을 구조적으로 볼 수 없다.
+#   2026-09-01 15:34:46 에 원인불명 외부 매수 3계약이 들어왔다. 15:12 가드는 22분
+#   전에 「FLAT · 정상」으로 판정하고 이미 종료한 뒤였고, 15:40 마감도 그 포지션을
+#   보지 않았다 — 절대원칙 §1 위반이 밤을 넘겼고 사람은 익일에야 알았다(이상점 1-6).
+#   15:39 판정이 있었다면 그 시점에 CRITICAL 팝업이 떴다(사람이 개입 가능한 시각이다).
+# ⚠ `FORCE_FLAT_GUARD_AT` 는 **건드리지 않는다** — 26주 WFA 재검증 등록 상수라
+#   값·타입을 바꾸면 그 항목의 대조 대상이 어긋난다(461차 `mdd_pct` 교훈). 여기서는
+#   축을 하나 **더하기만** 한다.
+# ⚠ 성격은 1단계 그대로다 — **알림 전용, 주문 없음**
+#   (`FORCE_FLAT_GUARD_ORDER_ENABLED` 는 False 유지, 승격은 주간회의 안건).
+# ⚠ 빈 리스트면 종전(단발) 동작과 완전히 같다.
+FORCE_FLAT_GUARD_EXTRA_AT = ["15:20", "15:30", "15:39"]
 FORCE_FLAT_GUARD_HEARTBEAT_STALE_SEC = 180.0   # 하트비트가 이보다 낡으면 "프로세스 정지"
 FORCE_FLAT_GUARD_POPUP = True           # 미청산 감지 시 Windows 메시지박스(트레이딩 PC 앞 사람용)
 FORCE_FLAT_GUARD_ORDER_ENABLED = False  # ⚠ 2단계(브로커 직접 청산) — 미구현. 주간회의 승인 전 금지

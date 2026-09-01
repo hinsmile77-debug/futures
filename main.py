@@ -1151,6 +1151,15 @@ class TradingSystem:
         # 1회 보고한다. 2026-08-31에는 이 값이 하루 종일 0이었는데 어디에도
         # 남지 않았고, 패널만 `0.000 (CLEAR)` 로 조용했다.
         self._fp_measured_count_today: int = 0
+        # [MW0601 514차 / 장후 고도화② · P5-신규] 오늘 감지된 **외부 진입** 레그 수.
+        # 미륵이가 내지 않았는데 계좌에 들어온 진입이다. 2026-09-01 에 38건이
+        # 들어와 -1,630,766원을 만들었고, 그중 **마지막 1건(15:34:46)이 청산 시도
+        # 한 번 없이 밤을 넘겨** 절대원칙 §1 위반이 됐다(이상점 1-6).
+        # ⚠ 검출은 그날도 100%였다 — `[체결동기화] 외부진입` 이 38건 전량 실시간으로
+        #   남았다. 없었던 것은 **경보**다. 사람이 그 사실을 안 것은 익일 리포트였다.
+        # ⚠ 0 은 폴백이 아니라 실측이다(계측 4원칙 ②) — 마감에서 1회 보고한다.
+        self._external_entry_legs_today: int = 0
+        self._external_entry_qty_today: int = 0
         self._health_degraded_mode: bool = False
         self._health_warn_streak: int = 0
         self._health_info_streak: int = 0
@@ -11781,6 +11790,53 @@ class TradingSystem:
             )
             return
 
+        # ── [MW0601 514차 / 장후 Fix P1-3] 마감 진입 직전 잔여 포지션 경보 ────────
+        # 🔴 **경보만 한다. 청산하지 않는다.** 마감 절차에 자동 청산을 통합하는 것은
+        #    Fix P0-2 이고, 그것은 주문·청산 실행 경로 변경이라 주간회의 승인 대상이다.
+        #    여기서 하는 일은 "마감이 잔여 포지션을 보지도 않고 지나갔다"를 없애는 것뿐이다.
+        #
+        # 2026-09-01 15:34:46, 원인불명 외부 매수 3계약이 계좌에 들어왔다. 15:10 강제청산
+        # 과 15:18 안전망은 이미 지나간 뒤였고, 15:40:08 마감은 그 포지션을 **보지도 않고**
+        # 통계·리셋을 진행한 뒤 프로그램이 종료됐다. 절대원칙 §1(오버나이트 금지)이 깨진
+        # 채 밤을 넘겼고, 사람이 그 사실을 안 것은 **익일 장후 리포트**였다.
+        # 마감 시점에 한 줄만 있었어도 6시간 빨랐다.
+        #
+        # ⚠ 계측 4원칙 ②·④ — 상태를 못 읽으면 「FLAT」이 아니라 **미측정**으로 적는다.
+        #   조용한 성공과 조용한 실패를 같은 문구로 만들지 않는다.
+        # ⚠ 계측 4원칙 ⑤ — 축을 둘 다 건다. 엔진 포지션이 FLAT이어도 브로커 잔량이
+        #   남아 있을 수 있다(2026-09-01 이 형태였다면 엔진 축만으로는 못 잡는다).
+        try:
+            _rp_status = str(self.position.status)
+            _rp_qty = int(self.position.quantity or 0)
+            _rp_measured = True
+        except Exception as _rp_e:
+            _rp_status, _rp_qty, _rp_measured = None, 0, False
+            logger.warning("[DailyCloseResidual] 포지션 상태 읽기 실패: %s", _rp_e)
+        _rp_broker = int(getattr(self, "_integrity_broker_qty", 0) or 0)
+        if not _rp_measured:
+            log_manager.system(
+                "[DailyCloseResidual] 🔴 마감 진입 시 포지션 상태 **미측정** — "
+                "잔여 포지션 여부를 확인하지 못했다(FLAT 확인이 아니다). "
+                "대신증권 계좌를 직접 확인할 것",
+                "ERROR",
+            )
+        elif _rp_status != "FLAT" or _rp_broker > 0:
+            log_manager.system(
+                f"[DailyCloseResidual] 🔴 마감 진입 시 잔여 포지션 — "
+                f"엔진 {_rp_status} {_rp_qty}계약 · broker_cached {_rp_broker}계약. "
+                f"절대원칙 §1(오버나이트 금지) 위반 상태다. 15:10·15:18 강제청산 단계는 "
+                f"이미 지나갔으므로 이 포지션은 **자동으로 청산되지 않는다** — "
+                f"사람이 지금 대신증권 계좌에서 정리해야 한다. "
+                f"(마감은 예정대로 진행한다. 자동 청산 통합은 승인 대기 Fix P0-2)",
+                "ERROR",
+            )
+        else:
+            log_manager.system(
+                "[DailyCloseResidual] 마감 진입 시 FLAT 확인 "
+                f"(엔진 FLAT · broker_cached {_rp_broker}계약)",
+                "INFO",
+            )
+
         stats = self.position.daily_stats()
         forward_stats = self.position.daily_forward_stats()
         logger.info(f"[Daily] 마감 통계: {stats}")
@@ -11823,6 +11879,27 @@ class TradingSystem:
                 "WARNING" if _miss_cnt >= 3 else "INFO",
             )
         self._chejan_exit_miss_count = 0
+
+        # [MW0601 514차 / 장후 고도화② · P5-신규] 외부 진입 일별 집계 보고 후 리셋.
+        # ⚠ 리셋 **전에** 값을 읽는다(계측 4원칙 ④ — `_ccf_today` 관례).
+        # ⚠ 0 은 실측이다. "오늘은 없었다"를 명시적으로 남겨야 다음날 리포트가
+        #   「미측정」과 구별할 수 있다(계측 4원칙 ②).
+        _ee_legs = self._external_entry_legs_today
+        _ee_qty = self._external_entry_qty_today
+        if _ee_legs > 0:
+            log_manager.system(
+                f"[ExternalEntry] 🔴 오늘 외부 진입 총 {_ee_legs}건 / {_ee_qty}계약 — "
+                f"미륵이가 내지 않은 진입이다. 발생원(HTS·MTS·타 프로그램)을 "
+                f"확인할 것",
+                "ERROR",
+            )
+        else:
+            log_manager.system(
+                "[ExternalEntry] 오늘 외부 진입 0건 (실측 — 미측정이 아니다)",
+                "INFO",
+            )
+        self._external_entry_legs_today = 0
+        self._external_entry_qty_today = 0
 
         # ── 챔피언-도전자 일별 집계 ─────────────────────────────
         if self.challenger_engine is not None:
@@ -12943,6 +13020,33 @@ class TradingSystem:
             logger.info("[Shutdown] 정상 종료 플래그 기록: %s (%s)", _flag, reason)
         except Exception as _e:
             logger.warning("[Shutdown] 정상 종료 플래그 기록 실패 (무해): %s", _e)
+
+        # 🔴 [MW0601 513차 / FZ-2 오탐 차단] 런처가 **지우지 않는** 날짜본 종료 마커.
+        #   위 `_exit_normally` 는 런처가 읽은 직후 삭제한다(start_mireuk.bat:597~598).
+        #   그래서 프로세스 밖 센티넬(FZ-2)이 판정할 시점에는 **항상 없고**, 그 축은
+        #   매번 「미측정」 → 규약대로 동결 판정 유지 → 정상 마감한 날에도 15:45~16:30
+        #   에 가짜 CRITICAL 이 쏟아졌다(2026-08-25~09-01 실측 매일 45회, 팝업 포함).
+        #   이 파일은 런처가 건드리지 않으므로 「이 세션은 스스로 종료했다」가 남는다 —
+        #   `daily_close_done_*.txt` 가 EOD 재학습을 위해 같은 이유로 존재하는 것과 같다.
+        #
+        #   ⚠ **마감 완료 시각이 아니라 종료 시각을 담는 것이 핵심이다.**
+        #     `daily_close_done` 은 15:40:11 에 찍히는데 그 뒤 15초의 종료 로그
+        #     (`자동 종료 실행`·`미륵이 자동 종료`)가 15:40:26 에 남아, 마커가 마지막
+        #     신호보다 **먼저**가 된다 — 498차 F-10 이 실전에서 한 번도 성립하지 못한
+        #     이유다. 이 마커는 `_auto_shutdown()` 에서 다시 쓰이므로 종료 시점을 갖는다.
+        #   ⚠ 파일명에 날짜가 박혀 있어 어제 마커가 오늘 판정에 끼어들지 않는다.
+        #     그래도 센티넬은 **시각을 비교**한다(존재만으로 판정하지 않는다) — 오전에
+        #     한 번 정상 종료한 뒤 재기동한 세션이 오후에 동결되는 경우를 지키기 위해서다.
+        try:
+            _sd_marker = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "data",
+                f"shutdown_normal_{datetime.date.today().strftime('%Y%m%d')}.txt",
+            )
+            with open(_sd_marker, "w", encoding="utf-8") as _f:
+                _f.write(reason + "\n" + datetime.datetime.now().isoformat() + "\n")
+        except Exception as _sm_e:
+            logger.warning("[Shutdown] 날짜본 종료 마커 기록 실패 (무해): %s", _sm_e)
 
     # ── [MW0601 478차 후속 / FZ-1] 메인 이벤트 루프 동결 감시 ─────────────────
 
@@ -16048,6 +16152,32 @@ def _ts_handle_external_fill(
         log_manager.trade(
             f"[체결동기화] 외부진입 {side} {remaining_fill}계약 @ {fill_price} "
             f"| 평균={result['avg_entry_price']} 보유={result['position_qty']}계약"
+        )
+        # ── [MW0601 514차 / 장후 고도화② · P5-신규] 외부 진입 **실시간 경보** ──────
+        # 🔴 **차단하지 않는다. 경보만 한다.** 이 경로는 이미 체결된 사실을 엔진 상태에
+        #    반영하는 동기화 지점이다 — 여기서 무엇을 막을 수는 없다. 바뀌는 것은
+        #    "사람이 언제 아는가" 하나뿐이다(주문·게이트·수량 경로 무변경).
+        #
+        # 2026-09-01: 외부 진입 38건 -1,630,766원. 전량 위 TRADE 로그에 실시간으로
+        # 남았지만 **경보 채널에는 한 줄도 없었다.** 사람이 안 것은 익일 장후 리포트다.
+        # 마지막 1건(15:34:46)은 15:10·15:18 강제청산이 지난 뒤라 청산 시도 한 번 없이
+        # 밤을 넘겼다(이상점 1-6, 절대원칙 §1 위반).
+        #
+        # ⚠ Slack 은 쓰지 않는다 — 사용자 결정(개발단계 직접 모니터링).
+        #   `scripts/force_flat_guard.py:emit()` 이 같은 이유로 Slack 을 쓰지 않는다.
+        #   경보 채널은 대시보드 「경보」 탭으로 올라가는 `log_manager.system(ERROR)` 다.
+        # ⚠ 누적을 함께 싣는다 — 한 건씩 보면 오늘 같은 **반복 재유입**이 안 보인다.
+        self._external_entry_legs_today += 1
+        self._external_entry_qty_today += int(remaining_fill)
+        log_manager.system(
+            f"[ExternalEntry] 🔴 미륵이가 내지 않은 진입이 계좌에 들어왔다 — "
+            f"{side} {remaining_fill}계약 @ {fill_price} "
+            f"(보유 {result['position_qty']}계약, 평균 {result['avg_entry_price']}). "
+            f"오늘 누적 {self._external_entry_legs_today}건 / "
+            f"{self._external_entry_qty_today}계약. "
+            f"HTS·MTS 등 다른 경로에서 같은 계좌를 만지고 있는지 지금 확인할 것 — "
+            f"15:10 이후에 들어오면 강제청산 단계가 이미 지나가 자동으로 닫히지 않는다",
+            "ERROR",
         )
         self.dashboard.append_pnl_log(
             f"외부진입 동기화 | {side} {remaining_fill}계약 @ {fill_price}",

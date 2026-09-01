@@ -324,6 +324,50 @@ def _cfg(name, default):
         return default
 
 
+# ── [MW0601 514차 / 장후 고도화①] 반복 판정 지원 ────────────────────────────
+
+#: 종료코드의 **심각도** 순서. ⚠ 숫자 크기와 다르다 — `RC_NOT_APPLICABLE`(6)이
+#: 가장 크지만 가장 안전하고, `RC_UNCLOSED`(3)가 가장 작지만 가장 심각하다.
+#: 반복 판정에서 `max(rc)` 를 쓰면 미청산(3)이 비거래일(6)에 묻힌다 — 이 표가
+#: 그 실수를 막는다(계측 4원칙 ① 과 같은 취지: 축을 이름으로 못박는다).
+_RC_SEVERITY = {
+    RC_UNCLOSED: 4,        # 가장 심각 — 포지션이 남아 있다
+    RC_PROCESS_DEAD: 3,
+    RC_UNKNOWN: 2,
+    RC_OK: 1,
+    RC_NOT_APPLICABLE: 0,  # 가장 안전 — 판정 대상이 아니었다
+}
+
+
+def _worse_rc(a, b):
+    """두 종료코드 중 **더 심각한** 쪽을 고른다."""
+    return a if _RC_SEVERITY.get(a, 2) >= _RC_SEVERITY.get(b, 2) else b
+
+
+def _extra_times():
+    """추가 판정 시각 목록. 설정이 없거나 형식이 아니면 빈 목록(=종전 단발 동작)."""
+    raw = _cfg("FORCE_FLAT_GUARD_EXTRA_AT", [])
+    if isinstance(raw, str):
+        raw = [raw]
+    try:
+        return [str(x).strip() for x in raw if str(x).strip()]
+    except TypeError:
+        return []
+
+
+def judge_and_emit(root, day, stale, popup, manual):
+    """1회 판정 + 기록. 반복 호출을 위해 `main()` 에서 떼어낸 것뿐이다.
+
+    ⚠ 판정 로직(`judge`)도 기록 로직(`emit`)도 바뀌지 않았다 — 호출 지점만 늘었다.
+    """
+    now = datetime.datetime.now()
+    hb = _read_json(heartbeat_path(root, day))
+    pos = _read_json(os.path.join(root, "data", "position_state.json"))
+    verdict = judge(now, hb, pos, stale_sec=stale)
+    emit(root, day, verdict, popup=popup, manual=manual)
+    return verdict["rc"]
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="15:12 프로세스 밖 FLAT 가드 (F-2)")
     ap.add_argument("--at", default=None, help="판정 시각 HH:MM (기본: FORCE_FLAT_GUARD_AT)")
@@ -384,11 +428,38 @@ def main(argv=None):
         now = datetime.datetime.now()
 
     day = now.date()
-    hb = _read_json(heartbeat_path(root, day))
-    pos = _read_json(os.path.join(root, "data", "position_state.json"))
-    verdict = judge(now, hb, pos, stale_sec=stale)
-    emit(root, day, verdict, popup=popup, manual=bool(args.once))
-    return verdict["rc"]
+    rc = judge_and_emit(root, day, stale, popup, manual=bool(args.once))
+
+    # ── [MW0601 514차 / 장후 고도화①] 추가 판정 시각 ──────────────────────────
+    # 🔴 **알림 전용 성격은 그대로다 — 주문은 여전히 내지 않는다.**
+    #    바뀌는 것은 "언제 보는가" 하나뿐이다.
+    #
+    # 2026-09-01: 15:12 판정은 「FLAT · 정상」이었고 그것은 그 시점의 사실로서 옳았다.
+    # 문제는 **15:34:46 에 외부 매수 3계약이 들어왔다**는 것이고, 단발 가드는 그것을
+    # 구조적으로 볼 수 없었다. 15:40 마감도 보지 않았다 → 밤을 넘겼다(이상점 1-6).
+    #
+    # ⚠ `--once`(수동 진단)에는 적용하지 않는다 — 손으로 돌린 진단이 30분씩 붙잡고
+    #   있으면 점검 세션이 멈춘다. 그리고 이미 지난 시각은 조용히 건너뛴다.
+    if not args.once:
+        for extra_at in _extra_times():
+            try:
+                hh, mm = [int(x) for x in str(extra_at).split(":")]
+            except Exception:
+                print("[ForceFlatGuard] 추가 판정 시각 형식 오류(무시): %r" % (extra_at,),
+                      file=sys.stderr)
+                continue
+            now = datetime.datetime.now()
+            target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            if target <= now:
+                print("[ForceFlatGuard] 추가 판정 시각 %s 이 이미 지났다 — 건너뜀" % extra_at)
+                continue
+            print("[ForceFlatGuard] 대기 — %s 에 추가 판정" % extra_at)
+            while datetime.datetime.now() < target:
+                time.sleep(min(30.0, max(
+                    1.0, (target - datetime.datetime.now()).total_seconds())))
+            rc = _worse_rc(rc, judge_and_emit(root, datetime.datetime.now().date(),
+                                              stale, popup, manual=False))
+    return rc
 
 
 if __name__ == "__main__":
