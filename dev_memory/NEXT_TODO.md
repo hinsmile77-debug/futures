@@ -2,6 +2,31 @@
 
 > 검증 필요 항목, 예정된 작업, 알려진 잠재 이슈.
 
+### 523차 — Phase 0 후속 (MW0602, 2026-09-02)
+
+근거: `dev_memory/DECISION_LOG.md` 2026-09-02(523차).
+
+- 🔴 **U-1 (사용자 조치 · 미완)** — 동결 센티넬 **예약작업 등록**.
+  `docs/프롬프트/MW0602_동결센티넬_예약작업_설치지침_20260902.md` §2 의
+  `schtasks` 1줄. **등록 전까지 센티넬은 한 번도 돌지 않는다** — 코드만 있고
+  안 도는 상태가 바로 FP-CRITICAL·TOX 죽은 섀도다.
+- **O-1 (등록 다음 거래일)** — `logs/freeze_sentinel_<날짜>.log` 에 `ARMED` 줄이
+  찍히는지. 그 줄이 **센티넬 자신의 생존 증거**다. 없으면 조용히 죽은 것이다.
+- **O-2 (등록 후 1주)** — `CRITICAL` 오탐 0건 확인. 뜨면 먼저 크래시 지문
+  (`Windows fatal exception`·`access violation`)과 런처 `[AUTO-RESTART]` 를 볼 것 —
+  있으면 크래시(런처가 회수)이지 동결이 아니다.
+- **O-3 (Degraded 선제차단 발생 시)** — `[HealthPolicy] Degraded 선제차단: … cause=S?`
+  가 실제 구간명으로 찍히는지. 523차 이전에는 `_cause` 가 로그에 실리지도 않았다.
+  며칠 관측 후 "자기 유발(S0 재학습)" 대 "외부/DB 기인(S1·S4)" 분기 여부를 주간회의.
+- **T-1 (FZ-1 도입 시)** — `FREEZE_SENTINEL_STALL_SEC` 600 → 300 복원 재검토.
+  3신호 교차검증이 살아나면 여유를 줄여도 오탐이 나지 않는다.
+- **T-2 (마커 도입 시)** — `FREEZE_SENTINEL_WINDOW` 15:45 → 16:30 복원 재검토.
+  선행: `shutdown_normal` 마커(MW0601 513차) 이관 **또는** `daily_close_done` 을
+  마감 **끝**에 쓰도록 변경.
+- **T-3 (관례화)** — 체리픽 후 `tests/test_457_fallback_visibility.py` 를 돌린다.
+  「반쪽 이식」이 505차(`_dashboard_call`)·523차(`_last_pipe_dominant`) 두 번 나왔고,
+  둘 다 상위 커밋만 보면 드롭인처럼 보였다.
+
 ### 522차 — FZ-1 보류 결정 감시 (MW0602, 2026-09-02)
 
 근거: `dev_memory/DECISION_LOG.md` 2026-09-02(522차),
