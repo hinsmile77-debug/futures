@@ -52,6 +52,12 @@ from config.settings import (
     ATR_EXPIRY_CEILING_DAYS_BEFORE, ATR_EXPIRY_CEILING_DAYS_AFTER,
     CB_ACC30M_MIN_SAMPLES, SGD_BLEND_DISABLED_HORIZONS, HORIZON_ENABLED,
     TP1_PROTECT_PLUS_ALPHA_PTS, TP1_PROTECT_ATR_LOCK_MULT,   # [432차] 3중 정의 단일화
+    # [MW0601 482차 / F-3] 메인 스레드 정지 계측 임계 (섀도 — 차단 없음)
+    MAIN_THREAD_STALL_WARN_MS as _MT_WARN_MS,
+    MAIN_THREAD_STALL_ALERT_MS as _MT_ALERT_MS,
+    MAIN_THREAD_STALL_DETECT_MS as _MT_DETECT_MS,
+    # [MW0601 519차] ALERT 밴드를 「2 경보」 탭에 띄울 때의 일일 상한
+    MAIN_THREAD_STALL_ALERT_TAB_DAILY_MAX as _MT_ALERT_TAB_DAILY_MAX,
 )
 from strategy.entry.time_strategy_router import TimeStrategyRouter
 from utils.time_utils import get_time_zone, now_kst
@@ -9614,6 +9620,16 @@ class MireukDashboard(QMainWindow):
 
         self._pipe_elapsed_s: int = -1           # -1=미실행(대기), 0+=마지막 실행 후 경과초
         self._watchdog_alerted: set = set()    # 이미 발동한 임계값 (60/120/180s)
+        # [MW0601 482차 / F-3] 명시 초기화 — 종전에는 `getattr(self, "_tick_header_last_mono",
+        # None)`으로 읽었다(계측 4원칙 ④가 금지하는 형태). None = 첫 틱(비교 대상 없음).
+        self._tick_header_last_mono = None
+        # 마지막 파이프라인 **완료** 시각(monotonic). None = 아직 한 번도 안 돎(미측정).
+        # `_pipe_elapsed_s`는 초 단위 정수라 5초짜리 정지의 잔차를 재기엔 해상도가 없다.
+        self._pipe_last_done_mono = None
+        # [MW0601 519차] 경보 탭 ALERT 일일 상한 — 명시 초기화한다.
+        # `getattr(self, "_x", 기본값)` 으로 런타임 상태를 읽지 않는다(계측 4원칙 ④).
+        self._stall_alert_day = ""     # 상한 리셋 기준 날짜(YYYYMMDD)
+        self._stall_alert_count = 0    # 오늘 경보 탭에 띄운 횟수
         self._pipeline_recovery_cb = None      # main.py가 등록하는 복구 콜백
 
         self.lbl_clock = None   # 제거됨 — _tick_header() 참조용 유지
@@ -10531,17 +10547,96 @@ class MireukDashboard(QMainWindow):
         # ── 메인 스레드 블로킹 검출 ─────────────────────────────────
         # _tick_header는 1초마다 호출됨. 직전 호출과 간격이 2s 초과이면
         # 그 사이에 메인 스레드가 블로킹됐다는 직접 증거.
-        _prev = getattr(self, "_tick_header_last_mono", None)
+        _prev = self._tick_header_last_mono
         if _prev is not None:
             _gap_ms = (_now_mono - _prev) * 1000
-            if _gap_ms > 2000:
-                logger.warning(
+            if _gap_ms > _MT_DETECT_MS:
+                # ── [MW0601 482차 / F-3] 메인 스레드 정지 전용 계측 ──────────
+                # 종전 한 줄은 `pipe_elapsed`(마지막 파이프라인 완료 후 **초**)만
+                # 실어, 이 정지가 CB⑤(파이프라인 경과시간 5,000ms)의 사정권 안인지
+                # 밖인지 판별할 수 없었다. 실제로는 4건 중 3건이 파이프라인
+                # 315~390ms짜리 분에서 5초 넘게 멈춘 것 — 92~94%가 CB⑤ 계측 밖이다.
+                # 앞머리 문구는 **바꾸지 않는다** — 점검 수집기의 `block_ms` 패턴과
+                # §11 적신호 3곳이 이 문자열에 걸려 있다(457차 G5와 같은 이유).
+                _since_pipe = (
+                    (_now_mono - self._pipe_last_done_mono)
+                    if self._pipe_last_done_mono is not None else None
+                )
+                _sev = (logger.error if _gap_ms >= _MT_ALERT_MS
+                        else logger.warning if _gap_ms >= _MT_WARN_MS
+                        else logger.warning)
+                _sev(
                     "[LiveDBG] _tick_header 간격 %.0fms — 메인 스레드 블로킹 발생 | "
-                    "pipe_elapsed=%d watchdog_alerted=%s",
+                    "pipe_elapsed=%d watchdog_alerted=%s | "
+                    "[MainStall] stall_ms=%.0f band=%s since_pipe_s=%s",
                     _gap_ms,
                     self._pipe_elapsed_s,
                     sorted(self._watchdog_alerted),
+                    _gap_ms,
+                    ("ALERT" if _gap_ms >= _MT_ALERT_MS
+                     else "WARN" if _gap_ms >= _MT_WARN_MS else "INFO"),
+                    # ⚠ "미측정"(파이프라인이 아직 한 번도 안 돎)과 "0.0초"를 구분한다
+                    #   — 계측 4원칙 ②. 문자열 `NA`로 남긴다.
+                    ("%.1f" % _since_pipe) if _since_pipe is not None else "NA",
                 )
+                # ── [MW0601 519차 체리픽] ALERT 밴드를 「2 경보」 탭으로 ──────
+                #
+                # 🔴 **경보만 한다. 매매 경로는 건드리지 않는다.**
+                #
+                # 무엇이 빠져 있었나: 바로 위 `_sev(...)` 는 모듈 로거를 쓴다.
+                # 그것은 **파일 로그로만** 간다 — 대시보드 「2 경보」 탭은
+                # `log_manager` 를 타는 것만 받는다. 즉 메인 스레드가 몇십 초 멈춰도
+                # **파일에만 남고 화면에는 안 떴다.** MW0601 2026-09-02 11:28:57 의
+                # 56,875ms 정지가 그렇게 조용히 지나갔고, 사람이 안 것은 장중 점검
+                # 때였다. G-1(BrokerSync)이 "훅은 있는데 문구가 안 읽혔다"였다면
+                # 여기는 **훅 자체가 없었다**.
+                #
+                # 폭주 위험: MW0601 실측 ALERT(≥15초)는 전 기간 **5건/5거래일**
+                # (20,985·21,781·17,390·15,157·56,875ms)로 하루 최대 1건꼴이다.
+                # 그래도 계측이 폭주의 원인이 되지 않게 **일일 상한**을 둔다.
+                #
+                # ⚠ **임계값을 새로 정하지 않았다** — 기존 `MAIN_THREAD_STALL_ALERT_MS`
+                #   (15초)를 그대로 쓴다. 재보정은 26주 WFA 항목이다.
+                #   바뀌는 것은 "이미 ALERT 로 판정된 것을 화면에도 띄우는가" 하나뿐이다.
+                # ⚠ WARN 밴드(5~15초)는 **일부러 올리지 않는다** — 올리면 경보 탭이
+                #   잡음으로 덮인다.
+                # ⚠ 계측이 1초 타이머를 죽이면 안 된다 — 전 구간 try 로 감싼다.
+                #
+                # ⚠ [MW0602 체리픽 조정] 원문에 있던 "원인 스택은
+                #   `logs/mainstall_traceback_*.log` 참조" 문구는 뺐다 —
+                #   그 덤프 기능은 이 브랜치에 **없다**. 없는 파일을 가리키는 안내는
+                #   경보를 신뢰할 수 없게 만든다(계측 4원칙 ④와 같은 취지).
+                if _gap_ms >= _MT_ALERT_MS:
+                    try:
+                        _al_today = datetime.now().strftime("%Y%m%d")
+                        if _al_today != self._stall_alert_day:
+                            self._stall_alert_day = _al_today
+                            self._stall_alert_count = 0
+                        if self._stall_alert_count < _MT_ALERT_TAB_DAILY_MAX:
+                            self._stall_alert_count += 1
+                            _sec = _gap_ms / 1000.0
+                            # 경보 탭은 `append("all", …)` 가 WARN/ERROR/CRITICAL 을
+                            # "warn"(2 경보) 탭으로 라우팅한다. 여기는 대시보드 **안**
+                            # 이라 log_manager 를 거칠 필요가 없다.
+                            self.log_panel.append(
+                                "all", "ERROR",
+                                "[MainStall] 🔴 미륵이 화면·판단이 %.1f초 동안 멈춰 "
+                                "있었다 (오늘 %d번째). 그 동안 매분 파이프라인·청산 "
+                                "감시·안전장치가 전부 정지 상태였다. 포지션을 들고 "
+                                "있었다면 손절·익절이 그만큼 늦게 걸렸다는 뜻이다 — "
+                                "계좌를 확인하고, 반복되면 재기동할 것."
+                                % (_sec, self._stall_alert_count))
+                        elif self._stall_alert_count == _MT_ALERT_TAB_DAILY_MAX:
+                            self._stall_alert_count += 1
+                            # 상한에 닿았다는 사실 자체를 남긴다 — 조용히 끊지 않는다
+                            # (계측 4원칙 ③ 탈락 가시화).
+                            self.log_panel.append(
+                                "all", "WARNING",
+                                "[MainStall] 오늘 경보 탭 표시 상한(%d건)에 도달했다 — "
+                                "이후 정지는 파일 로그에만 남는다"
+                                % _MT_ALERT_TAB_DAILY_MAX)
+                    except Exception:
+                        pass
         self._tick_header_last_mono = _now_mono
         if hasattr(self, "account_info_panel"):
             self.account_info_panel.tick_live()
@@ -11422,8 +11517,15 @@ class DashboardAdapter:
         self._win.log_panel.refresh_pnl_history(rows)
 
     def notify_pipeline_ran(self):
-        """분봉 파이프라인 완료 시 상태 바 + 헤더 생존 바 동시 리셋."""
+        """분봉 파이프라인 완료 시 상태 바 + 헤더 생존 바 동시 리셋.
+
+        ⚠ 시그니처를 바꾸지 말 것 — 453차·471차 테스트가 이 호출을 불변식으로 지킨다.
+        """
+        import time as _t_np
         self._win.log_panel.notify_update()
+        # [MW0601 482차 / F-3] 완료 시각(monotonic) 기록 — `[MainStall]`이 정지와
+        # 파이프라인의 시간 관계를 초 소수점까지 남기기 위함. 계측 전용.
+        self._win._pipe_last_done_mono = _t_np.monotonic()
         self._win._pipe_elapsed_s = 0
         self._win._watchdog_alerted.clear()  # 복구 시 경보 플래그 초기화
 

@@ -161,6 +161,14 @@ DEFAULT_CONFIG = {
         # `오늘 PnL` 이 든 전략경보 배너는 뜨지 않는 날이 있는데(0819 실측: 배너 자체
         # 미출력 → 검산 축이 매일 비었다), 이 줄은 15:40 daily_close 마다 무조건 찍힌다.
         "daily_close": r"일일 마감\s*\|\s*승=(?P<w>\d+)\s*패=(?P<l>\d+)\s*PnL=(?P<won>[+-]?[\d,]+)원",
+        # ── [MW0601 482차 F-3 체리픽] CB⑤가 재는 값 — 메인 스레드 정지와 **단위가 다르다.**
+        # `[PipePerf] total` = 파이프라인 S0~S8 구간. `_tick_header 간격` = 메인 스레드
+        # 전체 정지. 같은 분끼리 빼면 CB⑤가 구조적으로 못 보는 잔차가 나온다.
+        # ⚠ [MW0602 조정] 원본은 여기에 `cb3_ready`·`model_health` 패턴도 함께 넣지만
+        #   **가져오지 않았다** — 그 로그(`CB③ ready` · `[ModelHealth] date=`)는 이
+        #   브랜치가 찍지 않는다(실측 0건, 482차 G-1 미이관). 없는 로그의 패턴을 넣으면
+        #   매일 「무기록」이 떠 경보 피로만 만든다.
+        "pipe_perf": r"\[PipePerf\](?:\[DBG\])? total=(?P<total_ms>\d+)ms",
     },
     "banner_start": "전략 상태 경보",
     "banner_lines": 8,
@@ -3295,16 +3303,74 @@ def day_summary(digests, cfg, out, root=None, day=None):
                 except ValueError:
                     pass
         if vals:
-            vals.sort(reverse=True)
+            _sorted = sorted(vals, reverse=True)
             over = [v for v in vals if v >= 5000]
             A("### 메인 스레드 블로킹 %d건 · 최대 %dms · 5초 초과 %d건"
-              % (len(vals), vals[0], len(over)))
+              % (len(vals), _sorted[0], len(over)))
             A("")
-            A("상위 — " + ", ".join("%dms" % v for v in vals[:8]))
+            A("상위 — " + ", ".join("%dms" % v for v in _sorted[:8]))
             A("")
-            if over:
-                A("> ⚠ `CB_PIPE_PAUSE_MS = 5_000`(CB⑤ 실질 구현) 이상이 **%d건**이다. "
-                  "CB⑤가 실제로 발동했는지, 아니면 계측만 되고 지나갔는지 확인하라." % len(over))
+            # [MW0601 482차 / F-3] 같은 분 `[PipePerf] total`과 대조해 CB⑤ 미계상
+            # 잔차를 낸다. 두 값은 **단위가 다르다**(계측 4원칙 ①):
+            #   CB⑤        = 파이프라인 경과시간(S0~S8)
+            #   _tick_header= 메인 스레드 전체 정지시간
+            # 2026-08-20 실측 4건 전량에서 잔차가 1,958~5,537ms(38~92%)였다 —
+            # 그만큼이 CB⑤도 FZ-1(180초)도 보지 않는 구간이다.
+            #
+            # ⚠ 레코드의 `hhmm` 은 실제로 **HH:MM:SS** 다(초까지 있다). 분 단위로
+            #   짝지으려면 앞 5글자로 잘라야 한다 — 자르지 않으면 초가 달라 전부
+            #   "미측정"이 되고, 그것이 "PipePerf 가 없었다"로 오독된다.
+            def _mn(x):
+                return (x or "")[:5]
+
+            _pp = {}
+            for r in merged.get("pipe_perf", []):
+                try:
+                    _k = _mn(r["hhmm"])
+                    _pp[_k] = max(_pp.get(_k, 0), int(r["total_ms"]))
+                except (TypeError, ValueError, KeyError):
+                    pass
+            _rows = []
+            for b in bms:
+                v = b.get("ms") or b.get("ms2")
+                try:
+                    v = int(v)
+                except (TypeError, ValueError):
+                    continue
+                if v < 5000:
+                    continue
+                _hh = b.get("hhmm")
+                _cand = [_pp.get(_mn(_hh))]
+                # 정지는 분 경계를 넘을 수 있다 — 직전 분도 본다.
+                try:
+                    _h, _m = _mn(_hh).split(":")
+                    _t = int(_h) * 60 + int(_m) - 1
+                    _cand.append(_pp.get("%02d:%02d" % (_t // 60 % 24, _t % 60)))
+                except (ValueError, AttributeError):
+                    pass
+                _have = [c for c in _cand if c is not None]
+                _tot = max(_have) if _have else None
+                _rows.append((_hh, v, _tot))
+            if _rows:
+                A("**5초 초과 건 — CB⑤ 미계상 잔차** (`CB_PIPE_PAUSE_MS=5_000`)")
+                A("")
+                A("_대조값은 같은 분과 **직전 분** `PipePerf total` 중 **큰 쪽**이다 —"
+                  " 잔차를 과대평가하지 않기 위한 보수적 선택이다(정지가 분 경계를 넘을 수 있다)._")
+                A("")
+                A("| 시각 | 메인 정지 | 같은 분 `PipePerf total` | 잔차(CB⑤ 사각) |")
+                A("|---|---|---|---|")
+                for _hh, v, _tot in _rows:
+                    if _tot is None:
+                        A("| %s | %dms | **미측정** | — |" % (_hh, v))
+                    else:
+                        A("| %s | %dms | %dms | **%dms (%.0f%%)** |" % (
+                            _hh, v, _tot, v - _tot, 100.0 * (v - _tot) / v))
+                A("")
+                A("> ⚠ **CB⑤ 미발동이 결함이 아니다.** CB⑤는 파이프라인 경과시간에 걸리고, "
+                  "위 정지는 메인 스레드 전체 정지시간이라 **단위가 다르다**. "
+                  "잔차가 큰 건은 정지의 대부분이 S0~S8 밖(COM 콜백·Qt 페인트·다른 타이머)에서 "
+                  "났다는 뜻이며, 그 구간은 CB⑤도 FZ-1(180초)도 보지 않는다. "
+                  "482차 F-3 섀도 계측(`MAIN_THREAD_STALL_*`)이 이 구간을 2주 관찰한다.")
                 A("")
 
     return ds_flags
@@ -4096,8 +4162,15 @@ def build(root, day, phase, cfg, discover_only=False):
         except ValueError:
             pass
     if over:
-        flags.append("메인 스레드 블로킹 5초 초과 **%d건** (최대 %dms) — "
-                     "`CB_PIPE_PAUSE_MS=5_000` 기준 초과. CB⑤ 발동 여부 확인" % (len(over), max(over)))
+        # [MW0601 482차 / F-3] 종전 문구는 "`CB_PIPE_PAUSE_MS=5_000` 기준 초과 →
+        # CB⑤ 발동 여부 확인"이었는데, 이 둘은 **단위가 다르다**(계측 4원칙 ①).
+        # CB⑤는 파이프라인 경과시간에 걸리고 여기 값은 메인 스레드 전체 정지시간이다.
+        # 그 문구 때문에 NEXT_TODO O-10이 "5,000ms 초과 1건이라도 나오면 CB⑤ 실발동"
+        # 이라는 틀린 전제를 세웠다 — CB⑤ 미발동이 설계상 옳다.
+        flags.append("메인 스레드 정지 5초 초과 **%d건** (최대 %dms) — CB⑤(파이프라인 경과시간)와 "
+                     "**단위가 다르다**. CB⑤ 미발동이 정상이며, 5초~180초 구간은 FZ-1 워치독도 "
+                     "보지 않는다. §5 잔차 표로 CB⑤ 사각 크기를 확인하라 (482차 F-3)"
+                     % (len(over), max(over)))
 
     for dg in digests:
         for pat in ("[Brier] 과신", "degraded=ON", "level=CRITICAL", "축퇴",
