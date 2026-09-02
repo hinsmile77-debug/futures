@@ -740,6 +740,12 @@ class TradingSystem:
         self._heartbeat_count: int = 0
         self._session_no: int = 0
         self._restart_cause: str = "STARTUP"   # STARTUP / MANUAL / AUTO_DISCONNECT
+        # [MW0601 457차 G9 / MW0602 523차 완성] 직전 사이클 파이프라인 **지배 구간**.
+        # (구간명, ms) 튜플 또는 None. **표시 전용 — 판정식에 넣지 않는다.**
+        # 🔴 이 브랜치에는 읽기(`getattr`)만 넘어와 있고 쓰기가 없어서 영구 None
+        #   이었다 — `tests/test_457_fallback_visibility.py` 를 이식하자마자 잡혔다
+        #   (계측 4원칙 ④가 역산한 바로 그 형태). 아래 파이프라인 말미에서 채운다.
+        self._last_pipe_dominant = None
         self._pending_order = None
         self._completed_order_nos: list = []   # 최근 완료 주문번호 (중복 chejan 콜백 방어)
         # Chejan 이벤트 큐: COM 콜백에서 push, 파이프라인 틱에서 drain
@@ -2522,13 +2528,17 @@ class TradingSystem:
                     # 직전 사이클의 지배 구간을 붙여 "내부 정비 기인(S0 모델 리로드)"과
                     # "외부/DB 기인(S1·S4)"을 로그에서 바로 가를 수 있게 한다.
                     # 분기 정책은 보류 — B1 배포 후 실제로 무엇이 남는지 보고 결정한다.
-                    _dom = getattr(self, "_last_pipe_dominant", None)
+                    # 🔴 [MW0602 523차] `_cause` 는 계산만 되고 **로그에 실리지
+                    #   않았다** — 원인 태그를 만들려던 G9 가 이 브랜치에서는 두 겹으로
+                    #   죽어 있었다(값이 영구 None + 그나마도 미출력).
+                    _dom = self._last_pipe_dominant
                     _cause = ("cause=%s(%.0fms)" % _dom) if _dom else "cause=미상"
                     logger.warning(
                         "[HealthPolicy] Degraded 선제차단: streak=%.2f+%.2f ≥ %.0f "
-                        "(latency=%.0fms quality=%.2f cache=%.0fs exc10m=%.0f)",
+                        "(latency=%.0fms quality=%.2f cache=%.0fs exc10m=%.0f) %s",
                         self._health_warn_streak, _w, _enter_thresh,
                         latency_ms, quality_score, cache_age_sec, exception_density_10m,
+                        _cause,
                     )
 
         if not is_degraded:
@@ -9786,6 +9796,20 @@ class TradingSystem:
             f"{(_st[i][1] - _st[i-1][1]) * 1000:.0f}ms"
             for i in range(1, len(_st))
         )
+        # ── [MW0601 457차 / G9] 지배 구간 보존 — Degraded 판정 로그의 원인 태그 ──
+        # Degraded 선제차단이 **자기 유발**(장중 재학습 직후 S0)인지 외부/DB 기인
+        # (S1·S4)인지를 사후 분석이 아니라 **런타임 판정 로그**에서 바로 가른다.
+        # ⚠ **정책은 바꾸지 않는다** — 표시 전용이며 판정식(streak/threshold)에
+        #   들어가지 않는다. 분기 여부는 며칠 관측 후 주간회의.
+        try:
+            _spans = [
+                (_st[i - 1][0] if _st[i - 1][0] != "start" else "S0",
+                 (_st[i][1] - _st[i - 1][1]) * 1000.0)
+                for i in range(1, len(_st))
+            ]
+            self._last_pipe_dominant = max(_spans, key=lambda t: t[1]) if _spans else None
+        except Exception:
+            self._last_pipe_dominant = None
         _retrain_tag_pipe = (
             " [GBM재학습중]" if self.circuit_breaker._gbm_retrain_active else ""
         )
