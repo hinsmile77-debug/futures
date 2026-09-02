@@ -29,7 +29,7 @@
 
 근거: `dev_memory/DECISION_LOG.md` 2026-09-02(523차).
 
-- 🔴 **U-1 (사용자 조치 · 미완)** — 동결 센티넬 **예약작업 등록**.
+- ✅ **U-1 (2026-09-02 525차 완료)** — 동결 센티넬 예약작업 등록. 등록명 `\Mireuk\Mireuk_FreezeSentinel_0855` · Next Run 09-03 08:55 · `schtasks` 기본값 3종 교정(StartWhenAvailable/배터리 2종). ~~아래 원문~~:
   `docs/프롬프트/MW0602_동결센티넬_예약작업_설치지침_20260902.md` §2 의
   `schtasks` 1줄. **등록 전까지 센티넬은 한 번도 돌지 않는다** — 코드만 있고
   안 도는 상태가 바로 FP-CRITICAL·TOX 죽은 섀도다.
