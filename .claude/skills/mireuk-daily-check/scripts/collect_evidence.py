@@ -180,8 +180,8 @@ DEFAULT_CONFIG = {
     "banner_lines": 8,
     # config/settings.py 에서 값을 확인할 상수 — CLAUDE.md 절대원칙·한시예외 대응
     "invariants": [
-        {"name": "CB_CONSEC_STOP_LIMIT", "expect": "9999",
-         "why": "모의투자 한정 예외(CB② 사실상 비활성). 실투 전환 전 2~3 복원 필수. 재검토 기한 2026-08-29"},
+        {"name": "CB_CONSEC_STOP_LIMIT", "expect": "3",
+         "why": "[2026-09-02 519차] 모의 한정 예외 해제 — 9999→3 복원(절대원칙 ② 문구와 일치). ⚠ 값 복원만으로 실전 전환 기준 ⑤가 충족되지 않는다 — 복원 후 정상 발동 1회 확인이 남았다"},
         {"name": "CB3_P4_GRADE_BLOCK_ENABLED", "expect": "False",
          "why": "30m 퇴역으로 CB③-P4 상시 RESTRICTED 고착 → 차단만 비활성 (296·297차)"},
         {"name": "FP_CRITICAL_GRADE_BLOCK_ENABLED", "expect": "False",
@@ -1665,7 +1665,7 @@ def day_summary(digests, cfg, out):
         for k, v in sorted(cd.items(), key=lambda kv: -kv[1]):
             A("- `%s` ×%d" % (k, v))
         A("")
-        A("> CB② 는 `CB_CONSEC_STOP_LIMIT=9999` 라 **연속 손절 카운터는 올라가되 정지는 안 한다.** "
+        A("> CB② 는 `CB_CONSEC_STOP_LIMIT=3`(2026-09-02 복원) — **3회 도달 시 실제로 당일 정지한다.** "
           "카운터 로그가 보이는 것은 정상이다.")
         A("")
 

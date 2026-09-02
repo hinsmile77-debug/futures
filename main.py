@@ -11813,23 +11813,53 @@ class TradingSystem:
             _rp_status, _rp_qty, _rp_measured = None, 0, False
             logger.warning("[DailyCloseResidual] 포지션 상태 읽기 실패: %s", _rp_e)
         _rp_broker = int(getattr(self, "_integrity_broker_qty", 0) or 0)
+        # ── [MW0601 519차 / F-1 · 사용자 지시] 탐지 → **집행** 승격 ────────────
+        # 514차는 여기서 경보만 냈다("사람이 지금 정리해야 한다"). 그런데 15:40에
+        # 사람이 화면 앞에 없으면 아무 일도 일어나지 않는다 — 2026-09-01이 정확히
+        # 그랬고, 그 결과가 다음날 아침 -5,299,668원이다.
+        # 이제 잔량이 보이면 **상한 안에서 직접 청산한다**(시도 3회·12초).
+        # ⚠ 미측정이어도 시도한다 — 프로브가 브로커 잔고를 직접 읽으므로 계좌가
+        #   FLAT이면 주문 없이 끝난다. "엔진 상태를 못 읽었다"가 "포지션이 없다"는
+        #   뜻은 아니다(계측 4원칙 ②).
+        _rp_force_enabled = bool(runtime_settings.DAILY_CLOSE_FORCE_EXIT_ENABLED)
+        _rp_engine_desc = (
+            "미측정" if not _rp_measured
+            else "%s %d계약 · broker_cached %d계약" % (_rp_status, _rp_qty, _rp_broker)
+        )
         if not _rp_measured:
             log_manager.system(
                 "[DailyCloseResidual] 🔴 마감 진입 시 포지션 상태 **미측정** — "
                 "잔여 포지션 여부를 확인하지 못했다(FLAT 확인이 아니다). "
-                "대신증권 계좌를 직접 확인할 것",
+                "브로커 잔고를 직접 조회해 확인·청산을 시도한다",
                 "ERROR",
             )
+            if _rp_force_enabled:
+                _ts_daily_close_force_exit(self, _rp_engine_desc)
+            else:
+                log_manager.system(
+                    "[DailyCloseResidual] 자동청산 비활성"
+                    "(DAILY_CLOSE_FORCE_EXIT_ENABLED=False) — "
+                    "대신증권 계좌를 직접 확인할 것",
+                    "ERROR",
+                )
         elif _rp_status != "FLAT" or _rp_broker > 0:
             log_manager.system(
                 f"[DailyCloseResidual] 🔴 마감 진입 시 잔여 포지션 — "
                 f"엔진 {_rp_status} {_rp_qty}계약 · broker_cached {_rp_broker}계약. "
                 f"절대원칙 §1(오버나이트 금지) 위반 상태다. 15:10·15:18 강제청산 단계는 "
-                f"이미 지나갔으므로 이 포지션은 **자동으로 청산되지 않는다** — "
-                f"사람이 지금 대신증권 계좌에서 정리해야 한다. "
-                f"(마감은 예정대로 진행한다. 자동 청산 통합은 승인 대기 Fix P0-2)",
+                f"이미 지나갔다",
                 "ERROR",
             )
+            if _rp_force_enabled:
+                _ts_daily_close_force_exit(self, _rp_engine_desc)
+            else:
+                log_manager.system(
+                    "[DailyCloseResidual] 자동청산 비활성"
+                    "(DAILY_CLOSE_FORCE_EXIT_ENABLED=False) — 이 포지션은 "
+                    "**자동으로 청산되지 않는다.** 사람이 지금 대신증권 계좌에서 "
+                    "정리해야 한다. (마감은 예정대로 진행한다)",
+                    "ERROR",
+                )
         else:
             log_manager.system(
                 "[DailyCloseResidual] 마감 진입 시 FLAT 확인 "
@@ -16888,6 +16918,162 @@ def _ts_broker_direct_force_exit(self, price: float, reason: str = "강제청산
     else:
         _ts_reset_exit_reject_state(self, reason="BrokerDirectExit")
     return ret == 0
+
+
+def _ts_broker_residual_qty(self, ctx: str = "probe"):
+    """브로커 잔고를 **읽기만** 해서 (수량, 방향, 측정성공)을 돌려준다.
+
+    [MW0601 519차 / F-1] 주문을 내지 않는다. `_ts_broker_direct_force_exit()` 의
+    반환값(`ret == 0`)은 *"주문을 보냈는가"* 이지 *"지금 FLAT 인가"* 가 아니라,
+    그것만으로는 청산 루프의 종료 조건을 만들 수 없다 — `False` 가
+    「이미 FLAT(정상 종료)」과 「TR 실패(청산 못 함)」를 **같은 값으로** 뭉갠다.
+    그 둘을 구분하려고 별도 프로브를 둔다(계측 4원칙 ②: 미측정 ≠ 0).
+
+    Returns:
+        (qty, side, measured)
+          · measured=False → 조회 자체가 실패했다. **qty=0 을 「FLAT」으로 읽지 말 것.**
+          · measured=True, qty=0 → 진짜 잔량 없음.
+
+    ⚠ 행 해석 규칙은 `_ts_broker_direct_force_exit()` 와 **같아야 한다.**
+      한쪽만 바뀌면 "청산했다는데 프로브는 잔량이 있다"는 모순이 생긴다 —
+      `tests/test_519_*.py` 가 두 함수의 파싱 키 집합을 대조해 고정한다.
+    """
+    account_no = str(_secrets.ACCOUNT_NO or "").strip()
+    code = getattr(self, "_futures_code", "")
+    target_code = self._normalize_broker_code(code)
+    if not account_no or not target_code:
+        logger.warning("[ResidualProbe] account_no/code 없음 — 미측정 ctx=%s", ctx)
+        return 0, None, False
+    try:
+        result = self.broker.request_futures_balance(account_no)
+    except Exception as e:                      # TR 예외가 마감을 죽이면 안 된다
+        logger.warning("[ResidualProbe] 잔고 TR 예외 ctx=%s: %s", ctx, e)
+        return 0, None, False
+    if result is None:
+        logger.warning("[ResidualProbe] 잔고 TR 실패 — 미측정 ctx=%s", ctx)
+        return 0, None, False
+
+    rows = result.get("nonempty_rows") or result.get("rows") or []
+    for row in rows:
+        row_code = self._normalize_broker_code(
+            row.get("종목코드") or row.get("code") or ""
+        )
+        if row_code != target_code:
+            continue
+
+        def _num(v):
+            try:
+                return float(str(v or "").replace(",", "").strip())
+            except Exception:
+                return 0.0
+
+        qty = int(_num(
+            row.get("잔고수량") or row.get("position_qty") or row.get("qty")
+        ))
+        side = _ts_order_side_to_direction({
+            "balance_side":      row.get("구분") or row.get("매매구분"),
+            "balance_side_code": row.get("side_code"),
+        })
+        return max(0, qty), side, True
+    return 0, None, True                        # 해당 종목 행 없음 = 진짜 FLAT
+
+
+def _ts_daily_close_force_exit(self, engine_desc: str):
+    """[MW0601 519차 / F-1] 마감 진입 시 잔여 포지션을 **상한 안에서** 청산한다.
+
+    🔴 **절대원칙 §1(오버나이트 금지)의 마지막 집행자다.** 15:10 강제청산과
+    15:18 FINAL_CLOSE 는 그 시각 이후에 생긴 포지션을 구조적으로 보지 못한다 —
+    2026-09-01 15:34:46 외부 진입 3계약이 그 창으로 들어와 밤을 넘겼고, 다음날
+    아침 하드스톱으로 -5,299,668원이 확정됐다.
+
+    **반드시 유한하게 끝난다.** 마감은 Qt 메인 스레드에서 돌고, 그 뒤에 EOD
+    재학습·P8·세션 저장이 줄줄이 기다린다. 청산이 마감을 인질로 잡으면 피해가
+    더 커진다. 그래서 시도 횟수와 벽시계 시한을 **둘 다** 걸고, 넘기면 포기하고
+    **경보를 남긴 뒤 마감을 계속 진행한다.**
+
+    시한(기본 12초)은 `MAIN_THREAD_STALL_ALERT_MS`(15초)보다 짧게 잡았다 —
+    안전장치가 자기 자신 때문에 정지 경보를 울리는 모양을 피한다.
+
+    Returns: dict — 리포트·테스트가 읽는 결과 요약.
+    """
+    max_attempts = int(runtime_settings.DAILY_CLOSE_FORCE_EXIT_MAX_ATTEMPTS)
+    timeout = float(runtime_settings.DAILY_CLOSE_FORCE_EXIT_TIMEOUT_SEC)
+    settle = float(runtime_settings.DAILY_CLOSE_FORCE_EXIT_SETTLE_SEC)
+    t0 = time.monotonic()
+    out = {"attempts": 0, "orders_sent": 0, "closed": False,
+           "measured": False, "final_qty": None, "timed_out": False,
+           "elapsed_sec": 0.0}
+
+    # 청산가 힌트 — **시장가 주문이라 체결가에 영향이 없다.** 로그·거부보고용이며
+    # 0.0 이어도 청산은 정상 진행된다(16558행 `_force_price` 와 같은 관례).
+    try:
+        price = float(getattr(self, "_last_pipeline_price", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        price = 0.0
+
+    while out["attempts"] < max_attempts:
+        if time.monotonic() - t0 >= timeout:
+            out["timed_out"] = True
+            break
+
+        qty, side, measured = _ts_broker_residual_qty(self, ctx="daily_close")
+        out["measured"] = measured
+        out["final_qty"] = qty if measured else None
+        if measured and qty <= 0:
+            out["closed"] = True
+            break
+        if not measured:
+            # 조회 실패 — 잔량을 모른 채 주문을 내지 않는다. 다음 시도에서 재조회.
+            out["attempts"] += 1
+            if time.monotonic() - t0 + settle < timeout:
+                time.sleep(settle)
+            continue
+
+        out["attempts"] += 1
+        log_manager.system(
+            f"[DailyCloseForceExit] 시도 {out['attempts']}/{max_attempts} — "
+            f"브로커 잔량 {side} {qty}계약 (엔진: {engine_desc}) 시장가 청산",
+            "ERROR",
+        )
+        if _ts_broker_direct_force_exit(
+                self, price,
+                "15:40 마감 잔여 청산(%d/%d)" % (out["attempts"], max_attempts)):
+            out["orders_sent"] += 1
+        # 체결이 붙을 시간을 준다. 다음 루프의 프로브가 실제로 닫혔는지 확인한다
+        # (`_ts_broker_direct_force_exit` 의 반환값은 "주문을 보냈는가"일 뿐이다).
+        if time.monotonic() - t0 + settle < timeout:
+            time.sleep(settle)
+
+    # 마지막 확인 — 시도 상한에 걸려 나온 경우에도 실제 상태를 한 번 더 읽는다.
+    if not out["closed"] and not out["timed_out"]:
+        qty, _side, measured = _ts_broker_residual_qty(self, ctx="daily_close_final")
+        out["measured"] = measured
+        out["final_qty"] = qty if measured else None
+        out["closed"] = bool(measured and qty <= 0)
+
+    out["elapsed_sec"] = round(time.monotonic() - t0, 2)
+
+    if out["closed"]:
+        log_manager.system(
+            f"[DailyCloseForceExit] ✅ 잔여 포지션 청산 완료 — "
+            f"시도 {out['attempts']}회 · 주문 {out['orders_sent']}건 · "
+            f"{out['elapsed_sec']}초. 절대원칙 §1 위반 상태를 마감 전에 해소했다",
+            "ERROR",
+        )
+    else:
+        # 실패를 성공처럼 적지 않는다. 무엇을 모르는지도 함께 적는다(계측 4원칙 ②).
+        _state = ("잔량 %s계약" % out["final_qty"]) if out["measured"] else "잔량 **미측정**"
+        log_manager.system(
+            f"[DailyCloseForceExit] 🔴 잔여 포지션을 닫지 못했다 — {_state} · "
+            f"시도 {out['attempts']}/{max_attempts}회 · 주문 {out['orders_sent']}건 · "
+            f"{out['elapsed_sec']}초"
+            f"{' · **시한 초과**' if out['timed_out'] else ''}. "
+            f"마감은 예정대로 계속 진행한다(마감을 멈추면 EOD 재학습·P8·세션 저장이 "
+            f"통째로 날아간다). **지금 대신증권 계좌에서 직접 정리할 것** — "
+            f"이대로 두면 오버나이트다",
+            "ERROR",
+        )
+    return out
 
 
 def _ts_on_chejan_event(self, payload: dict) -> None:

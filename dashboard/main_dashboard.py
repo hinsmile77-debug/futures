@@ -58,6 +58,8 @@ from config.settings import (
     MAIN_THREAD_STALL_WARN_MS as _MT_WARN_MS,
     MAIN_THREAD_STALL_ALERT_MS as _MT_ALERT_MS,
     MAIN_THREAD_STALL_DETECT_MS as _MT_DETECT_MS,
+    # [MW0601 519차] ALERT 밴드를 「2 경보」 탭에 띄울 때의 일일 상한
+    MAIN_THREAD_STALL_ALERT_TAB_DAILY_MAX as _MT_ALERT_TAB_DAILY_MAX,
     # [MW0601 493차 후속5 / F-P] 정지 시점 스택 스냅샷 (계측 — 차단 없음)
     MAIN_STALL_TRACEBACK_ENABLED as _MST_ON,
     MAIN_STALL_TRACEBACK_MIN_MS as _MST_MIN_MS,
@@ -10096,6 +10098,10 @@ class MireukDashboard(QMainWindow):
         self._mst_last_mono = None     # None = 아직 한 번도 안 찍었다
         self._mst_count = 0            # 오늘 찍은 횟수
         self._mst_day = ""             # 상한 리셋 기준 날짜(YYYYMMDD)
+        # [MW0601 519차] 경보 탭 ALERT 일일 상한 — `__init__` 에서 명시 초기화한다.
+        # `getattr(self, "_x", 기본값)` 으로 런타임 상태를 읽지 않는다(계측 4원칙 ④).
+        self._stall_alert_day = ""     # 상한 리셋 기준 날짜(YYYYMMDD)
+        self._stall_alert_count = 0    # 오늘 경보 탭에 띄운 횟수
         # 마지막 파이프라인 **완료** 시각(monotonic). None = 아직 한 번도 안 돎(미측정).
         # `_pipe_elapsed_s`는 초 단위 정수라 5초짜리 정지의 잔차를 재기엔 해상도가 없다.
         self._pipe_last_done_mono = None
@@ -11048,6 +11054,68 @@ class MireukDashboard(QMainWindow):
                     #   — 계측 4원칙 ②. 문자열 `NA`로 남긴다.
                     ("%.1f" % _since_pipe) if _since_pipe is not None else "NA",
                 )
+                # ── [MW0601 519차 / 사용자 지시] ALERT 밴드를 「2 경보」 탭으로 ──
+                #
+                # 🔴 **경보만 한다. 매매 경로는 건드리지 않는다.**
+                #
+                # **무엇이 빠져 있었나.** 바로 위 `_sev(...)` 는 모듈 로거
+                # (`logger = logging.getLogger("SYSTEM")`, 75행)를 쓴다. 그것은
+                # **파일 로그로만** 간다 — 대시보드 「2 경보」 탭은
+                # `log_manager.subscribe("SYSTEM", …)`(main.py:1272) → `append_sys_log_tagged`
+                # 를 타는 것만 받는다. 즉 **정지는 파일에만 남고 화면에는 안 떴다.**
+                # 2026-09-02 11:28:57 에 56,875ms 가 멈췄는데 경보 탭은 조용했고,
+                # 사람이 안 것은 그날 장중 점검(12:26)이었다.
+                # G-1(BrokerSync)이 "훅은 있는데 문구가 안 읽혔다"였다면, 여기는
+                # **훅 자체가 없었다** — 두 건은 증상만 닮았지 원인이 다르다.
+                #
+                # **왜 지금 켜도 되는가(폭주 위험 없음).** ALERT(≥15초)는 전 로그
+                # 기간에 **5건 / 5거래일**뿐이다:
+                #   08-24 20,985ms · 08-25 21,781ms · 08-28 17,390ms ·
+                #   08-31 15,157ms · 09-02 **56,875ms**(직전 최대의 2.6배)
+                # 하루 최대 1건꼴이라 경보 탭이 무뎌질 수준이 아니다. 그래도
+                # 계측이 폭주의 원인이 되지 않도록 **일일 상한**을 함께 둔다.
+                #
+                # ⚠ **임계값을 새로 정하지 않았다.** 기존 `MAIN_THREAD_STALL_ALERT_MS`
+                #   (15초)를 그대로 쓴다 — 임계 재보정은 표본이 더 필요하고
+                #   26주 WFA 주기 항목이다(482차 F-3 섀도 관찰과 함께 판단).
+                #   여기서 바뀌는 것은 **"이미 ALERT 로 판정된 것을 화면에도 띄우는가"**
+                #   하나뿐이다.
+                # ⚠ WARN 밴드(5~15초)는 **일부러 올리지 않는다.** 오늘만 4건이고
+                #   08-25 실측으로는 28건이라, 올리면 경보 탭이 잡음으로 덮인다.
+                # ⚠ 계측이 1초 타이머를 죽이면 안 된다 — 전 구간 try 로 감싼다.
+                if _gap_ms >= _MT_ALERT_MS:
+                    try:
+                        _al_today = datetime.now().strftime("%Y%m%d")
+                        if _al_today != self._stall_alert_day:
+                            self._stall_alert_day = _al_today
+                            self._stall_alert_count = 0
+                        if self._stall_alert_count < _MT_ALERT_TAB_DAILY_MAX:
+                            self._stall_alert_count += 1
+                            _sec = _gap_ms / 1000.0
+                            # 경보 탭은 `append("all", …)` 가 WARN/ERROR/CRITICAL 을
+                            # "warn"(2 경보) 탭으로 라우팅한다(7973행). 여기는
+                            # 대시보드 **안**이라 log_manager 를 거칠 필요가 없다.
+                            self.log_panel.append(
+                                "all", "ERROR",
+                                "[MainStall] 🔴 미륵이 화면·판단이 %.1f초 동안 멈춰 있었다 "
+                                "(오늘 %d번째). 그 동안 매분 파이프라인·청산 감시·"
+                                "안전장치가 전부 정지 상태였다. 포지션을 들고 있었다면 "
+                                "손절·익절이 그만큼 늦게 걸렸다는 뜻이다 — 계좌를 확인하고, "
+                                "반복되면 재기동할 것. 원인 스택은 "
+                                "logs/mainstall_traceback_%s.log 참조"
+                                % (_sec, self._stall_alert_count, _al_today))
+                        elif self._stall_alert_count == _MT_ALERT_TAB_DAILY_MAX:
+                            self._stall_alert_count += 1
+                            # 상한에 닿았다는 사실 자체를 남긴다 — 조용히 끊지 않는다
+                            # (계측 4원칙 ③ 탈락 가시화).
+                            self.log_panel.append(
+                                "all", "ERROR",
+                                "[MainStall] 오늘 정지 경보가 일일 상한 %d건에 도달했다 "
+                                "— 이후 발생분은 화면에 띄우지 않는다(파일 로그에는 계속 "
+                                "남는다). 하루에 이만큼 멈췄다는 것 자체가 이상이다."
+                                % _MT_ALERT_TAB_DAILY_MAX)
+                    except Exception as _al_e:
+                        logger.warning("[MainStall] 경보 탭 전달 실패 (무해): %s", _al_e)
                 # ── [MW0601 493차 후속5 / F-P] 정지 시점 스택을 남긴다 ──────────
                 # 482차 F-3 섀도가 2주째 "몇 번 멈췄다"만 세고 **"무엇이 멈추게
                 # 했는지"** 는 못 남기고 있었다. 스택 없이는 관찰이 끝나도 원인을

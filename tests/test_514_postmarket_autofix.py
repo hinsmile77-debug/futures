@@ -106,22 +106,42 @@ def test_fa_checks_both_axes():
     assert "broker_cached" in seg
 
 
-def test_fa_is_alert_only_no_exit_order():
-    """🔴 **경보만 한다 — 청산 주문을 내지 않는다.**
+def test_fa_exit_goes_only_through_the_bounded_helper():
+    """마감 잔여 청산은 **상한이 걸린 헬퍼 한 곳으로만** 나간다.
 
-    마감 절차에 자동 청산을 통합하는 것은 Fix P0-2 이고 주문·청산 실행 경로
-    변경이라 주간회의 승인 대상이다. 자동조치가 그 선을 넘으면 안 된다.
+    ⚠ **이 테스트는 원래 "경보만 한다 — 청산 주문을 내지 않는다"였다.**
+    514차 시점에는 마감 자동청산이 승인 대기(Fix P0-2)였고, 자동조치가 그 선을
+    넘지 않는 것을 고정하는 것이 목적이었다. 그 전제는
+    **2026-09-02(519차) 사용자 지시로 종결**됐다 — F-1 이 승인·구현되면서 이
+    블록은 이제 실제로 청산한다.
+
+    그래서 **가드를 없애지 않고 대상을 옮긴다.** 지금 지켜야 할 선은
+    「청산하지 않는다」가 아니라 **「임시 주문 경로를 daily_close 안에 만들지
+    않는다」** 이다. 청산은 반드시 `_ts_daily_close_force_exit()` 를 지나야 하고,
+    그 함수가 시도 횟수·벽시계 시한·실패 보고를 책임진다
+    (`tests/test_519_*.py` §3 이 그 상한을 고정한다).
     """
     src = _func_src(_MAIN, "daily_close")
     start = src.index("[MW0601 514차 / 장후 Fix P1-3]")
     end = src.index("self.position.daily_stats()")
     block = src[start:end]
-    forbidden = ["send_order", "_ts_time_exit_pass", "force_exit", "close_position",
-                 "SendOrder", "execute_exit", "_exit_position"]
+
+    # 승인된 유일한 통로가 실제로 쓰인다.
+    assert "_ts_daily_close_force_exit(self," in block, (
+        "마감 잔여 청산이 배선돼 있지 않다 — F-1 이 죽은 코드가 됐다"
+    )
+    # 킬스위치를 반드시 본다.
+    assert "DAILY_CLOSE_FORCE_EXIT_ENABLED" in block
+
+    # 원시 주문 프리미티브를 직접 부르지 않는다 — 부르면 거부 처리·재시도·
+    # 로그가 헬퍼와 갈려 두 개의 청산 경로가 생긴다.
+    forbidden = ["send_order", "SendOrder", "send_market_order",
+                 "_send_broker_exit_order", "_set_pending_order",
+                 "_ts_time_exit_pass", "close_position", "_exit_position"]
     for token in forbidden:
         assert token not in block, (
-            "P1-3 블록이 주문·청산 경로를 호출한다(%s) — 이것은 승인 대기 Fix P0-2 다"
-            % token
+            "daily_close 안에 별도 주문 경로가 생겼다(%s) — 청산은 "
+            "_ts_daily_close_force_exit() 한 곳으로만 나가야 한다" % token
         )
 
 
@@ -297,7 +317,12 @@ def test_fc_no_slack():
 # ══════════════════════════════════════════════════════════════════════════
 
 @pytest.mark.parametrize("toggle,expected", [
-    ("CB_CONSEC_STOP_LIMIT", 9999),
+    # ⚠ [2026-09-02 519차] 9999 → 3. **자동조치가 바꾼 것이 아니다** — 사용자가
+    #   직접 지시해 모의투자 한정 예외를 해제했다(재검토 기한 08-29 초과 5일).
+    #   이 표는 "자동조치가 넘지 않아야 할 선"을 재는 것이지 "값이 영원히 고정"을
+    #   뜻하지 않는다. 승인된 변경이 나면 **여기 기대값을 함께 옮기고 근거를 적는다** —
+    #   그러지 않으면 이 가드가 승인된 결정을 계속 위반으로 신고한다.
+    ("CB_CONSEC_STOP_LIMIT", 3),
     ("CB3_P4_GRADE_BLOCK_ENABLED", False),
     ("FP_CRITICAL_GRADE_BLOCK_ENABLED", False),
     ("TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED", False),
