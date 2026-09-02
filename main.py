@@ -17846,6 +17846,42 @@ def _ts_sync_position_from_broker(self) -> None:
         f"[BrokerSync] startup sync 완료: {before} -> {after}",
         "CRITICAL" if before != after else "INFO",
     )
+    # ── [MW0601 518차 / G-1(=G-3)] 재기동 시 브로커 잔량 이상 — **읽히는 경보** ──
+    #
+    # 🔴 **경보만 한다. 차단하지도, 청산하지도 않는다.** 여기는 이미 체결돼 있는
+    #    계좌 상태를 엔진에 반영하는 동기화 지점이다 — 막을 것이 없다. 바뀌는 것은
+    #    "사람이 언제, 무엇을 알고, 무엇을 할 수 있는가" 하나뿐이다.
+    #
+    # ⚠ **09-02 장후 고도화 G-1 의 전제는 절반이 틀렸다 — 훅은 이미 있었다.**
+    #    리포트는 *"CRITICAL 로그는 있었지만 실시간 알림 훅은 없음"* 이라고 적었으나,
+    #    2026-09-02 코드 실측으로 경로가 **이미 이어져 있음**을 확인했다:
+    #      `log_manager.system(…, "CRITICAL")` → SYSTEM 레이어
+    #      → `main.py:1272 log_manager.subscribe("SYSTEM", …)`
+    #      → `dashboard.append_sys_log_tagged()` (WARN/ERROR/CRITICAL 을 통과시킴)
+    #      → `log_panel.append("all", "CRITICAL", …)` → **「2 경보」 탭**
+    #    즉 새 훅을 하나 더 달면 **같은 사건이 경보 탭에 두 줄로 뜬다.**
+    #    (함정① — "이미 코드에 있는 것을 또 구현" 은 이 프로젝트의 반복 사고다.)
+    #
+    # **그래서 진짜 결손은 훅이 아니라 문구다.** 위 줄은 사람에게 이렇게 보인다:
+    #     `[BrokerSync] startup sync 완료: FLAT -> LONG 3계약`
+    # 첫 단어가 **"완료"** 다. 경보 탭을 훑는 사람에게 이것은 성공 통지로 읽힌다.
+    # 2026-09-02 08:41:09 에 실제로 이 줄이 떴고, 08:45:11 하드스톱까지 **4분**이
+    # 있었는데 아무도 움직이지 않았다 — 그 4분 뒤 확정된 손실이 -5,299,668원이다.
+    # 로그는 제 할 일을 했다. **읽히지 않았을 뿐이다.**
+    #
+    # 514차 F-C(`[ExternalEntry]`)가 같은 문제를 이미 이렇게 풀었다 — 무슨 일이
+    # 일어났는지 + 지금 무엇을 확인할지 + 안 하면 무엇이 걸리는지. 같은 형식을 쓴다.
+    # ⚠ Slack 은 쓰지 않는다(사용자 결정 — 개발단계 직접 모니터링).
+    if before != after and qty > 0:
+        log_manager.system(
+            f"[BrokerSync] 🔴 재기동해 보니 계좌에 포지션이 남아 있다 — "
+            f"{side} {qty}계약 @ {avg_price} (재기동 전 엔진 상태: {before}). "
+            f"미륵이가 이번 세션에 낸 자리가 아니다. 전일 미청산이거나 "
+            f"HTS·MTS 등 다른 경로에서 들어온 자리다. "
+            f"지금 계좌를 직접 확인할 것 — 손절선은 참조 ATR 로 임시 배정돼 있고, "
+            f"의도한 자리가 아니면 수동 청산이 자동 손절보다 빠르다",
+            "ERROR",
+        )
 
 
 def _ts_sync_from_balance_payload(self, payload: dict) -> None:
@@ -18073,6 +18109,40 @@ def _ts_execute_entry(
     if self._has_pending_order():
         logger.info("[Entry] pending order exists -> skip new entry %s %s", direction, quantity)
         return
+    # ── [MW0601 518차 / F-3] 진입 출처 라벨을 여기서 되돌린다 ────────────────────
+    #
+    # 🔴 **라벨 전용이다. 주문·수량·게이트 경로는 한 줄도 바뀌지 않는다.**
+    #    `_entry_source` 를 읽는 곳은 `_record_trade_result()` 의 `trades` INSERT
+    #    한 곳뿐이다(2026-09-02 실측: 읽기 2곳 = 초기화 1135행 + INSERT 3578행).
+    #
+    # **이 줄은 신설이 아니라 복구다.** `_on_manual_entry_requested()` 가
+    # `self._execute_entry(...)` 직후 `self._entry_source = "OPERATOR_MANUAL"` 을
+    # 덮어쓰면서 그 자리에 *"_execute_entry() 내부에서 기본값(SYSTEM_AUTO)으로
+    # 설정되므로 호출 후 덮어씀"* 이라고 적어두고 있다(3346행). **설계 의도는
+    # 처음부터 여기였고, 구현만 빠져 있었다.**
+    #
+    # 결과: `_entry_source` 는 `__init__` 에서 한 번 `"SYSTEM_AUTO"` 가 된 뒤,
+    # `BROKER_SYNC_RECOVERY`·`GHOST_PENDING_MISS`·`OPERATOR_MANUAL`·
+    # `OPERATOR_RESTORE` 로 **한 번 바뀌면 세션이 끝날 때까지 되돌아오지 않았다**
+    # (할당 7곳 전부 비-SYSTEM_AUTO 방향). 2026-09-02 실측: 09:41 브로커 동기화
+    # 뒤 10:19 에 정상 자동진입한 자리가 `BROKER_SYNC_RECOVERY` 로 기록됐다.
+    #
+    # ⚠ **왜 하필 이 지점인가** — 두 조건을 동시에 만족하는 유일한 자리다.
+    #   ① 위의 조기 반환 게이트(서버구분·계좌불일치·broker sync·쿨다운·pending)를
+    #      **전부 통과한 뒤**다. 차단된 시도가 라벨을 되돌리면, 그때 들고 있던
+    #      외부/복구 포지션이 청산될 때 `SYSTEM_AUTO` 로 **오귀속**된다.
+    #   ② `_send_broker_entry_order()` **이전**이다. BlockRequest() 가 COM 이벤트를
+    #      pump 하는 동안 Chejan 체결 콜백이 먼저 도착해 그 자리에서 청산·기록까지
+    #      갈 수 있다(바로 아래 Fix-PendingFirst 주석의 그 레이스) — 전송 뒤에
+    #      세우면 그 경로가 낡은 라벨을 읽는다.
+    #
+    # ⚠ **소급 정정이 아니다.** 이미 쌓인 행의 `entry_source` 는 그대로다. 즉
+    #   `trades.entry_source` 시계열은 **2026-09-02 에 불연속**이다 — 이 날짜 앞뒤로
+    #   "SYSTEM_AUTO 건수"를 직접 비교하지 말 것(461차 `mdd_pct` 와 같은 유형).
+    #   사전등록 채널 다수가 `"entry_source": "SYSTEM_AUTO"` 로 표본을 거르므로
+    #   (`config/settings.py` [21] 등), 이 수정 **이후** 표본이 늘어나는 것은
+    #   정상이며 합격선·판정식은 무변경이다.
+    self._entry_source = "SYSTEM_AUTO"
     # [Fix-PendingFirst] CYBOS BlockRequest()는 COM 이벤트 루프를 pump하므로
     # send_market_order() 반환 전에 Chejan 콜백이 먼저 실행될 수 있음.
     # pending을 SendOrder 이전에 등록해 pending_matched=False 및 ret=1 오판 방지.
