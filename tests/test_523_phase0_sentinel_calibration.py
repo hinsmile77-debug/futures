@@ -28,8 +28,21 @@ def check(name, cond, detail=""):
 
 
 def _fz1_present():
-    """FZ-1(L1)이 도입됐는가 — 3신호가 살아났는지의 판정."""
+    """FZ-1(L1)이 도입됐는가 — 3신호(하트비트·[TS])가 살아났는지의 판정."""
     return os.path.exists(os.path.join(ROOT, "utils", "freeze_watchdog.py"))
+
+
+def _shutdown_marker_wired():
+    """🔴 [524차 정정] 감시 창은 FZ-1 이 아니라 **종료 마커**에 달려 있다.
+
+    523차는 창 검사를 `_fz1_present()` 로 완화하게 짰는데 **그것이 틀렸다.**
+    정상 종료 뒤에는 3신호가 **전부** 낡으므로 신호 개수는 도움이 되지 않는다 —
+    필요한 것은 「스스로 종료했다」를 말해 주는 마커이고, 그것이 마지막 신호보다
+    **뒤**여야 한다. `_exit_normally` 는 런처가 지우고 `daily_close_done` 은 마감
+    중에 찍혀 늦지 않다. 그래서 판정 근거는 `shutdown_normal` 마커 하나다.
+    """
+    src = io.open(os.path.join(ROOT, "main.py"), encoding="utf-8").read()
+    return "shutdown_normal_%s.txt" in src or "shutdown_normal_{" in src
 
 
 def test_sentinel_is_alert_only():
@@ -70,8 +83,13 @@ def test_window_ends_before_daily_close_tail():
     from config.settings import FREEZE_SENTINEL_WINDOW as W
     end = str(W[1])
     hh, mm = [int(x) for x in end.split(":")]
-    if _fz1_present():
-        return   # 마커가 살아나면 16:30 복원 가능 — 그때 이 항목을 재설계할 것
+    if _shutdown_marker_wired():
+        # 마커가 있으면 마감 뒤 정지를 정상 종료로 가릴 수 있다 → 창을 넓혀도 된다.
+        # 오히려 **좁으면** 15:40 마감 자체의 동결을 놓치므로 하한을 요구한다.
+        assert (hh * 60 + mm) >= (16 * 60), (
+            "종료 마커가 배선됐는데 창이 %s 에서 끝난다 — 15:40 마감 동결과 EOD "
+            "인계 구간을 놓친다(MW0601 test_490 과 같은 요구)" % end)
+        return
     assert (hh * 60 + mm) <= (15 * 60 + 45), (
         "감시 창 종료가 %s 다. 정상종료 마커 없이 15:45 를 넘기면 마감 뒤 정지를 "
         "동결로 오판한다 — 15:45 이하로 두거나 마커를 먼저 도입할 것" % end)

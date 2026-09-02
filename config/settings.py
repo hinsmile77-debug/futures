@@ -6050,6 +6050,41 @@ MAIN_THREAD_STALL_DETECT_MS = 2_000
 # 상한에 닿을 일이 거의 없지만, 닿으면 그 사실을 한 줄 남긴다(계측 4원칙 ③).
 MAIN_THREAD_STALL_ALERT_TAB_DAILY_MAX = 10
 
+# ── [MW0601 478차 후속 / FZ-1 · MW0602 524차 이식] 메인 루프 동결 워치독 ─────────
+#
+# 2026-08-19 13:41:21(MW0601), 메인(Qt) 스레드가 `exec_()` **아래 네이티브 코드**에서
+# 1코어 100% 스핀에 빠져 메시지 펌프가 죽었다. 그 순간부터 QTimer 기반 장치가 전부
+# 동시에 무력화됐다 — 매분 파이프라인 · **15:10 강제청산(절대원칙 §1)** · CB⑤ ·
+# 대시보드 워치독 · 15:40 마감/자동종료. 실손해 0은 **우연히 FLAT** 이었기 때문이다.
+#
+# 🔴 감시자는 **이벤트 루프 밖**에 있어야 한다. `utils/freeze_watchdog.py` 는 순수
+#    `threading.Thread` 이며 PyQt5·COM·로깅 프레임워크에 의존하지 않는다.
+# 🔴 복구가 아니라 `os._exit()` 인 이유: 메인이 네이티브 코드에서 반환하지 않는 상태는
+#    파이썬 레벨에서 되살릴 수 없다. 남은 선택지는 "동결 지속"과 "재기동"뿐이고,
+#    재기동은 런처 RESTART_LOOP + `session_recovery_service` 가 포지션·카운터를
+#    복원하므로 **모든 시나리오에서 낫다** — 특히 포지션 보유 중이면 STEP 8 청산
+#    감시가 부활한다.
+#
+# ⚠ **[MW0602 이식 근거]** 이 브랜치는 동결 이력이 **0건**이다(최근 14 로그일 전부
+#   15:40 마감 4줄 정상 · 최대 메인 정지 4.4초). 그럼에도 도입하는 이유는 **탐지가
+#   없어 "0"의 일부가 관측 부재**이기 때문이다(521차 §3). 빈도가 아니라 꼬리위험
+#   장치로 평가한다.
+# ⚠ **임계 180초는 MW0601 프로파일 기준이다.** 이 PC 최장 정지 4.4초의 **40배**라
+#   오탐 여지는 거의 없다. 재보정은 26주 WFA 항목.
+# ⚠ 런처 호환 확인됨 — `start_mireuk_CREON.bat` 이 15:10 이후 재기동 금지 ·
+#   5회 상한 · CREON 재로그인을 이미 갖췄다(521차 §4-2).
+FREEZE_WATCHDOG_ENABLED = True
+FREEZE_WATCHDOG_CHECK_SEC = 30.0        # 감시 주기
+FREEZE_WATCHDOG_STALL_SEC = 180.0       # 이 시간 넘게 하트비트가 갱신 안 되면 1스트라이크
+FREEZE_WATCHDOG_STRIKES = 2             # 연속 스트라이크 이 횟수에서 발화(최소 실동결 ~3분)
+FREEZE_WATCHDOG_EXIT_CODE = 43          # os._exit 코드 — 런처 로그에서 식별용
+FREEZE_WATCHDOG_WINDOW = ("09:00", "15:45")   # 감시 구간(거래일 KST). 밖에서는 검사만 쉰다
+FREEZE_WATCHDOG_TS_HEARTBEAT = True     # [FZ-5] crash_fault.log 에 30초마다 [TS] 1줄
+# [MW0601 480차 / G-1] 생존 하트비트를 **파일로도** 내보낸다 — 쓰는 주체가 이
+# 프로세스 하나뿐이라 밖에서 mtime 만 봐도 생존을 판정할 수 있다. FZ-2 센티넬이 읽는다.
+FREEZE_WATCHDOG_HEARTBEAT_FILE = True
+FREEZE_WATCHDOG_HEARTBEAT_PATH = "data/heartbeat_{pc}_{date}.json"
+
 # ── [MW0601 490차 F-M / MW0602 523차 체리픽] 프로세스 밖 동결 센티넬 (FZ-2) ──────
 #
 # **알림 전용.** 하드 종료 없음(`FREEZE_SENTINEL_KILL_ENABLED` 는 자리만 있고 구현이
@@ -6077,25 +6112,23 @@ MAIN_THREAD_STALL_ALERT_TAB_DAILY_MAX = 10
 #     `dev_memory/NEXT_TODO.md` 523차 T-1.
 FREEZE_SENTINEL_ENABLED = True
 FREEZE_SENTINEL_CHECK_SEC = 60.0        # 감시 주기(초). 별도 프로세스라 파이프라인 지연과 무관
-FREEZE_SENTINEL_STALL_SEC = 600.0       # ⚠ MW0602 단일신호 보정값(원본 300.0)
-# 🔴 **[MW0602 조정] 감시 창을 16:30 → 15:45 로 좁혔다 — 원본대로 두면 매 거래일
-#   가짜 CRITICAL + 팝업이 뜬다.** 실측(2026-09-02 `--at-time` 재생):
-#       13:00 OK · 15:45 OK · **16:00 CRITICAL** · **16:29 CRITICAL**
-#   원인은 **정상 종료 판별 마커 3종을 이 브랜치가 쓸 수 없다는 것**이다:
-#     · `_exit_normally`      미측정(런처가 지운다)
-#     · `shutdown_normal`     이 브랜치에 **코드 자체가 없다**(MW0601 513차 미이관)
-#     · `daily_close_done`    파일은 있으나(42개) mtime 이 마지막 SYSTEM.log 줄보다
-#                             **약 15초 이르다** → 판정기의 "마커가 정체 신호보다
-#                             뒤" 조건이 성립하지 않는다
-#   ⇒ 15:40 마감 후 프로세스가 정상 종료해도 「동결」로 읽힌다. MW0601 이 493차에
-#     겪은 **43회 가짜 경보**와 같은 경로이고, 그것이 쌓이면 진짜 동결도 무시하게 된다.
-#
-#   15:45 로 끊어도 **잃는 것이 작다**: 절대원칙 §1 의 핵심 구간(15:10 강제청산 ·
-#   15:18 안전망)은 창 안에 그대로 있고, 15:40 마감 자체가 얼어붙는 경우는
-#   `daily_close_done` 마커 **결손**으로 다음 장후 점검이 잡는다(522차 T-A).
-#   ⚠ 마커 3종 중 하나라도 도입되면 16:30 복원을 재검토할 것 —
-#     `dev_memory/NEXT_TODO.md` 523차 T-2.
-FREEZE_SENTINEL_WINDOW = ("09:00", "15:45")
+FREEZE_SENTINEL_STALL_SEC = 300.0       # [524차] 3신호 복원으로 원본값 환원
+#   ⚠ 523차에는 600.0 이었다 — FZ-1 보류로 신호가 SYSTEM.log 하나뿐이라
+#     실측 최대 무신호 271초 대비 여유가 없었기 때문이다. 524차가 FZ-1 을
+#     배선해 하트비트·[TS] 가 살아났으므로(3신호 교차검증) 원본 300 으로 되돌린다.
+# 🔴 **[MW0602 524차] 16:30 으로 복원했다 — 523차의 15:45 우회를 걷어낸다.**
+#   523차에는 정상 종료 판별 마커 3종을 이 브랜치가 못 써서(`_exit_normally` 는
+#   런처가 지우고 · `shutdown_normal` 은 코드 부재 · `daily_close_done` 은 mtime 이
+#   마지막 SYSTEM.log 줄보다 **약 15초 이르다**) 마감 후 정지를 동결로 오판했다.
+#   실측이었다: `--at-time` 재생에서 16:00·16:29 둘 다 CRITICAL.
+#   ⇒ 524차가 **원인을 고쳤다** — MW0601 513차의 날짜본 종료 마커
+#     (`data/shutdown_normal_<date>.txt`)를 `_write_exit_normally_flag()` 에
+#     이식했다. 런처가 지우지 않고 `_auto_shutdown()` 에서 다시 쓰이므로
+#     **종료 시각**을 갖는다 → 마지막 신호보다 뒤가 된다.
+#   ⚠ 마커는 **다음 정상 종료부터** 생긴다. 그전까지는 15:45~16:30 구간에서
+#     CRITICAL 이 뜰 수 있다 — 다음 마감 후 `data/shutdown_normal_*.txt` 생성을
+#     확인할 것(`dev_memory/NEXT_TODO.md` 524차 O-3).
+FREEZE_SENTINEL_WINDOW = ("09:00", "16:30")
 FREEZE_SENTINEL_POPUP = True            # 동결 확정 시 Windows 메시지박스
 FREEZE_SENTINEL_KILL_ENABLED = False    # ⚠ 2단계(하드 종료) — 미구현. 주간회의 승인 전 금지
 # 과신(conf>=0.85) 오류 N회 연속 시 CB③ 임계값을 0.35→0.50으로 상향
