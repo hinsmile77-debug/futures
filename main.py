@@ -11371,6 +11371,59 @@ class TradingSystem:
             )
             return
 
+        # ── [MW0601 514차 / 장후 Fix P1-3 체리픽] 마감 진입 직전 잔여 포지션 경보 ──
+        # 🔴 **경보만 한다. 청산하지 않는다.** 자동 청산 통합(MW0601 519차 F-1)은
+        #    주문 실행 경로 변경이라 이 브랜치에서는 **미도입**이다 — 사용자 승인 대기.
+        #    여기서 하는 일은 "마감이 잔여 포지션을 보지도 않고 지나갔다"를 없애는 것뿐이다.
+        #
+        # MW0601 2026-09-01 15:34:46, 원인불명 외부 매수 3계약이 계좌에 들어왔다.
+        # 15:10 강제청산과 15:18 안전망은 이미 지나간 뒤였고, 15:40:08 마감은 그 포지션을
+        # **보지도 않고** 통계·리셋을 진행한 뒤 종료됐다. 절대원칙 §1(오버나이트 금지)이
+        # 깨진 채 밤을 넘겨 다음날 -5,299,668원이 됐고, 사람이 안 것은 **익일 장후
+        # 리포트**였다. 마감 시점에 한 줄만 있었어도 6시간 빨랐다.
+        #
+        # ⚠ **MW0602는 이 사건을 겪은 적이 없다** — `trades` 실측 비-SYSTEM_AUTO 진입
+        #   0건 · 15:18 이후 진입 0건(2026-09-02 기준). 그러나 **구조는 동일하다**:
+        #   15:10·15:18 은 그 뒤에 생긴 포지션을 볼 수 없다. 471차 F-1(도달 불가였는데
+        #   6개월간 아무 계측에도 안 걸림)과 같은 형태라, 사건을 기다렸다가 붙일 계측이
+        #   아니다.
+        #
+        # ⚠ 계측 4원칙 ②·④ — 상태를 못 읽으면 「FLAT」이 아니라 **미측정**으로 적는다.
+        #   조용한 성공과 조용한 실패를 같은 문구로 만들지 않는다.
+        # ⚠ 계측 4원칙 ⑤ — 축을 둘 다 건다. 엔진 포지션이 FLAT이어도 브로커 잔량이
+        #   남아 있을 수 있다(위 사건이 그 형태였다면 엔진 축만으로는 못 잡는다).
+        try:
+            _rp_status = str(self.position.status)
+            _rp_qty = int(self.position.quantity or 0)
+            _rp_measured = True
+        except Exception as _rp_e:
+            _rp_status, _rp_qty, _rp_measured = None, 0, False
+            logger.warning("[DailyCloseResidual] 포지션 상태 읽기 실패: %s", _rp_e)
+        _rp_broker = int(getattr(self, "_integrity_broker_qty", 0) or 0)
+        if not _rp_measured:
+            log_manager.system(
+                "[DailyCloseResidual] 🔴 마감 진입 시 포지션 상태 **미측정** — "
+                "잔여 포지션 여부를 확인하지 못했다(FLAT 확인이 아니다). "
+                "대신증권 계좌를 직접 확인할 것",
+                "ERROR",
+            )
+        elif _rp_status != "FLAT" or _rp_broker > 0:
+            log_manager.system(
+                f"[DailyCloseResidual] 🔴 마감 진입 시 잔여 포지션 — "
+                f"엔진 {_rp_status} {_rp_qty}계약 · broker_cached {_rp_broker}계약. "
+                f"절대원칙 §1(오버나이트 금지) 위반 상태다. 15:10·15:18 강제청산 단계는 "
+                f"이미 지나갔으므로 이 포지션은 **자동으로 청산되지 않는다** — "
+                f"사람이 지금 대신증권 계좌에서 정리해야 한다. "
+                f"(마감은 예정대로 진행한다. 자동 청산은 승인 대기)",
+                "ERROR",
+            )
+        else:
+            log_manager.system(
+                "[DailyCloseResidual] 마감 진입 시 FLAT 확인 "
+                f"(엔진 FLAT · broker_cached {_rp_broker}계약)",
+                "INFO",
+            )
+
         stats = self.position.daily_stats()
         forward_stats = self.position.daily_forward_stats()
         # [MW0602 463차 C5] SGD 지표는 **리셋 전에** 캡처한다.
