@@ -2,6 +2,29 @@
 
 > 검증 필요 항목, 예정된 작업, 알려진 잠재 이슈.
 
+### 524차 — FZ-1 배선 후속 (MW0602, 2026-09-02)
+
+근거: `dev_memory/DECISION_LOG.md` 2026-09-02(524차). **522차 보류는 철회됐다** —
+그 항목의 트리거 T-A/T-B/T-C 는 이제 보류 감시가 아니라 일반 관측으로 남는다.
+
+- 🔴 **O-1 (다음 기동)** — `[FreezeWatchdog] 기동 …` 로그 1줄 + 개장 후
+  `data/heartbeat_MW0602_<date>.json` 생성 확인. 없으면 배선이 죽은 것이다.
+- 🔴 **O-2 (다음 마감 후)** — `data/shutdown_normal_<date>.txt` 생성 확인.
+  **이게 없으면 FZ-2 가 15:45~16:30 에 가짜 CRITICAL 을 낸다**(523차 실측 형태).
+  생기면 그 구간 `--once` 가 `INFO(NORMAL_CLOSE)` 또는 `NOT_APPLICABLE` 이어야 한다.
+- **O-3 (1주)** — FZ-1 오발화 0건 확인. 발화하면 `logs/crash_fault.log` 의
+  `_freeze_watchdog_context` 줄(**미청산 여부**)을 가장 먼저 볼 것 — 15:10 이후
+  발화면 런처가 재기동하지 않는다(오버나이트 금지).
+- **T-1 (안건)** — FZ-2 `KILL_ENABLED` 승격 여부. 현재 알림 전용이며 코드도 없다.
+  ⚠ 15:10 이후 하드 종료는 재기동을 유발하지 않아 마감 절차만 죽인다.
+- **T-2 (안건)** — **FZ-4(옵션체인 워커 가드) 이식 여부.**
+  `tests/test_478_freeze_watchdog.py` 의 2건이 그때까지 `skip` 으로 남는다
+  (`_COLLECT_ABORT_SEC`·`_RESULT_DISCARD_SEC` 부재). 이식하면 자동 복구.
+- **T-3 (26주 WFA)** — `FREEZE_WATCHDOG_STALL_SEC`(180초) 재보정.
+  MW0601 프로파일 기준값이며 이 PC 최장 정지 4.4초의 40배다.
+- **T-4 (Phase 2 · 주간회의)** — L3 `force_flat_guard` · 519차 F-1 자동청산 ·
+  490차 F-L 본편. 521차 검토 §5 Phase 2 그대로.
+
 ### 523차 — Phase 0 후속 (MW0602, 2026-09-02)
 
 근거: `dev_memory/DECISION_LOG.md` 2026-09-02(523차).
