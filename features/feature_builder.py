@@ -32,6 +32,7 @@ from config.settings import (
     HURST_WARMUP_COLDSTART_MIN, HURST_WARMUP_LAG_FLOOR, HURST_WARMUP_LAG_RATIO,
     TREND_EFFICIENCY_WINDOW, KYLE_LAMBDA_WINDOW, RV_IV_WINDOW,
     CHASE_FILTER_LOOKBACK_MIN, REGIME_EXHAUSTION_LOOKBACK_MIN,
+    SWING_FEATURE_LOOKBACKS_MIN, SWING_FEATURE_DIST_CLIP_ATR,   # [529차] 스윙 위치 피처
     EXHAUSTION_RESTORE_MODE, TOXICITY_CANCEL_CHURN_CEILING,
 )
 
@@ -48,6 +49,46 @@ try:
 except Exception:
     _CVD_DEBIAS_MODE = "shadow"
 _CVD_DEBIAS_LIVE = str(_CVD_DEBIAS_MODE).lower() == "live"
+
+
+def compute_swing_features(highs, lows, close, atr, lookbacks, clip_atr=20.0):
+    """[MW0601 529차] 스윙 위치 피처 — 순수 함수(테스트 가능).
+
+    highs/lows: 오래된 → 최신 순, 현재 봉 포함. atr<=0 이면 거리 0.0 + ready=False.
+    반환 키는 settings 주석의 7종 × 창 수.
+    """
+    out = {}
+    n_have = min(len(highs), len(lows))
+    for n in lookbacks:
+        n = int(n)
+        if n_have <= 0:
+            out.update({
+                "swing_high_%dm" % n: float(close), "swing_low_%dm" % n: float(close),
+                "dist_to_high_%dm_atr" % n: 0.0, "dist_to_low_%dm_atr" % n: 0.0,
+                "bars_since_high_%dm" % n: 0, "bars_since_low_%dm" % n: 0,
+                "swing_ready_%dm" % n: False,
+            })
+            continue
+        hs = highs[-n:]
+        ls = lows[-n:]
+        hi = max(hs)
+        lo = min(ls)
+        # 같은 값이 여러 봉이면 **가장 최근** 극단을 기준으로 경과 봉 수를 센다
+        bars_hi = (len(hs) - 1) - max(i for i, v in enumerate(hs) if v == hi)
+        bars_lo = (len(ls) - 1) - max(i for i, v in enumerate(ls) if v == lo)
+        ready = (n_have >= n) and (atr is not None) and (atr > 1e-6)
+        if atr is not None and atr > 1e-6:
+            d_hi = min(max((hi - close) / atr, 0.0), clip_atr)
+            d_lo = min(max((close - lo) / atr, 0.0), clip_atr)
+        else:
+            d_hi = d_lo = 0.0
+        out.update({
+            "swing_high_%dm" % n: float(hi), "swing_low_%dm" % n: float(lo),
+            "dist_to_high_%dm_atr" % n: float(d_hi), "dist_to_low_%dm_atr" % n: float(d_lo),
+            "bars_since_high_%dm" % n: int(bars_hi), "bars_since_low_%dm" % n: int(bars_lo),
+            "swing_ready_%dm" % n: bool(ready),
+        })
+    return out
 
 
 class FeatureBuilder:
@@ -87,6 +128,10 @@ class FeatureBuilder:
         self._core_fail_notified: Dict[str, bool] = {"cvd": False, "vwap": False, "ofi": False}
         self._on_core_fail: Optional[Any] = None  # 외부 CB 경보 콜백 (main.py에서 주입)
         self._close_history: deque = deque(maxlen=HURST_WINDOW_N)  # Hurst 계산용 종가 버퍼
+        # [529차] 스윙 위치 피처용 고가/저가 버퍼 — 창 중 최대 룩백 + 1
+        _sw_max = max(SWING_FEATURE_LOOKBACKS_MIN) if SWING_FEATURE_LOOKBACKS_MIN else 60
+        self._high_history: deque = deque(maxlen=_sw_max)
+        self._low_history: deque = deque(maxlen=_sw_max)
         # CVD 모노톤 비율 계산용 — 20구간(21개 포인트) 이력
         self._cvd_history: deque = deque(maxlen=21)
         # 방향성 고도화 피처용
@@ -460,6 +505,9 @@ class FeatureBuilder:
         #   ③ n>=HURST_WINDOW_N: 검증된 정상 운영값(HURST_MAX_LAG) 고정
         if close > 0:
             self._close_history.append(close)
+            # [529차] 스윙 버퍼 — 종가 버퍼와 같은 조건으로만 쌓아 정렬을 유지한다
+            self._high_history.append(high if high > 0 else close)
+            self._low_history.append(low if low > 0 else close)
         _n_buf = len(self._close_history)
         try:
             if _n_buf < HURST_WARMUP_COLDSTART_MIN:
@@ -528,6 +576,25 @@ class FeatureBuilder:
             )
         else:
             features["price_extension_atr_60m"] = 0.0
+
+        # [MW0601 529차] 스윙 위치 피처 — 기록 전용(소비자 없음). settings 주석 참조.
+        # 위 두 연장폭이 "N분 전 종가 한 점" 대비라 V자 되돌림 뒤 연장을 못 보는 것을 보완:
+        # 창 안의 실제 최고/최저 대비 거리(ATR)와 그 극단 이후 경과 봉 수를 남긴다.
+        try:
+            features.update(compute_swing_features(
+                list(self._high_history), list(self._low_history), close, _atr_now,
+                SWING_FEATURE_LOOKBACKS_MIN, SWING_FEATURE_DIST_CLIP_ATR,
+            ))
+        except Exception as _exc:
+            _mark_feature_error(_exc)
+            logger.warning("[FeatureBuilder] 스윙 피처 오류 — ready=False: %s", _exc)
+            for _n in SWING_FEATURE_LOOKBACKS_MIN:
+                features.update({
+                    "swing_high_%dm" % _n: close, "swing_low_%dm" % _n: close,
+                    "dist_to_high_%dm_atr" % _n: 0.0, "dist_to_low_%dm_atr" % _n: 0.0,
+                    "bars_since_high_%dm" % _n: 0, "bars_since_low_%dm" % _n: 0,
+                    "swing_ready_%dm" % _n: False,
+                })
 
         # 마디가(Round Number) 거리 — 방향 인자 없이 상/하 최근접 레벨 중 더 가까운 쪽만 사용
         # (nearest_round_distance()는 direction 인자가 필요해 피처 생성 시점엔 사용 불가).
@@ -941,4 +1008,6 @@ class FeatureBuilder:
         # 317차: 누락돼있던 Hurst 종가 버퍼 리셋 — 개장 후 최초 ~40분간 전일/주말
         # 종가가 창에 섞여 들어가 Hurst가 비정상적으로 낮게 나오던 원인(316차 딥다이브).
         self._close_history.clear()
+        self._high_history.clear()   # [529차] 스윙 버퍼도 함께 — 전일 고저가 창에 섞이지 않게
+        self._low_history.clear()
         logger.info("[FeatureBuilder] daily reset complete")

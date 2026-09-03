@@ -19097,3 +19097,50 @@ docs/정기점검/매일점검/evidence_MW0601-20260826_post.md
 
 ### 관측 예정
 - [ ] **O-t9** 위 526-4 5항목. 미달이면 배선 결함으로 즉시 격상.
+## 2026-09-04 (MW0601 527·528차 — 탈진 레짐 조사 · C1~C4 사전감지 조사) — 승인 대기
+
+- [ ] **527-A (P1 계측)** 교정판 소진 신호 bear 0건 원인 규명 — `cvd_exhaustion.py` detrend 오실레이터가 단조증가 계열에서
+      신저점을 구조적으로 억제하는지(가설 ⓒ) 60거래일 replay로 하위조건 (a)(b)(c) 각각의 성립률 분해. `live` 전환 논의의 선행조건.
+- [ ] **527-B (P2 문서)** 탈진 레짐을 "예약(도달 불가)"로 CLAUDE.md/CORE.md에 명기 + 83차 후속("0회면 하한 1.1") **철회**(병목은 c2) +
+      `NEXT_TODO.md:7563` "탈진 레짐 Hurst 우회 라이브 검증" 영구 대기 표기.
+- [ ] **528-A [18b]** `RegimeExhaustionGate` hurst<0.45 전제 해제 변형 섀도 — 별도 테이블/컬럼으로 카운터팩추얼. C2형 포착 여부 + 79건 부호 유지 확인.
+- [ ] **528-B [16]** `chase_foreign_combo_watch` 판정식 사전등록 — `min_samples=20`(현 23) 且 `min_days=10` 且 일자 p<0.05 且 drop-worst 유지
+      → **등급 강등** 안건(하드차단 금지, 317차). 524차 §8③ 재상정. 현재 4/6 p=0.75 → FAIL 시작.
+- [ ] **528-C** 채널 `leg_exhaustion_entry_watch` 사전등록 — `run≥5 ATR 且 60분 극단≤1 ATR 순방향`, `min_days=25` 且 일자 p<0.05 且
+      drop-worst-3 유지. 현 48건/16일 avg −25,683 vs +18,240, 8/8 p=1.00 → 표본 대기. 판정 전 무변경.
+- [ ] **528-D (주간회의 안건)** CORE 3_vwap 순방향 요구 + TrendGate streak≥10 완화가 진입을 연장 쪽으로 미는 구조 — "레그 길이"를
+      문턱에 반영할지. 거울상 유의(역행 진입 p=0.04 · CVD 역방향 p=0.00)가 계기. faststop_discovery(2026-08-03) 결정과 충돌 여부 먼저.
+
+### 관측 예정
+- [ ] **O-t10** CFCG "강등 후보" 뒤 진입 손익 누적(현 23건 −248,263) — 528-B 판정 표본.
+- [ ] **O-t11** streak≥10 ON 분 순방향 진입(524차 O-t5 승계, 현 13건 avg −25,376) — 5건 이상 추가 시 집계.
+## 2026-09-04 (MW0601 529차 — 스윙 피처 착수 · 3_vwap×TrendGate 최적안)
+
+- [DONE 2026-09-04] **529-1** 스윙 위치 피처 7키(창 60) `feature_builder.py` 착수 — 기록 전용, 소비자 0, 7 tests passed. **재기동 후 적재.**
+- [ ] **529-2 (P1 라이브 검증)** 첫 거래일: `raw_features`에 `swing_ready_60m` True 비율(개장 60분 후 ~100%) · `dist_to_*` 분포가 오프라인
+      재현(179건 run p50 5.7 ATR)과 같은 자릿수인지 · `[FeatureBuilder] 스윙 피처 오류` 로그 0건.
+- [ ] **529-A** 채널 `leg_exhaustion_entry_watch` 사전등록(승인 대기) — 모집단 순방향 진입 且 run≥5 ATR 且 극단≤1.0 ATR 且 ready.
+      판정 `min_samples=40` 且 `min_days=25` 且 일자 p<0.05 且 drop-worst-3 且 초입군 비악화 → 소프트 승격 안건. 컷 고정(사후 변경 금지).
+- [ ] **529-B** 승격 형태 사전 확정(감점 `12_leg_position` vs 사이저 ×0.5) — 판정 전에 채널 판정문에 박는다.
+- [ ] **529-C** 채널 `streak_leg_end_watch` — TrendGate 완화 적용 분 且 레그 끝 진입(현 35건 −243k / 완화-필수 5건 5승) `min_samples=20`.
+- [ ] **529-E** 관측 `leg_entry_early_watch` — 초입(run≤2) 12건 10/2 +532k · 이탈≥1.5σ 且 초입 15건 12/3 +675k.
+- [ ] **529-D** 3_vwap **무변경** 확정 기록(실측: 상한 감점 시 +675k 군 손상).
+## 2026-09-04 (MW0601 529차 후속 — 채널 3종 구현 완료)
+
+- [DONE 2026-09-04] **529-A/B** 채널 `leg_exhaustion_entry_watch`(P5-14) 사전등록 + 승격 형태 확정
+      (`checklist_demote` 1순위 · `size_half` 2순위 · 하드차단 금지). 첫 판정 **INSUFFICIENT**(17/25일).
+- [DONE 2026-09-04] **529-C** 채널 `streak_leg_end_watch`(P5-15). 첫 판정 **NO_CHANGE**(p=1.00).
+- [DONE 2026-09-04] **529-D** 확정 결정 2건 등록 — `core_vwap_directional_requirement`(3_vwap 무변경) ·
+      `trend_gate_relax_keep`(완화 유지).
+- [DONE 2026-09-04] **529-E** 관측 채널 `leg_entry_early_watch`(P5-16) — OBSERVE, 승격 경로 없음.
+- [DONE 2026-09-04] 판정기 `scripts/leg_position_watch.py` + `tests/test_529_leg_position_watch.py`(40 passed 합산).
+
+### 남은 것
+- [ ] **529-2 (P1 라이브 검증, 재확인)** 첫 거래일 스윙 피처 적재 — `swing_ready_60m` True 비율 · `dist_to_*` 분포 ·
+      `[FeatureBuilder] 스윙 피처 오류` 0건. 추가로 `leg_position_watch.py`의 `source_crosscheck`가
+      **db vs replay_proxy 불일치 0**인지(배선 검증의 유일 수단).
+- [ ] **529-F (P2)** 캠페인 주간 리포트에 P5-14/15/16 렌더링 연결 — 현재는 `leg_position_watch.py` 단독 실행이다
+      (`spread_extreme_watch`와 같은 상태). EOD 체인 편입 여부는 주간회의.
+- [ ] **529-G (P2)** C 채널 원천 취약성 — TrendGate 활성 상태를 `ensemble_decisions`에 컬럼으로 남길지 검토
+      (지금은 로그 파싱이라 `LOG_KEEP_DAYS`가 표본 상한). 계측 4원칙 ②(미측정≠0) 적용 대상.
+- [ ] **529-H** 처리군 거래일 25일 도달 시 A 재판정 → `SOFT_DEMOTE_CANDIDATE`면 주간회의 상정(승격 형태는 확정됨).
