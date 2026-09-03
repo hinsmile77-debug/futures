@@ -23,6 +23,7 @@ from features.technical.trend_efficiency import calculate_trend_efficiency
 from features.technical.kyle_lambda import KyleLambdaCalculator
 from features.technical.multi_timeframe import MultiTimeframeAnalyzer
 from features.technical.round_number import nearest_round_distance_symmetric
+from features.technical.swing_extremes import SwingExtremeCalculator
 from features.technical.realized_vol import RealizedVolCalculator
 from features.technical.expiry import compute_expiry_features
 from config.constants import MINI_FUTURES_TICK_SIZE as _DEFAULT_TICK_SIZE  # [235차] 미니선물 전용 기본값 0.02
@@ -33,6 +34,7 @@ from config.settings import (
     TREND_EFFICIENCY_WINDOW, KYLE_LAMBDA_WINDOW, RV_IV_WINDOW,
     CHASE_FILTER_LOOKBACK_MIN, REGIME_EXHAUSTION_LOOKBACK_MIN,
     EXHAUSTION_RESTORE_MODE, TOXICITY_CANCEL_CHURN_CEILING,
+    SWING_EXTREME_WINDOWS, SWING_EXTREME_MIN_BARS,
 )
 
 logger = logging.getLogger("SIGNAL")
@@ -77,6 +79,10 @@ class FeatureBuilder:
         self.kyle_lambda_calc = KyleLambdaCalculator(window=KYLE_LAMBDA_WINDOW)
         self.rv_calc = RealizedVolCalculator(window=RV_IV_WINDOW)
         self.multi_timeframe = MultiTimeframeAnalyzer()
+        # [MW0602 527차] N봉 스윙 고점·저점 — 당일 고저 버퍼는 계산기가 자체 보유
+        # (`_close_history`는 종가만 있어 재사용 불가). reset_daily·재기동 워밍업 동반.
+        self.swing = SwingExtremeCalculator(
+            windows=SWING_EXTREME_WINDOWS, min_bars=SWING_EXTREME_MIN_BARS)
         self._last_features: Dict[str, float] = {}
         self._last_hoga_snapshot: Dict[str, Any] = {}
         self._micro_tick_count = 0
@@ -529,6 +535,17 @@ class FeatureBuilder:
         else:
             features["price_extension_atr_60m"] = 0.0
 
+        # [MW0602 527차] N봉 스윙 고점·저점 — 위 두 연장폭이 "N분 전 대비 변위"라면
+        # 이쪽은 "N봉 범위 안의 위치 · 극점까지 ATR 거리 · 극점 이후 경과 봉 수"다.
+        # 당일 봉만 쓰며(전일 갭 오염 방지) 워밍업은 `swing{N}_ready`/`swing_measured`로
+        # 드러낸다. 소비는 GBM 후보·섀도뿐 — 게이트 배선 금지 사유는 모듈 docstring.
+        try:
+            features.update(self.swing.update(high=high, low=low, close=close, atr=_atr_now))
+        except Exception as _exc:
+            _mark_feature_error(_exc)
+            logger.warning("[FeatureBuilder] SwingExtreme 오류 — 폴백 사용: %s", _exc)
+            features.update(self.swing.fallback())
+
         # 마디가(Round Number) 거리 — 방향 인자 없이 상/하 최근접 레벨 중 더 가까운 쪽만 사용
         # (nearest_round_distance()는 direction 인자가 필요해 피처 생성 시점엔 사용 불가).
         # 상태 없는 순수 함수라 reset_daily() 대상 아님.
@@ -893,6 +910,29 @@ class FeatureBuilder:
         )
         return len(vals)
 
+    def set_intraday_ohlc_history(self, bars) -> int:
+        """[MW0602 527차] 장중 재기동 시 스윙 고저 버퍼를 당일 분봉으로 복원.
+
+        `set_intraday_close_history`(494차 F-5)의 자매 함수다 — 그쪽은 종가만 있으면
+        되지만 스윙 계산기는 고가·저가가 필요해 따로 받는다. 같은 규약을 따른다:
+        **당일 봉만**, 이미 버퍼가 차 있으면 아무것도 하지 않고 0.
+
+        Args:
+            bars: 시각 오름차순 (high, low[, close]) 튜플 또는 {"high","low"} dict 시퀀스.
+
+        Returns:
+            실제로 주입된 봉 수.
+        """
+        n = self.swing.warm_start(bars)
+        if n:
+            logger.info(
+                "[FeatureBuilder] 장중 재기동 스윙 고저 버퍼 복원 — 당일 %d봉 주입 "
+                "(윈도우 %s, ready=%s)",
+                n, list(self.swing.windows),
+                {w: n >= w for w in self.swing.windows},
+            )
+        return n
+
     def set_prev_day_closes(self, close_map: Dict[str, float]) -> None:
         """
         전일 종가 맵(ts→close)을 저장해 `prev_day_same_hour_ret` 계산에 사용.
@@ -981,6 +1021,7 @@ class FeatureBuilder:
         self.kyle_lambda_calc.reset_daily()
         self.rv_calc.reset_daily()
         self.multi_timeframe.reset_daily()
+        self.swing.reset_daily()   # [527차] 당일 고저 버퍼 — 갭 오염 방지
         self._last_features = {}
         self._last_hoga_snapshot = {}
         self._micro_tick_count = 0

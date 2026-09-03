@@ -11378,13 +11378,19 @@ class TradingSystem:
             _today = datetime.datetime.now().date().isoformat()
             with _sqlite3.connect(_RDB, timeout=10) as _conn:
                 _rows = _conn.execute(
-                    "SELECT close FROM raw_candles WHERE ts >= ? AND ts < ? ORDER BY ts",
+                    "SELECT close, high, low FROM raw_candles WHERE ts >= ? AND ts < ? ORDER BY ts",
                     (_today, _today + "Z"),
                 ).fetchall()
             _closes = [r[0] for r in _rows if r and r[0]]
             if not _closes:
                 logger.info("[FeatureBuilder] 재기동 Hurst 복원 — 당일 분봉 0건, 스킵")
                 return 0
+            # [MW0602 527차] 스윙 고저 버퍼도 같은 당일 봉으로 복원 — 실패해도 Hurst 복원은 진행.
+            try:
+                self.feature_builder.set_intraday_ohlc_history(
+                    [(r[1], r[2], r[0]) for r in _rows if r and r[0] and r[1] and r[2]])
+            except Exception as _sw_e:
+                logger.warning("[FeatureBuilder] 재기동 스윙 버퍼 복원 실패 (무해): %s", _sw_e)
             return self.feature_builder.set_intraday_close_history(_closes)
         except Exception as _e:
             logger.warning("[FeatureBuilder] 재기동 Hurst 워밍업 복원 실패 (무해): %s", _e)

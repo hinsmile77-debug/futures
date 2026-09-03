@@ -341,6 +341,19 @@ DYNAMIC_FEATURES_POOL = [
     # 확인돼 있어 여기 등록하지 않음(재현 실패 카테고리, opt_gex_bn류와 동일 취급).
     "micro_regime_code",
     "queue_directional_depletion",
+    # [MW0602 527차] N봉 스윙 고점·저점 — features/technical/swing_extremes.py 신규 구현 +
+    # 배선 완료(feature_builder.py, settings.SWING_EXTREME_WINDOWS=(20,60) + 세션).
+    # 등록은 주간 SHAP 심사가 "교체 후보"로 제안할 수 있게 문을 여는 것뿐(자동 편입 아님).
+    # 소급 실측(120거래일 일자단위 IC): day·60 블록 Bonferroni 통과, 20 블록은 bb_position
+    # 중복(r=0.95). 같은 윈도우의 range_pos ≡ low_dist/(high_dist+low_dist) 항등식이라
+    # 재검증 시 독립 신호 3개로 세지 말 것. `*_ready`·`swing_measured` 플래그는 미등록
+    # (상태 플래그 — 학습 입력 아님).
+    "swing20_range_pos", "swing20_high_dist_atr", "swing20_low_dist_atr",
+    "swing20_high_age", "swing20_low_age",
+    "swing60_range_pos", "swing60_high_dist_atr", "swing60_low_dist_atr",
+    "swing60_high_age", "swing60_low_age",
+    "swing_day_range_pos", "swing_day_high_dist_atr", "swing_day_low_dist_atr",
+    "swing_day_high_age", "swing_day_low_age",
 ]
 
 # ── 시장 레짐 ─────────────────────────────────────────────────

@@ -1550,6 +1550,22 @@ CHASE_FILTER_LOOKBACK_MIN = 10  # 연장 측정 룩백 (분)
 CHASE_FILTER_ATR_THRESHOLD = 2.0  # 기본 임계값 (추세·중립 구간)
 CHASE_FILTER_ATR_THRESHOLD_MEANREV = 1.5  # Hurst<0.45(평균회귀) 임계값 — 더 엄격
 
+# [MW0602 527차 신설] N봉 스윙 고점·저점 피처 — features/technical/swing_extremes.py.
+# 윈도우별로 range_pos / high_dist_atr / low_dist_atr / high_age / low_age 5종 +
+# `swing{N}_ready`(윈도우 충족) 를 내고, 세션 전체(`swing_day_*`)도 함께 낸다.
+# 10_chase(price_extension_atr, 10분 변위)·RegimeExhaustion(60분 변위)이 "얼마나
+# 움직였나"만 보는 것과 달리 "극점이 언제였고 거기서 얼마나 떨어졌나"를 분리한다.
+#   · 20: bb_position 과 r=+0.95 — GBM 신규 정보는 적고 게이트 입력(극점 나이)용
+#   · 60: 3m·5m·15m 일자단위 IC Bonferroni 통과(120거래일), 전후반 안정
+#   · day: 15m IC −0.198(vwap_position 급). age 쌍이 vwap/bb 통제 후에도 |t|≥5
+# 🔴 소비 경로는 GBM 후보(DYNAMIC_FEATURES_POOL) + 섀도뿐이다 — 차단 게이트 배선 금지.
+#   전 분봉 IC는 평균회귀(음수)인데 라이브 진입 코호트는 정반대(신고점 진입 +461만원)라
+#   부호를 게이트에 박으면 어느 쪽이든 틀린다. 근거·수치:
+#   docs/정기점검/매일점검/MW0602-20260904-스윙피처_도입_및_VWAP-TrendGate_상호작용_검토.md
+# 당일 봉만 사용(317차 Hurst 버퍼와 같은 이유). 개장 후 N봉 전까지는 부분 윈도우.
+SWING_EXTREME_WINDOWS = (20, 60)   # 봉 수. 바꾸면 raw_features 키 이름이 바뀐다(학습/추론 정합 주의)
+SWING_EXTREME_MIN_BARS = 5         # 이 미만이면 계산하지 않고 폴백 + swing_measured=False
+
 # [368차 신설] ChaseForeignComboGuard(섀도) — 10_chase+6_foreign 동시 실패 조합 감시.
 # 배경: 0722 정기점검 딥다이브(MW0601 실측) — 09:32~09:53 21분 사이 이 조합(나머지
 # 9개 항목 전부 통과, A/A/A등급)이 동일하게 3회 발화, 3회 전부 하드스톱

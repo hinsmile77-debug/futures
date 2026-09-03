@@ -35077,3 +35077,62 @@ DB 읽기 전용. 시뮬 정의: 손절 1.5×ATR·TP1 0.5×ATR 선터치·≤10�
   `SUPPORTS_LIVE`는 **안건 자격**이지 전환이 아니다(2주 연속 + ⓑ + ⓒ).
 - `[18]` 재론 시 **반드시 `[18-U]` 고유/중복 분해를 병기**할 것 — 두 채널 반사실을 더하면 이중계상.
 - 세 스위치를 켜려면 `tests/test_528` 을 함께 고쳐야 한다(의도적 마찰).
+
+## 2026-09-04 (MW0602 527차 — N봉 스윙 고점·저점 피처 도입 + 3_vwap·TrendGate 상호작용 검토)
+
+**계기**: 사용자 지시 ① "N분 고점·저점, 그 지점까지의 거리, 스윙 후 경과 봉 수 피처를 개발해
+feature_builder에 추가하라" ② "반대 방향의 장치 둘(3_vwap·TrendGate)과의 손익 최적 방안을
+숙고하고 제안하라". 산출물 `docs/정기점검/매일점검/MW0602-20260904-스윙피처_도입_및_VWAP-TrendGate_상호작용_검토.md`.
+**라이브 매매 로직 무변경 · 개장 전 완료(07:40~08:30, 프로세스 정지) · 커밋 없음.**
+
+### 변경
+- `features/technical/swing_extremes.py` **신규** — `SwingExtremeCalculator`. 윈도우 (20, 60) + 세션
+  전체, 각 `range_pos / high_dist_atr / low_dist_atr / high_age / low_age` + `swing{N}_ready`,
+  `swing_measured`. **당일 봉만**(317차 Hurst 버퍼 규약), 동률 극점은 가장 최근 봉, ATR 미계산이면
+  거리 0 대신 ready=False(502차 U-1 유형 선치). 항등식 `range_pos ≡ low_dist/(high_dist+low_dist)`.
+- `features/feature_builder.py` — `self.swing` 배선(`price_extension_atr_60m` 직후) · `reset_daily` ·
+  `set_intraday_ohlc_history()`(494차 F-5 자매). `main.py:_load_intraday_close_history_at_restart`가
+  high/low를 함께 읽어 재기동 시 스윙 버퍼도 복원.
+- `config/settings.py` `SWING_EXTREME_WINDOWS=(20,60)`·`SWING_EXTREME_MIN_BARS=5` ·
+  `config/constants.py` `DYNAMIC_FEATURES_POOL` 값 키 15개 등록(플래그 제외) ·
+  `scripts/feature_health_report.py` `_BENIGN_SUFFIX += ("_ready",)`.
+- `tests/test_527_swing_extremes.py` 14건. **S9가 게이트 미배선을 고정**한다(checklist·trend_persistence·
+  ensemble_decision에 `swing` 문자열 금지) — 배선하려면 테스트를 함께 고쳐야 한다(의도적 마찰).
+
+### 소급 검증 (SOP Phase 3 잣대, 120거래일 44,252봉, 일자단위 IC, Bonferroni |t|>3.36)
+- 세션 블록 15m IC −0.198(t −13.5) — `vwap_position`(−0.188)과 같은 급이나 r=+0.92로 대부분 겹친다.
+  **한계 정보는 age 쌍**: vwap·bb 통제 후 부분 IC `swing_day_high_age` t=+5.9 / `low_age` −5.2.
+- 60봉 블록 3m·5m·15m 통과·전후반 안정, 부분 IC 비유의(|t|≤1.4). 20봉 블록 `bb_position` r=+0.95.
+- 부호 전 호라이즌 음수(평균회귀). 비용 미차감 — `vwap_position` 전례(SOP A-5)와 같은 함정 예상.
+- 계산기 vs 소급 산식: 09-03 385봉 재생 1,143검 오차 0.
+
+### 🔴 파트2 핵심 — 전 분봉과 라이브 진입 코호트의 부호가 반대다
+- 전 분봉: LONG 통과측(vwap>0) 모든 range_pos 버킷 음수(5m −0.26~−0.58) · TrendGate 활성 & 20봉 극단
+  5m **−0.46**(t −2.9) vs 중간 +0.02 · 고점 근처 신고점(age≤0.1) 15m −0.75 vs 낡은 고점(>0.6) **+0.85**.
+- 라이브 294포지션(포지션 단위 net): **A 극단·신선(rp_dir≥0.8 & age≤0.1) n=108 +4,610,518**(양수일 22/32,
+  일자 t +3.31, 최고일 제외 +392만, 08-18 제외 +416만, LONG/SHORT 양방향 동형) / B 극단·낡음 24 −1,189,528 /
+  C 되돌림 126 −2,383,266 / D 반대편 36 −811,699. TG 활성&극단 94 **+3,606,219**(23/30) vs TG 활성&되돌림
+  52 −1,024,315. 극점 거리 <0.5ATR 71 +2,690,879 vs ≥1.5ATR 104 −2,450,751.
+- 해석: 선택 효과 — 게이트를 통과한 신고점 분봉은 모집단의 신고점과 다른 분포. **스윙 피처에 부호를 박아
+  게이트로 쓰면 어느 쪽이든 틀린다.** 사용자 가설("많이 올라왔으니 조심")은 모집단에서 참, 진입 표본에서
+  거짓 — "조심"의 자리는 신선한 극단이 아니라 **낡은 극단과 되돌림**이다.
+
+### 제안 (결정 아님 — 주간회의 안건)
+- P-0 지금: 배선·POOL·섀도만. 게이트 배선 금지.
+- P-1 사전등록 채널 **[60] `swing_entry_cohort_watch`** — (A/B/C/D)×TG 귀속, H1 A 건당 net>왕복비용 ·
+  H2 B∪C<0, min_samples 20/셀 · min_days 10 · drop_worst_day, 판정 창 2026-09-07~. TG 귀속은
+  `ensemble_decisions.min_conf_effective` 실측으로. **승인 전 채널 신설 금지.**
+- P-2 판정 후: (a) TrendGate 완화 **조건화**(극점 신선할 때만 완화, 되돌림이면 원 min_conf — 완화를
+  좁히는 방향) (b) 10_chase에 "극점까지 거리≥1.5ATR 순방향 → pass −1" **병렬** 항목(축이 다르므로 대체 아님)
+  (c) 3_vwap 무변경(CORE·부호만 보는 게이트).
+- ⚠ 3-3 수치로 임계(0.8/0.1/1.5ATR)를 고르지 말 것(313차 ④ 사후탐색). 9월 A 코호트 −32만(n=8) 관찰.
+
+### 검증
+- `tests/test_527_swing_extremes.py` 14/14 · 회귀 `test_502`·`test_494`·`test_457_fallback_visibility` 통과
+  (base anaconda pytest 7.4.0 — py37_32에 pytest 없음, 511차와 동일). 6파일 `py_compile` OK.
+- ⚠ SOP Phase 4(Purged CV·ablation·비용조정·표본확대)·Phase 5(라이브 4주) **미실시** — 오늘부터 축적.
+
+### How to apply
+- 오늘 09:00부터 `raw_features`에 15키+플래그 적재. O-1로 배선 생존 확인(NEXT_TODO 527차).
+- 26주 WFA L1에서 같은 윈도우의 셋(range_pos·high_dist·low_dist)을 독립 3개로 세지 말 것.
+- `SWING_EXTREME_WINDOWS`를 바꾸면 키 이름이 바뀐다 — 학습/추론 정합 확인 후에만.

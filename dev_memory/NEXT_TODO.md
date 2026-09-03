@@ -2,6 +2,27 @@
 
 > 검증 필요 항목, 예정된 작업, 알려진 잠재 이슈.
 
+### 527차 — 스윙 고점·저점 피처 배선 후속 (MW0602, 2026-09-04)
+
+근거: `dev_memory/DECISION_LOG.md` 2026-09-04(527차),
+`docs/정기점검/매일점검/MW0602-20260904-스윙피처_도입_및_VWAP-TrendGate_상호작용_검토.md`.
+
+- 🔴 **O-1 (오늘 장중)** — `raw_features` 최신 행에 `swing20_*`·`swing60_*`·`swing_day_*` 15키 +
+  `swing{N}_ready`·`swing_measured`. 09:05 이전 `swing_measured=0`, 09:20 이후 `swing20_ready=1`,
+  10:00 이후 `swing60_ready=1`. **없으면 배선이 죽은 것이다**(TOX 죽은 섀도 유형).
+- **O-2 (장중 재기동 발생 시)** — `[FeatureBuilder] 장중 재기동 스윙 고저 버퍼 복원 — 당일 N봉` 로그.
+- **T-1 (주간회의)** — 사전등록 채널 **[60] `swing_entry_cohort_watch`** 승인 여부(제안 P-1).
+  (A 극단·신선 / B 극단·낡음 / C 되돌림 / D 반대편) × TG 활성 귀속 · H1 A 건당 net>왕복비용 ·
+  H2 B∪C<0 · min_samples 20/셀 · min_days 10 · drop_worst_day · 판정 창 2026-09-07~.
+  **승인 전 채널을 만들지 않는다.** TG 귀속은 `ensemble_decisions.min_conf_effective` 실측.
+- **T-2 (2026-10-02 이후 · SOP Phase 2)** — `scripts/feature_health_report.py` 20거래일 건강도.
+  `swing_day_low_dist_atr`는 시계 성분(between/total 0.199)이 있으니 정본 분류기로 유형 확정.
+- **T-3 (SOP Phase 3 라이브 재검증)** — `core_feature_discovery.py --days 40`(라이브 값)로 세션 블록
+  15m IC −0.198 재현 여부 + `vwap_position` 통제 부분 IC. 재현 안 되면 소급 IC를 인용하지 말 것.
+- **T-4 (26주 WFA)** — 항등식 3개 독립 계수 금지 · 20봉 블록 vs `bb_position`(r=0.95) 처분.
+- **T-5 (안건, 채널 판정 후)** — P-2 (a) TrendGate 완화 조건화 / (b) 10_chase 병렬 항목(극점 거리
+  ≥1.5ATR 순방향). ⚠ 3-3 사후탐색 수치로 임계를 고르지 말 것. 9월 A 코호트 −32만(n=8) 추이 확인.
+
 ### 524차 — FZ-1 배선 후속 (MW0602, 2026-09-02)
 
 근거: `dev_memory/DECISION_LOG.md` 2026-09-02(524차). **522차 보류는 철회됐다** —

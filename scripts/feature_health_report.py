@@ -105,7 +105,10 @@ _BENIGN_PREFIX = ("quality_", "macro_quality_", "opt_available", "opt_chain_avai
 # 경보 피로를 만들어 진짜 이상을 묻는 셈이 되므로 상태플래그로 분류한다.
 # ⚠ 등급 표에는 그대로 나온다 — 값이 갑자기 0 쪽으로 쏠리면 워밍업이 길어졌다는
 #   뜻이므로 거기서 읽으면 된다.
-_BENIGN_SUFFIX = ("_measured",)
+# [MW0602 527차] `_ready` 접미사 일반화 — hurst_ready 등은 위 접두어 목록에 이름별로
+# 올라 있었지만 `trend_efficiency_ready`(502차)·`swing{N}_ready`(527차)처럼 새로 생기는
+# 워밍업 플래그가 매번 누락돼 신설 직후 CRITICAL 로 뜨는 것을 막는다.
+_BENIGN_SUFFIX = ("_measured", "_ready")
 
 
 def is_benign_flag(name):
