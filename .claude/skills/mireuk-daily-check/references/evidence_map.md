@@ -145,13 +145,23 @@
 | 계열 | 패턴 |
 |---|---|
 | 안전장치 | `[CB]` `연속 손절` `HALT` `CIRCUIT` |
-| 청산 | `강제청산` `[ExitCooldown]` `안전망` `FORCED` |
+| 청산 | `강제청산` `[ForceExitPass]` `[SchedForceExit]` `[ExitStageRecon]` `[ExitCooldown]` `안전망` `FORCED` |
 | 크래시 | `0xC0000409` `STACK_BUFFER` `Traceback` `MemoryError` |
 | 성능 | `메인 스레드 블로킹` `[Brier] 과신` `[SHAP] 슬로우` |
 | 상태 | `degraded=ON` `level=CRITICAL` |
 | 모델 열화 | `축퇴` `WeightCollapse` `ConstOut` `ConfFloorGuard` |
 | 판정 | `전략 상태 경보` `판정  :` |
 | 생명주기 | `[Shutdown]` `자동 종료` `기동 복원` |
+
+> **[MW0601 523차 / G-3] `[ExitStageRecon]` 추가.** 매일 15:40 에 자동으로 도는 청산
+> 라벨 자기대사(507차 후속 G-5)인데 패턴 목록에 없어, 2026-09-03 이상점 1-3(F-10 세
+> 번째 사례)을 **수동 grep 으로** 찾아야 했다. 순서는 `안전망`·`FORCED` 앞이다 — 한
+> 줄당 첫 매치만 채택(break)하기 때문이다(471차 교훈과 같은 이유).
+>
+> ⚠ **이 목록은 `config_dailycheck_targets.json` 으로 덮지 마라.** `load_config()` 가
+> `cfg.update(user)` 로 **키 단위 통째 교체**를 하므로, JSON 에 `always_quote_patterns`
+> 를 한 줄이라도 쓰면 코드 기본값 30여 개가 통째로 사라진다. 패턴 추가는
+> `collect_evidence.py` 의 `DEFAULT_CONFIG` 에서 한다.
 
 > 맨 `OOM` 은 **뺐다** — `장중 경량 모드(DB): 39799 → 4800행 사전 제한 (OOM 방지)` 같은
 > **예방 문구**가 잡혀 매일 가짜 적신호를 냈다. `MemoryError`·`OutOfMemory`·`메모리 부족`만 본다.

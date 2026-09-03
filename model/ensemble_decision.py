@@ -384,18 +384,45 @@ class EnsembleDecision:
             if _reachable == self._conf_floor_reachable:
                 return          # 상태 무변화 — 로그 억제
             self._conf_floor_reachable = _reachable
+            # [MW0601 523차 / G-2] 보정기 순위판별력(auc)을 같은 줄에 찍는다.
+            # 2026-09-03 1-2 조사가 `[ConfFloorGuard]`(출력상한·min_conf·span)와
+            # `[Calibration]`(auc) 두 로그를 손으로 대조해야 원인 후보를 좁힐 수
+            # 있었다 — auc 가 정상인데 출력상한만 눌려 있으면 보정기 결함(가설 b),
+            # auc 도 같이 낮으면 레짐(가설 a)이다. 판단 로직은 건드리지 않는다.
+            # ⚠ span 은 **이미 찍히고 있었다** — 리포트 G-2 의 "출력상한·min_conf만
+            #   있음"은 사실과 달랐다. 실제 결손은 auc 하나였다.
+            # 계측 4원칙 ②·④ — "속성 없음"·"표본 없어 못 쟀음"·"실제 값"을 서로
+            # 다른 문자열로 쓴다. 셋을 0 이나 N/A 하나로 뭉뚱그리지 않는다.
+            # ⚠ **자체 try 로 감싼다.** 바깥 try 는 실패를 `unmeasured:error` 로
+            #   삼키므로, 여기서 예외가 나면 auc 를 못 찍는 데서 끝나지 않고
+            #   **도달가능/불가 판정 자체가 사라진다**. 관측을 하나 더 붙이려다
+            #   가드의 눈을 감기는 형태가 된다(test_523 이 이 경로를 고정한다).
+            try:
+                if not hasattr(_cal, "rank_auc"):
+                    _auc_txt = "미보유"
+                elif _cal.rank_auc is None:
+                    _auc_txt = "미측정"
+                else:
+                    _auc_txt = "%.3f" % float(_cal.rank_auc)
+            except Exception:
+                _auc_txt = "조회실패"
+            try:
+                _span_txt = ("%.4f" % _cal.output_span) if _cal.output_span is not None else "N/A"
+            except Exception:
+                _span_txt = "조회실패"
             if not _reachable:
                 logger.warning(
                     "[ConfFloorGuard] 자동진입 하한 도달 불가 — 보정기 출력상한 %.4f < "
-                    "필요 %.4f (conf_floor=%.3f, min_conf=%.3f, span=%s). "
+                    "필요 %.4f (conf_floor=%.3f, min_conf=%.3f, span=%s, auc=%s). "
                     "이 상태에서는 어떤 신호도 자동진입 하한을 넘을 수 없다.",
                     _out_max, _need, float(ENS_CONF_FLOOR_FOR_AUTO), float(min_conf or 0.0),
-                    ("%.4f" % _cal.output_span) if _cal.output_span is not None else "N/A",
+                    _span_txt, _auc_txt,
                 )
             else:
                 logger.info(
-                    "[ConfFloorGuard] 하한 도달 가능 복구 — 출력상한 %.4f ≥ 필요 %.4f",
-                    _out_max, _need,
+                    "[ConfFloorGuard] 하한 도달 가능 복구 — 출력상한 %.4f ≥ 필요 %.4f "
+                    "(span=%s, auc=%s)",
+                    _out_max, _need, _span_txt, _auc_txt,
                 )
         except Exception as _cfg_e:
             # [MW0601 482차 / G-3] 예외로 못 잰 분도 0이 아니라 "재지 않음"이다.

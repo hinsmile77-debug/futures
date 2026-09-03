@@ -117,6 +117,13 @@ DEFAULT_CONFIG = {
         # 뒤에 두면 D2 발동 로그가 "안전망" 버킷으로 들어가 §11 적신호 6번 판정이
         # 이 태그를 못 본다.
         "[ForceExitPass]", "[SchedForceExit]",
+        # [MW0601 523차 / G-3] 청산 라벨 자기대사(507차 후속 G-5, 매일 15:40 WARN).
+        # 2026-09-03 이상점 1-3(F-10 3번째 사례)의 **발견 경로가 수동 grep** 이었다 —
+        # 매일 자동으로 계산되는데 다이제스트에는 우연히만 걸렸다. 여기 넣어야
+        # 누적대장 P5-06 표본 갱신이 손으로 찾는 일에 의존하지 않는다.
+        # ⚠ `"안전망"`·`"FORCED"` 보다 **앞**에 둔다 — 한 줄당 첫 매치만 채택(break)
+        #   하므로, 뒤에 두면 문구가 바뀌었을 때 다른 버킷에 삼켜진다(471차 교훈).
+        "[ExitStageRecon]",
         "[ExitCooldown]", "안전망", "FORCED",
         "0xC0000409", "STACK_BUFFER", "Traceback", "MemoryError", "OutOfMemory", "메모리 부족",
         "메인 스레드 블로킹", "[Brier] 과신", "[SHAP] 슬로우",
@@ -176,6 +183,12 @@ DEFAULT_CONFIG = {
         # EOD 건강도 줄의 존재 자체 — "필드가 없다"와 "줄이 없다"를 구분하기 위함.
         "model_health": r"\[ModelHealth\] date=(?P<date>[\d-]+)",
     },
+    # [MW0601 523차 / G-1] 날짜 토큰이 없어 §9 인벤토리에 절대 안 잡히는 상태 파일.
+    # 2026-09-03 이상점 1-1(어제 기록된 P8 완료 마커가 아침에 사라짐)의 발견 경로가
+    # **수동으로 파일을 열어본 것**이었다. 로그가 아니라 JSON 이라 수집기 어느 절도
+    # 보지 않았다. 읽기 전용 — 수집기는 이 파일을 쓰지 않는다.
+    "state_snapshot_path": "data/session_state.json",
+    "state_snapshot_keys": ["date", "p8_last_success_date", "eod_retrain_ok_date"],
     "banner_start": "전략 상태 경보",
     "banner_lines": 8,
     # config/settings.py 에서 값을 확인할 상수 — CLAUDE.md 절대원칙·한시예외 대응
@@ -1775,6 +1788,82 @@ def scan_gate_flags(root, cfg):
 
 
 # ------------------------------------------------------------------ dev_memory
+def state_snapshot_section(root, cfg, day, out):
+    """[MW0601 523차 / G-1] `data/session_state.json` 의 기동 마커 스냅샷.
+
+    왜 §9 에 붙는가
+    ---------------
+    이 파일에는 **날짜 토큰이 없다.** 인벤토리(§1)는 파일명에서 `YYYYMMDD` 를 찾아
+    당일 산출물을 고르므로 이 파일은 어느 절에도 실린 적이 없다. 그런데
+    2026-09-03 이상점 1-1(어제 EOD 가 기록한 `p8_last_success_date` 가 다음날
+    아침에 사라져 있었다)은 **사람이 우연히 파일을 열어봐서** 발견됐다.
+
+    계측 4원칙 ②·④ — 세 상태를 서로 다르게 쓴다:
+      · 파일이 없다        → `(파일 없음 — 미측정)`
+      · 파일은 있는데 키가 없다 → `(키 없음 — 미측정)`
+      · 값이 있다          → 값 + 수집 대상일과의 일치 여부
+
+    "키가 없다"를 빈칸이나 `-` 로 쓰면 "값이 없다"와 구분되지 않는다. 1-1 이
+    정확히 그 구분을 요구하는 이상점이다(키가 통째로 사라졌다).
+
+    ⚠ 읽기 전용이다 — 수집기는 이 파일을 쓰지 않는다. 장중에도 안전하다.
+    """
+    A = out.append
+    rel = cfg.get("state_snapshot_path", "data/session_state.json")
+    keys = cfg.get("state_snapshot_keys") or []
+    path = os.path.join(root, rel.replace("/", os.sep))
+    # `day` 는 datetime.date 다 — 문자열과 직접 비교하면 항상 False 가 되어
+    # 「전부 불일치」라는 조용한 오보가 된다. 여기서 한 번만 문자열로 고정한다.
+    day_txt = day.strftime("%Y-%m-%d")
+
+    A("### `%s` — 기동 마커 스냅샷 (날짜 토큰 없어 인벤토리 미포함)" % rel)
+    A("")
+    if not os.path.exists(path):
+        A("(파일 없음 — 미측정. `0` 도 `없음` 도 아니다)")
+        A("")
+        return
+
+    try:
+        st = os.stat(path)
+        mtime_txt = ts_kst(st.st_mtime).strftime("%m-%d %H:%M:%S")
+    except OSError:
+        mtime_txt = "(stat 실패)"
+
+    raw = read_text(path, limit=200000)
+    try:
+        obj = json.loads(raw)
+    except Exception as e:
+        A("(JSON 파싱 실패 — 미측정) %s" % e)
+        A("")
+        return
+    if not isinstance(obj, dict):
+        A("(최상위가 객체가 아님 — 미측정)")
+        A("")
+        return
+
+    A("- 파일 최종 기록: **%s**" % mtime_txt)
+    A("")
+    A("| 키 | 값 | 수집 대상일(%s)과 일치 |" % day_txt)
+    A("|---|---|---|")
+    for k in keys:
+        if k not in obj:
+            A("| `%s` | **(키 없음 — 미측정)** | — |" % k)
+            continue
+        v = obj[k]
+        v_txt = "(null — 미측정)" if v is None else str(v)
+        if v is None:
+            match = "—"
+        elif isinstance(v, str) and len(v) >= 10:
+            match = "예" if v[:10] == day_txt else "**아니오**"
+        else:
+            match = "(날짜 아님)"
+        A("| `%s` | %s | %s |" % (k, v_txt, match))
+    A("")
+    A("> 「아니오」거나 「키 없음」이면 그 마커를 남기는 경로(EOD 재학습·P8 재적합)가 "
+      "어제 것을 못 남겼거나 오늘 아침 누군가 덮었다는 뜻이다 — 2026-09-03 이상점 1-1 계열.")
+    A("")
+
+
 def devmemory_section(root, cfg, day, out):
     A = out.append
     A("")
@@ -2306,6 +2395,9 @@ def build(root, day, phase, cfg, discover_only=False):
         A(summarize_json(e["path"]))
         A("```")
         A("")
+
+    # ---- 9-b. 기동 마커 스냅샷 (G-1) ----
+    state_snapshot_section(root, cfg, day, L)
 
     # ---- 10. 정기점검 리포트 폴더 ----
     A("## 10. 정기점검 리포트 현황")
