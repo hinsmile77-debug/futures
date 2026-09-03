@@ -11,6 +11,18 @@ ChallengerRegistry: 도전자 인스턴스 풀 + 레짐별 챔피언 포인터 �
   _regime_champions[regime] = 해당 레짐에서 현재 실거래를 담당하는 challenger_id
   탈진 레짐은 최초에 None → 전문가 풀 내 성과 1위가 자동으로 Shadow 1위가 되고
   사용자 수동 승인 후 실거래 챔피언이 됨.
+
+🔴 [MW0602 526차 후속8] 탈진 풀은 **순환 잠금** 상태다 (2026-09-03 조사보고 §9).
+  승격에 필요한 것은 `REGIME_SPECIALIST_CRITERIA.min_regime_trades = 50`(레짐 내 거래 수)
+  인데, 레짐 거래가 생기려면 ⓐ 미시레짐 「탈진」이 켜져야 하고 → ⓑ 켜져도
+  `main.py` RegimeChampGate 가 champion=None 을 이유로 진입을 막는다 → ⓒ 챔피언이
+  되려면 다시 레짐 거래 50건이 필요하다.
+  실측: `A_CVD_EXHAUSTION`·`D_EXHAUSTION_REGIME` 은 27,463분 전부 direction=0
+  (입력 `bear/bull_exhaustion` 이 상수 0.0) · `challenger_regime_metrics` 0행 ·
+  `champion_history` 0행. 소진 피처를 live 로 돌려도 탈진 레짐 발생률이
+  0.45분/일이라 50건은 **수년** 스케일이다.
+  ⇒ 유지 비용은 0이므로 그대로 둔다. 승격 기준 재정의(레짐 분 → 섀도 거래)는
+    **정책 변경**이라 `EXHAUSTION_RESTORE_MODE` live 안건에 묶는다.
 """
 import logging
 from typing import Dict, List, Optional

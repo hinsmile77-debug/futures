@@ -19222,3 +19222,148 @@ P0 0건 · 신규 P1 0건 · P2 0건(기존 2건 지속) · 이월 미처분 0�
 - [ ] `1-3` 런타임 라이브러리 버전 미기록(`F-6` 미배포) — 🔄 지속.
 - [ ] `1-4` 사이저 3계약 vs 실체결 2계약(binding_gate="margin") — 🔄 지속,
       기존 전환기준 ⑧ 구조. `[28]` 채널이 관할.
+
+## 2026-09-03 (MW0602 526차 후속4 — 장중 흐름 × 진입·청산 연계 딥다이브)
+
+산출물: `docs/정기점검/매일점검/MW0602-20260903-장중흐름-진입청산-딥다이브.md`
+
+- [ ] **G-11(526차 후속4) 진입 체결 슬리피지 계측 `entry_fill_slippage`** — `main.py:17501` `[체결진입보정]` 평균가 확정 지점에서
+  `trades.db`에 `(ts, entry_ts, direction, signal_price, order_price, fill_avg, qty, slippage_pts)` 1행 INSERT.
+  `exit_fill_slippage` 스키마 관례. **주문·청산 실행 경로 무변경, try/except로 체결 처리 보호.** A등급(자동조치 가능).
+  근거: 09-03 CASE-01 −0.29pt(gross의 17%) / CASE-02 +0.23pt. 검증: 다음 진입 시 행 생성 + `[체결진입보정]` 로그 대사,
+  부호 규약 테스트(SHORT 낮게 팔림=음수) 고정.
+- [x] **O-69(526차 후속4) 13시대 진입 손실 집중 — 관측** → **[2026-09-03 526차 후속5 판정 완료 — 사용자 지시 조기 판정] 판정식 미충족(③ p=0.091)·⑤ 부호 갈림·ATR 층화 후 소멸 → 시간대 게이트 없음, [51] 부속 P-1로 흡수 종결(딥다이브 §10)** — 20거래일(08-06~09-03) `hour_bucket=13` 44포지션 **−1,298,472원**,
+  12거래일 중 **11일 음수**(drop-worst 08-18 제외 −935,930). 11:50~13:00 `OTHER` 금지 존 **직후 첫 진입 시간**.
+  **판정식(사전등록)**: 30거래일 창 일별 부호검정(`_sign_test_p` 양측) p<0.05 ∧ drop-worst 후 음수 ∧ [33] 순열검정으로
+  다른 시간대 대비 건당 손익 차 재현 → 주간회의 안건(정책 변경은 회의 몫). 미달 시 30거래일 뒤 재판정.
+  ⚠ 반사실 +1,298,472원은 사후탐색 — 임계 선택에 쓰지 말 것. [53] C5'와 같은 회의에서 본다.
+- [x] (기록) 섀도 3종이 09-03 두 손실을 사전 표시 — `trend_efficiency` [57] CASE-01 `would_skip=1` · `GradeEVGuard`(부결) ·
+  `ChaseForeignComboGuard`(활성화 금지) CASE-02. **결정 변경 없음**, 각 채널 표본 +1.
+- [x] (기록) VWAP 강제X 반사실 +6.60pt/17건(1일) — 절대원칙 ③, 제안 없음. 26주 WFA `vwap_position` 재검증 시 국면 조건부 분해 질문만 이월.
+- [x] (기록) 3m 방향 적중 39.0%(6거래일 최저) · 1m 53.6%(최고) — [22] `guard_shadow`·464/465차 안건 표본. 신규 등록 없음.
+
+## 2026-09-03 (MW0602 526차 후속5 — O-69 조기 판정 · P-1 등록)
+
+산출물: `docs/정기점검/매일점검/MW0602-20260903-장중흐름-진입청산-딥다이브.md` §10 (판정·제안·구현계획)
+
+- [x] **O-69 판정 완료(사용자 지시 조기 판정)** — 판정식 3조건 중 ③ 미충족(일자 내 순열 p=0.091), 313차 ⑤ 위반(캠페인 전반 +767,554 / 후반 −1,298,472), ATR 층화 후 13시대 효과 소멸(p=0.57). **13시대 시간 기반 처방 없음.** 상세 DECISION_LOG 526차 후속5.
+- [x] **[2026-09-03 526차 후속6 구현 완료 — 테스트 9/9 · 리포트 전체 생성 exit 0]** ~~P-1(526차 후속5) [51] 채널 부속 「시간대 × ATR 층 잔여」 교차표 + 사전등록 잔여 검정 — A등급 계측(자동조치 적격)**
+  · `config/settings.py` `VALIDATION_CAMPAIGN["profit_geometry_lowvol_watch"]["hour_residual"]` 신설(strata_edges (1.25,1.5,2.0,2.6) · alpha 0.05 · min_positions_per_cell 10 · min_days_per_cell 5 · permutations 5000 · seed 462). **기존 키(`atr_split_pt` 등) 무변경.**
+  · `scripts/generate_validation_campaign_report.py`: `_entry_atr_map()`(conf_mult_shadow.atr 우선 → ensemble_decisions.features 폴백, 폴백 행 수 병기) · `_hour_atr_residual()` · [51] 절 하단 `[51-R]` OBSERVE 표(판정 무영향 · 셀 미달 `INSUFFICIENT(n=…)`).
+  · `tests/test_527_hour_atr_residual.py` 5건. py37_32 전체경로.
+  · 사전등록 판정문: ATR 층화 후 잔여 순열 p<0.05 ∧ 일자 부호검정 p<0.05 ∧ n≥10·일수≥5 **2주 연속** → 주간회의 안건. 그 외 관측 지속.
+  · 검증: 수동 1회 생성은 스크래치패드로(금요일점검 폴더에 날짜본 추가 금지) · 기존 [51] PASS 문구 불변.
+- [x] **[2026-09-03 사용자 승인 ①②③]** ~~사용자 결정 대기(526차 후속5)~~ — ① P-1 구현(완료) ② 13:00~13:30 섀도 등재(완료, [58] 신설·집행 OFF) ③ O-69 종결(완료). 원문: — ① P-1 자동조치 위임 여부(기본: 위임) ② 13:00~13:30 진입 금지 섀도 상정 여부(기본: **미상정** — 반사실 −956,530은 사후탐색, 전반 캠페인 13시대 +767,554) ③ O-69 종결 승인.
+- [x] (기록) 13시대 `entry_horizon=1m` 8포지션 −491,349(5/5일 음) — 전 기간 1m 시간대별 부호 갈림. 판정 표본 아님. 26주 WFA 호라이즌 재검증 시 함께 볼 것.
+
+## 2026-09-03 (MW0602 526차 후속6 — P-1·[58] 구현 완료 · O-70 신규)
+
+산출물: `docs/정기점검/매일점검/MW0602-20260903-장중흐름-진입청산-딥다이브.md` §11
+
+- [x] **P-1 구현 완료** — `[51-R]` 시간대×ATR 층 잔여(OBSERVE·판정 무영향) + `[58]`
+  13:00~13:30 섀도(집행 OFF). `config/settings.py` 사전등록 2블록 ·
+  `scripts/generate_validation_campaign_report.py` 헬퍼 4 + 평가 2 + 요약행 + 상세 절 2 +
+  metrics 2키 · `tests/test_527_hour_atr_residual.py` 9건.
+  검증: 신규 9/9 · `test_487` 3/3 · `test_424` 11/11 · 리포트 전체 생성 **exit 0** ·
+  [51] `PASS`·[53] `INSUFFICIENT 9건` **불변** · git diff 756 insertions / **0 deletions**.
+  🔴 라이브 무변경(`ZONE_ENTRY_BAN_ENFORCE=False` · `TIME_ZONES` 무변경, 테스트가 고정).
+- [x] **O-69 종결**(사용자 승인) — 13시대 시간 기반 처방 미채택. 후속 감시는 [51-R].
+- [ ] **O-70(526차 후속6) 10시대 진입 열위 — ATR 층화 후 오히려 강해진다**
+  · 첫 [51-R] 실행(캠페인 302포지션/37거래일): 10시 55포지션 −489,224원 ·
+    p_일자 **0.0912 → p_일자+ATR 0.0306**(13시는 0.496→0.339로 반대 방향).
+  · 셀: `ATR 1.5-2` 14건 **−396,921**(승률 57%) · `2-2.6` 14건 −203,561(50%) ·
+    `≥2.6` 27건 **+111,258**(67%) — 고변동일수록 낫다. 10시는 `ATR<1.5` 진입 0/32.
+  · ⚠ **승격 후보 아님** — 일별 부호검정 p=0.1153(≥0.05)로 3조건 AND에서 탈락.
+    🔴 이 수치로 조치하지 말 것(채널 첫 관측 · 사후탐색 구간).
+  · **판정**: [51-R]이 매주 재계산. **2주 연속** `p_일자+ATR<0.05` ∧ `부호검정 p<0.05` ∧
+    셀 n≥10·일수≥5 → 주간회의 상정. 그 외에는 관측 지속(리포트 날짜본 2주 대조는 사람).
+  · ⚠ 처방 방향 미정 — 시간대 고유 효과라면 존 축, 아니면 [51]·[25]·[10] 저변동/기하 축.
+- [ ] **커밋 대기(526차 후속4~6)** — `config/settings.py` ·
+  `scripts/generate_validation_campaign_report.py` · `tests/test_527_hour_atr_residual.py`(신규) ·
+  `docs/정기점검/매일점검/MW0602-20260903-장중흐름-진입청산-딥다이브.md`(신규) ·
+  `docs/정기점검/매일점검/MW0602-20260903-점검리포트.md` · `dev_memory/DECISION_LOG.md` ·
+  `dev_memory/NEXT_TODO.md`. ⚠ `git add .` 금지 — 경로 명시(EOL 오탐 다수).
+
+## 2026-09-03 (MW0602 526차 후속7 — 탈진 레짐 조사)
+
+산출물: `docs/정기점검/매일점검/MW0602-20260903-탈진레짐-조사보고.md` (읽기 전용 조사)
+
+- [x] (기록) **축 A 미시레짐 「탈진」 전 기간 0건** — 3조건 중 ②(`bear/bull_exhaustion>0`)만
+  막힘(①∧③은 209분/2.48%). 394차 `EXHAUSTION_RESTORE_MODE="shadow"` 기존 등록 사안 —
+  **신규 TODO 아님**. live 전환 조건 ⓐⓑⓒ 그대로.
+- [x] (기록) **축 B `[18]` 119건 / 누적 −35.19pt / 5주 연속 SUPPORTS_GATE** — 차단 보류는
+  2026-08-08 주간회의 확정(거버넌스). **재론 금지**(함정①).
+- [ ] **N-1(526차 후속7) 탈진 레짐 `2_confidence=0.56`이 완화가 아니라 봉쇄다 — 관측**
+  · 주석은 "탈진 레짐은 0.56으로 완화"(`strategy/entry/checklist.py:130`)인데 실측:
+    방향성 `conf≥0.56`이 2026-06-01 이후 **0.153%**(18/11,740, max 0.5998),
+    탈진 조건 성립 109분 중 **0건**(p50 0.3595). 실제 진입 유효문턱은 0.36~0.40.
+  · ⚠ **지금은 무영향**(축 A 0건). 조치 대상은 `EXHAUSTION_RESTORE_MODE` **live 전환 시점**이다.
+  · **판정 시점**: 394차 조건 ⓐⓑⓒ 검토가 열릴 때 — 그 자리에서 0.56을 현행 분포 기준으로
+    재산출할지 함께 결정. **지금 값을 바꾸지 말 것**(관측 표본 0, 476차 conf 붕괴와 같은 계열).
+- [ ] **N-2(526차 후속7) `[18]` 트리거 `11_countertrend` 축 119/119 미발동 — 관측**
+  · 설계는 `10_chase 또는 11_countertrend`인데 실측 전부 `chase_failed=1 ∧ ctr_failed=0`.
+  · **판정**: [18] 재론(= `faststop_discovery` 부분 철회 안건)이 열릴 때 함께 확인.
+    그 전까지 기록만 — 트리거 수정은 사전등록 채널의 정의 변경이라 §9-4 대상이다.
+- [ ] **N-4(526차 후속7) `REGIME_EXHAUSTION_PARAMS` 중복 정의·사문화 정리 — P2 기술부채**
+  · `collection/macro/micro_regime.py:26` · `config/settings.py:6796` 동일 dict 2벌,
+    **양쪽 다 소비처 0**(5키 중 `hurst_override`만 `main.py:8199`가 상수 비교로 직접 구현).
+  · ⚠ 삭제 전 확인: 대시보드·챌린저·리플레이 하네스가 import하지 않는지 재확인
+    (`scripts/exhaustion_restore_replay.py`는 `REGIME_EXHAUSTION` 상수만 쓴다).
+  · 우선순위 낮음 — 실동작 무관. 정리 시 두 파일을 한 커밋에서 함께.
+
+## 2026-09-03 (MW0602 526차 후속8 — 탈진 레짐 운영안 · 사용자 결정 대기)
+
+산출물: `docs/정기점검/매일점검/MW0602-20260903-탈진레짐-조사보고.md` 제2부 §7~11
+
+- [ ] **P-2(526차 후속8) `[18-U]` 고유/중복 분해 OBSERVE — A등급 계측(자동조치 적격)**
+  · `resolve_and_eval_regime_exhaustion()` 결과에 같은 분 실제 체결 포지션 조인 + 진입 시점
+    `trend_efficiency`(ensemble_decisions.features) 0.32 분할 → 실현 net·승·일수 병기. **판정식 무변경.**
+  · 근거: 0903 실측 체결 36건 −429,048 = te<0.32 7건 −585,775 + te≥0.32 28건 **+143,799**.
+  · 검증: 기존 `[18]` verdict 불변 테스트 · 폴백(te=0.5)·결손 건수 병기(계측 4원칙 ③).
+- [ ] **P-3(526차 후속8) `[59] exhaustion_restore_watch` — 394차 live 전환 조건 ⓐ 자동판정 채널(A등급)**
+  · `VALIDATION_CAMPAIGN["exhaustion_restore_watch"]`: `min_samples 20 · min_days 10 · alpha 0.05 ·
+    horizons (10,30) · strength_tiers (0.60,0.70) · consecutive_weeks 2 · start_date 배선 다음 거래일`.
+    🔴 임계는 타 채널 관례값 — 관측에서 역산하지 않았다. **자동 전환 없음** — 판정만.
+  · 원천: `raw_features` `bear/bull_exhaustion_shadow>0` 발화 분 → `raw_candles` 기대방향 수익
+    (bull→SHORT, bear→LONG) → 일자 부호검정 + drop-worst. verdict `SUPPORTS_LIVE`/`REJECTS_LIVE`/`INSUFFICIENT`.
+  · live 안건 조건(사전등록): ⓐ `SUPPORTS_LIVE` **2주 연속** ∧ ⓑ 교정값 포함 EOD 재학습 1회 ∧
+    ⓒ 챔피언 정책 결정(주간회의). 그 전엔 `EXHAUSTION_RESTORE_MODE="shadow"` 고정.
+  · 사전 실측(가설 생성 구간, 판정 무영향): MR 자격 21건 10분 −0.38pt(6:4) · 강한 4건 +3.90(3:0, n=4).
+- [ ] **P-4(526차 후속8) 정리 3건 — P2**
+  · 10-4 `config/settings.py:6796` `REGIME_EXHAUSTION_PARAMS` 사본 제거(소비처 0) +
+    `collection/macro/micro_regime.py:26`에 "실동작은 `strategy_params.py` `(macro,"EXHAUSTION")` ·
+    `hurst_override`만 `main.py:8199` 직접 비교" 주석.
+  · 10-5 `challenger/challenger_registry.py` 문서주석에 순환 잠금 1줄(50 레짐거래 ≈ 발생률 0.45분/일 → 수년).
+  · 10-6 `REGIME_EXHAUSTION_GATE_ENABLED` 주석 머리에 "미시레짐 「탈진」·챌린저 탈진 풀과 **별개**" 1줄.
+- [ ] **사용자 결정 대기(526차 후속8)** — ① P-2·P-3 자동조치 위임 여부(기본 위임) ② P-4 등록 여부
+  (기본 P2 등록) ③ `[18]` 활성화·`live` 전환 **미상정** 확인(기본 미상정 — 2026-08-08 결정 유지).
+- [x] (기록) N-1 0.56 문턱은 **지금 변경 금지** — live 안건이 열릴 때 그 시점 conf 분포로 재산출(10-3).
+
+## 2026-09-04 (MW0602 526차 후속9 — 탈진 운영안 결정 3건 구현 완료)
+
+산출물: `docs/정기점검/매일점검/MW0602-20260903-탈진레짐-조사보고.md` 제3부 §12
+
+- [x] **P-2 `[18-U]` 구현 완료** — `[18]` 발동분 × 실제 체결 × te 분할(OBSERVE·판정 무영향).
+  te 임계는 `[57]` 사전등록값 위임. 첫 실행: 체결 35 · 고유 28건 **+143,799** / 중복 7건 **−585,775**.
+- [x] **P-3 `[59] exhaustion_restore_watch` 구현 완료** — 394차 live 조건ⓐ 자동판정.
+  판정 모집단 MR 자격 한정 · 호라이즌 10분 단일 · drop-worst 통과조건 · **자동 전환 없음**.
+  판정 창 2026-09-04~ 개시. 사전 구간 ⓐ 미충족(p=0.7539).
+- [x] **P-4 정리 3건 완료** — `REGIME_EXHAUSTION_PARAMS` 사본 제거(micro_regime 원본 유지+주석) ·
+  챌린저 순환 잠금 주석 · 게이트 3계보 주석.
+- [x] **사용자 결정 ③ 확인 — 활성화 미상정.** `REGIME_EXHAUSTION_GATE_ENABLED=False` ·
+  `EXHAUSTION_RESTORE_MODE="shadow"` 무변경, `tests/test_528::test_1_activation_locked`가 잠금.
+- [x] **🔴 정정** — 후속8 §7-1 「36포지션 −429,048원」은 섀도 행 중복 계수. 정본 **35포지션 −441,976원**.
+  te 분해·강등 상한(+180,585)은 불변. 이 수치의 정본은 이제 `[18-U]` 출력이다.
+- [ ] **O-71(526차 후속9) `[59]`·`[58]` 판정 창 개시 관찰** — 둘 다 2026-09-04부터.
+  · 판정 기준: 각 채널 사전등록(`[59]` MR자격 n≥20·10일 + ⓐ 3검 / `[58]` n≥20·10일 + 4조건).
+  · **판정은 채널이 낸다** — 사람은 2주 연속 여부만 날짜본으로 대조.
+  · ⚠ `[59]`가 `SUPPORTS_LIVE`를 내도 **live 전환이 아니다**(ⓑ 재학습·ⓒ 챔피언 정책 남음).
+    전환은 SHORT 편향을 키운다(bear 발화 0) — `O-11`·`O-19`와 함께 볼 것.
+- [ ] **커밋 대기(526차 후속4~9)** — `config/settings.py` ·
+  `scripts/generate_validation_campaign_report.py` · `collection/macro/micro_regime.py` ·
+  `challenger/challenger_registry.py` · `tests/test_527_hour_atr_residual.py`(신규) ·
+  `tests/test_528_exhaustion_channels.py`(신규) ·
+  `docs/정기점검/매일점검/MW0602-20260903-장중흐름-진입청산-딥다이브.md`(신규) ·
+  `docs/정기점검/매일점검/MW0602-20260903-탈진레짐-조사보고.md`(신규) ·
+  `docs/정기점검/매일점검/MW0602-20260903-점검리포트.md` · `dev_memory/DECISION_LOG.md` ·
+  `dev_memory/NEXT_TODO.md`. ⚠ `git add .` 금지 — 경로 명시(EOL 오탐 다수).

@@ -23,6 +23,17 @@ REGIMES = [
     REGIME_EXHAUSTION,
 ]
 
+# ⚠ [MW0602 526차 후속8] **이 dict 는 어디서도 읽히지 않는다**(전수 grep, 2026-09-03).
+#   실동작은 아래 둘이 나눠 갖는다 —
+#     · `hurst_override` → `main.py:8199` 가 `current_micro_regime == REGIME_EXHAUSTION`
+#        상수 비교로 직접 구현(탈진 레짐이면 Hurst<0.45 차단 무효화)
+#     · 나머지(전략모드·신뢰도·사이즈·방향) → `config/strategy_params.py` 의
+#        `(macro_regime, "EXHAUSTION")` 3종 오버라이드
+#   설계 의도 기록으로 남긴다. **여기 값을 고쳐도 라이브는 바뀌지 않는다.**
+#   ⚠ `min_confidence 0.56` 은 checklist 가 별도로 하드코딩하고 있고
+#      (`strategy/entry/checklist.py:130`), 현행 conf 분포에서는 **완화가 아니라
+#      봉쇄**다(2026-09-03 조사보고 §2-4 N-1). 재산출은 live 전환 안건 소관.
+#   중복 사본이던 `config/settings.py:6796` 은 526차 후속8에서 제거했다.
 REGIME_EXHAUSTION_PARAMS = {
     "strategy_mode": "mean_reversion",
     "min_confidence": 0.56,

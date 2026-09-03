@@ -75,6 +75,8 @@ from config.settings import (
     MC_PERCENTILE, MC_ABS_FLOOR, MC_ABS_CEIL,  # [430차] [44] DynMC 재현
     ZONE_ENTRY_BAN_ENFORCE,        # [462차] [53] 집행 플래그 현황 표기용
     META_SCORING_HORIZON_BREAKS,   # [463차] [2] 스코어링 호라이즌 불연속 고지
+    # [MW0602 526차 후속8] [59] 소진 피처 live 전환 조건ⓐ 채널
+    EXHAUSTION_RESTORE_MODE, MR_EXHAUSTION_MIN, MR_EXHAUSTION_MIN_WEAK,
 )
 from config.constants import DIRECTION_UP, DIRECTION_DOWN, MINI_FUTURES_PT_VALUE
 from strategy.position.position_tracker import compute_trailing_stop_tier  # [361차]
@@ -3468,6 +3470,634 @@ def _atr14_at(conn, ts: str, lookback: int = 60):
         trs.append(max(h - l, abs(h - prev), abs(l - prev)))
         prev = float(b["close"])
     return sum(trs) / len(trs) if trs else None
+
+
+# ── [MW0602 526차 후속6 / P-1] 시간대 × ATR 층 잔여 ─────────────────────────
+#
+# O-69(13시대 진입 손실 집중)의 조기 판정에서 나온 도구다. "X시대가 나쁘다"는
+# 관찰이 **그 시간대의 고유 효과**인지 **그 시간대에 몰린 다른 조건(ATR)의 효과**
+# 인지를 가른다 — 0903 실측에서 13시대 열위(일자 부호검정 p=0.0063)는 ATR 층화 후
+# 소멸했다(층 내 일자내 순열 p=0.57).
+#
+# ⚠ [51] 본판정에 관여하지 않는다. verdict 는 종전 사전등록 기준으로만 계산된다.
+
+_ATR_SOURCE_LABEL = "raw_candles ATR(14) — [51] 본판정과 동일 정의(_atr14_at)"
+
+
+def _atr_stratum(atr: float, edges) -> str:
+    """ATR 값 → 층 라벨. edges=(1.25,1.5,2.0,2.6) → '<1.25' … '>=2.6'."""
+    prev = None
+    for e in edges:
+        if atr < e:
+            return ("<%g" % e) if prev is None else ("%g-%g" % (prev, e))
+        prev = e
+    return ">=%g" % edges[-1]
+
+
+def _entry_atr_rows():
+    """진입 포지션(포지션 단위) + 진입시점 ATR(14) 행 목록.
+
+    ATR은 [51] 본판정과 **같은 정의**(`_atr14_at`)를 쓴다 — 같은 채널 안에 두 ATR
+    정의를 섞지 않기 위함이다(461차 `mdd_pct` 분모 혼동 계열 예방).
+
+    Returns:
+        (rows, dropped) — rows: [{"day","hm","hour","atr","pnl","pts_per_ct"}...]
+        dropped: 탈락 사유별 건수(계측 4원칙 ③ — 절단하면 잔여를 명시한다).
+    """
+    pos = _merged_positions(extra_cols="pnl_pts")
+    dropped = {"total_positions": len(pos), "no_atr": 0, "bad_ts": 0}
+    rows = []
+    if not pos:
+        return rows, dropped
+    with _conn(RAW_DATA_DB) as conn:
+        for p in pos:
+            ts = p.get("entry_ts") or ""
+            if len(ts) < 16:
+                dropped["bad_ts"] += 1
+                continue
+            atr = _atr14_at(conn, ts)
+            if not atr or atr <= 0:
+                dropped["no_atr"] += 1
+                continue
+            qty = float(p.get("qty") or 1) or 1.0
+            pts = p.get("pnl_pts")
+            rows.append({
+                "day": ts[:10],
+                "hm": ts[11:16],
+                "hour": ts[11:13],
+                "atr": float(atr),
+                "pnl": float(p.get("pnl") or 0.0),
+                "pts_per_ct": (float(pts) / qty) if pts is not None else None,
+            })
+    return rows, dropped
+
+
+def _blocked_permutation_p(blocks, nperm, seed):
+    """블록 내 라벨 순열검정 — 단측 p(대상 코호트가 **열위**일 확률).
+
+    blocks: [(values, k)] — values=블록의 손익 배열, k=그 블록의 대상 라벨 개수.
+    라벨을 블록 안에서만 섞으므로 블록을 정의하는 축(일자·ATR 층)은 통제된다.
+    (313차 ①·② — 같은 날 진입은 독립 관측치가 아니다 / 층을 섞으면 교락된다)
+
+    두 라벨이 함께 있는 블록만 넘길 것 — 한쪽만 있는 블록은 순열 불변이라
+    통계량에 기여하지 않으면서 분모만 늘린다.
+
+    p = (관측 이하인 순열 수 + 1) / (nperm + 1)  — 0이 나오지 않게 하는 표준 보정.
+    """
+    if not blocks:
+        return None, None, 0
+    tgt, oth = [], []
+    for vals, k in blocks:
+        tgt.extend(vals[:k])
+        oth.extend(vals[k:])
+    if not tgt or not oth:
+        return None, None, 0
+    obs = float(np.mean(tgt) - np.mean(oth))
+    rs = np.random.RandomState(int(seed))
+    hit = 0
+    for _ in range(int(nperm)):
+        a_sum = a_n = b_sum = b_n = 0.0
+        for vals, k in blocks:
+            perm = rs.permutation(len(vals))
+            sel = perm[:k]
+            s = float(np.sum(np.asarray(vals)[sel]))
+            a_sum += s
+            a_n += k
+            b_sum += float(np.sum(vals)) - s
+            b_n += len(vals) - k
+        if (a_sum / a_n - b_sum / b_n) <= obs:
+            hit += 1
+    p = (hit + 1.0) / (int(nperm) + 1.0)
+    return round(obs, 1), round(p, 4), len(blocks)
+
+
+def _hour_atr_residual(rows, cfg, target_hours=None) -> dict:
+    """[51-R] 시간대 × ATR 층 교차표 + **ATR 층화 후 시간대 잔여 효과** 검정.
+
+    두 개의 p를 함께 낸다 — 이 대비가 이 표의 존재 이유다:
+      · `p_withinday`      : 일자만 통제(층 무시). 0903 13시대 = 0.091
+      · `p_withinday_atr`  : 일자 **+ ATR 층** 통제. 0903 13시대 = 0.57
+    앞이 작고 뒤가 크면 그 시간대 효과는 ATR로 설명된다 → 시간 기반 처방 금지.
+    """
+    cfg = cfg or {}
+    edges = tuple(cfg.get("strata_edges") or (1.25, 1.5, 2.0, 2.6))
+    alpha = float(cfg.get("alpha", 0.05))
+    min_n = int(cfg.get("min_positions_per_cell", 10))
+    min_d = int(cfg.get("min_days_per_cell", 5))
+    nperm = int(cfg.get("permutations", 5000))
+    seed = int(cfg.get("seed", 462))
+    out = {"strata_edges": list(edges), "alpha": alpha,
+           "min_positions_per_cell": min_n, "min_days_per_cell": min_d,
+           "permutations": nperm, "seed": seed,
+           "atr_source": _ATR_SOURCE_LABEL,
+           "n_positions": len(rows), "cells": [], "by_hour": {}}
+    if not rows:
+        out["reason"] = "표본 없음"
+        return out
+    for r in rows:
+        r["stratum"] = _atr_stratum(r["atr"], edges)
+    labels = []
+    prev = None
+    for e in edges:
+        labels.append(("<%g" % e) if prev is None else ("%g-%g" % (prev, e)))
+        prev = e
+    labels.append(">=%g" % edges[-1])
+    out["strata_labels"] = labels
+    hours = sorted({r["hour"] for r in rows})
+    out["n_days"] = len({r["day"] for r in rows})
+
+    # ── 교차표 ──
+    for h in hours:
+        for lab in labels:
+            v = [r for r in rows if r["hour"] == h and r["stratum"] == lab]
+            if not v:
+                continue
+            days = len({r["day"] for r in v})
+            cell = {"hour": h, "stratum": lab, "n": len(v), "days": days,
+                    "total_pnl_krw": round(sum(r["pnl"] for r in v), 0),
+                    "avg_pnl_krw": round(float(np.mean([r["pnl"] for r in v])), 0),
+                    "win_rate": round(float(np.mean(
+                        [1.0 if r["pnl"] > 0 else 0.0 for r in v])), 4)}
+            cell["status"] = ("OK" if (len(v) >= min_n and days >= min_d)
+                              else "INSUFFICIENT")
+            out["cells"].append(cell)
+
+    # ── 시간대별 잔여 ──
+    for h in (target_hours or hours):
+        tv = [r for r in rows if r["hour"] == h]
+        if not tv:
+            continue
+        ent = {"n": len(tv), "days": len({r["day"] for r in tv}),
+               "total_pnl_krw": round(sum(r["pnl"] for r in tv), 0),
+               "avg_pnl_krw": round(float(np.mean([r["pnl"] for r in tv])), 0),
+               "win_rate": round(float(np.mean(
+                   [1.0 if r["pnl"] > 0 else 0.0 for r in tv])), 4)}
+        # 일별 순손익 부호검정(층 무시 — 참고축)
+        dn = {}
+        for r in tv:
+            dn[r["day"]] = dn.get(r["day"], 0.0) + r["pnl"]
+        neg = sum(1 for x in dn.values() if x < 0)
+        ent["neg_days"] = neg
+        ent["obs_days"] = len(dn)
+        ent["sign_p"] = round(_sign_test_p(neg, len(dn)), 4)
+        # 순열검정 2종
+        for key, block_axis in (("withinday", ("day",)),
+                                ("withinday_atr", ("day", "stratum"))):
+            blocks = {}
+            for r in rows:
+                k = tuple(r[a] for a in block_axis)
+                blocks.setdefault(k, [[], []])[0 if r["hour"] == h else 1].append(r["pnl"])
+            usable = [(t + o, len(t)) for t, o in blocks.values() if t and o]
+            obs, p, nb = _blocked_permutation_p(usable, nperm, seed)
+            ent["obs_diff_" + key] = obs
+            ent["p_" + key] = p
+            ent["blocks_" + key] = nb
+        cells_h = [c for c in out["cells"] if c["hour"] == h]
+        ent["cells_ok"] = sum(1 for c in cells_h if c["status"] == "OK")
+        # 사전등록 승격 후보 — 3조건(2주 연속 확인은 사람이 날짜본 대조)
+        ent["escalate_candidate"] = bool(
+            ent.get("p_withinday_atr") is not None
+            and ent["p_withinday_atr"] < alpha
+            and ent["sign_p"] < alpha
+            and ent["cells_ok"] >= 1)
+        out["by_hour"][h] = ent
+    return out
+
+
+def eval_hour_atr_residual() -> dict:
+    """[51-R] 시간대 × ATR 층 잔여 — **OBSERVE 전용, 판정 무영향** (526차 후속6 P-1).
+
+    사전등록은 `VALIDATION_CAMPAIGN["profit_geometry_lowvol_watch"]["hour_residual"]`.
+    ⚠ verdict 는 언제나 `OBSERVE` 다 — 이 절은 PASS/FAIL 을 내지 않는다.
+    """
+    cr = VALIDATION_CAMPAIGN.get("profit_geometry_lowvol_watch", {})
+    cfg = cr.get("hour_residual") or {}
+    rows, dropped = _entry_atr_rows()
+    out = _hour_atr_residual(rows, cfg)
+    out["verdict"] = "OBSERVE"
+    out["dropped"] = dropped
+    out["consecutive_weeks_required"] = int(cfg.get("consecutive_weeks_required", 2))
+    cand = sorted(h for h, e in (out.get("by_hour") or {}).items()
+                  if e.get("escalate_candidate"))
+    out["escalate_hours"] = cand
+    if cand:
+        out["recommendation"] = (
+            "시간대 %s — ATR 층화 후에도 잔여 열위가 남는다. **%d주 연속** 같은 결과면 "
+            "주간회의 상정(존 정의 재검토). 단주 관측으로 조치하지 말 것"
+            % (", ".join("%s시" % h for h in cand),
+               out["consecutive_weeks_required"]))
+    else:
+        out["recommendation"] = (
+            "ATR 층화 후 잔여 열위가 남는 시간대가 없다 — **시간 기반 처방 금지**. "
+            "시간대별 손익 차이는 그 시간대에 몰린 ATR 조건으로 설명된다(O-69 판정과 동일)")
+    return out
+
+
+def eval_lunch_early_entry_ban_shadow() -> dict:
+    """[58] 13:00~13:30 진입 금지 — 섀도 (MW0602 526차 후속6, 사용자 지시).
+
+    🔴 **집행하지 않는다.** 라이브 진입 로직·TIME_ZONES·ZONE_ENTRY_BAN_ENFORCE 를
+    건드리지 않는 계측 채널이다. 코호트는 실제 체결된 진입이라 반사실 재구성이
+    필요 없다 — 그 실현손익이 곧 금지의 대가/이득이다(대체 진입 효과는 미반영).
+
+    🔴 창(13:00~13:30)은 관측에서 골랐다(사후탐색). 그래서 판정 창을 `start_date`
+    이후로 두고, 그 이전 구간은 `pre_window`(가설 생성)로만 병기한다.
+
+    FAIL 4조건은 사전등록이며 ④(ATR 층화 잔여)는 조건을 **더 엄격하게** 만든다 —
+    O-69 판정에서 13시대 열위가 ATR 층화 후 소멸했기 때문이다(p=0.57).
+    """
+    cr = VALIDATION_CAMPAIGN.get("lunch_early_entry_ban_shadow", {})
+    win = tuple(cr.get("window") or ("13:00", "13:30"))
+    min_n = int(cr.get("min_samples", 20))
+    min_d = int(cr.get("min_days", 10))
+    alpha = float(cr.get("alpha", 0.05))
+    need_res = bool(cr.get("require_atr_residual", True))
+    drop_worst = bool(cr.get("drop_worst_day", True))
+    start = str(cr.get("start_date") or "2026-09-04")
+    out = {"verdict": "INSUFFICIENT", "window": list(win),
+           "judgment_start": start, "enforced": False,
+           "entry_source_filter": cr.get("entry_source", "SYSTEM_AUTO"),
+           "require_atr_residual": need_res}
+
+    rows, dropped = _entry_atr_rows()
+    out["dropped"] = dropped
+    if not rows:
+        out["reason"] = "표본 없음"
+        return out
+
+    def _in_win(r):
+        return win[0] <= r["hm"] < win[1]
+
+    def _summ(v):
+        if not v:
+            return {}
+        dn = {}
+        for r in v:
+            dn[r["day"]] = dn.get(r["day"], 0.0) + r["pnl"]
+        s = _bucket_stats([r["pnl"] for r in v])
+        s["days"] = len(dn)
+        s["neg_days"] = sum(1 for x in dn.values() if x < 0)
+        s["worst_day"] = min(dn, key=dn.get) if dn else None
+        s["worst_day_pnl_krw"] = round(min(dn.values()), 0) if dn else None
+        s["total_ex_worst_day_krw"] = round(
+            sum(x for d, x in dn.items() if d != s["worst_day"]), 0) if dn else None
+        return s
+
+    # ── 가설 생성 구간(판정 무영향) ──
+    pre = [r for r in rows if r["day"] < start]
+    if pre:
+        out["pre_window"] = {
+            "range": [min(r["day"] for r in pre), max(r["day"] for r in pre)],
+            "cohort": _summ([r for r in pre if _in_win(r)]),
+            "rest": _summ([r for r in pre if not _in_win(r)]),
+            "note": ("🔴 창을 이 구간에서 골랐다 — 사후탐색이라 집행 근거가 아니다"),
+        }
+
+    # ── 판정 구간 ──
+    live = [r for r in rows if r["day"] >= start]
+    coh = [r for r in live if _in_win(r)]
+    rest = [r for r in live if not _in_win(r)]
+    out["cohort"] = _summ(coh)
+    out["rest"] = _summ(rest)
+    out["n_cohort"] = len(coh)
+    out["n_days"] = len({r["day"] for r in coh})
+
+    if len(coh) < min_n:
+        out["reason"] = ("코호트 표본 부족 (%d건 < %d건) — 판정 보류. 그 사이 라이브는 "
+                         "무변경이며 진입 금지를 집행하지 않는다" % (len(coh), min_n))
+        return out
+    if out["n_days"] < min_d:
+        out["reason"] = "관측일 부족 (%d일 < %d일)" % (out["n_days"], min_d)
+        return out
+
+    days = sorted({r["day"] for r in coh} & {r["day"] for r in rest})
+    diffs = [float(np.mean([r["pnl"] for r in rest if r["day"] == d])
+                   - np.mean([r["pnl"] for r in coh if r["day"] == d]))
+             for d in days]
+    out.update(_paired_day_summary(diffs, alpha))
+    if out.get("paired_days", 0) < min_d:
+        out["reason"] = ("짝지은 거래일 부족 (%d일 < %d일) — 같은 날 두 코호트가 함께 "
+                         "나와야 일자단위 비교가 성립한다" % (out.get("paired_days", 0), min_d))
+        return out
+
+    cond2 = bool(out.get("significant") and out.get("mean_diff", 0) > 0)
+    cond3 = (not drop_worst) or (
+        out["cohort"].get("total_ex_worst_day_krw") is not None
+        and out["cohort"]["total_ex_worst_day_krw"] < 0)
+    res = _hour_atr_residual(
+        live, (VALIDATION_CAMPAIGN.get("profit_geometry_lowvol_watch", {})
+               .get("hour_residual") or {}),
+        target_hours=[win[0][:2]])
+    ent = (res.get("by_hour") or {}).get(win[0][:2]) or {}
+    out["atr_residual"] = {"p_withinday": ent.get("p_withinday"),
+                           "p_withinday_atr": ent.get("p_withinday_atr"),
+                           "blocks": ent.get("blocks_withinday_atr"),
+                           "strata_edges": res.get("strata_edges"),
+                           "atr_source": res.get("atr_source")}
+    _p = ent.get("p_withinday_atr")
+    cond4 = (not need_res) or (_p is not None and _p < alpha)
+    out["conditions"] = {"n_and_days": True, "paired_inferior": cond2,
+                         "drop_worst_still_negative": cond3,
+                         "atr_residual": cond4}
+
+    if cond2 and cond3 and cond4:
+        out["verdict"] = "FAIL"
+        out["recommendation"] = (
+            "[58] %s~%s 진입 코호트가 열위이고 ATR 층화 후에도 남는다 "
+            "(일평균 격차 %s원, 부호검정 p=%.4f, 층화 잔여 p=%s) — **주간회의 상정**: "
+            "TIME_ZONES 에 LUNCH_RECOVERY_EARLY 신설 + ZONE_MIN_CONF · "
+            "C_AUTO_EXP_ZONES · main.py `_trend_mc_zones` 세 표에 키 동반 추가 후 "
+            "[53] 경로로 집행. 세 표 중 하나라도 빠지면 조용한 정책 변경이 된다"
+            % (win[0], win[1], _fmt_krw(out.get("mean_diff", 0)),
+               out.get("sign_p", 1.0), _p))
+    else:
+        out["verdict"] = "PASS"
+        _why = []
+        if not cond2:
+            _why.append("일자단위 열위 미유의(p=%.4f)" % out.get("sign_p", 1.0))
+        if not cond3:
+            _why.append("최악일 제외 시 코호트가 음수가 아님")
+        if not cond4:
+            _why.append("ATR 층화 후 잔여 열위 소멸(p=%s)" % _p)
+        out["recommendation"] = (
+            "%s~%s 코호트를 금지할 근거가 없다 — %s. **집행하지 말 것**. "
+            "시간대가 아니라 저변동 진입 축([51]·[25]·[10])을 볼 것"
+            % (win[0], win[1], " / ".join(_why) or "조건 미충족"))
+    return out
+
+
+# ── [MW0602 526차 후속8 / P-2] [18-U] `[18]` 고유/중복 분해 ──────────────────────
+#
+# `[18]` 은 **발동 분**을 세지만, 그 분에 실제로 체결됐는지는 세지 않는다. 2026-09-03
+# 조사에서 발동 119분 중 실제 체결은 36포지션뿐이었고(나머지는 JointGate·conf_floor·
+# 쿨다운 등 다른 게이트가 이미 막았다), 그 36건을 진입 시점 `trend_efficiency` 로
+# 가르자 **손실이 전부 `[57]` 과 겹치는 쪽에 있었다**:
+#     te<0.32(=[57] 중복)  7건 −585,775원 (2승)
+#     te>=0.32(=[18] 고유) 28건 **+143,799원** (20승)
+# 즉 `[18]` 을 켜는 것의 한계 효과는 고유 코호트에만 남는데 그쪽은 흑자다.
+# 501차 후속이 시뮬(`hyp`)로 "중복 77%"라 적었으나 **실현손익으로는 100%를 넘는다**
+# (시뮬은 TP1 상한 때문에 이익을 계통적으로 과소평가한다 — 405차 P0-3 배지).
+#
+# 🔴 **판정 무영향이다.** `[18]` verdict 는 `resolve_and_eval_regime_exhaustion()` 이
+#   사전등록 기준으로만 계산한다. 이 절은 그 옆에 실현손익 분해를 병기할 뿐이다.
+
+def eval_regime_exhaustion_unique_split() -> dict:
+    """[18-U] `[18]` 발동분 × 실제 체결 × te 분할 — OBSERVE 전용(526차 후속8 P-2).
+
+    te 임계는 `[57]` 사전등록값(`trend_efficiency_entry_gate.threshold`)을 **읽어온다** —
+    여기서 하드코딩하면 두 채널의 기준이 조용히 갈린다.
+    """
+    out = {"verdict": "OBSERVE"}
+    te_cut = float((VALIDATION_CAMPAIGN.get("trend_efficiency_entry_gate") or {})
+                   .get("threshold", 0.32))
+    out["te_threshold"] = te_cut
+    try:
+        with _conn(TRADES_DB) as conn:
+            fires = [r["ts"] for r in conn.execute(
+                "SELECT ts FROM regime_exhaustion_shadow ORDER BY ts").fetchall()]
+    except Exception as e:
+        out["error"] = "%s: %s" % (type(e).__name__, e)
+        return out
+    if not fires:
+        out["reason"] = "발동 표본 없음"
+        return out
+    fire_min = {t[:16] for t in fires}
+    out["n_fired"] = len(fires)
+
+    pos = _merged_positions()
+    by_min = {}
+    for p in pos:
+        by_min[p["entry_ts"][:16]] = p
+    hits = [(m, by_min[m]) for m in sorted(fire_min) if m in by_min]
+    out["n_executed"] = len(hits)
+    out["n_not_executed"] = len(fire_min) - len(hits)
+    if not hits:
+        out["reason"] = "발동 분에 체결된 포지션 없음"
+        return out
+
+    buckets = {"te_lt": [], "te_ge": [], "te_missing": []}
+    try:
+        with _conn(PREDICTIONS_DB) as pconn:
+            for m, p in hits:
+                te = None
+                row = pconn.execute(
+                    "SELECT features FROM ensemble_decisions WHERE ts = ?",
+                    (m + ":00",)).fetchone()
+                if row and row["features"]:
+                    try:
+                        te = json.loads(row["features"]).get("trend_efficiency")
+                    except Exception:
+                        te = None
+                key = ("te_missing" if te is None
+                       else ("te_lt" if float(te) < te_cut else "te_ge"))
+                buckets[key].append(p)
+    except Exception as e:
+        out["error"] = "%s: %s" % (type(e).__name__, e)
+        return out
+
+    out["by_cohort"] = {}
+    for lab, v in buckets.items():
+        if not v:
+            out["by_cohort"][lab] = {"n": 0}
+            continue
+        s = _bucket_stats([q["pnl"] for q in v])
+        s["days"] = len({q["entry_ts"][:10] for q in v})
+        out["by_cohort"][lab] = s
+    _all = [q for v in buckets.values() for q in v]
+    out["total_net_krw"] = round(sum(q["pnl"] for q in _all), 0)
+    out["total_days"] = len({q["entry_ts"][:10] for q in _all})
+    _ge = out["by_cohort"].get("te_ge") or {}
+    _lt = out["by_cohort"].get("te_lt") or {}
+    out["recommendation"] = (
+        "고유 코호트(te>=%.2f) n=%s **%s원** / 중복 코호트(te<%.2f) n=%s %s원 — "
+        "`[57]` 승격 시 `[18]`의 한계 효과는 고유 코호트에만 남는다. "
+        "**두 채널의 반사실을 더하지 말 것**(이중계상)" % (
+            te_cut, _ge.get("n", 0), _fmt_krw(_ge.get("total_pnl_krw", 0)),
+            te_cut, _lt.get("n", 0), _fmt_krw(_lt.get("total_pnl_krw", 0))))
+    return out
+
+
+# ── [MW0602 526차 후속8 / P-3] [59] 소진 피처 live 전환 조건 ⓐ 자동판정 ──────────
+
+def _exhaustion_shadow_firings(since: str):
+    """교정 섀도 발화 분 목록 — `bear/bull_exhaustion_shadow > 0`.
+
+    Returns: (rows, dropped)
+      rows: [{"ts","day","side"(+1 LONG기대 / -1 SHORT기대),"strength",
+              "vwap_position","mr_eligible"}...]
+      dropped: 사유별 건수(계측 4원칙 ③).
+    """
+    rows, dropped = [], {"scanned": 0, "bad_json": 0, "no_vwap": 0}
+    try:
+        with _conn(RAW_DATA_DB) as conn:
+            cur = conn.execute(
+                "SELECT ts, features FROM raw_features WHERE ts >= ? ORDER BY ts",
+                (since,))
+            for r in cur:
+                dropped["scanned"] += 1
+                try:
+                    d = json.loads(r["features"]) if r["features"] else {}
+                except Exception:
+                    dropped["bad_json"] += 1
+                    continue
+                bull = float(d.get("bull_exhaustion_shadow", 0) or 0)
+                bear = float(d.get("bear_exhaustion_shadow", 0) or 0)
+                if bull <= 0 and bear <= 0:
+                    continue
+                vp = d.get("vwap_position")
+                if vp is None:
+                    dropped["no_vwap"] += 1
+                    continue
+                vp = float(vp)
+                # bull(상승압력 소진) → SHORT 기대 / bear(하락압력 소진) → LONG 기대
+                side = -1 if bull >= bear else 1
+                strength = bull if side == -1 else bear
+                weak = float(MR_EXHAUSTION_MIN_WEAK)
+                mr_ok = (strength >= weak
+                         and (vp > 1.5 if side == -1 else vp < -1.5))
+                rows.append({"ts": r["ts"][:16], "day": r["ts"][:10], "side": side,
+                             "strength": strength, "vwap_position": vp,
+                             "mr_eligible": bool(mr_ok)})
+    except Exception:
+        return rows, dropped
+    return rows, dropped
+
+
+def eval_exhaustion_restore_watch() -> dict:
+    """[59] 소진 피처 live 전환 조건 ⓐ 자동판정 (526차 후속8 / P-3) — 사전등록.
+
+    🔴 **자동 전환 없다.** `EXHAUSTION_RESTORE_MODE` 는 사람이 바꾼다.
+    판정 모집단은 **MR 자격 코호트**(vwap 조건 동반)이고 판정 호라이즌은 **10분 단일**이다
+    — 근거·주의는 `config/settings.py:VALIDATION_CAMPAIGN["exhaustion_restore_watch"]` 주석.
+    """
+    cr = VALIDATION_CAMPAIGN.get("exhaustion_restore_watch", {})
+    min_n = int(cr.get("min_samples", 20))
+    min_d = int(cr.get("min_days", 10))
+    alpha = float(cr.get("alpha", 0.05))
+    hz = int(cr.get("judgment_horizon_min", 10))
+    aux = tuple(cr.get("aux_horizons_min") or (30,))
+    tiers = tuple(cr.get("strength_tiers") or (0.60, 0.70))
+    need_mr = bool(cr.get("require_mr_eligible", True))
+    drop_worst = bool(cr.get("drop_worst_day", True))
+    start = str(cr.get("start_date") or "2026-09-04")
+    out = {"verdict": "INSUFFICIENT", "judgment_start": start,
+           "judgment_horizon_min": hz, "aux_horizons_min": list(aux),
+           "require_mr_eligible": need_mr, "strength_tiers": list(tiers),
+           "restore_mode": str(EXHAUSTION_RESTORE_MODE),
+           "mr_weak_min": float(MR_EXHAUSTION_MIN_WEAK),
+           "mr_strong_min": float(MR_EXHAUSTION_MIN)}
+
+    fires, dropped = _exhaustion_shadow_firings(_campaign_start())
+    out["dropped"] = dropped
+    out["n_firings_all"] = len(fires)
+    if not fires:
+        out["reason"] = ("교정 섀도 발화 0건 — `bear/bull_exhaustion_shadow` 가 계산되지 "
+                         "않는 세대이거나 표본 구간에 발화가 없다(미측정≠0)")
+        return out
+    out["n_bull"] = sum(1 for f in fires if f["side"] == -1)
+    out["n_bear"] = sum(1 for f in fires if f["side"] == 1)
+
+    close_map, _h, _l = _load_candle_maps(min(f["ts"] for f in fires))
+
+    def _fwd(ts, minutes):
+        try:
+            t0 = datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M")
+        except Exception:
+            return None
+        a = close_map.get(t0.strftime("%Y-%m-%d %H:%M:00"))
+        b = close_map.get((t0 + datetime.timedelta(minutes=minutes))
+                          .strftime("%Y-%m-%d %H:%M:00"))
+        if a is None or b is None:
+            return None
+        return float(b) - float(a)
+
+    def _summ(sub, minutes):
+        vals, by_day = [], {}
+        for f in sub:
+            d = _fwd(f["ts"], minutes)
+            if d is None:
+                continue
+            v = d * f["side"]          # 기대방향 부호 적용
+            vals.append(v)
+            by_day.setdefault(f["day"], []).append(v)
+        if not vals:
+            return {"n": 0}
+        day_means = {d: float(np.mean(v)) for d, v in by_day.items()}
+        neg = sum(1 for x in day_means.values() if x < 0)
+        pos_days = len(day_means) - neg
+        s = {"n": len(vals),
+             "mean_pt": round(float(np.mean(vals)), 4),
+             "median_pt": round(float(np.median(vals)), 4),
+             "hit_rate": round(float(np.mean([1.0 if x > 0 else 0.0 for x in vals])), 4),
+             "days": len(day_means), "days_positive": pos_days, "days_negative": neg,
+             "sign_p": round(_sign_test_p(pos_days, len(day_means)), 4)}
+        if day_means:
+            worst = min(day_means, key=day_means.get)
+            s["worst_day"] = worst
+            s["mean_ex_worst_day"] = round(
+                float(np.mean([v for d, v in day_means.items() if d != worst])), 4
+            ) if len(day_means) > 1 else None
+        return s
+
+    # ── 가설 생성 구간(판정 무영향) ──
+    pre = [f for f in fires if f["day"] < start]
+    if pre:
+        out["pre_window"] = {
+            "range": [min(f["day"] for f in pre), max(f["day"] for f in pre)],
+            "n_all": len(pre),
+            "n_mr_eligible": sum(1 for f in pre if f["mr_eligible"]),
+            "judgment_cohort": _summ([f for f in pre if f["mr_eligible"]] if need_mr else pre, hz),
+            "note": "🔴 이 구간에서 채널 설계를 정했다 — 판정 무영향·집행 근거 아님",
+        }
+
+    live_rows = [f for f in fires if f["day"] >= start]
+    coh = [f for f in live_rows if f["mr_eligible"]] if need_mr else live_rows
+    out["n_judgment_cohort"] = len(coh)
+    out["main"] = _summ(coh, hz)
+    out["aux"] = {("h%d" % m): _summ(coh, m) for m in aux}
+    out["by_tier"] = {
+        "strong(>=%.2f)" % tiers[-1]: _summ([f for f in coh if f["strength"] >= tiers[-1]], hz),
+        "weak(%.2f~%.2f)" % (tiers[0], tiers[-1]):
+            _summ([f for f in coh if tiers[0] <= f["strength"] < tiers[-1]], hz),
+    }
+
+    m = out["main"]
+    if m.get("n", 0) < min_n:
+        out["reason"] = ("판정 코호트 표본 부족 (%d건 < %d건) — 보류. 그 사이 "
+                         "`EXHAUSTION_RESTORE_MODE` 는 \"shadow\" 유지" % (m.get("n", 0), min_n))
+        return out
+    if m.get("days", 0) < min_d:
+        out["reason"] = "관측일 부족 (%d일 < %d일)" % (m.get("days", 0), min_d)
+        return out
+
+    sig = m["sign_p"] < alpha
+    pos = m["mean_pt"] > 0
+    ex_worst_ok = (not drop_worst) or (m.get("mean_ex_worst_day") is None
+                                       or m["mean_ex_worst_day"] > 0)
+    out["conditions"] = {"n_and_days": True, "sign_significant": sig,
+                         "mean_positive": pos, "drop_worst_still_positive": ex_worst_ok}
+    if sig and pos and ex_worst_ok:
+        out["verdict"] = "SUPPORTS_LIVE"
+        out["recommendation"] = (
+            "조건ⓐ 충족 (기대방향 %d분 수익 평균 %+.3fpt, 일자 %d/%d 양, p=%.4f) — "
+            "**live 전환이 아니라 안건 자격**이다. %d주 연속 확인 + ⓑ(교정값 포함 EOD "
+            "재학습) + ⓒ(탈진 레짐 발생률·챔피언 승격 정책)가 남아 있고, 전환은 "
+            "SHORT 편향을 키운다(bear측 발화 %d건) — `O-11`·`O-19`와 함께 볼 것" % (
+                hz, m["mean_pt"], m["days_positive"], m["days"], m["sign_p"],
+                int(cr.get("consecutive_weeks_required", 2)), out.get("n_bear", 0)))
+    elif sig and not pos:
+        out["verdict"] = "REJECTS_LIVE"
+        out["recommendation"] = (
+            "조건ⓐ 반증 (기대방향 %d분 수익 평균 %+.3fpt, p=%.4f) — 교정 섀도 발화가 "
+            "기대방향으로 가지 않는다. `EXHAUSTION_RESTORE_MODE=\"shadow\"` 유지" % (
+                hz, m["mean_pt"], m["sign_p"]))
+    else:
+        out["verdict"] = "OBSERVE"
+        out["recommendation"] = (
+            "표본은 찼으나 방향이 애매하다 (평균 %+.3fpt, 일자 %d/%d 양, p=%.4f) — "
+            "조건ⓐ 미충족이므로 `shadow` 유지, 관찰 계속" % (
+                m["mean_pt"], m["days_positive"], m["days"], m["sign_p"]))
+    return out
 
 
 def eval_profit_geometry_lowvol_watch() -> dict:
@@ -8106,6 +8736,13 @@ def _fmt_verdict(v: str) -> str:
         #   ⚠ SPLIT_BY_LIMIT 는 복원값 2와 3이 **서로 반대 방향**이라는 뜻이다.
         #     절대원칙 §2가 "2~3"이라 적어둔 범위 안에서 결론이 갈리므로,
         #     이 판정이 뜨면 **값을 먼저 정하지 말고 그 사실을 안건으로 올릴 것.**
+        # [MW0602 526차 후속8 / 59] 소진 피처 live 전환 **조건 ⓐ** 어휘.
+        #   PASS/FAIL 을 쓰지 않는 이유는 위 BLOCK_*·RESTORE_* 와 같다 — 묻는 것이
+        #   "성능이 기준을 넘었는가"가 아니라 "394차 사전등록 조건 ⓐ가 충족됐는가"다.
+        #   ⚠ SUPPORTS_LIVE 는 **"live 로 바꿔라"가 아니다** — ⓐ 하나를 통과했다는
+        #     뜻이고 ⓑ(재학습)·ⓒ(챔피언 정책)와 2주 연속 확인이 남아 있다.
+        "SUPPORTS_LIVE": "🔶 SUPPORTS_LIVE(조건ⓐ 충족)",
+        "REJECTS_LIVE": "🔷 REJECTS_LIVE(조건ⓐ 반증)",
         "RESTORE_FAVORS_CB2": "🛡 RESTORE_FAVORS_CB2(복원이 손실을 막는다)",
         "RESTORE_COSTS": "🟠 RESTORE_COSTS(복원이 수익을 막는다)",
         "SPLIT_BY_LIMIT": "🔀 SPLIT_BY_LIMIT(복원값 2·3이 반대 방향)",
@@ -8209,6 +8846,12 @@ def build_report(days: int) -> tuple:
     pgv = _safe_eval(eval_profit_geometry_lowvol_watch, "[51]")
     efw = _safe_eval(eval_effective_weight_watch, "[52]")
     zbb = _safe_eval(eval_zone_ban_breach_watch, "[53]")
+    # [MW0602 526차 후속6] [51-R] 시간대×ATR 층 잔여(OBSERVE) · [58] 13:00~13:30 섀도
+    hres = _safe_eval(eval_hour_atr_residual, "[51-R]")
+    leb = _safe_eval(eval_lunch_early_entry_ban_shadow, "[58]")
+    # [MW0602 526차 후속8] [18-U] 고유/중복 분해(OBSERVE) · [59] 소진 live 조건ⓐ
+    regu = _safe_eval(eval_regime_exhaustion_unique_split, "[18-U]")
+    ers = _safe_eval(eval_exhaustion_restore_watch, "[59]")
     off = eval_offline_geometry_channels()
     # [MW0602 435차] [48]/[49] — 둘 다 **시뮬레이터를 쓰지 않는다**(trades /
     # exit_fill_slippage 실측). 그래서 §47 게이트가 SUSPEND여도 계속 판정한다.
@@ -8296,6 +8939,10 @@ def build_report(days: int) -> tuple:
         "regime_exhaustion_watch": reg, "toxicity_block_shadow": txb,
         "weight_collapse_watch": wcw,
         "trend_efficiency_entry_gate": teg,   # [57] MW0602 502차 U-2
+        "hour_atr_residual": hres,            # [51-R] MW0602 526차 후속6 (OBSERVE)
+        "regime_exhaustion_unique_split": regu,  # [18-U] MW0602 526차 후속8 (OBSERVE)
+        "exhaustion_restore_watch": ers,      # [59] MW0602 526차 후속8
+        "lunch_early_entry_ban_shadow": leb,  # [58] MW0602 526차 후속6 (섀도)
         "direction_ev_watch": dev, "mfe_capture_watch": mcw,
         "guard_shadow": gsc, "intraday_cv_watch": icw,
         "tp1_protect_giveback_watch": tpg,
@@ -8832,6 +9479,13 @@ def build_report(days: int) -> tuple:
     _row_462(53, "진입금지 존 위반 코호트%s" % (
         " **[집행 ON]**" if zbb.get("enforce_flag") else ""),
         zbb, "zone_ban_breach_watch")
+    # [MW0602 526차 후속6] [58] 13:00~13:30 섀도 — 라이브 무변경(집행 OFF 고정)
+    _row_462(58, "13:00~13:30 진입 금지 (섀도) — 판정창 %s~" % leb.get(
+        "judgment_start", "—"), leb, "lunch_early_entry_ban_shadow")
+    # [MW0602 526차 후속8] [59] 소진 피처 live 전환 조건ⓐ — 자동 전환 없음
+    _row_462(59, "소진 피처 live 조건ⓐ (mode=%s · 판정창 %s~)" % (
+        ers.get("restore_mode", "—"), ers.get("judgment_start", "—")),
+        ers, "exhaustion_restore_watch")
 
     # [MW0601 405차 / P0-3] pt 채널 단위 배지 — 요약표에 단위가 다른 두 계열이 섞여 있다.
     # 실현손익 채널([13]·[21]·[5]·[8])은 trades.net_pnl_krw라 계약수가 반영된 "원"이고,
@@ -9767,6 +10421,53 @@ def build_report(days: int) -> tuple:
     L.append("  판단 근거 표본 축적용(목표 min_samples=%d, hurst_gate_shadow·"
               "open_gap_shadow와 동일 기준) — §9 사전등록 원칙, 즉시 자동 전환 없음." % (
         VALIDATION_CAMPAIGN["regime_exhaustion_watch"]["min_samples"]))
+    L.append("")
+
+    # ── [MW0602 526차 후속8 / P-2] [18-U] 고유/중복 분해 (OBSERVE · 판정 무영향) ──
+    L.append("### [18-U] 발동분 × 실제 체결 × `te` 분할 (OBSERVE · 판정 무영향) — 526차 후속8")
+    L.append("")
+    if regu.get("error"):
+        L.append("- ⚠ 오류: %s" % regu["error"])
+    elif regu.get("reason"):
+        L.append("- 보류: %s" % regu["reason"])
+    else:
+        L.append("- 발동 %s분 중 **같은 분 실제 체결 %s포지션** (미체결 %s분 — 다른 게이트가 이미 차단)"
+                 % (regu.get("n_fired", 0), regu.get("n_executed", 0),
+                    regu.get("n_not_executed", 0)))
+        L.append("- `te` 분할 기준 %.2f — **`[57]` 사전등록값을 읽어온다**(하드코딩 아님)"
+                 % regu.get("te_threshold", 0.32))
+        L.append("")
+        L.append("| 코호트 | n | 일수 | 실현 net | 건당 | 승률 |")
+        L.append("|---|---|---|---|---|---|")
+        for _u58k, _u58lab in (("te_ge", "**고유** te≥%.2f — `[18]`만 잡는다" % regu.get("te_threshold", 0.32)),
+                               ("te_lt", "중복 te<%.2f — `[57]`이 이미 잡는다" % regu.get("te_threshold", 0.32)),
+                               ("te_missing", "te 결손·폴백")):
+            _u58 = (regu.get("by_cohort") or {}).get(_u58k) or {}
+            if not _u58.get("n"):
+                L.append("| %s | 0 | — | — | — | — |" % _u58lab)
+                continue
+            L.append("| %s | %s | %s | **%s원** | %s원 | %.0f%% |" % (
+                _u58lab, _u58["n"], _u58.get("days", "—"),
+                _fmt_krw(_u58.get("total_pnl_krw", 0)), _fmt_krw(_u58.get("avg_pnl_krw", 0)),
+                100.0 * float(_u58.get("win_rate", 0) or 0)))
+        L.append("")
+        L.append("- 합계 %s원 / %s거래일" % (
+            _fmt_krw(regu.get("total_net_krw", 0)), regu.get("total_days", "—")))
+        if regu.get("recommendation"):
+            L.append("- %s" % regu["recommendation"])
+    L.append("")
+    L.append("> **왜 이 분해가 필요한가.** `[18]` 은 **발동 분**을 세지만 그 분에 실제로")
+    L.append("> 체결됐는지는 세지 않는다. 체결분만 실현손익으로 다시 세고 진입 시점")
+    L.append("> `trend_efficiency` 로 가르면 **손실이 전부 `[57]` 과 겹치는 쪽에 있다** —")
+    L.append("> 고유 코호트는 흑자다. 즉 `[57]` 이 승격되면 `[18]` 을 켜는 것의 한계 효과는")
+    L.append("> **음(−)** 이 된다.")
+    L.append("> ")
+    L.append("> 🔴 **두 채널의 반사실을 더하지 말 것**(이중계상). 501차 후속이 시뮬(`hyp`)로")
+    L.append("> \"중복 77%\"라 적었으나 **실현손익으로는 100%를 넘는다** — 시뮬은 TP1 상한")
+    L.append("> 때문에 이익을 계통적으로 과소평가한다(405차 P0-3 배지와 같은 이유).")
+    L.append("> ")
+    L.append("> ⚠ **판정 무영향**이다 — 위 `[18]` verdict 는 사전등록 기준으로만 계산된다.")
+    L.append("> ⚠ 미체결 분은 **다른 게이트가 막은 것**이지 `[18]` 의 공로가 아니다.")
     L.append("")
 
     # [19] ToxicityGate block counterfactual 상세
@@ -11887,6 +12588,264 @@ def build_report(days: int) -> tuple:
     L.append("> 🔴 **[18]과 이중계상하지 말 것** — 502차 실측에서 [18] 반사실 −32.81pt 중")
     L.append("> **77%(−25.16pt)가 te<0.32 구간 19건**에 몰려 있었다. 두 채널은 같은 손실을")
     L.append("> 다른 정의로 가리킨다. 근거: `docs/정기점검/손실6일_사전간파체계_개선방안_20260830.md` §5.")
+    L.append("")
+    L.append("---")
+    L.append("")
+
+    # ── [MW0602 526차 후속6 / P-1] [51-R] 시간대 × ATR 층 잔여 ──────────────────
+    L.append("## [51-R] 시간대 × ATR 층 잔여 (OBSERVE · 판정 무영향) — 526차 후속6 신설")
+    L.append("")
+    if hres.get("error"):
+        L.append("- ⚠ 오류: %s" % hres["error"])
+    elif hres.get("reason"):
+        L.append("- 보류: %s" % hres["reason"])
+    else:
+        _p1dr = hres.get("dropped") or {}
+        L.append("- ATR 원천: %s" % hres.get("atr_source", "—"))
+        L.append("- 층 경계(사전등록·고정): `%s` · 셀 하한 n≥%s·일수≥%s · 순열 %s회(seed %s)"
+                 % (hres.get("strata_edges"), hres.get("min_positions_per_cell"),
+                    hres.get("min_days_per_cell"), hres.get("permutations"),
+                    hres.get("seed")))
+        L.append("- 표본 %s포지션 / %s거래일 · 탈락 %s건(ATR 산출 불가 %s · 시각 불량 %s)"
+                 % (hres.get("n_positions", 0), hres.get("n_days", 0),
+                    int(_p1dr.get("no_atr", 0)) + int(_p1dr.get("bad_ts", 0)),
+                    _p1dr.get("no_atr", 0), _p1dr.get("bad_ts", 0)))
+        L.append("")
+        L.append("**시간대별 잔여 — `p_일자`가 작고 `p_일자+ATR`이 크면 그 시간대 효과는 ATR로 설명된다**")
+        L.append("")
+        L.append("| 시각대 | n | 일수 | 순손익 | 건당 | 승률 | 음수일 | 부호검정 p | p_일자 | **p_일자+ATR** | 셀 OK | 승격후보 |")
+        L.append("|---|---|---|---|---|---|---|---|---|---|---|---|")
+        for _p1h in sorted(hres.get("by_hour") or {}):
+            _p1e = hres["by_hour"][_p1h]
+            L.append("| %s시 | %s | %s | %s | %s | %.0f%% | %s/%s | %.4f | %s | **%s** | %s | %s |" % (
+                _p1h, _p1e.get("n", 0), _p1e.get("days", 0),
+                _fmt_krw(_p1e.get("total_pnl_krw", 0)), _fmt_krw(_p1e.get("avg_pnl_krw", 0)),
+                100.0 * float(_p1e.get("win_rate", 0) or 0),
+                _p1e.get("neg_days", 0), _p1e.get("obs_days", 0),
+                float(_p1e.get("sign_p", 1.0) or 1.0),
+                _p1e.get("p_withinday", "—"), _p1e.get("p_withinday_atr", "—"),
+                _p1e.get("cells_ok", 0),
+                "⚠ **예** " if _p1e.get("escalate_candidate") else "아니오"))
+        L.append("")
+        L.append("**셀 교차표 (시각대 × ATR 층)** — 미달 셀은 `INSUFFICIENT`다. **0이 아니다**(계측 4원칙 ②)")
+        L.append("")
+        L.append("| 시각대 | ATR 층 | n | 일수 | 순손익 | 건당 | 승률 | 상태 |")
+        L.append("|---|---|---|---|---|---|---|---|")
+        for _p1c in hres.get("cells") or []:
+            L.append("| %s시 | %s | %s | %s | %s | %s | %.0f%% | %s |" % (
+                _p1c["hour"], _p1c["stratum"], _p1c["n"], _p1c["days"],
+                _fmt_krw(_p1c["total_pnl_krw"]), _fmt_krw(_p1c["avg_pnl_krw"]),
+                100.0 * float(_p1c.get("win_rate", 0) or 0),
+                "OK" if _p1c["status"] == "OK" else "INSUFFICIENT(n=%s·%s일)" % (
+                    _p1c["n"], _p1c["days"])))
+        L.append("")
+        L.append("- 권고: %s" % hres.get("recommendation", "—"))
+    L.append("")
+    L.append("> **무엇을 묻나.** *\"어느 시간대가 나쁘다는 관찰이 그 시간대의 고유 효과인가,")
+    L.append("> 아니면 그 시간대에 몰린 다른 조건(진입시점 ATR)의 효과인가.\"*")
+    L.append("> ")
+    L.append("> 계기는 **O-69**(13시대 진입 손실 집중)의 조기 판정(2026-09-03, 사용자 지시)이다.")
+    L.append("> 20거래일 실측에서 13시대 44포지션 −1,298,472원·12거래일 중 11일 음수")
+    L.append("> (부호검정 p=0.0063)였는데 **ATR 층화 후 그 열위가 사라졌다**(층 내 순열 p=0.57).")
+    L.append("> 13시는 진입시점 ATR 최저(평균 1.44)·`ATR<1.5` 진입 비중 최고(61%)였고,")
+    L.append("> 모델 적중률(3m 52%)·시장 효율(0.114)에는 시간대 차이가 없었다.")
+    L.append("> ")
+    L.append("> 🔴 **판정 무영향이다** — [51] 본판정의 `atr_split_pt`·합격선은 무변경이다.")
+    L.append("> 이 절은 verdict 를 내지 않는다(`OBSERVE`).")
+    L.append("> 🔴 **단주 관측으로 조치하지 말 것** — 승격 조건은 `%d주 연속`이다" % (
+        hres.get("consecutive_weeks_required", 2)))
+    L.append("> (리포트 4주 보관 · 날짜본 대조는 사람이 한다).")
+    L.append("> ")
+    L.append("> ⚠ **층 경계는 관측에서 역산하지 않았다** — 2.6은 [51] 기존 분할선,")
+    L.append("> 1.5·2.0은 `ATR_MIN_ENTRY`(1.0)의 배수, 1.25는 중간점이다. 0903 실측에서")
+    L.append("> 가장 나빴던 `[1.25,1.50)`을 컷으로 승격하지 않은 이유는 ATR 4분위가")
+    L.append("> **단조가 아니고**(Q1 −1,135,536 / Q2 +265,483 / Q3 −959,055 / Q4 +871,070)")
+    L.append("> `ATR<1.5` vs `≥1.5` 일자내 순열이 p=0.39라 어떤 경계도 근거가 없기 때문이다.")
+    L.append("> ")
+    L.append("> ⚠ ATR은 [51] 본판정과 **같은 정의**(raw_candles 14봉)다. 0903 딥다이브는")
+    L.append("> 엔진 ATR(`ensemble_decisions.features`)로 셌으므로 소수점이 다를 수 있다 —")
+    L.append("> 한 채널에 두 정의를 섞지 않는 쪽을 택했다(461차 `mdd_pct` 분모 혼동 계열 예방).")
+    L.append("")
+    L.append("---")
+    L.append("")
+
+    # ── [MW0602 526차 후속6] [58] 13:00~13:30 진입 금지 (섀도) ────────────────
+    L.append("## [58] 13:00~13:30 진입 금지 (섀도) — 526차 후속6 신설 · 사용자 지시")
+    L.append("")
+    L.append("| 항목 | 값 |")
+    L.append("|---|---|")
+    L.append("| 판정 | %s |" % _fmt_verdict(leb.get("verdict", "")))
+    L.append("| 집행 | **OFF (섀도 전용 — 라이브 진입 로직 무변경)** |")
+    L.append("| 창 (사전등록·고정) | `%s ~ %s` |" % tuple(leb.get("window") or ["—", "—"]))
+    L.append("| 판정 창 | %s ~ |" % leb.get("judgment_start", "—"))
+    L.append("| 코호트 | n=%s · %s거래일 |" % (leb.get("n_cohort", 0), leb.get("n_days", 0)))
+    _p1c = leb.get("cohort") or {}
+    _p1r = leb.get("rest") or {}
+    if _p1c:
+        L.append("| 코호트 손익 | %s원 · 건당 %s원 · 승률 %.0f%% · 음수일 %s/%s |" % (
+            _fmt_krw(_p1c.get("total_pnl_krw", 0)), _fmt_krw(_p1c.get("avg_pnl_krw", 0)),
+            100.0 * float(_p1c.get("win_rate", 0) or 0),
+            _p1c.get("neg_days", 0), _p1c.get("days", 0)))
+    if _p1r:
+        L.append("| 잔여(그 외 시각) | n=%s · 건당 %s원 · 승률 %.0f%% |" % (
+            _p1r.get("n", 0), _fmt_krw(_p1r.get("avg_pnl_krw", 0)),
+            100.0 * float(_p1r.get("win_rate", 0) or 0)))
+    _c58cond = leb.get("conditions") or {}
+    if _c58cond:
+        L.append("| FAIL 4조건 | 표본 %s · 일자열위 %s · drop-worst %s · **ATR잔여 %s** |" % (
+            "✅" if _c58cond.get("n_and_days") else "❌",
+            "✅" if _c58cond.get("paired_inferior") else "❌",
+            "✅" if _c58cond.get("drop_worst_still_negative") else "❌",
+            "✅" if _c58cond.get("atr_residual") else "❌"))
+    _c58ar = leb.get("atr_residual") or {}
+    if _c58ar:
+        L.append("| ATR 층화 잔여 | p_일자 %s → **p_일자+ATR %s** (블록 %s) |" % (
+            _c58ar.get("p_withinday", "—"), _c58ar.get("p_withinday_atr", "—"),
+            _c58ar.get("blocks", "—")))
+    if leb.get("reason"):
+        L.append("| 보류 사유 | %s |" % leb["reason"])
+    if leb.get("recommendation"):
+        L.append("| 권고 | %s |" % leb["recommendation"])
+    if leb.get("error"):
+        L.append("| ⚠ 오류 | %s |" % leb["error"])
+    _c58pw = leb.get("pre_window") or {}
+    if _c58pw:
+        _c58pc, _c58pr = _c58pw.get("cohort") or {}, _c58pw.get("rest") or {}
+        L.append("")
+        L.append("**가설 생성 구간 (%s ~ %s) — 🔴 판정 무영향 · 집행 근거 아님**" % tuple(
+            _c58pw.get("range") or ["—", "—"]))
+        L.append("")
+        L.append("| 코호트 | n | 일수 | 순손익 | 건당 | 승률 | 음수일 |")
+        L.append("|---|---|---|---|---|---|---|")
+        for _c58lab, _c58s in (("13:00~13:30", _c58pc), ("그 외 시각", _c58pr)):
+            if _c58s:
+                L.append("| %s | %s | %s | %s | %s | %.0f%% | %s/%s |" % (
+                    _c58lab, _c58s.get("n", 0), _c58s.get("days", 0),
+                    _fmt_krw(_c58s.get("total_pnl_krw", 0)),
+                    _fmt_krw(_c58s.get("avg_pnl_krw", 0)),
+                    100.0 * float(_c58s.get("win_rate", 0) or 0),
+                    _c58s.get("neg_days", 0), _c58s.get("days", 0)))
+    L.append("")
+    L.append("> **무엇을 묻나.** *\"13:00~13:30 진입을 막았다면 무엇을 포기했나.\"*")
+    L.append("> 2026-09-03 사용자 지시로 신설했다. 코호트는 **실제 체결된 진입**이라")
+    L.append("> 반사실 재구성이 없다 — 실현손익이 곧 금지의 대가/이득이다.")
+    L.append("> ")
+    L.append("> 🔴 **집행하지 않는다.** `TIME_ZONES`·`ZONE_ENTRY_BAN_ENFORCE`·진입 로직을")
+    L.append("> 건드리지 않았다. 이 채널은 계측이며 집행 여부는 판정 후 주간회의가 정한다.")
+    L.append("> ")
+    L.append("> 🔴 **창(13:00~13:30)은 관측에서 골랐다 — 사후탐색이다.** 0903 실측 15분")
+    L.append("> 버킷(13:00-15 −633,537 / 13:15-30 −322,993 / 13:30-45 **+4,428** /")
+    L.append("> 13:45-14:00 −346,370)을 보고 앞 30분을 자른 것이므로, 판정 창을 배선")
+    L.append("> 다음 거래일부터로 두고 그 이전은 「가설 생성 구간」으로만 병기한다.")
+    L.append("> ")
+    L.append("> 🔴 **④ ATR 층화 잔여 조건은 문턱을 낮춘 것이 아니라 높인 것이다.**")
+    L.append("> O-69 판정에서 13시대 열위는 ATR 층화 후 소멸했다(p=0.091 → 0.57).")
+    L.append("> 시간 기반 금지는 *시간대 고유 효과*가 있을 때만 정당하고, 저변동 진입")
+    L.append("> 문제라면 처방은 시간이 아니라 [51]·[25]·[10] 축이다.")
+    L.append("> ")
+    L.append("> ⚠ **[53]과 모집단이 다르다 — 합치지 말 것.** [53]은")
+    L.append("> `banned_zones=(OTHER, EXIT_ONLY, PRE_MARKET)` 위반 코호트를 재며 사전등록이")
+    L.append("> 걸려 있다. 거기에 이 창을 끼우면 판정 대상이 바뀌어 검증 시계가 리셋된다.")
+    L.append("> ")
+    L.append("> ⚠ **대체 진입 효과 미반영** — 막았다면 다른 분에 진입했을 수 있다.")
+    L.append("> ⚠ 승격 시 배선은 라우터다: `TIME_ZONES`에 `LUNCH_RECOVERY_EARLY` 신설 +")
+    L.append("> `ZONE_MIN_CONF`·`C_AUTO_EXP_ZONES`·`main.py:_trend_mc_zones` **세 표에**")
+    L.append("> **키 동반 추가**. 하나라도 빠지면 조용한 정책 변경이 된다.")
+    L.append("")
+    L.append("---")
+    L.append("")
+
+    # ── [MW0602 526차 후속8 / P-3] [59] 소진 피처 live 전환 조건ⓐ ────────────────
+    L.append("## [59] 소진 피처 live 전환 조건ⓐ (394차 사전등록) — 526차 후속8 신설")
+    L.append("")
+    L.append("| 항목 | 값 |")
+    L.append("|---|---|")
+    L.append("| 판정 | %s |" % _fmt_verdict(ers.get("verdict", "")))
+    L.append("| `EXHAUSTION_RESTORE_MODE` | **%s** (자동 전환 없음) |" % ers.get("restore_mode", "—"))
+    L.append("| 판정 창 | %s ~ |" % ers.get("judgment_start", "—"))
+    L.append("| 판정 모집단 | MR 자격(`|vwap|>1.5` ∧ 강도≥%.2f) %s |" % (
+        ers.get("mr_weak_min", 0.60), "**한정**" if ers.get("require_mr_eligible") else "전체"))
+    L.append("| 판정 호라이즌 | **%s분 단일**(다중검정 회피) · 참고 %s |" % (
+        ers.get("judgment_horizon_min", 10),
+        ", ".join("%s분" % x for x in (ers.get("aux_horizons_min") or []))))
+    L.append("| 발화(캠페인 전 구간) | %s분 — bull %s / **bear %s** |" % (
+        ers.get("n_firings_all", 0), ers.get("n_bull", 0), ers.get("n_bear", 0)))
+    _e59 = ers.get("main") or {}
+    if _e59.get("n"):
+        L.append("| 판정 코호트 | n=%s · %s거래일 |" % (_e59["n"], _e59.get("days", "—")))
+        L.append("| 기대방향 수익 | 평균 **%+.3fpt** · 중앙 %+.3f · 적중 %.0f%% |" % (
+            _e59["mean_pt"], _e59.get("median_pt", 0), 100.0 * float(_e59.get("hit_rate", 0) or 0)))
+        L.append("| 일자 부호검정 | 양 %s / 음 %s · **p=%.4f** |" % (
+            _e59.get("days_positive", 0), _e59.get("days_negative", 0), _e59.get("sign_p", 1.0)))
+        if _e59.get("mean_ex_worst_day") is not None:
+            L.append("| 최악일 제외 평균 | %+.3fpt (제외일 %s) |" % (
+                _e59["mean_ex_worst_day"], _e59.get("worst_day", "—")))
+    else:
+        L.append("| 판정 코호트 | n=0 |")
+    _c59 = ers.get("conditions") or {}
+    if _c59:
+        L.append("| 조건ⓐ 3검 | 유의 %s · 평균 양 %s · drop-worst %s |" % (
+            "✅" if _c59.get("sign_significant") else "❌",
+            "✅" if _c59.get("mean_positive") else "❌",
+            "✅" if _c59.get("drop_worst_still_positive") else "❌"))
+    for _t59, _v59 in sorted((ers.get("by_tier") or {}).items()):
+        if _v59.get("n"):
+            L.append("| 층 %s | n=%s · 평균 %+.3fpt · 적중 %.0f%% · 일 %s/%s |" % (
+                _t59, _v59["n"], _v59["mean_pt"],
+                100.0 * float(_v59.get("hit_rate", 0) or 0),
+                _v59.get("days_positive", 0), _v59.get("days", 0)))
+    for _t59, _v59 in sorted((ers.get("aux") or {}).items()):
+        if _v59.get("n"):
+            L.append("| 참고 %s | 평균 %+.3fpt · 적중 %.0f%% (판정 무관) |" % (
+                _t59, _v59["mean_pt"], 100.0 * float(_v59.get("hit_rate", 0) or 0)))
+    _d59 = ers.get("dropped") or {}
+    if _d59:
+        L.append("| 스캔·탈락 | %s행 스캔 · JSON불량 %s · vwap결손 %s |" % (
+            _d59.get("scanned", 0), _d59.get("bad_json", 0), _d59.get("no_vwap", 0)))
+    if ers.get("reason"):
+        L.append("| 보류 사유 | %s |" % ers["reason"])
+    if ers.get("recommendation"):
+        L.append("| 권고 | %s |" % ers["recommendation"])
+    if ers.get("error"):
+        L.append("| ⚠ 오류 | %s |" % ers["error"])
+    _p59 = ers.get("pre_window") or {}
+    if _p59:
+        _pc59 = _p59.get("judgment_cohort") or {}
+        L.append("")
+        L.append("**가설 생성 구간 (%s ~ %s) — 🔴 판정 무영향 · 전환 근거 아님**" % tuple(
+            _p59.get("range") or ["—", "—"]))
+        L.append("")
+        L.append("| 발화 | MR 자격 | n | 평균 | 적중 | 일 양/음 | 부호검정 p |")
+        L.append("|---|---|---|---|---|---|---|")
+        L.append("| %s분 | %s분 | %s | %s | %s | %s/%s | %s |" % (
+            _p59.get("n_all", 0), _p59.get("n_mr_eligible", 0), _pc59.get("n", 0),
+            ("%+.3fpt" % _pc59["mean_pt"]) if _pc59.get("n") else "—",
+            ("%.0f%%" % (100.0 * _pc59["hit_rate"])) if _pc59.get("n") else "—",
+            _pc59.get("days_positive", "—"), _pc59.get("days_negative", "—"),
+            ("%.4f" % _pc59["sign_p"]) if _pc59.get("n") else "—"))
+    L.append("")
+    L.append("> **무엇을 묻나.** 394차(2026-07-27)가 소진 피처 live 전환 조건 **ⓐ**를")
+    L.append("> *\"발화 시점 사후수익률이 기대방향 기준 일자단위로 유의하게 양(+)\"* 으로")
+    L.append("> 사전등록했는데 **그것을 계산하는 코드가 어디에도 없었다.** CB②·CB③-P4·")
+    L.append("> FP-CRITICAL과 같은 \"재검토하기로 했는데 안 함\" 경로라 채널로 옮겼다.")
+    L.append("> ")
+    L.append("> 🔴 **SUPPORTS_LIVE 는 \"바꿔라\"가 아니다** — ⓐ 하나를 통과했다는 뜻이고")
+    L.append("> **%d주 연속** 확인 + ⓑ(교정값 포함 EOD 재학습) + ⓒ(탈진 레짐 발생률·챔피언" % (
+        int((VALIDATION_CAMPAIGN.get("exhaustion_restore_watch") or {}).get(
+            "consecutive_weeks_required", 2))))
+    L.append("> 승격 정책)가 남는다. 전환은 사람이 주간회의에서 한다.")
+    L.append("> ")
+    L.append("> 🔴 **전환은 SHORT 편향을 키운다.** 교정 후에도 `bear_exhaustion_shadow` 는")
+    L.append("> 발화가 없어(위 표 bear 칸) **LONG MR 은 열리지 않고 SHORT MR 만 열린다.**")
+    L.append("> `O-11`·`O-19` 방향 편향과 함께 볼 것.")
+    L.append("> ")
+    L.append("> ⚠ **판정 모집단은 MR 자격 코호트다** — live 가 실제로 여는 문이 checklist")
+    L.append("> `3_vwap` MR 분기이고 그 분기는 `|vwap_position|>1.5` 를 함께 요구하기 때문이다.")
+    L.append("> 전체 발화로 판정하면 거래되지 않을 분까지 세어 ⓐ를 잘못 통과시킨다.")
+    L.append("> ⚠ **판정 호라이즌은 10분 하나**다(다중검정 회피). 30분은 참고 병기다.")
+    L.append("> ⚠ 미시레짐 「탈진」자체는 **전 기간 0건**이고, live 로 바꿔도 켜지는 순간")
+    L.append("> `RegimeChampGate`(챔피언 None)와 checklist `2_confidence=0.56` 이 진입을 막는다 —")
+    L.append("> 상세: `docs/정기점검/매일점검/MW0602-20260903-탈진레짐-조사보고.md`.")
     L.append("")
     L.append("---")
     L.append("")
