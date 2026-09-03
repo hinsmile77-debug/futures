@@ -765,6 +765,12 @@ class TradingSystem:
         # 현재 레짐
         self.current_regime         = "NEUTRAL"
         self.current_micro_regime   = "혼합"
+        # [MW0601 526차 / F-A] 미시 레짐 판정 근거·데이터이상 플래그 — 명시 초기화(계측 4원칙 ④).
+        # `regime`은 변동성(①②)로만 정해지고, z경고(③)는 `_micro_data_anomaly`로 분리된다.
+        self._micro_regime_source: str = "none"
+        self._micro_data_anomaly: bool = False
+        self._micro_z_warn_count: int = 0
+        self._micro_regime_legacy: str = "혼합"
         self.current_intraday_regime = INTRADAY_NORMAL   # Layer 2 장중 전술 레짐
         self._verified_today: int = 0        # 당일 SGD 검증 누적 건수
         self._efficacy_tick:  int = 0        # 5분마다 효과 검증 패널 갱신용
@@ -6664,6 +6670,14 @@ class TradingSystem:
         )
 
         # 미시 레짐 업데이트 (v6.5) — MicroRegimeClassifier: ADX 자체 계산
+        # [526차 / F-A] 재기동 리플레이(과거 분봉 연속 주입) 중에는 `last_z_warn_count`가
+        # 그 봉의 것이 아니다 — 06-17~08-21 리플레이 전환 273건이 그렇게 생겼다(실제 판단
+        # 반영 3건). 봉 ts가 현재보다 150초 이상 과거면 리플레이로 보고 z경고를 0으로 넘긴다.
+        try:
+            _mr_bar_dt = datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+            _mr_replay = (datetime.datetime.now() - _mr_bar_dt).total_seconds() > 150.0
+        except Exception:
+            _mr_replay = False
         _mr = self.micro_regime_clf.push_1m_candle(
             high             = float(bar.get("high", close) or close),
             low              = float(bar.get("low",  close) or close),
@@ -6671,9 +6685,15 @@ class TradingSystem:
             bear_exhaustion  = float(features.get("bear_exhaustion",  0.0) or 0.0),
             bull_exhaustion  = float(features.get("bull_exhaustion",  0.0) or 0.0),
             vwap_position    = float(features.get("vwap_position",    0.0) or 0.0),
-            z_warn_count     = getattr(self.model, "last_z_warn_count", 0),
+            z_warn_count     = (0 if _mr_replay
+                                else getattr(self.model, "last_z_warn_count", 0)),
         )
         self.current_micro_regime = _mr["regime"]
+        # [526차 / F-A] 판정 근거·데이터이상 플래그 — RegimeOverride(STEP 6)·STEP 9 저장이 읽는다
+        self._micro_regime_source = str(_mr.get("regime_source") or "none")
+        self._micro_data_anomaly  = bool(_mr.get("data_anomaly", False))
+        self._micro_z_warn_count  = int(_mr.get("z_warn_count", 0) or 0)
+        self._micro_regime_legacy = str(_mr.get("regime_legacy") or _mr["regime"])
         self._micro_regime_instability = _mr.get("instability_10m", 0)   # [359차]
         self.dashboard.update_micro_regime(
             _mr["regime"], _mr["adx"], _mr["atr_ratio"], _mr["regime_duration"]
@@ -6692,7 +6712,10 @@ class TradingSystem:
             log_manager.signal(
                 f"[MicroRegime] 레짐 변경 → {_mr['regime']} "
                 f"(ADX={_mr['adx']:.1f} ATR비={_mr['atr_ratio']:.2f} "
-                f"지속={_mr['regime_duration']}분)"
+                f"지속={_mr['regime_duration']}분 "
+                f"근거={_mr.get('regime_source', 'none')} z={_mr.get('z_warn_count', 0)}"
+                f"{' data_anomaly' if _mr.get('data_anomaly') else ''}"
+                f"{' replay' if _mr_replay else ''})"
             )
 
         # ATR Circuit Breaker
@@ -7697,6 +7720,7 @@ class TradingSystem:
             from config.strategy_params import (
                 apply_regime_overrides as _aro,
                 is_entry_blocked as _ieb,
+                zwarn_gate_blocks as _zwarn_gate_blocks,
                 PARAM_CURRENT as _PC,
             )
             _MICRO_EN = {
@@ -7713,6 +7737,23 @@ class TradingSystem:
                 log_manager.signal(
                     f"[RegimeOverride] 진입 금지 "
                     f"— {self.current_regime}×{self.current_micro_regime}"
+                    f" (근거={self._micro_regime_source})"
+                )
+            elif self._micro_data_anomaly and _zwarn_gate_blocks(
+                    runtime_settings.MICRO_REGIME_ZWARN_GATE):
+                # [MW0601 526차 / F-A] 종전에는 이 분이 '급변장'으로 라벨링돼 위 분기에서
+                # 막혔다(62차 ③ z_warn>=3 조건). 라벨은 분리했지만 **차단은 동일하게
+                # 유지**한다 — 막히는 분 집합이 같다(매매 동작 불변). 사유만 가른다:
+                # 변동성 차단은 RegimeOverride, 모델 입력 이상은 DataAnomalyGate.
+                # 이 게이트의 손익은 캠페인 채널 `data_anomaly_gate_watch`(P5-13)가 재고,
+                # 처분(block→reduce/off)은 그 판정 뒤 MICRO_REGIME_ZWARN_GATE 로 바꾼다.
+                direction = 0
+                grade     = "X"
+                decision["checklist_reason"] = "DataAnomalyGate"
+                log_manager.signal(
+                    f"[DataAnomalyGate] 진입 금지 — z경고 피처 {self._micro_z_warn_count}개"
+                    f"(>={self.micro_regime_clf.Z_WARN_ANOMALY_MIN}) 레짐={self.current_micro_regime}"
+                    f" mode={runtime_settings.MICRO_REGIME_ZWARN_GATE}"
                 )
         except Exception as _ro_e:
             logger.debug("[RegimeOverride] 적용 실패 (스킵): %s", _ro_e)
@@ -10467,6 +10508,10 @@ class TradingSystem:
             decision["fp_psi"], decision["fp_level"] = self._fp_last_psi
         else:
             decision["fp_psi"] = decision["fp_level"] = None
+        # [MW0601 526차 / F-A] 미시 레짐 판정 근거·데이터이상·종전 라벨 영속
+        decision["micro_regime_source"] = self._micro_regime_source
+        decision["data_anomaly"] = int(bool(self._micro_data_anomaly))
+        decision["micro_regime_legacy"] = self._micro_regime_legacy
 
         _feat_clean = {k: round(float(v), 4) for k, v in features.items()
                        if v is not None and v == v}
@@ -12231,6 +12276,10 @@ class TradingSystem:
         self._hz_bar_age.clear()
         self.micro_regime_clf.reset_daily()
         self.current_micro_regime = "혼합"  # threshold_feasibility 피처에 1분 lag로 전달됨
+        self._micro_regime_source = "none"          # [526차 / F-A]
+        self._micro_data_anomaly = False
+        self._micro_z_warn_count = 0
+        self._micro_regime_legacy = "혼합"
         self.intraday_regime.reset_daily()
         self.current_intraday_regime = INTRADAY_NORMAL
         self.day_regime_engine.reset_daily()

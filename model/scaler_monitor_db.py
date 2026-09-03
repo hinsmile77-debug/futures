@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS scaler_events (
     max_z          REAL,
     max_z_feature  TEXT,
     extreme_count  INTEGER DEFAULT 0,
+    extreme_count_adj INTEGER,
     raw_value      REAL,
     pre_value      REAL,
     scaler_mean    REAL,
@@ -118,6 +119,10 @@ def init_db() -> None:
             ("pre_value",   "REAL"),
             ("scaler_mean", "REAL"),
             ("scaler_std",  "REAL"),
+            # [MW0601 526차 / F-C] 모니터 전용 보정 극단 피처 수(quality_* 제외·항등 그룹 dedupe).
+            # DEFAULT 없음 — 기존 행은 NULL = 미측정(계측 4원칙 ②). 게이트 입력은 여전히
+            # `extreme_count`(보정 전)다 — 두 값을 병기해 채널 P5-13 판정 뒤 처분한다.
+            ("extreme_count_adj", "INTEGER"),
         ]:
             if col not in existing:
                 c.execute("ALTER TABLE scaler_events ADD COLUMN %s %s" % (col, typedef))
@@ -145,13 +150,14 @@ def insert_events_batch(rows: List[dict]) -> None:
             c.executemany(
                 """INSERT INTO scaler_events
                    (ts, date, horizon, fitted_at, age_minutes,
-                    max_z, max_z_feature, extreme_count,
+                    max_z, max_z_feature, extreme_count, extreme_count_adj,
                     raw_value, pre_value, scaler_mean, scaler_std)
                    VALUES
                    (:ts, :date, :horizon, :fitted_at, :age_minutes,
-                    :max_z, :max_z_feature, :extreme_count,
+                    :max_z, :max_z_feature, :extreme_count, :extreme_count_adj,
                     :raw_value, :pre_value, :scaler_mean, :scaler_std)""",
-                rows,
+                # [526차 / F-C] 구버전 행(키 부재)은 NULL = 미측정
+                [dict(r, extreme_count_adj=r.get("extreme_count_adj")) for r in rows],
             )
             c.commit()
     except Exception as _e:

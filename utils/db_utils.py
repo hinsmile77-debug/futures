@@ -551,6 +551,19 @@ def _migrate_ensemble_decisions_db():
                 # ⚠ 이름은 `joint_gate_shadow.meta_size_fallback` 과 맞췄다.
                 #   두 테이블을 조인해 읽을 때 같은 사실이 다른 이름이면 안 된다.
                 "meta_size_fallback": "INTEGER",
+                # ── [MW0601 526차 / F-A] 미시 레짐 라벨·데이터이상 게이트 분리 ──
+                # 급변장 라벨의 82%(정규 전환 207건 중 169건, scaler_monitor.db 대조)가
+                # 변동성이 아니라 「직전 분 |z|>4 피처 ≥3」(62차 ③ 조건)에서 나왔다.
+                # 라벨(`micro_regime`)은 변동성(①②)로만 정하고, ③은 `data_anomaly`로
+                # 분리해 같은 지점에서 **동일하게 차단**한다(매매 동작 불변).
+                #   micro_regime_source : 'atr15' | 'atr125_adx' | 'none' — 급변장 근거
+                #   data_anomaly        : 1/0 — z경고 피처 >= Z_WARN_ANOMALY_MIN
+                #   micro_regime_legacy : 종전 라벨(③ 포함) — 배선 전후 대조·섀도 전용
+                # ⚠ 526차 이전 행은 NULL = **미측정**이지 "이상 없음"이 아니다(계측 4원칙 ②).
+                #   그 구간의 대리 지표는 `features.atr_ratio < 1.25`(채널 legacy_proxy).
+                "micro_regime_source": "TEXT",
+                "data_anomaly": "INTEGER",
+                "micro_regime_legacy": "TEXT",
             }
             for name, dtype in additions.items():
                 if name not in cols:

@@ -1555,6 +1555,18 @@ VOLATILITY_BURST_ACTION = (
 VOLATILITY_BURST_SIZE_MULT = 0.5  # action="reduce"일 때 사이즈 배수
 VOLATILITY_BURST_STOP_WIDEN_MULT = 1.5  # action="reduce"일 때 스톱 거리 확대 배수
 
+# [MW0601 526차 / F-A] 데이터이상 게이트 — 급변장 라벨에서 분리한 ③ z_warn 조건의 처분.
+# 배경: 62차(2026-05-19)가 `MicroRegimeClassifier`에 「스케일러 |z|>4 피처 ≥3 → 급변장」을
+#   보조 조건으로 넣었는데, 실측(06-17~09-03, scaler_monitor.db 대조)에서 정규 급변장 전환
+#   207건 중 169건(82%)이 이 조건이었고 그 분의 변동성은 평상시였다(급변장 분의 52%).
+#   1위 z 피처는 시장값이 아니라 수집 카운터 `quality_investor_fetch_count`.
+# 손익: 그 분의 차단을 풀어줘도 벌지 못한다 — 실제 진입 후보 107건/34일 봉 시뮬 net
+#   −228,986원(수수료 포함, 일자 +23/−11 p=0.06). 그래서 **라벨만 분리하고 차단은 유지**한다.
+# 값: "block"(현행·기본 — 종전과 동일하게 신규 진입 차단) / "off"(라벨만 남기고 통과) /
+#     "reduce"(사이즈 축소 — F-B 판정 뒤 배선 예정, 배선 전에는 block으로 처리).
+# 🔴 변경은 캠페인 채널 `data_anomaly_gate_watch`(P5-13) 판정 뒤 주간회의 결정으로만.
+MICRO_REGIME_ZWARN_GATE = "block"
+
 # [260704 감사 P1] 신호 소멸 청산 — 보유 포지션과 반대 방향의 앙상블 신호가
 # zone_mc(시간대×호라이즌 동적 min_conf) 이상으로 확정되는 시점을 기록한다.
 # 근거: _archive/docs/260704_SYSTEM_AUDIT_UPGRADE_PROPOSAL.md §3-2 ①
@@ -4560,6 +4572,38 @@ VALIDATION_CAMPAIGN = {
         # 항목 ④(고te 구간 TP 확대) 표본을 같은 테이블에 적립한다 — 이 분위 이상을
         # 고te로 본다.
         "tp_expansion_watch_quantile": 0.75,
+    },
+    # ── [MW0601 526차 / P5-13] 데이터이상 게이트(DataAnomalyGate) 손익 — 사전등록 ──────
+    #
+    # 무엇을 묻는가: 급변장 라벨에서 분리한 「z경고 피처 ≥3」 차단이 돈을 지키는가.
+    #   지키면 "block" 유지, 못 지키면 "reduce"→"off" 순으로 처분(MICRO_REGIME_ZWARN_GATE).
+    # 모집단: `ensemble_decisions.checklist_reason='DataAnomalyGate'` 且 direction≠0 且
+    #   **실제 진입 후보**(conf ≥ min_conf · grade 'C' · auto_entry=1). 차단된 신호라 실거래가
+    #   없으므로 봉 단위 반사실 시뮬(다음 봉 시가 진입 · 손절 1.5·TP1 0.5(1/3, 보호스톱)·
+    #   TP2 1.5 ATR14 · 최대 30봉 · 같은 봉 겹침은 손절 우선)로 재고, **왕복 수수료를 뺀 net**
+    #   으로 판정한다(수수료가 이익을 삼킨 것이 526차 소급 결과의 핵심이었다).
+    # 배선 전 구간(~2026-09-03)은 대리 지표 `checklist_reason='RegimeOverride'` 且
+    #   `features.atr_ratio < 1.25`로 소급한다(legacy_proxy — 보고서에 별도 표기).
+    # 소급값(526차, T3): 107건(비중첩)/34일 net −228,986원 · 일자 +23/−11 p=0.06 → FAIL 시작.
+    # ⚠ 합격선은 여기서만 온다. 방향(SHORT만 +88만) 층화는 **보고 열**일 뿐 판정에 넣지 않는다
+    #   (458차 D6 — 사후 층화 금지).
+    "data_anomaly_gate_watch": {
+        "enabled": True,
+        "data_start": "2026-06-19",          # RegimeOverride 사유 기록 시작일(대리 지표 구간 포함)
+        "reasons": ["DataAnomalyGate"],       # F-A 배선 후 정식 모집단
+        "legacy_proxy": {"reason": "RegimeOverride", "atr_ratio_max": 1.25},
+        "candidate_filter": {"grade": "C", "auto_entry": 1, "conf_ge_min_conf": True},
+        "nonoverlap_min": 3,                  # 313차 ② — 3분 내 중복 신호는 첫 건만
+        "min_samples": 30,                    # 비중첩 후보 수 하한
+        "min_days": 10,                       # 후보 발생 거래일 수 하한
+        "alpha": 0.05,                        # 일자단위 부호검정(양측)
+        "drop_best_days": 3,                  # 313차 ③ — 최고 3일 제거 후 부호 유지 요구
+        "require_net_positive": True,         # 수수료 차감 net > 0 이어야 "풀어도 된다"
+        "sim": {"stop_atr": 1.5, "tp1_atr": 0.5, "tp2_atr": 1.5,
+                "tp1_fraction": 0.3333, "max_bars": 30, "atr_window": 14},
+        "pt_value_krw": 50_000,               # 미니선물 1pt = MINI_FUTURES_PT_VALUE
+        "commission_source": "settings",      # FUTURES_COMMISSION_RATE × 약정금액 × 2(왕복)
+        "promotion_order": ["reduce", "off"], # 하드 해제 직행 금지(317차 FalseBlock 교훈)
     },
     # 캠페인 시작일 — 이 날짜 이후 데이터만 판정에 사용 (290차 배포 시점)
     "start_date": "2026-07-05",

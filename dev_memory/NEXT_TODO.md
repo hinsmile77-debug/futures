@@ -18999,3 +18999,101 @@ docs/정기점검/매일점검/evidence_MW0601-20260826_post.md
 - [ ] 정체불명 매매 38건 · 09-02 손실 포지션 본인 여부 확인
 - [ ] 대신증권 계좌·정산(-556만원) 직접 확인
 - [ ] **CB② 발동 1회 관측** — 실전 전환 기준 ⑤의 남은 조건. 인위적으로 만들지 말 것.
+
+## 2026-09-03 (MW0601 524차 — 지수흐름×진입청산 딥다이브)
+
+> 상세: `DECISION_LOG.md` 2026-09-03(524차) · `docs/정기점검/매일점검/MW0601-20260903-지수흐름x진입청산-딥다이브.md`.
+> 코드 변경 0. 아래는 전부 **섀도·채널 제안**(라이브 무변경) — 사용자 승인 후 구현.
+
+### 신규 등록 (사용자 승인 대기)
+
+- [ ] **524-1 / P5-10** `VALIDATION_CAMPAIGN["regime_override_volatile_watch"]` 신설 —
+      `ensemble_decisions.checklist_reason='RegimeOverride'` 행 × `raw_candles` 봉 시뮬(손절 1.5·TP1 0.5·TP2 1.5 ATR,
+      손절 우선) + `spread_ticks` 차감 열. 사전등록: 급변장일 `min_days=8` 且 비중첩(3분) `min_samples=30` ·
+      일자단위 부호검정 p<0.05 · drop-worst-day 부호 유지 · 스프레드 차감 후 양수 → 주간회의 안건.
+      첫 표본: 09-03 D창 16건(+36.8pt 상한) · 08-10 A급 SHORT 5건(456차) 소급.
+      변경: `config/settings.py` · `scripts/generate_validation_campaign_report.py` · `tests/test_524_*`.
+- [ ] **524-2 / P5-11** `main.py:7778` σ워밍업 **섀도 로그** `[SigmaWarmupShadow] 본장σ(n)=… 프리장포함σ(n+15)=… 괴리=…`
+      + 갭데이(`|시가−전일종가| ≥ ATR×3`) 한정 채널 `sigma_warmup_gap_watch`. 판정: 갭데이 `min_days=8` ·
+      괴리 중앙값 <15% 且 차단신호 봉 시뮬 일자단위 p<0.05 → 워밍업 원천 변경 안건. 진입 판정(09:20 해제) 무변경.
+      갭데이가 드물면 26주 WFA 항목으로 이관.
+- [ ] **524-3** [16] `chase_foreign_combo_watch`에 사전등록 판정식 추가 — `min_samples=20` 且 `min_days=10` ·
+      강등후보 A등급 포지션 일자단위 순손익 부호검정 p<0.05 → 강등 승격 안건. 현재 "순수 관찰용 — 판정 없음"
+      (`settings.py:2472`). 09-03 표본 +2(C2 −168,566 · C5 −1,260).
+
+### 관측 예정 (다음 장후가 닫는다)
+
+- [ ] **O-t5** `[TrendGate] … 지속 모드 ON (streak=10)` 발동 분에 같은 방향으로 진입한 포지션 — 5건 쌓이면 승률·평균 MAE 집계. 1번: C4 11:02 SHORT −2.08pt.
+- [ ] **O-t6** 1m 호라이즌 포지션의 TP1→보호스톱 간격(초) — 중앙값 <30초면 P5-03에 "1m 1틱 기하(TP1 ATR×0.3 vs lock ATR×0.25)" 항목 편입. 1번: C6 0초(같은 초).
+- [ ] **O-t7** `[ChaseForeignComboGuard] 강등 후보` 표시 진입의 손익 — 524-3 판정식.
+
+### 누적대장 갱신(완료)
+
+- [x] P5-03 +3건(C5·C6·C7) → 5건/2거래일 · P5-07 +1건(C5) → 4건/2거래일 · P5-10·P5-11 신규 행.
+## 2026-09-03 (MW0601 525차 — 급변장 기준·차단 손익 딥다이브)
+
+> 상세: `DECISION_LOG.md` 2026-09-03(525차) · `docs/정기점검/매일점검/MW0601-20260903-급변장기준과차단손익-딥다이브.md`.
+> 코드 변경 0. 전부 계측·채널 — 사용자 승인 후 구현.
+
+### 신규 등록
+
+- [ ] **525-1 (P1 이상점 1-4 · 계측)** 급변장 판정 근거 라벨링 — `collection/macro/micro_regime.py:_classify` →
+      `regime_source ∈ {atr15, atr125_adx, z_warn}` 반환, `push_1m_candle` 결과·`[MicroRegime] 레짐 변경` 로그에 `근거=` 동봉,
+      `ensemble_decisions.micro_regime_source`(NULL=미측정) 적재, 수집기 §5에 일별 분기 집계. **판정 로직 무변경.**
+      검증 `tests/test_525_micro_regime_source.py`(세 분기 + 09-03 14:08 = `atr125_adx`). 자동조치 A등급 후보(계측 배선).
+- [ ] **525-2 / P5-12** 채널 `volatile_release_reentry_watch` + `trades.minutes_since_volatile` 적재 —
+      판정식 `min_samples=20` 且 `min_days=10` 且 일자 p<0.05 且 drop-worst-day 부호 유지 且 동방향/역방향 둘 다 음수.
+      소급: 27건/14일 −1,770,519원, p=0.791 → FAIL 시작. 쿨다운 적용은 판정 후.
+- [ ] **525-3 / P5-10 판정식 확정** `regime_override_volatile_watch`를 (a)진짜 변동성 / (b)z_warn 두 갈래로 —
+      급변장일 `min_days=8` 且 비중첩 3분 `min_samples=30` · 일자 p<0.05 · drop-best-3 부호 유지 · `spread_ticks` 차감 후 양수.
+      소급 (a) 219건 +138.9pt +33/−21 p=0.134 보류 · (b) 391건 p=1.00. 524-1과 통합(524-1은 이 항목으로 흡수).
+- [ ] **525-4 (P2)** 349차 `VolatilityBurstGuard` 07-16 이후 0회 발동 — 임계(틱 600·atr_ratio 1.8) 산출 근거를
+      최근 20거래일 분당 틱수·atr_ratio 분포로 재측정. 죽은 게이트/좁은 게이트 판정. 26주 WFA 항목 편입 후보.
+
+### 관측 예정
+- [ ] **O-t8** 525-1 배선 후 첫 5거래일 급변장 근거 분포(`z_warn` 비중) — 81%가 재현되면 ③ 조건 처분을 주간회의 안건으로.
+## 2026-09-04 (MW0601 526차 — 급변장 라벨 fix 손익·제안)
+
+> 상세: `DECISION_LOG.md` 2026-09-04(526차) · `docs/정기점검/매일점검/MW0601-20260903-급변장라벨fix-손익과제안-딥다이브.md`.
+> 코드 변경 0. **525-1은 526-1로 흡수**(계측만 → 동작 불변 분리로 확장).
+
+### 신규 등록 (사용자 승인 대기)
+
+- [ ] **526-1 / F-A (A등급 후보 · 매매 동작 불변)** 급변장 라벨과 데이터이상 게이트 분리 —
+      `collection/macro/micro_regime.py:_classify` → `(regime, source, data_anomaly)` · `main.py:7709` 차단 = `is_entry_blocked or data_anomaly`
+      (차단 분 집합 동일) · `checklist_reason` `RegimeOverride`/`DataAnomalyGate` 분리 · `ensemble_decisions.micro_regime_source`·`.data_anomaly`
+      (NULL=미측정) · `raw_features_horizon.regime`·`regime_history`는 ③ 제외 라벨 · 리플레이 경로 `z_warn_count=0` ·
+      `config/settings.py: MICRO_REGIME_ZWARN_GATE="block"`. 검증 `tests/test_526_micro_regime_split.py`(3케이스 + 09-03 재생 차단집합 동일).
+      재기동 필요. 525-1 흡수.
+- [ ] **526-2 / P5-13** 채널 `data_anomaly_gate_watch` — 판정식 `min_days=10` 且 비중첩 `min_samples=30` · 일자 p<0.05 · 수수료 포함 net>0 ·
+      drop-best-3 유지 → `"reduce"` 안건. 소급 T3 107건/34일 −228,986 p=0.06 → FAIL 시작. P5-10 (b) 갈래 이관.
+- [ ] **526-3 / F-C (P2)** `_Z_WARN_EXEMPT`에 `quality_*` 12종 추가 + OFI 항등 3종·`cvd_direction` dedupe — **스케일러 모니터 집계·대시보드에만**
+      먼저 적용(두 값 병기). 게이트 k에는 F-B 판정 후.
+
+### 관측 예정
+- [ ] **O-t9** F-A 배선 첫 거래일: `DataAnomalyGate` 분 수 ≈ 종전 z-only 급변장 분 수(일평균 ~12분)인지 · 리플레이 잡음 전환 0건인지.
+## 2026-09-04 (MW0601 526차 후속 — F-A·P5-13·F-C 구현 완료, 사용자 승인)
+
+- [DONE 2026-09-04] **526-1 / F-A** 급변장 라벨 ↔ 데이터이상 게이트 분리 — `_classify_split()` ·
+      `main.py` RegimeOverride/DataAnomalyGate 사유 분리 · 리플레이 가드(150초) · `MICRO_REGIME_ZWARN_GATE="block"` ·
+      `ensemble_decisions` 3컬럼. **실봉 재생 23거래일 8,704분 차단 집합 동일·불일치 0**,
+      `tests/test_526_micro_regime_split.py` 11 passed. **재기동 필요.**
+- [DONE 2026-09-04] **526-2 / P5-13** 채널 `data_anomaly_gate_watch` 신설(settings 사전등록 + 스크립트 + 테스트).
+      첫 판정 **KEEP_BLOCK**(107건/34일 net −348,619 · 일자 p=0.058 · 최고 3일 제거 −1,614,989).
+- [DONE 2026-09-04] **526-3 / F-C** `extreme_count_adj`(quality_* 제외 · 항등 그룹 dedupe) — **모니터·DB 병기 전용**,
+      게이트 입력은 보정 전 값 유지.
+
+### 남은 것
+
+- [ ] **526-4 (P1, 라이브 검증)** 다음 거래일 확인 — ① `[MicroRegime] … 근거=` 로그 출현 ② `DataAnomalyGate` 분 수
+      ≈ 종전 z-only 급변장 분(08-03~09-03 실측 154분/23일 ≈ 7분/일) ③ 리플레이 전환 잡음 0건
+      ④ `micro_regime_source`·`data_anomaly`·`micro_regime_legacy` 적재율 100% ⑤ `[ScalerMonitor] … adj=` 출현.
+- [ ] **526-5 (P2)** P5-13이 `min_days=10`·`min_samples=30`을 **gate 표본만으로** 채우는 시점 재판정
+      (현재는 legacy_proxy 107건). 적립 속도 ≈ 3건/거래일 → 약 10거래일.
+- [ ] **526-6 (P2)** `raw_features_horizon.regime`·`regime_history`가 **③ 제외 라벨**을 저장하는지 확인
+      (F-A는 `current_micro_regime`을 바꿨으므로 자동 반영되지만, 레짐 조건부 채널 `replay_regime`·`hurst_regime`의
+      과거 구간은 여전히 종전 라벨이다 — 시계열 불연속 표기 필요).
+- [ ] **525-4 (P2, 유지)** 349차 `VolatilityBurstGuard` 0회 발동 — 임계 재측정.
+
+### 관측 예정
+- [ ] **O-t9** 위 526-4 5항목. 미달이면 배선 결함으로 즉시 격상.

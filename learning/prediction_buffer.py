@@ -257,6 +257,12 @@ class PredictionBuffer:
             # None은 "미측정"으로 NULL이 되며 0.0(무드리프트)과 구분된다.
             decision.get("fp_psi"),
             decision.get("fp_level"),
+            # [MW0601 526차 / F-A] 미시 레짐 판정 근거(atr15/atr125_adx/none)·데이터이상
+            # 플래그·종전 라벨(③ z_warn 포함). 키 부재(구버전 호출부)는 NULL = 미측정
+            # (계측 4원칙 ②) — `.get(key, 0)` 금지.
+            decision.get("micro_regime_source"),
+            (int(bool(decision["data_anomaly"])) if "data_anomaly" in decision else None),
+            decision.get("micro_regime_legacy"),
         )
 
         with get_conn(PREDICTIONS_DB, timeout=3.0) as conn:  # 3s fail-fast (기본 10s 대비 CB⑤ 5s 이내 실패)
@@ -293,8 +299,9 @@ class PredictionBuffer:
                        confidence_raw, confidence_smoothed, weight_collapsed,
                        meta_size_raw, meta_size_fallback,
                        spread_ticks, spread_extreme_shadow,
-                       fp_psi, fp_level
-                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       fp_psi, fp_level,
+                       micro_regime_source, data_anomaly, micro_regime_legacy
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 ens_row,
             )
 

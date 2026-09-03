@@ -44,6 +44,19 @@ class MicroRegimeClassifier:
     VWAP_EXHAUSTION_MIN = 1.5
     MIN_CANDLES_FOR_ATR = 5
     INSTABILITY_WINDOW_MIN = 10   # [359차] 휩쏘 계측 창 — 최근 N분 내 레짐 전환 횟수
+    # [MW0601 526차 / F-A] 데이터 이상(스케일러 |z|>4 피처 수) 문턱. 62차(2026-05-19)가
+    # "급변장이 안 잡힌다"며 급변장 판정의 **보조 조건**으로 넣었으나, 실측(06-17~09-03,
+    # scaler_monitor.db 대조)에서 정규 파이프라인 급변장 전환 207건 중 169건(82%)이 이
+    # 조건으로 발동했고 그 분의 변동성은 평상시였다(급변장 분의 52%). 즉 "시장 급변"이
+    # 아니라 "모델 입력 이상"이 급변장 라벨의 주 공급원이었다.
+    # → 라벨과 게이트를 **분리**한다: `regime`은 ①atr_ratio≥1.5 / ②≥1.25&ADX≥30 으로만
+    #   정하고, 이 조건은 `data_anomaly` 플래그로 따로 돌려준다. 차단은 main.py의
+    #   RegimeOverride 지점에서 `regime==급변장 or data_anomaly` 로 **종전과 동일하게**
+    #   막는다(매매 동작 불변 — 막히는 분 집합이 같다). `regime_legacy`가 종전 라벨이다.
+    Z_WARN_ANOMALY_MIN = 3
+    SOURCE_ATR15 = "atr15"           # ① atr_ratio >= ATR_VOLATILE_MULT
+    SOURCE_ATR125_ADX = "atr125_adx"  # ② atr_ratio >= 1.25 and ADX >= ATR_VOLATILE_ADX_MIN
+    SOURCE_NONE = "none"             # 급변장 아님
 
     def __init__(self, atr_window: int = 20, adx_window: int = 14):
         self.atr_window = atr_window
@@ -89,7 +102,7 @@ class MicroRegimeClassifier:
         atr_ratio = atr / (atr_avg + 1e-9)
 
         adx = self._compute_adx()
-        new_regime = self._classify(
+        new_regime, regime_source, data_anomaly = self._classify_split(
             adx,
             atr,
             atr_avg,
@@ -99,16 +112,21 @@ class MicroRegimeClassifier:
             vwap_position,
             z_warn_count,
         )
+        # 종전(62차~525차) 라벨 — ③ z_warn 조건이 급변장에 섞여 있던 값. 대조·섀도 전용.
+        regime_legacy = REGIME_VOLATILE if data_anomaly else new_regime
 
         regime_changed = new_regime != self._current_regime
         if regime_changed:
             logger.info(
-                "[MicroRegime] %s → %s (ADX=%.1f, ATR=%.3f, ratio=%.2f)",
+                "[MicroRegime] %s → %s (ADX=%.1f, ATR=%.3f, ratio=%.2f, 근거=%s, z=%d%s)",
                 self._current_regime,
                 new_regime,
                 adx,
                 atr,
                 atr_ratio,
+                regime_source,
+                int(z_warn_count or 0),
+                ", data_anomaly" if data_anomaly else "",
             )
             self._prev_regime = self._current_regime
             self._current_regime = new_regime
@@ -128,6 +146,11 @@ class MicroRegimeClassifier:
 
         return {
             "regime": new_regime,
+            # [526차 / F-A] 판정 근거·데이터이상 플래그·종전 라벨(대조용)
+            "regime_source": regime_source,
+            "data_anomaly": bool(data_anomaly),
+            "z_warn_count": int(z_warn_count or 0),
+            "regime_legacy": regime_legacy,
             "adx": round(adx, 2),
             "atr": round(atr, 4),
             "atr_avg": round(atr_avg, 4),
@@ -151,15 +174,40 @@ class MicroRegimeClassifier:
         vwap_position=0.0,
         z_warn_count=0,
     ) -> str:
+        """종전 의미의 라벨(③ z_warn 포함) — 하위호환·대조 전용. 라이브는 `_classify_split`."""
+        regime, _src, anomaly = self._classify_split(
+            adx, atr, atr_avg, atr_ratio,
+            bear_exhaustion, bull_exhaustion, vwap_position, z_warn_count,
+        )
+        return REGIME_VOLATILE if anomaly else regime
+
+    def _classify_split(
+        self,
+        adx,
+        atr,
+        atr_avg,
+        atr_ratio,
+        bear_exhaustion=0.0,
+        bull_exhaustion=0.0,
+        vwap_position=0.0,
+        z_warn_count=0,
+    ):
+        """(regime, source, data_anomaly) — [526차 / F-A] 라벨과 데이터이상을 분리.
+
+        regime       : ①②(변동성)로만 정한 미시 레짐 라벨
+        source       : 급변장이면 그 근거(SOURCE_ATR15 / SOURCE_ATR125_ADX), 아니면 SOURCE_NONE
+        data_anomaly : z_warn_count >= Z_WARN_ANOMALY_MIN — 시장이 아니라 모델 입력 이상.
+                       차단 여부는 호출자(main.py RegimeOverride)가 정한다.
+        불변식: 종전 라벨 == 급변장  ⇔  (regime == 급변장) or data_anomaly
+        """
         del atr, atr_avg
 
-        volatile = (
-            atr_ratio >= self.ATR_VOLATILE_MULT
-            or z_warn_count >= 3
-            or (atr_ratio >= 1.25 and adx >= self.ATR_VOLATILE_ADX_MIN)
-        )
-        if volatile:
-            return REGIME_VOLATILE
+        data_anomaly = bool(int(z_warn_count or 0) >= self.Z_WARN_ANOMALY_MIN)
+
+        if atr_ratio >= self.ATR_VOLATILE_MULT:
+            return REGIME_VOLATILE, self.SOURCE_ATR15, data_anomaly
+        if atr_ratio >= 1.25 and adx >= self.ATR_VOLATILE_ADX_MIN:
+            return REGIME_VOLATILE, self.SOURCE_ATR125_ADX, data_anomaly
 
         # 탈진장: 급변장과 겹치지 않는 독립 구간 (ATR_EXHAUSTION_MIN ~ ATR_VOLATILE_MULT)
         # ofi_reversal_speed 조건 제거 — bear/bull_exhaustion이 CVD+OFI 복합 신호를 이미 내포
@@ -169,15 +217,15 @@ class MicroRegimeClassifier:
             and abs(vwap_position) >= self.VWAP_EXHAUSTION_MIN
         )
         if exhaustion_conds:
-            return REGIME_EXHAUSTION
+            return REGIME_EXHAUSTION, self.SOURCE_NONE, data_anomaly
 
         if adx >= self.ADX_TREND_THRESHOLD and atr_ratio < self.ATR_TREND_MULT:
-            return REGIME_TREND
+            return REGIME_TREND, self.SOURCE_NONE, data_anomaly
 
         if adx < self.ADX_RANGE_THRESHOLD and atr_ratio < 1.3:
-            return REGIME_RANGE
+            return REGIME_RANGE, self.SOURCE_NONE, data_anomaly
 
-        return REGIME_MIXED
+        return REGIME_MIXED, self.SOURCE_NONE, data_anomaly
 
     def _compute_atr(self) -> float:
         highs = list(self._high_buf)
@@ -243,6 +291,10 @@ class MicroRegimeClassifier:
     def _empty(self) -> Dict:
         return {
             "regime": REGIME_MIXED,
+            "regime_source": self.SOURCE_NONE,
+            "data_anomaly": False,
+            "z_warn_count": 0,
+            "regime_legacy": REGIME_MIXED,
             "adx": 15.0,
             "atr": 0.0,
             "atr_avg": 0.0,

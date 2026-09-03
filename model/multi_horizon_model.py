@@ -180,6 +180,22 @@ class MultiHorizonModel:
         "is_open_volatile",       # 0/1 시간 플래그, 09:00~09:30 항상 z≈5.0
     })
 
+    # [MW0601 526차 / F-C] **모니터 전용** 보정 — `extreme_count_adj`.
+    # 🔴 게이트 k(`extreme_count` → `last_z_warn_count` → DataAnomalyGate)에는 넣지 않는다.
+    #   보정을 게이트에 넣으면 부분 해제가 되는데, 그 손익은 소급 시뮬에서 음수였다
+    #   (526차 T3 net −228,986). 채널 P5-13 판정 전까지 두 값을 **병기**만 한다.
+    # ① `quality_*` 12종: 수집 메타데이터(호출 횟수·stale·age·source code) — 시장값이 아니라
+    #    "측정했는가"를 적는 값이다(계측 4원칙 ②). 1위 z 피처 `quality_investor_fetch_count`
+    #    (=min(fetch_count,5), |z| 중앙값 5.9)가 z경고 줄의 10%를 차지했다.
+    # ② 항등 그룹: 500차 실측 `ofi_imbalance ≡ ofi_norm/3`, `ofi_pressure ≡ sign(ofi_norm)`,
+    #    `cvd_direction`은 `cvd` 부호(0.5 고착). 한 사건이 2~3개로 계수돼 "3개 이상" 문턱이
+    #    실질 1~2개가 된다 — 그룹당 1개로 센다.
+    _Z_WARN_MONITOR_EXEMPT_PREFIXES: tuple = ("quality_",)
+    _Z_WARN_DEDUP_GROUPS: tuple = (
+        frozenset({"ofi_norm", "ofi_imbalance", "ofi_pressure"}),
+        frozenset({"cvd", "cvd_direction"}),
+    )
+
     # 전체 호라이즌 CORE 면제 union — predict_proba AutoMask·chronic 체크에 사용
     # (어느 호라이즌에서라도 CORE인 피처는 전체에서 마스킹 금지)
     _CORE_MASK_EXEMPT: frozenset = frozenset({
@@ -466,6 +482,8 @@ class MultiHorizonModel:
                     if _ew_fn in self._Z_WARN_EXEMPT and _ew_i < len(extreme_mask):
                         extreme_mask[_ew_i] = False
             extreme_count = int(np.sum(extreme_mask))
+            # [526차 / F-C] 모니터 전용 보정값 — 게이트에는 쓰지 않는다(위 상수 주석)
+            extreme_count_adj = self._adjusted_extreme_count(extreme_mask)
             if extreme_count > 0:
                 extreme_summary = self._summarize_extreme_zscores(xs_mon[0], extreme_mask)
                 _ex_key = ("EX", horizon)
@@ -516,6 +534,7 @@ class MultiHorizonModel:
                     "max_z":         round(_max_z_val, 4),
                     "max_z_feature": _max_z_feat,
                     "extreme_count": extreme_count,
+                    "extreme_count_adj": extreme_count_adj,   # [526차 / F-C] 모니터 전용
                     "raw_value":     round(_raw_val, 6) if _raw_val is not None else None,
                     "pre_value":     round(_pre_val, 6) if _pre_val is not None else None,
                     "scaler_mean":   round(_sc_mean, 6) if _sc_mean is not None else None,
@@ -528,9 +547,9 @@ class MultiHorizonModel:
                     _last_sm = self._scaler_warn_throttle.get(_sm_key)
                     if _last_sm is None or (_now_sm - _last_sm).total_seconds() > 600:
                         logger.warning(
-                            "[ScalerMonitor] ts=%s horizon=%s age=%.0fm max_z=%+.2f(%s) extreme=%d",
+                            "[ScalerMonitor] ts=%s horizon=%s age=%.0fm max_z=%+.2f(%s) extreme=%d adj=%d",
                             monitor_ts[11:16], horizon,
-                            _age or 0.0, _max_z_val, _max_z_feat, extreme_count,
+                            _age or 0.0, _max_z_val, _max_z_feat, extreme_count, extreme_count_adj,
                         )
                         self._scaler_warn_throttle[_sm_key] = _now_sm
 
@@ -605,11 +624,17 @@ class MultiHorizonModel:
                 "direction":    direction,
                 "confidence":   round(confidence, 4),
                 "extreme_count": extreme_count,
+                "extreme_count_adj": extreme_count_adj,   # [526차 / F-C] 모니터 전용
             }
 
         # 전체 호라이즌 중 최대 극단 z-score 피처 수 (MarketDNA·대시보드용)
+        # ⚠ [526차] 이 값이 DataAnomalyGate의 입력(k)이다 — **보정 전** 값을 유지한다.
         self.last_z_warn_count = max(
             (r.get("extreme_count", 0) for r in results.values()), default=0
+        )
+        # [526차 / F-C] 보정값(모니터·대시보드 병기용). 게이트에 쓰지 않는다.
+        self.last_z_warn_count_adj = max(
+            (r.get("extreme_count_adj", 0) for r in results.values()), default=0
         )
         # Phase B: 전 호라이즌 union (순서 보존 dedup)
         self.last_extreme_features = list(dict.fromkeys(_all_extreme_names))
@@ -1095,6 +1120,37 @@ class MultiHorizonModel:
         """
         mask = self._canary_z_warn_mask(X_recent)
         return int(np.sum(mask)) if mask is not None else 0
+
+    def _adjusted_extreme_count(self, extreme_mask) -> int:
+        """[MW0601 526차 / F-C] 모니터 전용 보정 극단 피처 수.
+
+        `quality_*` 수집 메타데이터를 제외하고, 항등 그룹(OFI 3종 / cvd·cvd_direction)은
+        그룹당 1개로 센다. **게이트(`last_z_warn_count`)에는 쓰지 않는다.**
+        """
+        try:
+            names = self.feature_names or []
+            if not names:
+                return int(np.sum(extreme_mask))
+            kept = 0
+            seen_groups = set()
+            for i, fn in enumerate(names):
+                if i >= len(extreme_mask) or not extreme_mask[i]:
+                    continue
+                if fn.startswith(self._Z_WARN_MONITOR_EXEMPT_PREFIXES):
+                    continue
+                gid = None
+                for gi, grp in enumerate(self._Z_WARN_DEDUP_GROUPS):
+                    if fn in grp:
+                        gid = gi
+                        break
+                if gid is not None:
+                    if gid in seen_groups:
+                        continue
+                    seen_groups.add(gid)
+                kept += 1
+            return int(kept)
+        except Exception:
+            return int(np.sum(extreme_mask))
 
     def canary_z_warn_features(self, X_recent: np.ndarray) -> list:
         """X_recent에서 z-score 극단인 피처명 리스트 반환 (프리장 Phase refit 진단용).

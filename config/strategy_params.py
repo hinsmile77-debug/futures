@@ -755,6 +755,19 @@ def is_entry_blocked(params: Dict[str, Any]) -> bool:
     return params.get("entry_conf_neutral", 0.0) >= 9999.0
 
 
+def zwarn_gate_blocks(mode: str) -> bool:
+    """[MW0601 526차 / F-A] 데이터이상 게이트(`MICRO_REGIME_ZWARN_GATE`) → 신규 진입 차단 여부.
+
+    "block": 차단(현행 — 종전 급변장 ③ 조건과 동일 동작)
+    "off"  : 통과(라벨만 남기고 막지 않음 — 채널 판정 뒤에만 쓴다)
+    "reduce": 사이즈 축소는 F-B 판정 뒤 배선 예정 — **배선 전에는 안전 쪽(차단)**으로 처리.
+    """
+    m = str(mode or "block").strip().lower()
+    if m == "off":
+        return False
+    return True
+
+
 # ---------------------------------------------------------------------------
 # 타입 힌트 보정 (Python 3.7 호환)
 # ---------------------------------------------------------------------------
