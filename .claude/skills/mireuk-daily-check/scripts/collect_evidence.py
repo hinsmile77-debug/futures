@@ -625,6 +625,36 @@ DEFAULT_CONFIG = {
             },
         },
     },
+    # ── [MW0602 526차 후속 / G-1] 미판정 관측의 나이 ───────────────────────────
+    # §11 은 "오늘 무슨 일이 있었나"를 잡는다. 이 축은 그 반대다 — **판정하기로
+    # 해놓고 아무도 안 한 관측**을 잡는다. `O-47` 이 그 사고였다: 507차(08-31)가
+    # "F-7 배포 후 첫 발화일에 판정"으로 사전등록했는데, 실제 첫 발화일(09-01)과
+    # 그 다음날(09-02) 점검 세션 둘 다 그냥 지나갔다. 규칙은 정확했고 **상기시키는
+    # 장치가 없었다.**
+    #
+    # 🔴 오탐을 만들면 죽는 기능이다. 494차 F-7 의 관측 ID 대조 초안이 첫 실행에서
+    #   오탐 15건을 내고 폐기된 전례가 있고, `NEXT_TODO.md` 는 19,000줄 누적 로그라
+    #   `- [ ]` 를 통째로 세면 수백 건이 나온다. 그래서 범위를 세 겹으로 좁힌다:
+    #     ① **최근 N거래일** 안에 열린 세션 블록만 본다(`## YYYY-MM-DD (…)` 기준).
+    #        🔴 세션 **개수**로 자르면 안 된다 — 하루에 블록이 3~4개(장전·장중·장후·
+    #        자동조치) 생겨서 8블록이 약 2거래일밖에 안 되고, 그러면 정작 잡으려던
+    #        `O-47`(3거래일 방치)이 09-02 에 창 밖으로 밀린다. 실측으로 확인한 값이다.
+    #        반대로 넓히면 재사용된 옛 번호(`O-1`·`O-3`…)가 되살아난다 — 494차 F-7 이
+    #        기록한 라벨 충돌이 그대로 오탐이 된다. 5거래일이 그 사이다.
+    #     ② 항목 줄에서 **백틱 안의 로그 태그**(`[Tag]`)를 뽑아, 그 태그가 **오늘 자
+    #        로그에 실제로 등장했는지**만 기계적으로 확인한다. 태그가 없으면 판정
+    #        조건을 기계가 읽을 수 없다는 뜻이므로 **세지 않고 건수만 남긴다**
+    #        (계측 4원칙 ③).
+    #     ③ 세션이 스스로 「매 장전/매 장후/상시」라 적은 **반복 관측은 제외**한다 —
+    #        그 태그는 매일 등장하므로 매일 뜨면 곧 무시된다. 문구 추론이 아니라
+    #        NEXT_TODO 가 쓰는 리터럴 표기다.
+    "pending_observations": {
+        "lookback_days": 5,       # 최근 N**거래일** 안에 열린 `## YYYY-MM-DD` 블록만
+        "min_age_days": 1,        # 등록 후 경과 **거래일**. 0 이면 당일 등록분도 뜬다
+        "max_rows": 5,            # 넘치면 `… 외 N개`(계측 4원칙 ③)
+        "recurring_markers": ["매 장전", "매 장후", "매 거래일", "상시",
+                              "단일일 판정 금지", "단일일로 판정 금지"],
+    },
     # ── [MW0602 475차 후속 / 장후 G-2] DB 원천 지표 ────────────────────────────
     # 로그에 없는 상태를 §12 시야에 넣는다. 판정 규칙은 로그 지표와 같다(stuck_verdict).
     # ⚠ `ensemble_decisions` 는 `predictions.db` 에 있다 — 같은 이름의
@@ -2061,6 +2091,182 @@ def scan_obs_labels(root):
             out["new"] = sorted(now_ids - prev_ids)
             out["collisions"] = [n for n in out["new"] if n <= prev_max]
             out["prev_max"] = prev_max
+    return out
+
+
+# 세션 블록 머리: `## 2026-09-03 (MW0602 526차 — 일일 점검: 장전)`
+_SESSION_HEAD_RE = re.compile(r"^##\s+(?P<d>20\d\d-\d\d-\d\d)\b")
+# 체크박스 항목의 **머리**에 붙은 정의성 라벨만 센다(본문 중 참조는 세지 않는다 —
+# `_OBS_DEF_RE` 와 같은 이유). `P-*` 도 같은 문법으로 쓰인다.
+_PENDING_DEF_RE = re.compile(
+    r"^\s*-\s*\[(?P<mark>[ xX])\]\s*\**\s*`?(?P<id>[OP]-\d+)`?\s*(?:\([^)]{0,24}\))?\s*\**"
+)
+_BACKTICK_SPAN_RE = re.compile(r"`([^`]{1,300})`")
+# 로그 태그: `[Retrain]` · `[SchedForceExit]` 처럼 대괄호로 감싼 영숫자 토큰.
+# 한글·공백이 든 대괄호(`[진입체크]`·`[56] 채널`)는 제외한다 — 문구 변형이 잦아
+# 리터럴 대조의 근거가 되지 못한다.
+_LOG_TAG_RE = re.compile(r"\[[A-Za-z][A-Za-z0-9_\-]{1,30}\]")
+
+
+def scan_pending_observations(root, cfg, day):
+    """[MW0602 526차 후속 / G-1] 미판정 `O-*`/`P-*` 관측의 **나이**와 판정조건 충족 여부.
+
+    §11 의 다른 축이 "오늘 무슨 일이 있었나"를 잡는다면 이 축은 **"판정하기로
+    해놓고 아무도 안 한 것"** 을 잡는다. `O-47` 이 그 사고였다(507차가 08-31에
+    "F-7 배포 후 첫 발화일에 판정"으로 사전등록 → 첫 발화일 09-01 과 09-02 세션이
+    모두 그냥 지나감 → 09-03 에야 판정). 규칙은 정확했고 상기 장치가 없었다.
+
+    판정은 **추론하지 않는다.** 항목 줄의 백틱 안에서 로그 태그(`[Tag]`)를 뽑아,
+    그 리터럴이 **오늘 자 로그 파일에 등장했는가**만 본다. 태그가 없는 항목은
+    기계가 판정 조건을 읽을 수 없다는 뜻이므로 세지 않고 **건수만 남긴다**
+    (계측 4원칙 ③ — 절단하면 잔여 개수를 명시한다).
+
+    Returns:
+        {"rows": [{"id","age_days","tags","line","date"}…],   # 나이 내림차순
+         "skipped_no_tag": int,     # 태그를 못 뽑은 미판정 항목 수
+         "skipped_recurring": int,  # 세션이 스스로 「매 장전/상시」라 적은 반복 관측
+         "scanned_sessions": int, "open_items": int,
+         "measured": bool, "path": str, "error": str(optional)}
+
+    ⚠ `measured=False` 는 "미판정 항목 0건"이 아니라 **"재지 못했다"** 이다
+      (계측 4원칙 ② — 미측정 ≠ 0). 오늘 자 로그가 하나도 없으면 그 상태가 된다.
+    """
+    conf = cfg.get("pending_observations") or {}
+    rel = os.path.join("dev_memory", "NEXT_TODO.md")
+    out = {"rows": [], "skipped_no_tag": 0, "skipped_recurring": 0,
+           "scanned_sessions": 0, "open_items": 0, "measured": False,
+           "path": "dev_memory/NEXT_TODO.md"}
+    if not conf:
+        out["error"] = "pending_observations 설정 없음"
+        return out
+    p = os.path.join(root, rel)
+    if not os.path.exists(p):
+        out["error"] = "NEXT_TODO.md 없음"
+        return out
+    try:
+        with io.open(p, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except (IOError, OSError) as e:
+        out["error"] = str(e)
+        return out
+
+    # ── ① 최근 N거래일 안에 열린 세션 블록으로 범위를 좁힌다 ─────────────────
+    # 거래일 축은 로그 파일 날짜 토큰이다(§12 계열 스캐너와 같은 집합 — 갈라지면
+    # 한쪽만 조용히 달라진다. `collect_files_by_day` 를 뽑아낸 것도 같은 이유였다).
+    by_day = collect_files_by_day(root, cfg, day)
+    day_tokens = sorted(by_day)
+    today_tok = date_tokens(day)["ymd"]
+    look = int(conf.get("lookback_days", 5))
+    win = day_tokens[-look:] if day_tokens else []
+    floor_tok = win[0] if win else today_tok
+
+    heads = []          # [(줄인덱스, 날짜문자열)]
+    lines = text.splitlines()
+    for i, ln in enumerate(lines):
+        m = _SESSION_HEAD_RE.match(ln)
+        if m:
+            heads.append((i, m.group("d")))
+    if not heads:
+        out["error"] = "세션 블록 머리(`## YYYY-MM-DD`)를 찾지 못했다"
+        return out
+    keep = [(i, d) for (i, d) in heads if d.replace("-", "") >= floor_tok]
+    if not keep:
+        keep = heads[-1:]           # 창 안에 세션이 없으면 최신 하나만
+    out["scanned_sessions"] = len(keep)
+    out["window_from"] = floor_tok
+
+    # 라벨별로 **창 안 최초 등장일**(나이의 분모)과 **최종 상태**(해소 여부)를 따로 잡는다.
+    # 같은 라벨이 매 세션 다시 실리는 문서라, 최초 등장으로 나이를 재고 최종 줄로 판정한다.
+    # 🔴 항목은 **여러 줄이다** — 판정 기준 로그는 대개 이어지는 들여쓴 줄(표 포함)에
+    #   있다(`O-47` 이 정확히 그 형태였다: 머리줄엔 태그가 없고 다음 표에 `[GUARD]`).
+    #   머리줄만 읽으면 이 기능은 만든 날부터 0건을 낸다. 이어지는 **빈 줄 또는 들여쓴
+    #   줄**까지를 한 항목으로 본다 — 다음 최상위 `- [ ]` 나 `##` 에서 끊긴다.
+    first_date, last = {}, {}
+    for k, (start, hdate) in enumerate(keep):
+        end = keep[k + 1][0] if k + 1 < len(keep) else len(lines)
+        i = start
+        while i < end:
+            m = _PENDING_DEF_RE.match(lines[i])
+            if not m:
+                i += 1
+                continue
+            body = [lines[i].strip()]
+            j = i + 1
+            while j < end and len(body) < 40:
+                nxt = lines[j]
+                if nxt.strip() and not nxt[:1].isspace():
+                    break               # 최상위 줄 — 다음 항목이거나 산문
+                if _PENDING_DEF_RE.match(nxt):
+                    break
+                body.append(nxt.strip())
+                j += 1
+            oid = m.group("id")
+            first_date.setdefault(oid, hdate)
+            last[oid] = {"mark": m.group("mark"), "line": lines[i].strip(),
+                         "body": " ".join(x for x in body if x), "date": hdate}
+            i = j
+
+    open_items = dict((k, v) for k, v in last.items() if v["mark"] == " ")
+    out["open_items"] = len(open_items)
+
+    # ── ② 오늘 자 로그에서 태그 리터럴을 찾는다 ───────────────────────────────
+    today_files = by_day.get(today_tok) or []
+    if not today_files:
+        # 미측정이다 — "판정 조건 충족 0건"과 구분해서 돌려준다(계측 4원칙 ②).
+        return out
+    out["measured"] = True
+
+    markers = conf.get("recurring_markers") or []
+    want = {}           # 태그 → [라벨…]
+    for oid, rec in open_items.items():
+        line = rec.get("body") or rec["line"]
+        if any(mk in line for mk in markers):
+            out["skipped_recurring"] += 1
+            continue
+        tags = set()
+        for span in _BACKTICK_SPAN_RE.findall(line):
+            for t in _LOG_TAG_RE.findall(span):
+                tags.add(t)
+        if not tags:
+            out["skipped_no_tag"] += 1
+            continue
+        for t in tags:
+            want.setdefault(t, []).append(oid)
+    if not want:
+        return out
+
+    seen_tags = set()
+    for full in today_files:
+        if len(seen_tags) == len(want):
+            break
+        try:
+            if os.stat(full).st_size > 24 * 1024 * 1024:
+                continue
+            with io.open(full, encoding="utf-8", errors="replace") as f:
+                for chunk in iter(lambda: f.read(1 << 20), ""):
+                    for t in want:
+                        if t not in seen_tags and t in chunk:
+                            seen_tags.add(t)
+                    if len(seen_tags) == len(want):
+                        break
+        except (IOError, OSError):
+            continue
+
+    # ── ③ 나이는 **거래일** 로 센다 — 등록 세션일 이후 로그가 존재한 날의 수 ──
+    min_age = int(conf.get("min_age_days", 1))
+    rows = []
+    for oid, rec in open_items.items():
+        hit = sorted(t for t in want if oid in want[t] and t in seen_tags)
+        if not hit:
+            continue
+        reg_tok = first_date[oid].replace("-", "")
+        age = len([d for d in day_tokens if reg_tok < d <= today_tok])
+        if age < min_age:
+            continue
+        rows.append({"id": oid, "age_days": age, "tags": hit,
+                     "line": rec["line"], "date": first_date[oid]})
+    rows.sort(key=lambda r: (-r["age_days"], r["id"]))
+    out["rows"] = rows
     return out
 
 
@@ -4195,6 +4401,30 @@ def build(root, day, phase, cfg, discover_only=False):
                      "발급할 것(494차 F-7). 0825 `1-9` 가 그 사고였다"
                      % (_n, _obs.get("prev_max")))
 
+    # [MW0602 526차 후속 / G-1] 판정 조건이 이미 충족된 것으로 보이는 **미판정 관측**.
+    # `O-47` 이 3거래일 방치된 것은 규칙이 틀려서가 아니라 상기 장치가 없어서였다.
+    # ⚠ 오탐 가능(리터럴 태그 대조) — §11 제목 그대로 **출발점이지 결론이 아니다**.
+    _pend = scan_pending_observations(root, cfg, day)
+    _pend_rows = _pend.get("rows") or []
+    _pend_max = int((cfg.get("pending_observations") or {}).get("max_rows", 5))
+    for r in _pend_rows[:_pend_max]:
+        flags.append("미판정 관측 **`%s`** — 등록 후 **%d거래일** 경과했는데 판정 기준 "
+                     "로그 `%s` 가 **오늘 자 로그에 이미 있다**. 오늘 판정할 수 있는지 "
+                     "확인할 것(526차 G-1). 등록: %s — %s"
+                     % (r["id"], r["age_days"], "`, `".join(r["tags"]), r["date"],
+                        truncate(r["line"], 110)))
+    if len(_pend_rows) > _pend_max:
+        flags.append("미판정 관측 **… 외 %d건** — 같은 조건(판정 기준 로그가 오늘 자에 "
+                     "등장)인 항목이 더 있다. `pending_observations.max_rows`(%d) 로 잘렸다"
+                     % (len(_pend_rows) - _pend_max, _pend_max))
+    if _pend.get("error"):
+        flags.append("미판정 관측 스캔 **미측정** — %s (526차 G-1). "
+                     "「해당 없음」이 아니라 재지 못한 것이다(계측 4원칙 ②)"
+                     % _pend["error"])
+    elif not _pend.get("measured"):
+        flags.append("미판정 관측 스캔 **미측정** — 오늘 자 로그 파일이 없어 판정 기준 "
+                     "리터럴을 대조하지 못했다(526차 G-1, 계측 4원칙 ②)")
+
     if bad_tag:
         flags.append("PC명 태그 누락 커밋 %d건 — 멀티PC 컨벤션 위반" % len(bad_tag))
     if dirty:
@@ -4291,6 +4521,18 @@ def build(root, day, phase, cfg, discover_only=False):
             A("> 기지 충돌 %d건(`%s`)은 **재부여하지 않는다** — 소급 재라벨은 미측정 "
               "구간을 만든다(계측 4원칙 ②). `(NNN차)` 접미로 구분한다."
               % (len(OBS_LABEL_WHITELIST), "`, `".join(sorted(OBS_LABEL_WHITELIST))))
+    # [MW0602 526차 후속 / G-1] 탈락 가시화 — 무엇을 **안 봤는지** 남긴다(계측 4원칙 ③).
+    # 이 줄이 없으면 "적신호 없음"이 "미판정 관측이 없다"로 읽힌다.
+    if _pend.get("measured"):
+        A("")
+        A("> ℹ️ **미판정 관측 스캔**(526차 G-1) — 최근 세션 %d개 블록에서 미해소 "
+          "`O-*`/`P-*` **%d건**을 봤고, 그중 판정 기준 로그가 오늘 자에 등장한 것이 "
+          "**%d건**이다. 제외: 판정 태그를 뽑을 수 없는 항목 **%d건**(백틱 안 `[Tag]` "
+          "없음 — 기계가 판정 조건을 읽을 수 없다) · 세션이 스스로 「매 장전/상시」로 "
+          "적은 반복 관측 **%d건**. 판정 자체는 사람이 한다."
+          % (_pend.get("scanned_sessions", 0), _pend.get("open_items", 0),
+             len(_pend_rows), _pend.get("skipped_no_tag", 0),
+             _pend.get("skipped_recurring", 0)))
     if suppressed:
         A("")
         A("**🗓 휴장(정상)으로 강등된 적신호 %d건** — %s(%s)이라 당일 데이터가 없는 것이 "
