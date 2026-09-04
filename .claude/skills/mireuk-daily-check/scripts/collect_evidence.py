@@ -2106,6 +2106,51 @@ _BACKTICK_SPAN_RE = re.compile(r"`([^`]{1,300})`")
 # 한글·공백이 든 대괄호(`[진입체크]`·`[56] 채널`)는 제외한다 — 문구 변형이 잦아
 # 리터럴 대조의 근거가 되지 못한다.
 _LOG_TAG_RE = re.compile(r"\[[A-Za-z][A-Za-z0-9_\-]{1,30}\]")
+# [MW0602 528차 후속 / 장후 자동조치] 한정어에서 **자리표시자**를 걷어낸다.
+# `count=N` · `decide=…` · `<날짜>` 는 로그에 그대로 찍힐 리터럴이 아니다 — 요구에
+# 넣으면 맞는 줄도 못 찾는다. 단일 대문자·줄임표·꺾쇠괄호만 버린다(보수적).
+_TAG_ARG_DROP_RE = re.compile(u"^(?:[A-Z]|\\.{2,}|\u2026+|<[^>]*>|\\?+|[-\u2013\u2014|]+)$")
+
+
+def tag_requirements(span):
+    u"""백틱 스팬 하나에서 `(태그, (한정어 토큰…))` 요구를 만든다.
+
+    **왜 한정어까지 보나.** 526차 초판은 백틱 안에서 `[Tag]` 만 돌려서 그 리터럴이
+    오늘 자 로그에 있는지만 봤다. 그러자 `O-58` 의 판정 조건 `[Retrain] DB pruning`
+    (EOD DB 정리)이 **매일 찍히는 호라이즌별 재학습** `[Retrain] 3m 교체 보류` 에
+    걸려 "판정 조건 충족"으로 올라왔다(0904 리포트 §2 「확인 필요」 — 부분일치 오탐).
+
+    ⚠ 그렇다고 **한정어 전부를 강제하면 반대 방향으로 고장난다** — 실측상 한정어의
+      상당수는 `NORMAL → CRASH | day=-0.09% atr=1.00` 처럼 **그때 그 사건의 예시**라
+      다시 나올 일이 없다. 전부 요구하면 이 기능은 조용히 0건을 낸다 — FP-CRITICAL·
+      TOX 죽은 섀도와 같은 형태다.
+    → 그래서 문턱을 올리는 대신 **일치의 강도를 등급으로 나눈다**(호출측 참조):
+      한정어까지 한 줄에서 맞으면 `strong`, 태그만 맞으면 `weak` 로 남기고 문구를
+      달리 쓴다. 억제도 침묵도 아닌 **가시화**다(계측 4원칙 ③·④).
+
+    스팬에 태그가 둘 이상이면 한정어를 어느 쪽에 귀속시킬지 알 수 없으므로
+    **종전대로** 태그만 돌려 약한 요구로 둔다(보수적 허용).
+    """
+    s = (span or "").strip()
+    tags = _LOG_TAG_RE.findall(s)
+    if not tags:
+        return []
+    if len(tags) > 1 or not _LOG_TAG_RE.match(s):
+        return [(t, ()) for t in tags]
+    tag = tags[0]
+    terms = []
+    for tok in s[len(tag):].strip().split():
+        tok = tok.strip(u",.\u00b7()[]\"'`\u201c\u201d\u2018\u2019")
+        if not tok or _TAG_ARG_DROP_RE.match(tok):
+            continue
+        if u"=" in tok:
+            k, _sep, v = tok.partition(u"=")
+            if k and (not v or _TAG_ARG_DROP_RE.match(v)):
+                tok = k + u"="
+        terms.append(tok)
+        if len(terms) >= 6:     # 뒷부분은 산문일 확률이 높다 — 과잉제한 방지
+            break
+    return [(tag, tuple(terms))]
 
 
 def scan_pending_observations(root, cfg, day):
@@ -2122,7 +2167,9 @@ def scan_pending_observations(root, cfg, day):
     (계측 4원칙 ③ — 절단하면 잔여 개수를 명시한다).
 
     Returns:
-        {"rows": [{"id","age_days","tags","line","date"}…],   # 나이 내림차순
+        {"rows": [{"id","age_days","tags","match","missing","line","date"}…],
+         "strong": int,            # 한정어까지 **한 줄에서** 맞은 항목 수
+         "weak": int,              # 태그만 맞은 항목 수 — 참고이지 「충족」이 아니다
          "skipped_no_tag": int,     # 태그를 못 뽑은 미판정 항목 수
          "skipped_recurring": int,  # 세션이 스스로 「매 장전/상시」라 적은 반복 관측
          "scanned_sessions": int, "open_items": int,
@@ -2130,6 +2177,9 @@ def scan_pending_observations(root, cfg, day):
 
     ⚠ `measured=False` 는 "미판정 항목 0건"이 아니라 **"재지 못했다"** 이다
       (계측 4원칙 ② — 미측정 ≠ 0). 오늘 자 로그가 하나도 없으면 그 상태가 된다.
+    ⚠ `match="weak"` 는 **판정 조건 충족이 아니다**(528차 후속). 태그 이름만 같고
+      한정어가 같은 줄에 없다는 뜻이며, `O-58` 이 그 오탐이었다 — `[Retrain] DB
+      pruning` 이 매일 찍히는 `[Retrain] 3m 교체 보류` 에 걸렸다(0904 §2 확인 필요).
     """
     conf = cfg.get("pending_observations") or {}
     rel = os.path.join("dev_memory", "NEXT_TODO.md")
@@ -2217,56 +2267,82 @@ def scan_pending_observations(root, cfg, day):
     out["measured"] = True
 
     markers = conf.get("recurring_markers") or []
-    want = {}           # 태그 → [라벨…]
+    reqs_by_oid = {}    # 라벨 → [(태그, (한정어…))…]
     for oid, rec in open_items.items():
         line = rec.get("body") or rec["line"]
         if any(mk in line for mk in markers):
             out["skipped_recurring"] += 1
             continue
-        tags = set()
+        reqs = []
         for span in _BACKTICK_SPAN_RE.findall(line):
-            for t in _LOG_TAG_RE.findall(span):
-                tags.add(t)
-        if not tags:
+            for req in tag_requirements(span):
+                if req not in reqs:
+                    reqs.append(req)
+        if not reqs:
             out["skipped_no_tag"] += 1
             continue
-        for t in tags:
-            want.setdefault(t, []).append(oid)
-    if not want:
+        reqs_by_oid[oid] = reqs
+    if not reqs_by_oid:
         return out
 
-    seen_tags = set()
+    # 태그만 맞은 것과 한정어까지 맞은 것을 **따로** 센다. 한정어는 같은 **한 줄**에서
+    # 맞아야 한다 — 파일 전체 substring 대조가 528차 이전 오탐의 직접 원인이었다
+    # (`[Retrain]` 는 A줄, `DB pruning` 은 B줄에 있어도 "충족"이 됐다).
+    all_reqs = set()
+    for reqs in reqs_by_oid.values():
+        all_reqs.update(reqs)
+    tags_wanted = set(t for (t, _terms) in all_reqs)
+    tag_hits, full_hits = set(), set()
+    pending = set(all_reqs)
     for full in today_files:
-        if len(seen_tags) == len(want):
+        if not pending and len(tag_hits) == len(tags_wanted):
             break
         try:
             if os.stat(full).st_size > 24 * 1024 * 1024:
                 continue
             with io.open(full, encoding="utf-8", errors="replace") as f:
-                for chunk in iter(lambda: f.read(1 << 20), ""):
-                    for t in want:
-                        if t not in seen_tags and t in chunk:
-                            seen_tags.add(t)
-                    if len(seen_tags) == len(want):
+                for ln in f:
+                    if not pending and len(tag_hits) == len(tags_wanted):
                         break
+                    for t in tags_wanted:
+                        if t not in ln:
+                            continue
+                        tag_hits.add(t)
+                        for req in [r for r in pending if r[0] == t]:
+                            if all(term in ln for term in req[1]):
+                                full_hits.add(req)
+                                pending.discard(req)
         except (IOError, OSError):
             continue
 
     # ── ③ 나이는 **거래일** 로 센다 — 등록 세션일 이후 로그가 존재한 날의 수 ──
     min_age = int(conf.get("min_age_days", 1))
     rows = []
-    for oid, rec in open_items.items():
-        hit = sorted(t for t in want if oid in want[t] and t in seen_tags)
-        if not hit:
+    for oid, reqs in reqs_by_oid.items():
+        rec = open_items[oid]
+        strong = sorted(set(r[0] for r in reqs if r in full_hits))
+        weak = sorted(set(r[0] for r in reqs
+                          if r[0] in tag_hits and r not in full_hits
+                          and r[0] not in strong))
+        if not strong and not weak:
             continue
         reg_tok = first_date[oid].replace("-", "")
         age = len([d for d in day_tokens if reg_tok < d <= today_tok])
         if age < min_age:
             continue
-        rows.append({"id": oid, "age_days": age, "tags": hit,
+        missing = sorted(set(u" ".join(r[1]) for r in reqs
+                             if r[0] in weak and r[1] and r not in full_hits))
+        rows.append({"id": oid, "age_days": age,
+                     "tags": strong or weak,
+                     "match": "strong" if strong else "weak",
+                     "missing": missing,
                      "line": rec["line"], "date": first_date[oid]})
-    rows.sort(key=lambda r: (-r["age_days"], r["id"]))
+    # 강한 일치가 먼저다 — 약한 일치는 「참고」이지 판정 신호가 아니다.
+    rows.sort(key=lambda r: (0 if r["match"] == "strong" else 1,
+                             -r["age_days"], r["id"]))
     out["rows"] = rows
+    out["strong"] = len([r for r in rows if r["match"] == "strong"])
+    out["weak"] = len([r for r in rows if r["match"] == "weak"])
     return out
 
 
@@ -4408,11 +4484,22 @@ def build(root, day, phase, cfg, discover_only=False):
     _pend_rows = _pend.get("rows") or []
     _pend_max = int((cfg.get("pending_observations") or {}).get("max_rows", 5))
     for r in _pend_rows[:_pend_max]:
-        flags.append("미판정 관측 **`%s`** — 등록 후 **%d거래일** 경과했는데 판정 기준 "
-                     "로그 `%s` 가 **오늘 자 로그에 이미 있다**. 오늘 판정할 수 있는지 "
-                     "확인할 것(526차 G-1). 등록: %s — %s"
-                     % (r["id"], r["age_days"], "`, `".join(r["tags"]), r["date"],
-                        truncate(r["line"], 110)))
+        if r.get("match") == "strong":
+            flags.append("미판정 관측 **`%s`** — 등록 후 **%d거래일** 경과했는데 판정 기준 "
+                         "로그 `%s` 가 **오늘 자 로그에 한 줄로 있다**(한정어까지 일치). "
+                         "오늘 판정할 수 있는지 확인할 것(526차 G-1). 등록: %s — %s"
+                         % (r["id"], r["age_days"], "`, `".join(r["tags"]), r["date"],
+                            truncate(r["line"], 110)))
+        else:
+            # 🔴 528차 후속 — 여기를 "충족"이라 쓰면 `O-58` 오탐이 재발한다.
+            #    태그는 같은데 한정어가 없는 상태이며, 그것이 곧 **미충족의 근거**다.
+            flags.append("미판정 관측 **`%s`**(참고) — 등록 후 **%d거래일** 경과. 태그 "
+                         "`%s` 는 오늘 자에 있으나 한정어 `%s` 가 **같은 줄에 없다** — "
+                         "판정 조건 **충족 아님**이 기본 해석이다(528차 후속: 부분일치 "
+                         "오탐 차단). 등록: %s — %s"
+                         % (r["id"], r["age_days"], "`, `".join(r["tags"]),
+                            "`, `".join(r.get("missing") or []) or "(없음)",
+                            r["date"], truncate(r["line"], 110)))
     if len(_pend_rows) > _pend_max:
         flags.append("미판정 관측 **… 외 %d건** — 같은 조건(판정 기준 로그가 오늘 자에 "
                      "등장)인 항목이 더 있다. `pending_observations.max_rows`(%d) 로 잘렸다"
@@ -4526,12 +4613,14 @@ def build(root, day, phase, cfg, discover_only=False):
     if _pend.get("measured"):
         A("")
         A("> ℹ️ **미판정 관측 스캔**(526차 G-1) — 최근 세션 %d개 블록에서 미해소 "
-          "`O-*`/`P-*` **%d건**을 봤고, 그중 판정 기준 로그가 오늘 자에 등장한 것이 "
-          "**%d건**이다. 제외: 판정 태그를 뽑을 수 없는 항목 **%d건**(백틱 안 `[Tag]` "
-          "없음 — 기계가 판정 조건을 읽을 수 없다) · 세션이 스스로 「매 장전/상시」로 "
-          "적은 반복 관측 **%d건**. 판정 자체는 사람이 한다."
+          "`O-*`/`P-*` **%d건**을 봤고, 그중 판정 기준 로그가 **한정어까지 한 줄로** "
+          "맞은 것이 **%d건**, **태그만** 맞은 것(참고 — 충족 아님)이 **%d건**이다. "
+          "제외: 판정 태그를 뽑을 수 없는 항목 **%d건**(백틱 안 `[Tag]` 없음 — 기계가 "
+          "판정 조건을 읽을 수 없다) · 세션이 스스로 「매 장전/상시」로 적은 반복 관측 "
+          "**%d건**. 판정 자체는 사람이 한다."
           % (_pend.get("scanned_sessions", 0), _pend.get("open_items", 0),
-             len(_pend_rows), _pend.get("skipped_no_tag", 0),
+             _pend.get("strong", 0), _pend.get("weak", 0),
+             _pend.get("skipped_no_tag", 0),
              _pend.get("skipped_recurring", 0)))
     if suppressed:
         A("")
