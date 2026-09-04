@@ -1,15 +1,15 @@
-# 호라이즌별 피처셋 주간 건강 리포트 — MW0601 · 2026-08-07
+# 호라이즌별 피처셋 주간 건강 리포트 — MW0601 · 2026-09-04
 
 > 생성: `scripts/generate_featureset_health_report.py` (읽기 전용)  
 > 근거: `docs/Spec for feature/피처셋_주기점검_자동리포트_구현계획_2026-08-02.md` Phase A  
 > **이 리포트는 관측과 권고만 출력한다.** 피처셋 변경은 L3(purged CV) 배터리 → 주간회의 수동 승인 → EOD 재학습 경로로만 이뤄진다 (`CLAUDE.md` §6 자동 통합 금지).
 
-- 건강도 관찰창: **2026-07-10 ~ 2026-08-07** (20거래일, 6,823행)
-- 후보 축적 관찰창: 2026-06-02 ~ 2026-08-07 (37거래일)
+- 건강도 관찰창: **2026-08-07 ~ 2026-09-04** (20거래일, 7,575행)
+- 후보 축적 관찰창: 2026-06-02 ~ 2026-09-04 (56거래일)
 - ℹ 관찰창 범위에서 백필 생성 행 9,002행(26일)을 **제외**했다 (418차 기본 동작). 미시구조가 0.0인 소급 행이라 포함하면 §2-b·§4가 왜곡된다. 포함하려면 `--include-backfill`.
 - 배포 스펙 출처: `model/horizons/feature_names_{hz}.pkl` **직접 로드** — `horizon_feature_sets.json`(계획 문서)·`shap_feature_registry.json`(PC별 런타임 산출물)이 아니다
 - 판정 기준: `scripts/feature_health_report.py` 단일 출처 (DEAD=분산0 / CRITICAL=zero·최빈 95%+ / WARN=80%+ / 미계측=표본<200)
-- git: `c88e600`
+- git: `9738080`
 
 ## 1. 호라이즌별 요약
 
@@ -18,7 +18,7 @@
 | 1m | 퇴역 | 8 | 7 | 1 | 0 | 0 | 0 | 0 | **0** | OK |
 | 3m | 0.13 | 12 | 12 | 0 | 0 | 0 | 0 | 0 | **0** | OK |
 | 5m | 0.30 | 12 | 10 | 1 | 1 | 0 | 0 | 0 | **0** | OK |
-| 10m | 0.29 | 11 | 10 | 1 | 0 | 0 | 0 | 0 | **0** | OK |
+| 10m | 0.29 | 11 | 11 | 0 | 0 | 0 | 0 | 0 | **0** | OK |
 | 15m | 0.28 | 13 | 12 | 0 | 1 | 0 | 0 | 0 | **0** | OK |
 | 30m | 퇴역 | 11 | 11 | 0 | 0 | 0 | 0 | 0 | **0** | OK |
 
@@ -29,46 +29,44 @@
 
 ## 2. 호라이즌별 상세 (정상 아닌 것만)
 
-### 1m — 배포 8개 (pkl 2026-08-07 15:45)
+### 1m — 배포 8개 (pkl 2026-09-04 15:45)
 
 | 등급 | 피처 | n | zero% | 최빈비중 | 고유값 | 비고 |
 |---|---|---|---|---|---|---|
-| WARN | `is_open_volatile` | 6823 | 88.2% | 88.2% | 2 | 상태플래그(상수 정상) |
+| WARN | `is_open_volatile` | 7575 | 88.4% | 88.4% | 2 | 상태플래그(상수 정상) |
 
 CORE(short): `cvd_delta_norm`=OK / `vwap_position`=OK / `ofi_pressure`=OK
 
-### 3m — 배포 12개 (pkl 2026-08-07 13:22)
+### 3m — 배포 12개 (pkl 2026-09-04 15:46)
 
 전 피처 OK.
 
 CORE(short): `cvd_delta_norm`=OK / `vwap_position`=OK / `ofi_pressure`=OK
 
-### 5m — 배포 12개 (pkl 2026-08-07 15:46)
+### 5m — 배포 12개 (pkl 2026-09-04 15:46)
 
 | 등급 | 피처 | n | zero% | 최빈비중 | 고유값 | 비고 |
 |---|---|---|---|---|---|---|
-| CRITICAL | `is_close_volatile` | 6823 | 97.8% | 97.8% | 2 | 상태플래그(상수 정상) |
-| WARN | `is_open_volatile` | 6823 | 88.2% | 88.2% | 2 | 상태플래그(상수 정상) |
+| CRITICAL | `is_close_volatile` | 7575 | 97.9% | 97.9% | 2 | 상태플래그(상수 정상) |
+| WARN | `is_open_volatile` | 7575 | 88.4% | 88.4% | 2 | 상태플래그(상수 정상) |
 
 CORE(short): `cvd_delta_norm`=OK / `vwap_position`=OK / `ofi_pressure`=OK
 
-### 10m — 배포 11개 (pkl 2026-08-07 15:46)
+### 10m — 배포 11개 (pkl 2026-09-04 15:46)
 
-| 등급 | 피처 | n | zero% | 최빈비중 | 고유값 | 비고 |
-|---|---|---|---|---|---|---|
-| WARN | `opt_pcr_extreme` | 6563 | 82.9% | 82.9% | 2 |  |
+전 피처 OK.
 
 CORE(mid): `vwap_position`=OK
 
-### 15m — 배포 13개 (pkl 2026-08-07 15:47)
+### 15m — 배포 13개 (pkl 2026-09-04 15:47)
 
 | 등급 | 피처 | n | zero% | 최빈비중 | 고유값 | 비고 |
 |---|---|---|---|---|---|---|
-| CRITICAL | `is_close_volatile` | 6823 | 97.8% | 97.8% | 2 | 상태플래그(상수 정상) |
+| CRITICAL | `is_close_volatile` | 7575 | 97.9% | 97.9% | 2 | 상태플래그(상수 정상) |
 
 CORE(mid): `vwap_position`=OK
 
-### 30m — 배포 11개 (pkl 2026-08-07 15:47)
+### 30m — 배포 11개 (pkl 2026-09-04 15:47)
 
 전 피처 OK.
 
@@ -82,56 +80,122 @@ CORE(long): `above_vwap`=OK / `opt_chain_pcr`=OK
 |---|---|---|---|---|
 | DEAD | `bear_exhaustion_shadow` | 100.0% | 100.0% | 계측만 (배포·후보 아님) |
 | CRITICAL | `bull_exhaustion_shadow` | 99.4% | 99.4% | 계측만 (배포·후보 아님) |
-| CRITICAL | `bull_reversal_signal` | 98.3% | 98.3% | 계측만 (배포·후보 아님) |
-| CRITICAL | `opt_gex_sign` | 0.9% | 97.2% | 후보: POOL, pending:15m |
+| CRITICAL | `bull_reversal_signal` | 97.6% | 97.6% | 계측만 (배포·후보 아님) |
+| DEAD | `macro_risk_off` | 100.0% | 100.0% | 계측만 (배포·후보 아님) |
+| CRITICAL | `trend_efficiency_ready` | 2.6% | 97.4% | 계측만 (배포·후보 아님) |
 
 > `계측만`인 피처가 죽어 있어도 지금 당장 모델을 해치지는 않는다. 다만 **나중에 후보로 승격시킬 때 이미 죽어 있는 상태**라 표준절차 Phase 2에서 반드시 걸린다 — 그때 고치는 것보다 지금 아는 편이 싸다.
 
+### 2-c. 시간축 형태 (값 분포로는 안 보이는 것)
+
+| 형태 | 피처 | 동률% | ACF1 | 변화간격 | 소재 |
+|---|---|---|---|---|---|
+| 결정론형 | `time_cos` | 3.9% | 0.9948 | 1.0분 | **배포: 30m** |
+| 결정론형 | `time_sin` | 4.4% | 0.9996 | 1.0분 | 계측만 |
+| 결정론형 | `trend_efficiency_ready` | 99.7% | 0.8999 | — | 계측만 |
+| 계단형 | `cvd_direction_debias` | 93.7% | 0.8434 | 6.0분 | 계측만 |
+| 계단형 | `multi_timeframe_5m` | 90.3% | 0.8708 | 10.0분 | 후보: POOL |
+| 계단형 | `opt_atm_call_oi` | 91.9% | 0.9291 | 10.0분 | 후보: pending:15m |
+| 계단형 | `opt_atm_pcr` | 90.7% | 0.9141 | 10.0분 | 후보: POOL, pending:15m |
+| 계단형 | `opt_atm_put_oi` | 92.0% | 0.9220 | 10.0분 | 후보: pending:15m |
+| 계단형 | `opt_chain_pcr` | 88.6% | 0.7468 | 10.0분 | 후보: pending:15m |
+| 계단형 | `opt_gex_bn` | 88.3% | 0.9443 | 10.0분 | 후보: pending:15m |
+| 누적형 | `swing_low_60m` | 86.4% | 0.9940 | 1.0분 | 계측만 |
+| 상수형 | `above_vwap` | 95.5% | 0.8172 | 3.0분 | **배포: 5m, 30m** |
+| 상수형 | `bull_exhaustion_shadow` | 99.2% | -0.0026 | 1.0분 | 계측만 |
+| 상수형 | `bull_reversal_signal` | 95.0% | -0.0254 | 1.0분 | 계측만 |
+| 상수형 | `feature_quality_score` | 99.2% | 0.9115 | 1.5분 | 계측만 |
+| 상수형 | `macro_nasdaq_chg` | 100.0% | 0.9973 | — | 계측만 |
+| 상수형 | `macro_risk_on` | 100.0% | — | — | 계측만 |
+| 상수형 | `macro_sp500_chg` | 100.0% | 0.9973 | — | **배포: 10m** |
+| 상수형 | `macro_us10y_chg` | 100.0% | 0.9973 | — | **배포: 3m, 10m** |
+| 상수형 | `macro_vix` | 99.7% | 0.9694 | — | **배포: 10m, 30m** |
+| 상수형 | `multi_timeframe_15m` | 96.2% | 0.9294 | 15.0분 | 후보: POOL |
+| 상수형 | `opt_pcr_bearish` | 97.6% | 0.8997 | 6.2분 | **배포: 30m** |
+| 상수형 | `opt_pcr_bullish` | 98.4% | 0.8819 | 4.8분 | 계측만 |
+| 상수형 | `opt_pcr_extreme` | 98.4% | 0.9076 | 8.5분 | **배포: 10m** |
+| 상수형 | `opt_pcr_extreme_bearish` | 98.4% | 0.9076 | 8.5분 | 계측만 |
+| 상수형 | `opt_pcr_extreme_bullish` | 98.5% | 0.8717 | 4.0분 | 계측만 |
+| 상수형 | `swing_ready_60m` | 99.7% | 0.9826 | — | 계측만 |
+
+> 이 표는 **등급을 바꾸지 않는다.** 값 분포는 정상이므로 §1·§2에서는 OK로 뜬다. 다만 이 피처들에 수명·decay·자기상관 지표를 매기면 '기억 길이'가 아니라 다른 양(갱신 주기·추세 기울기·상수성)을 재게 된다.
+> 판정 기준: 상수형=동률≥95% · 계단형=변화간격≥5분 · 누적형=ACF1≥0.99 · 결정론형=시각의 함수. 정본 분류·처분은 26주 재검증(`docs/Spec for feature/피처_재검증_및_호라이즌배정_원칙.md` §2)에서 한다.
+
+### 2-d. 미해결 KNOWN 등재 항목
+
+**11건** — 등재됐지만 등급이 아직 나쁜 항목 (최장 방치 38일). 등재 자체에는 만료·재검토 기한이 없으므로 여기서만 드러난다.
+
+| 등급 | 피처 | 등재일 | 방치 | 소재 | 등재 사유 |
+|---|---|---|---|---|---|
+| DEAD | `bear_exhaustion` | 2026-07-28 | 38일 | 계측만 | 394차 섀도 복구 중 — EXHAUSTION_RESTORE_MODE 참조 |
+| DEAD | `bear_exhaustion_signal` | 2026-07-28 | 38일 | 계측만 | 394차 섀도 복구 중 |
+| DEAD | `bull_exhaustion` | 2026-07-28 | 38일 | 계측만 | 394차 섀도 복구 중 — EXHAUSTION_RESTORE_MODE 참조 |
+| DEAD | `bull_exhaustion_signal` | 2026-07-28 | 38일 | 계측만 | 394차 섀도 복구 중 |
+| DEAD | `cvd_exhaustion` | 2026-07-28 | 38일 | 계측만 | bear_exhaustion 별칭(deprecated) |
+| DEAD | `cvd_exhaustion_signal` | 2026-07-28 | 38일 | 계측만 | bear_exhaustion_signal 별칭(deprecated) |
+| DEAD | `macro_event_flag` | 2026-07-28 | 38일 | 계측만 | EVENT_DATES 빈 dict — 캘린더 미입력(Phase 0 §2-3) |
+| DEAD | `program_individual_net_krw` | 2026-07-28 | 38일 | 계측만 | 원천 TR(CpSvr8111) 미제공 — 451차 폐기 집행. 과거 행 잔재 |
+| DEAD | `program_institution_net_krw` | 2026-07-28 | 38일 | 계측만 | 원천 TR(CpSvr8111) 미제공 — 451차 폐기 집행. 과거 행 잔재 |
+| CRITICAL | `cvd` | 2026-07-28 | 38일 | 계측만 | CVD 포화(+1.0 고착) — buy_vol 편향 파생, 미해결 등록 |
+| CRITICAL | `cvd_direction` | 2026-07-28 | 38일 | 후보: pending:10m | CVD 포화 파생 — 미해결 등록 |
+
+> ⚠ **이 표는 등급을 바꾸지도, 억제를 되돌리지도 않는다.** 위 항목들은 §1 `실이상`·§2-b·§2-c에서 계속 제외된다 — 경보 피로 방지는 그대로 두고 방치 사실만 드러내는 것이 목적이다.
+> 방치가 길어지면 처분은 둘 중 하나다 — **고치거나, KNOWN에서 빼서 다시 경보로 올리거나.** 사유란에 "미해결"이라 적힌 항목은 애초에 `KNOWN`(=원인 규명 완료) 슬롯의 취지와 맞지 않는다.
+
+**KNOWN 정리 가능**: 등급 해소 2건(`opt_gex_sign`, `program_foreign_net_krw`) — 원인이 해소됐는데 등재가 남아 있으면 그 항목이 앞으로의 진짜 이상을 조용히 삼킨다.
+
 ## 3. L4 — confidence 층화 검정 요약
 
-⚠ **미배선** — `data/horizon_conf_stratified_latest.json`가 없다. 이 절은 `scripts/horizon_conf_stratified_test.py`(07-30 실행계획 1단계 신설 대상)가 그 경로에 JSON을 쓰면 자동으로 채워진다. **빈칸이 '이상 없음'을 뜻하지 않는다.**
+출처: `data/horizon_conf_stratified_latest.json` (생성 2026-09-04, 창 20일)
+
+| 호라이즌 | conf<0.55 acc(n) | conf≥0.55 acc(n) | z | p | 판정 |
+|---|---|---|---|---|---|
+| 10m | 0.525 (539) | 0.486 (37) | -0.45 | 0.6497 | INSUFFICIENT |
+| 15m | 0.428 (180) | 0.379 (29) | -0.49 | 0.6237 | INSUFFICIENT |
+| 3m | 0.500 (1789) | 0.425 (40) | -0.94 | 0.3463 | INSUFFICIENT |
+| 5m | 0.489 (1171) | 0.385 (13) | -0.75 | 0.4526 | INSUFFICIENT |
 
 ## 4. 후보 파이프라인 현황판
 
 | 후보 | 출처 | 축적(최근 60거래일) | 건강 | 상태 |
 |---|---|---|---|---|
-| `basis_change_pt` | pending:1m, pending:3m, pending:5m, pending:10m | 18일 | OK | 📌 승격 보류 — basis_pt와 동일 검정에서 함께 재현 실패 |
-| `basis_pt` | pending:1m, pending:3m, pending:5m, pending:10m | 18일 | OK | 📌 승격 보류 — 표본 확대 후 신호 소멸(재현 실패) |
+| `basis_change_pt` | pending:1m, pending:3m, pending:5m, pending:10m | 37일 | OK | 📌 승격 보류 — basis_pt와 동일 검정에서 함께 재현 실패 |
+| `basis_pt` | pending:1m, pending:3m, pending:5m, pending:10m | 37일 | OK | 📌 승격 보류 — 표본 확대 후 신호 소멸(재현 실패) |
 | `cancel_ratio` | POOL | 0일 | raw부재 | 📌 구현불가 확정 — 데이터 원천 없음 (완전 사장) |
-| `cvd_direction` | pending:10m | 37일 | CRITICAL | 📌 교체 완료 — cvd_delta_norm이 대체 (후보 목록의 잔존 항목) |
-| `foreign_futures_net` | pending:10m | 22일 | OK | 검증가능 (22일) |
-| `hurst_ready` | POOL | 30일 | WARN | 검증가능 (30일) |
-| `imbalance_slope` | POOL | 37일 | OK | 검증가능 (37일) |
-| `is_month_end_rebalance` | pending:1m, pending:3m, pending:5m, pending:10m, pending:15m, pending:30m | 24일 | WARN | 검증가능 (24일) |
-| `is_monthly_expiry_week` | pending:1m, pending:3m, pending:5m, pending:10m, pending:15m, pending:30m | 24일 | CRITICAL | 검증가능 (24일) |
-| `is_monthly_witching` | pending:1m, pending:3m, pending:5m, pending:10m, pending:15m, pending:30m | 24일 | DEAD | 검증가능 (24일) |
-| `is_weekly_witching` | pending:1m, pending:3m, pending:5m, pending:10m, pending:15m, pending:30m | 24일 | OK | 검증가능 (24일) |
-| `kyle_lambda` | POOL | 18일 | OK | 축적중 18/20일 |
-| `micro_regime_code` | POOL | 37일 | OK | 검증가능 (37일) · 📌 1m 편입만 하지 않음 — 타 호라이즌 후보 자격은 유지 |
-| `microprice_slope` | POOL | 37일 | OK | 검증가능 (37일) |
-| `mlofi_norm` | POOL | 37일 | OK | 검증가능 (37일) |
-| `multi_timeframe_15m` | POOL | 18일 | OK | 축적중 18/20일 |
-| `multi_timeframe_5m` | POOL | 18일 | OK | 축적중 18/20일 |
-| `ofi_reversal_speed` | pending:1m | 37일 | OK | 검증가능 (37일) |
-| `opt_atm_call_oi` | pending:15m | 18일 | OK | 축적중 18/20일 · 📌 강등(include → pending) — magnitude 계열 재현 실패 |
-| `opt_atm_pcr` | POOL, pending:15m | 18일 | OK | 축적중 18/20일 |
-| `opt_atm_put_oi` | pending:15m | 18일 | OK | 축적중 18/20일 · 📌 강등(include → pending) — magnitude 계열 재현 실패 |
-| `opt_chain_pcr` | pending:15m | 18일 | OK | 축적중 18/20일 · 📌 ⚠ CORE — 15m 승격만 보류. 30m CORE 지위는 그대로 유지 |
-| `opt_gex_bn` | pending:15m | 18일 | OK | 축적중 18/20일 · 📌 강등(include → pending) — magnitude 계열 재현 실패, sign 계열로 대체 |
-| `opt_gex_sign` | POOL, pending:15m | 18일 | CRITICAL | 축적중 18/20일 |
-| `program_arb_net` | pending:5m, pending:10m, pending:15m, pending:30m | 22일 | OK | 검증가능 (22일) |
-| `program_non_arb_net` | pending:5m, pending:10m, pending:15m, pending:30m | 22일 | OK | 검증가능 (22일) |
-| `queue_depletion_speed` | POOL | 37일 | OK | 검증가능 (37일) |
-| `queue_directional_depletion` | POOL | 34일 | OK | 📌 1m 편입 종결 — 개선 대상 아님 (후보 재고에서 제외) |
-| `queue_momentum` | POOL | 37일 | OK | 검증가능 (37일) |
-| `queue_refill_rate` | POOL | 37일 | OK | 검증가능 (37일) |
-| `queue_signal` | POOL | 37일 | OK | 검증가능 (37일) |
-| `round_number_distance` | POOL | 18일 | OK | 축적중 18/20일 |
-| `rv_iv_spread` | POOL | 17일 | OK | 축적중 17/20일 |
-| `threshold_feasibility` | pending:15m | 37일 | OK | 📌 기각 — F4 재검증에서 부호 반전 (재현 실패) |
-| `trend_efficiency` | POOL | 18일 | OK | 축적중 18/20일 |
-| `vkospi` | pending:10m, pending:15m, pending:30m | 18일 | OK | 축적중 18/20일 |
-| `vpin` | POOL | 18일 | OK | 축적중 18/20일 |
+| `cvd_direction` | pending:10m | 56일 | CRITICAL | 📌 교체 완료 — cvd_delta_norm이 대체 (후보 목록의 잔존 항목) |
+| `foreign_futures_net` | pending:10m | 41일 | OK | 검증가능 (41일) |
+| `hurst_ready` | POOL | 49일 | WARN | 검증가능 (49일) |
+| `imbalance_slope` | POOL | 56일 | OK | 검증가능 (56일) |
+| `is_month_end_rebalance` | pending:1m, pending:3m, pending:5m, pending:10m, pending:15m, pending:30m | 43일 | WARN | 검증가능 (43일) |
+| `is_monthly_expiry_week` | pending:1m, pending:3m, pending:5m, pending:10m, pending:15m, pending:30m | 43일 | OK | 검증가능 (43일) |
+| `is_monthly_witching` | pending:1m, pending:3m, pending:5m, pending:10m, pending:15m, pending:30m | 43일 | WARN | 검증가능 (43일) |
+| `is_weekly_witching` | pending:1m, pending:3m, pending:5m, pending:10m, pending:15m, pending:30m | 43일 | OK | 검증가능 (43일) |
+| `kyle_lambda` | POOL | 37일 | OK | 검증가능 (37일) |
+| `micro_regime_code` | POOL | 56일 | OK | 검증가능 (56일) · 📌 1m 편입만 하지 않음 — 타 호라이즌 후보 자격은 유지 |
+| `microprice_slope` | POOL | 56일 | OK | 검증가능 (56일) |
+| `mlofi_norm` | POOL | 56일 | OK | 검증가능 (56일) |
+| `multi_timeframe_15m` | POOL | 37일 | OK | 검증가능 (37일) |
+| `multi_timeframe_5m` | POOL | 37일 | OK | 검증가능 (37일) |
+| `ofi_reversal_speed` | pending:1m | 56일 | OK | 검증가능 (56일) |
+| `opt_atm_call_oi` | pending:15m | 37일 | OK | 검증가능 (37일) · 📌 강등(include → pending) — magnitude 계열 재현 실패 |
+| `opt_atm_pcr` | POOL, pending:15m | 37일 | OK | 검증가능 (37일) |
+| `opt_atm_put_oi` | pending:15m | 37일 | OK | 검증가능 (37일) · 📌 강등(include → pending) — magnitude 계열 재현 실패 |
+| `opt_chain_pcr` | pending:15m | 37일 | OK | 검증가능 (37일) · 📌 ⚠ CORE — 15m 승격만 보류. 30m CORE 지위는 그대로 유지 |
+| `opt_gex_bn` | pending:15m | 37일 | OK | 검증가능 (37일) · 📌 강등(include → pending) — magnitude 계열 재현 실패, sign 계열로 대체 |
+| `opt_gex_sign` | POOL, pending:15m | 37일 | OK | 검증가능 (37일) |
+| `program_arb_net` | pending:5m, pending:10m, pending:15m, pending:30m | 41일 | OK | 검증가능 (41일) |
+| `program_non_arb_net` | pending:5m, pending:10m, pending:15m, pending:30m | 41일 | OK | 검증가능 (41일) |
+| `queue_depletion_speed` | POOL | 56일 | OK | 검증가능 (56일) |
+| `queue_directional_depletion` | POOL | 53일 | OK | 📌 1m 편입 종결 — 개선 대상 아님 (후보 재고에서 제외) |
+| `queue_momentum` | POOL | 56일 | OK | 검증가능 (56일) |
+| `queue_refill_rate` | POOL | 56일 | OK | 검증가능 (56일) |
+| `queue_signal` | POOL | 56일 | OK | 검증가능 (56일) |
+| `round_number_distance` | POOL | 37일 | OK | 검증가능 (37일) |
+| `rv_iv_spread` | POOL | 36일 | OK | 검증가능 (36일) |
+| `threshold_feasibility` | pending:15m | 56일 | OK | 📌 기각 — F4 재검증에서 부호 반전 (재현 실패) |
+| `trend_efficiency` | POOL | 37일 | OK | 검증가능 (37일) |
+| `vkospi` | pending:10m, pending:15m, pending:30m | 37일 | OK | 검증가능 (37일) |
+| `vpin` | POOL | 37일 | OK | 검증가능 (37일) |
 
 - **살아있는 재고**: 31건 (축적중+검증가능 — `⚠ 미배선`과 §5에서 `재고=제외`로 확정된 것은 뺀다)
 - 재고 충분 — 발굴 세션 권고 없음 (트리거 기준 3건)

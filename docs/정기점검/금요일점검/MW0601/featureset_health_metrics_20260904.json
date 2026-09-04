@@ -1,21 +1,21 @@
 {
   "_meta": {
     "pc": "MW0601",
-    "date": "2026-08-07",
-    "git": "c88e600",
+    "date": "2026-09-04",
+    "git": "9738080",
     "days": 20,
     "pool_days": 60,
     "min_samples": 200,
     "pool_ready_days": 20,
     "window": {
-      "rows": 8396,
-      "health_rows": 6823,
+      "rows": 15602,
+      "health_rows": 7575,
       "bad_rows": 0,
       "wide_from": "2026-06-02",
-      "wide_to": "2026-08-07",
-      "wide_days": 37,
-      "health_from": "2026-07-10",
-      "health_to": "2026-08-07",
+      "wide_to": "2026-09-04",
+      "wide_days": 56,
+      "health_from": "2026-08-07",
+      "health_to": "2026-09-04",
       "health_days": 20,
       "backfill_rows": 9002,
       "backfill_days": 26,
@@ -26,7 +26,7 @@
     "1m": {
       "weight": 0.0,
       "n_features": 8,
-      "pkl_mtime": "2026-08-07 15:45",
+      "pkl_mtime": "2026-09-04 15:45",
       "counts": {
         "OK": 7,
         "WARN": 1,
@@ -56,7 +56,7 @@
     "3m": {
       "weight": 0.13,
       "n_features": 12,
-      "pkl_mtime": "2026-08-07 13:22",
+      "pkl_mtime": "2026-09-04 15:46",
       "counts": {
         "OK": 12,
         "WARN": 0,
@@ -90,7 +90,7 @@
     "5m": {
       "weight": 0.3,
       "n_features": 12,
-      "pkl_mtime": "2026-08-07 15:46",
+      "pkl_mtime": "2026-09-04 15:46",
       "counts": {
         "OK": 10,
         "WARN": 1,
@@ -124,10 +124,10 @@
     "10m": {
       "weight": 0.29,
       "n_features": 11,
-      "pkl_mtime": "2026-08-07 15:46",
+      "pkl_mtime": "2026-09-04 15:46",
       "counts": {
-        "OK": 10,
-        "WARN": 1,
+        "OK": 11,
+        "WARN": 0,
         "CRITICAL": 0,
         "DEAD": 0,
         "미계측": 0,
@@ -144,7 +144,7 @@
         "poc_distance": "OK",
         "mlofi_slope": "OK",
         "vwap_position": "OK",
-        "opt_pcr_extreme": "WARN",
+        "opt_pcr_extreme": "OK",
         "macro_sp500_chg": "OK",
         "macro_us10y_chg": "OK",
         "macro_krw_chg": "OK",
@@ -155,7 +155,7 @@
     "15m": {
       "weight": 0.28,
       "n_features": 13,
-      "pkl_mtime": "2026-08-07 15:47",
+      "pkl_mtime": "2026-09-04 15:47",
       "counts": {
         "OK": 12,
         "WARN": 0,
@@ -188,7 +188,7 @@
     "30m": {
       "weight": 0.0,
       "n_features": 11,
-      "pkl_mtime": "2026-08-07 15:47",
+      "pkl_mtime": "2026-09-04 15:47",
       "counts": {
         "OK": 11,
         "WARN": 0,
@@ -223,23 +223,318 @@
     "bear_exhaustion_shadow",
     "bull_exhaustion_shadow",
     "bull_reversal_signal",
-    "opt_gex_sign"
+    "macro_risk_off",
+    "trend_efficiency_ready"
   ],
+  "shape_flagged": {
+    "above_vwap": "상수형",
+    "bull_exhaustion_shadow": "상수형",
+    "bull_reversal_signal": "상수형",
+    "cvd_direction_debias": "계단형",
+    "feature_quality_score": "상수형",
+    "macro_nasdaq_chg": "상수형",
+    "macro_risk_on": "상수형",
+    "macro_sp500_chg": "상수형",
+    "macro_us10y_chg": "상수형",
+    "macro_vix": "상수형",
+    "multi_timeframe_15m": "상수형",
+    "multi_timeframe_5m": "계단형",
+    "opt_atm_call_oi": "계단형",
+    "opt_atm_pcr": "계단형",
+    "opt_atm_put_oi": "계단형",
+    "opt_chain_pcr": "계단형",
+    "opt_gex_bn": "계단형",
+    "opt_pcr_bearish": "상수형",
+    "opt_pcr_bullish": "상수형",
+    "opt_pcr_extreme": "상수형",
+    "opt_pcr_extreme_bearish": "상수형",
+    "opt_pcr_extreme_bullish": "상수형",
+    "swing_low_60m": "누적형",
+    "swing_ready_60m": "상수형",
+    "time_cos": "결정론형",
+    "time_sin": "결정론형",
+    "trend_efficiency_ready": "결정론형"
+  },
+  "known_status": {
+    "unresolved": [
+      {
+        "feature": "bear_exhaustion",
+        "level": "DEAD",
+        "reason": "394차 섀도 복구 중 — EXHAUSTION_RESTORE_MODE 참조",
+        "registered": "2026-07-28",
+        "age_days": 38
+      },
+      {
+        "feature": "bear_exhaustion_signal",
+        "level": "DEAD",
+        "reason": "394차 섀도 복구 중",
+        "registered": "2026-07-28",
+        "age_days": 38
+      },
+      {
+        "feature": "bull_exhaustion",
+        "level": "DEAD",
+        "reason": "394차 섀도 복구 중 — EXHAUSTION_RESTORE_MODE 참조",
+        "registered": "2026-07-28",
+        "age_days": 38
+      },
+      {
+        "feature": "bull_exhaustion_signal",
+        "level": "DEAD",
+        "reason": "394차 섀도 복구 중",
+        "registered": "2026-07-28",
+        "age_days": 38
+      },
+      {
+        "feature": "cvd",
+        "level": "CRITICAL",
+        "reason": "CVD 포화(+1.0 고착) — buy_vol 편향 파생, 미해결 등록",
+        "registered": "2026-07-28",
+        "age_days": 38
+      },
+      {
+        "feature": "cvd_direction",
+        "level": "CRITICAL",
+        "reason": "CVD 포화 파생 — 미해결 등록",
+        "registered": "2026-07-28",
+        "age_days": 38
+      },
+      {
+        "feature": "cvd_exhaustion",
+        "level": "DEAD",
+        "reason": "bear_exhaustion 별칭(deprecated)",
+        "registered": "2026-07-28",
+        "age_days": 38
+      },
+      {
+        "feature": "cvd_exhaustion_signal",
+        "level": "DEAD",
+        "reason": "bear_exhaustion_signal 별칭(deprecated)",
+        "registered": "2026-07-28",
+        "age_days": 38
+      },
+      {
+        "feature": "macro_event_flag",
+        "level": "DEAD",
+        "reason": "EVENT_DATES 빈 dict — 캘린더 미입력(Phase 0 §2-3)",
+        "registered": "2026-07-28",
+        "age_days": 38
+      },
+      {
+        "feature": "program_individual_net_krw",
+        "level": "DEAD",
+        "reason": "원천 TR(CpSvr8111) 미제공 — 451차 폐기 집행. 과거 행 잔재",
+        "registered": "2026-07-28",
+        "age_days": 38
+      },
+      {
+        "feature": "program_institution_net_krw",
+        "level": "DEAD",
+        "reason": "원천 TR(CpSvr8111) 미제공 — 451차 폐기 집행. 과거 행 잔재",
+        "registered": "2026-07-28",
+        "age_days": 38
+      }
+    ],
+    "resolved": [
+      {
+        "feature": "opt_gex_sign",
+        "level": "OK",
+        "reason": "시장구조(감마 음수 고착) — 계측 정상, 정보 중복. 451차 종결",
+        "registered": "2026-08-09",
+        "age_days": 26
+      },
+      {
+        "feature": "program_foreign_net_krw",
+        "level": "OK",
+        "reason": "전체 프로그램 순매수 오라벨 — 451차 폐기 집행. 과거 행 잔재",
+        "registered": "2026-08-09",
+        "age_days": 26
+      }
+    ],
+    "gone": [],
+    "max_age_days": 38,
+    "total": 13
+  },
   "l4": {
-    "status": "미배선"
+    "generated": "2026-09-04",
+    "days": 20,
+    "window": [
+      "2026-08-07",
+      "2026-09-04"
+    ],
+    "conf_bucket_edge": 0.55,
+    "alpha_adjusted": 0.0125,
+    "horizons": {
+      "3m": {
+        "acc_low": 0.5003,
+        "n_low": 1789,
+        "acc_high": 0.425,
+        "n_high": 40,
+        "z": -0.942,
+        "p": 0.34632,
+        "verdict": "INSUFFICIENT",
+        "days": 20,
+        "acc_all": 0.4986,
+        "below_floor": false,
+        "buckets": [
+          {
+            "edge": 0.5,
+            "n": 1789,
+            "acc": 0.5003
+          },
+          {
+            "edge": 0.55,
+            "n": 28,
+            "acc": 0.3929
+          },
+          {
+            "edge": 0.6,
+            "n": 9,
+            "acc": 0.5556
+          },
+          {
+            "edge": 0.65,
+            "n": 2,
+            "acc": 0.5
+          },
+          {
+            "edge": 0.7,
+            "n": 1,
+            "acc": 0.0
+          }
+        ]
+      },
+      "5m": {
+        "acc_low": 0.4893,
+        "n_low": 1171,
+        "acc_high": 0.3846,
+        "n_high": 13,
+        "z": -0.751,
+        "p": 0.452576,
+        "verdict": "INSUFFICIENT",
+        "days": 20,
+        "acc_all": 0.4882,
+        "below_floor": false,
+        "buckets": [
+          {
+            "edge": 0.5,
+            "n": 1171,
+            "acc": 0.4893
+          },
+          {
+            "edge": 0.55,
+            "n": 11,
+            "acc": 0.4545
+          },
+          {
+            "edge": 0.6,
+            "n": 0,
+            "acc": null
+          },
+          {
+            "edge": 0.65,
+            "n": 2,
+            "acc": 0.0
+          },
+          {
+            "edge": 0.7,
+            "n": 0,
+            "acc": null
+          }
+        ]
+      },
+      "10m": {
+        "acc_low": 0.525,
+        "n_low": 539,
+        "acc_high": 0.4865,
+        "n_high": 37,
+        "z": -0.454,
+        "p": 0.649651,
+        "verdict": "INSUFFICIENT",
+        "days": 20,
+        "acc_all": 0.5226,
+        "below_floor": false,
+        "buckets": [
+          {
+            "edge": 0.5,
+            "n": 539,
+            "acc": 0.525
+          },
+          {
+            "edge": 0.55,
+            "n": 23,
+            "acc": 0.4783
+          },
+          {
+            "edge": 0.6,
+            "n": 11,
+            "acc": 0.6364
+          },
+          {
+            "edge": 0.65,
+            "n": 3,
+            "acc": 0.0
+          },
+          {
+            "edge": 0.7,
+            "n": 0,
+            "acc": null
+          }
+        ]
+      },
+      "15m": {
+        "acc_low": 0.4278,
+        "n_low": 180,
+        "acc_high": 0.3793,
+        "n_high": 29,
+        "z": -0.491,
+        "p": 0.623712,
+        "verdict": "INSUFFICIENT",
+        "days": 20,
+        "acc_all": 0.4211,
+        "below_floor": true,
+        "buckets": [
+          {
+            "edge": 0.5,
+            "n": 180,
+            "acc": 0.4278
+          },
+          {
+            "edge": 0.55,
+            "n": 13,
+            "acc": 0.4615
+          },
+          {
+            "edge": 0.6,
+            "n": 9,
+            "acc": 0.2222
+          },
+          {
+            "edge": 0.65,
+            "n": 6,
+            "acc": 0.3333
+          },
+          {
+            "edge": 0.7,
+            "n": 1,
+            "acc": 1.0
+          }
+        ]
+      }
+    }
   },
   "candidates": [
     {
       "name": "basis_change_pt",
       "sources": "pending:1m, pending:3m, pending:5m, pending:10m",
-      "days": 18,
+      "days": 37,
       "health": "OK",
       "status": "📌 승격 보류 — basis_pt와 동일 검정에서 함께 재현 실패"
     },
     {
       "name": "basis_pt",
       "sources": "pending:1m, pending:3m, pending:5m, pending:10m",
-      "days": 18,
+      "days": 37,
       "health": "OK",
       "status": "📌 승격 보류 — 표본 확대 후 신호 소멸(재현 실패)"
     },
@@ -253,240 +548,240 @@
     {
       "name": "cvd_direction",
       "sources": "pending:10m",
-      "days": 37,
+      "days": 56,
       "health": "CRITICAL",
       "status": "📌 교체 완료 — cvd_delta_norm이 대체 (후보 목록의 잔존 항목)"
     },
     {
       "name": "foreign_futures_net",
       "sources": "pending:10m",
-      "days": 22,
+      "days": 41,
       "health": "OK",
-      "status": "검증가능 (22일)"
+      "status": "검증가능 (41일)"
     },
     {
       "name": "hurst_ready",
       "sources": "POOL",
-      "days": 30,
+      "days": 49,
       "health": "WARN",
-      "status": "검증가능 (30일)"
+      "status": "검증가능 (49일)"
     },
     {
       "name": "imbalance_slope",
       "sources": "POOL",
-      "days": 37,
+      "days": 56,
       "health": "OK",
-      "status": "검증가능 (37일)"
+      "status": "검증가능 (56일)"
     },
     {
       "name": "is_month_end_rebalance",
       "sources": "pending:1m, pending:3m, pending:5m, pending:10m, pending:15m, pending:30m",
-      "days": 24,
+      "days": 43,
       "health": "WARN",
-      "status": "검증가능 (24일)"
+      "status": "검증가능 (43일)"
     },
     {
       "name": "is_monthly_expiry_week",
       "sources": "pending:1m, pending:3m, pending:5m, pending:10m, pending:15m, pending:30m",
-      "days": 24,
-      "health": "CRITICAL",
-      "status": "검증가능 (24일)"
+      "days": 43,
+      "health": "OK",
+      "status": "검증가능 (43일)"
     },
     {
       "name": "is_monthly_witching",
       "sources": "pending:1m, pending:3m, pending:5m, pending:10m, pending:15m, pending:30m",
-      "days": 24,
-      "health": "DEAD",
-      "status": "검증가능 (24일)"
+      "days": 43,
+      "health": "WARN",
+      "status": "검증가능 (43일)"
     },
     {
       "name": "is_weekly_witching",
       "sources": "pending:1m, pending:3m, pending:5m, pending:10m, pending:15m, pending:30m",
-      "days": 24,
+      "days": 43,
       "health": "OK",
-      "status": "검증가능 (24일)"
+      "status": "검증가능 (43일)"
     },
     {
       "name": "kyle_lambda",
       "sources": "POOL",
-      "days": 18,
+      "days": 37,
       "health": "OK",
-      "status": "축적중 18/20일"
+      "status": "검증가능 (37일)"
     },
     {
       "name": "micro_regime_code",
       "sources": "POOL",
-      "days": 37,
+      "days": 56,
       "health": "OK",
-      "status": "검증가능 (37일) · 📌 1m 편입만 하지 않음 — 타 호라이즌 후보 자격은 유지"
+      "status": "검증가능 (56일) · 📌 1m 편입만 하지 않음 — 타 호라이즌 후보 자격은 유지"
     },
     {
       "name": "microprice_slope",
       "sources": "POOL",
-      "days": 37,
+      "days": 56,
       "health": "OK",
-      "status": "검증가능 (37일)"
+      "status": "검증가능 (56일)"
     },
     {
       "name": "mlofi_norm",
       "sources": "POOL",
-      "days": 37,
+      "days": 56,
       "health": "OK",
-      "status": "검증가능 (37일)"
+      "status": "검증가능 (56일)"
     },
     {
       "name": "multi_timeframe_15m",
       "sources": "POOL",
-      "days": 18,
+      "days": 37,
       "health": "OK",
-      "status": "축적중 18/20일"
+      "status": "검증가능 (37일)"
     },
     {
       "name": "multi_timeframe_5m",
       "sources": "POOL",
-      "days": 18,
+      "days": 37,
       "health": "OK",
-      "status": "축적중 18/20일"
+      "status": "검증가능 (37일)"
     },
     {
       "name": "ofi_reversal_speed",
       "sources": "pending:1m",
-      "days": 37,
+      "days": 56,
       "health": "OK",
-      "status": "검증가능 (37일)"
+      "status": "검증가능 (56일)"
     },
     {
       "name": "opt_atm_call_oi",
       "sources": "pending:15m",
-      "days": 18,
+      "days": 37,
       "health": "OK",
-      "status": "축적중 18/20일 · 📌 강등(include → pending) — magnitude 계열 재현 실패"
+      "status": "검증가능 (37일) · 📌 강등(include → pending) — magnitude 계열 재현 실패"
     },
     {
       "name": "opt_atm_pcr",
       "sources": "POOL, pending:15m",
-      "days": 18,
-      "health": "OK",
-      "status": "축적중 18/20일"
-    },
-    {
-      "name": "opt_atm_put_oi",
-      "sources": "pending:15m",
-      "days": 18,
-      "health": "OK",
-      "status": "축적중 18/20일 · 📌 강등(include → pending) — magnitude 계열 재현 실패"
-    },
-    {
-      "name": "opt_chain_pcr",
-      "sources": "pending:15m",
-      "days": 18,
-      "health": "OK",
-      "status": "축적중 18/20일 · 📌 ⚠ CORE — 15m 승격만 보류. 30m CORE 지위는 그대로 유지"
-    },
-    {
-      "name": "opt_gex_bn",
-      "sources": "pending:15m",
-      "days": 18,
-      "health": "OK",
-      "status": "축적중 18/20일 · 📌 강등(include → pending) — magnitude 계열 재현 실패, sign 계열로 대체"
-    },
-    {
-      "name": "opt_gex_sign",
-      "sources": "POOL, pending:15m",
-      "days": 18,
-      "health": "CRITICAL",
-      "status": "축적중 18/20일"
-    },
-    {
-      "name": "program_arb_net",
-      "sources": "pending:5m, pending:10m, pending:15m, pending:30m",
-      "days": 22,
-      "health": "OK",
-      "status": "검증가능 (22일)"
-    },
-    {
-      "name": "program_non_arb_net",
-      "sources": "pending:5m, pending:10m, pending:15m, pending:30m",
-      "days": 22,
-      "health": "OK",
-      "status": "검증가능 (22일)"
-    },
-    {
-      "name": "queue_depletion_speed",
-      "sources": "POOL",
       "days": 37,
       "health": "OK",
       "status": "검증가능 (37일)"
     },
     {
+      "name": "opt_atm_put_oi",
+      "sources": "pending:15m",
+      "days": 37,
+      "health": "OK",
+      "status": "검증가능 (37일) · 📌 강등(include → pending) — magnitude 계열 재현 실패"
+    },
+    {
+      "name": "opt_chain_pcr",
+      "sources": "pending:15m",
+      "days": 37,
+      "health": "OK",
+      "status": "검증가능 (37일) · 📌 ⚠ CORE — 15m 승격만 보류. 30m CORE 지위는 그대로 유지"
+    },
+    {
+      "name": "opt_gex_bn",
+      "sources": "pending:15m",
+      "days": 37,
+      "health": "OK",
+      "status": "검증가능 (37일) · 📌 강등(include → pending) — magnitude 계열 재현 실패, sign 계열로 대체"
+    },
+    {
+      "name": "opt_gex_sign",
+      "sources": "POOL, pending:15m",
+      "days": 37,
+      "health": "OK",
+      "status": "검증가능 (37일)"
+    },
+    {
+      "name": "program_arb_net",
+      "sources": "pending:5m, pending:10m, pending:15m, pending:30m",
+      "days": 41,
+      "health": "OK",
+      "status": "검증가능 (41일)"
+    },
+    {
+      "name": "program_non_arb_net",
+      "sources": "pending:5m, pending:10m, pending:15m, pending:30m",
+      "days": 41,
+      "health": "OK",
+      "status": "검증가능 (41일)"
+    },
+    {
+      "name": "queue_depletion_speed",
+      "sources": "POOL",
+      "days": 56,
+      "health": "OK",
+      "status": "검증가능 (56일)"
+    },
+    {
       "name": "queue_directional_depletion",
       "sources": "POOL",
-      "days": 34,
+      "days": 53,
       "health": "OK",
       "status": "📌 1m 편입 종결 — 개선 대상 아님 (후보 재고에서 제외)"
     },
     {
       "name": "queue_momentum",
       "sources": "POOL",
-      "days": 37,
+      "days": 56,
       "health": "OK",
-      "status": "검증가능 (37일)"
+      "status": "검증가능 (56일)"
     },
     {
       "name": "queue_refill_rate",
       "sources": "POOL",
-      "days": 37,
+      "days": 56,
       "health": "OK",
-      "status": "검증가능 (37일)"
+      "status": "검증가능 (56일)"
     },
     {
       "name": "queue_signal",
       "sources": "POOL",
+      "days": 56,
+      "health": "OK",
+      "status": "검증가능 (56일)"
+    },
+    {
+      "name": "round_number_distance",
+      "sources": "POOL",
       "days": 37,
       "health": "OK",
       "status": "검증가능 (37일)"
     },
     {
-      "name": "round_number_distance",
-      "sources": "POOL",
-      "days": 18,
-      "health": "OK",
-      "status": "축적중 18/20일"
-    },
-    {
       "name": "rv_iv_spread",
       "sources": "POOL",
-      "days": 17,
+      "days": 36,
       "health": "OK",
-      "status": "축적중 17/20일"
+      "status": "검증가능 (36일)"
     },
     {
       "name": "threshold_feasibility",
       "sources": "pending:15m",
-      "days": 37,
+      "days": 56,
       "health": "OK",
       "status": "📌 기각 — F4 재검증에서 부호 반전 (재현 실패)"
     },
     {
       "name": "trend_efficiency",
       "sources": "POOL",
-      "days": 18,
+      "days": 37,
       "health": "OK",
-      "status": "축적중 18/20일"
+      "status": "검증가능 (37일)"
     },
     {
       "name": "vkospi",
       "sources": "pending:10m, pending:15m, pending:30m",
-      "days": 18,
+      "days": 37,
       "health": "OK",
-      "status": "축적중 18/20일"
+      "status": "검증가능 (37일)"
     },
     {
       "name": "vpin",
       "sources": "POOL",
-      "days": 18,
+      "days": 37,
       "health": "OK",
-      "status": "축적중 18/20일"
+      "status": "검증가능 (37일)"
     }
   ],
   "candidate_stock": 31,

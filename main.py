@@ -2770,6 +2770,23 @@ class TradingSystem:
                 + level_counts.get("ERROR", 0)
                 + level_counts.get("CRITICAL", 0)
             )
+            # ── [MW0601 532차 후속 / G-2] 예외밀도의 **내역**을 함께 잡아둔다 ──────
+            # 종전에는 숫자만 남아, exceptions_10m 이 무엇을 세는지 사후에 알 수 없었다
+            # (2026-09-04 장중 실측: 외부진입 3분 뒤부터 0→44 로 올랐으나 그 44가
+            #  외부진입 매칭 실패인지 다른 것인지 로그만으로 특정 불가).
+            # ⚠ `_classify_health_level()` 에는 넘기지 않는다 — 판정 무영향, 계측 전용.
+            try:
+                exception_tags_10m = log_manager.get_exception_tag_counts(
+                    since_sec=600,
+                    layer="SYSTEM",
+                    exclude_prefixes=p.get(
+                        "exception_exclude_tags", HEALTH_EXCEPTION_EXCLUDE_TAGS
+                    ),
+                )
+            except Exception as _et_e:
+                # 계측 4원칙 ② — 못 쟀으면 「0종」이 아니라 미측정이다.
+                exception_tags_10m = None
+                logger.debug("[Health] 예외태그 소계 실패(미측정): %s", _et_e)
 
             health_level = self._classify_health_level(
                 latency_ms=latency_ms,
@@ -2810,8 +2827,24 @@ class TradingSystem:
                     " [GBM재학습중→lat임계 %.0f/%.0fms]" % self._effective_latency_thresholds()
                     if self._is_gbm_retrain_window() else ""
                 )
+                # [MW0601 532차 후속 / G-2] 예외밀도 내역 — 상위 3태그 + 잔여 종수.
+                # ⚠ 계측 4원칙 ③ — 자를 거면 남은 개수를 명시한다(`… 외 N종`).
+                # ⚠ 계측 4원칙 ② — 미측정과 0종을 같은 문구로 쓰지 않는다.
+                if exception_tags_10m is None:
+                    _exc_tag_txt = " | exc_tags=미측정"
+                elif exception_tags_10m:
+                    _et_sorted = sorted(
+                        exception_tags_10m.items(), key=lambda kv: (-kv[1], kv[0])
+                    )
+                    _et_rest = len(_et_sorted) - 3
+                    _exc_tag_txt = " | exc_tags=%s%s" % (
+                        " ".join("%s×%d" % (t, c) for t, c in _et_sorted[:3]),
+                        (" 외 %d종" % _et_rest) if _et_rest > 0 else "",
+                    )
+                else:
+                    _exc_tag_txt = ""
                 log_manager.health(
-                    "[Health] level=%s degraded=%s | latency=%.0fms | quality=%.2f | cache_age=%.0fs | exceptions_10m=%.0f%s"
+                    "[Health] level=%s degraded=%s | latency=%.0fms | quality=%.2f | cache_age=%.0fs | exceptions_10m=%.0f%s%s"
                     % (
                         health_level,
                         "ON" if self._health_degraded_mode else "OFF",
@@ -2819,6 +2852,7 @@ class TradingSystem:
                         quality_score,
                         cache_age_sec,
                         exception_density_10m,
+                        _exc_tag_txt,
                         _relax_tag,
                     ),
                     health_level,
@@ -3239,6 +3273,16 @@ class TradingSystem:
         logger.info(msg)
         log_manager.system(msg)
 
+    # ── [MW0601 532차 후속 / G-1] session_state 완료 마커 쓰기 계측 ──────────
+    # 이 두 키는 "어제 EOD 재학습과 P8 스케일러 재적합이 끝났다"는 완료 마커다.
+    # 2026-09-03·09-04 이틀 연속 아침에 사라졌는데(0904 리포트 이상점 1-1),
+    # `_write_session_state()` 는 넘겨받은 dict 를 **통째로 덮어쓴다** — 즉
+    # `_read_session_state()` 없이 새로 만든 dict 를 넘긴 호출부가 하나라도 있으면
+    # 키가 조용히 증발한다. 크래시도 경고도 남지 않아 사후 추정에만 의존해 왔다.
+    # 아래 계측이 하는 일은 그 순간을 **호출부(파일:행)까지 특정해 남기는 것**뿐이며,
+    # 쓰기 동작 자체는 바꾸지 않는다.
+    _SESSION_STATE_MARKER_KEYS = ("p8_last_success_date", "eod_retrain_ok_date")
+
     def _session_state_path(self) -> str:
         return os.path.join(BASE_DIR, "data", "session_state.json")
 
@@ -3267,6 +3311,19 @@ class TradingSystem:
     def _write_session_state(self, data: dict) -> None:
         state_path = self._session_state_path()
         os.makedirs(os.path.dirname(state_path), exist_ok=True)
+        # [MW0601 532차 후속 / G-1] 쓰기 **전** 디스크의 마커 보유 현황을 잡아둔다.
+        #   ⚠ 계측 4원칙 ② — 못 읽었으면 「마커 없음」이 아니라 None(미측정)이다.
+        #     둘을 같은 값으로 표현하면 "소실 0건"이 조용한 실패를 덮는다.
+        _pre_markers = None
+        try:
+            if os.path.exists(state_path):
+                with open(state_path, "r", encoding="utf-8") as _pre_f:
+                    _pre_state = json.load(_pre_f)
+                _pre_markers = set(
+                    k for k in self._SESSION_STATE_MARKER_KEYS if _pre_state.get(k)
+                )
+        except Exception as _pre_e:
+            logger.debug("[SessionState] 쓰기 전 스냅샷 실패(미측정 처리): %s", _pre_e)
         # P0: state_persist_enabled 시 ProfitGuard + CircuitBreaker 상태 추가 저장
         if getattr(self, "_state_persist_enabled", True):
             try:
@@ -3282,6 +3339,58 @@ class TradingSystem:
                 json.dump(data, f, ensure_ascii=False)
         except Exception as exc:
             logger.warning("[SessionState] save failed: %s", exc)
+        else:
+            self._log_session_state_write(state_path, data, _pre_markers)
+
+    def _log_session_state_write(self, state_path, data, pre_markers) -> None:
+        """[MW0601 532차 후속 / G-1] 방금 쓴 session_state 의 마커 변화를 남긴다.
+
+        정상 경로도 DEBUG 로 남긴다 — "어느 쓰기가 두 키를 지웠는가"는 지운 순간만
+        봐서는 알 수 없고, 직전에 무엇이 있었는지가 함께 있어야 특정된다.
+
+        ⚠ 로그는 모듈 로거(`logger`)로만 낸다. `log_manager` 로 내면 WARNING 이
+          `exceptions_10m` 에 합산돼 헬스 degraded 를 자체 유발한다(F-17 전례).
+        ⚠ 이 함수는 어떤 예외도 밖으로 내보내지 않는다 — 계측이 저장을 망치면 안 된다.
+        """
+        try:
+            try:
+                mtime = datetime.datetime.fromtimestamp(
+                    os.path.getmtime(state_path)
+                ).strftime("%H:%M:%S")
+            except Exception:
+                mtime = "미측정"
+            # 호출부 — frame 0=이 함수, 1=_write_session_state, 2=그것을 부른 쪽
+            try:
+                _fr = sys._getframe(2)
+                caller = "%s:%d" % (
+                    os.path.basename(_fr.f_code.co_filename), _fr.f_lineno,
+                )
+            except Exception:
+                caller = "미측정"
+            now_markers = set(
+                k for k in self._SESSION_STATE_MARKER_KEYS if data.get(k)
+            )
+            logger.debug(
+                "[SessionState] write keys=%d markers=%s mtime=%s 호출부=%s",
+                len(data), (sorted(now_markers) or "없음"), mtime, caller,
+            )
+            if pre_markers is None:
+                # 쓰기 전 상태가 미측정이면 소실 판정 자체가 불가능하다(계측 4원칙 ②).
+                logger.debug(
+                    "[SessionState] 쓰기 전 마커 미측정 — 소실 판정 생략 (호출부=%s)",
+                    caller,
+                )
+                return
+            lost = sorted(pre_markers - now_markers)
+            if lost:
+                logger.warning(
+                    "[SessionStateDrop] 완료 마커 소실 %s — 이 쓰기가 지웠다 "
+                    "(호출부=%s mtime=%s 남은마커=%s). 호출부가 _read_session_state() "
+                    "없이 dict 를 새로 만들었을 가능성",
+                    lost, caller, mtime, (sorted(now_markers) or "없음"),
+                )
+        except Exception as _log_e:
+            logger.debug("[SessionState] 쓰기 계측 실패(무해): %s", _log_e)
 
     def _restore_auto_shutdown_state(self) -> None:
         state = self._read_session_state()
@@ -12016,6 +12125,59 @@ class TradingSystem:
             logger.info("[FeatureBuilder] 전일 종가 버퍼 갱신: %d봉", len(_today_closes))
         except Exception as _fbe:
             logger.warning("[FeatureBuilder] 전일 종가 버퍼 갱신 실패: %s", _fbe)
+
+        # ── [MW0601 532차 후속 / G-3] 오늘의 자동진입 하한(min_conf) 일별 요약 ────
+        # 왜: 자동진입 하한은 고정 상수가 아니라 DynMC 가 매일 conf 분포의 p65 로
+        #     재산출한다(CLAUDE.md 「확률 판단 기준」 정정문). 그런데 그 값이 하루
+        #     단위로 남는 곳이 없었다 — mc_history.db 는 **변화가 0.5%p 이상일 때만**
+        #     행을 쓰므로, 2026-09-04 리포트가 ConfFloorGuard 장기화를 조사할 때
+        #     "임계 자체가 최근 올랐는가"를 대조하지 못했다(1-3 판정 유보의 직접 원인).
+        # 이 한 줄이 그 시계열을 만든다. 계측 전용이며 임계·판정에 관여하지 않는다.
+        # ⚠ 계측 4원칙 ② — 갱신 0회와 「못 읽었다」를 같은 문구로 쓰지 않는다.
+        try:
+            from model.mc_history_db import get_today_history as _mc_today
+            from strategy.entry.time_strategy_router import (
+                get_zone_min_conf_snapshot as _mc_snap,
+            )
+            _mc_date = now.date().isoformat()
+            _mc_rows = _mc_today(_mc_date)
+            if _mc_rows:
+                _mc_trig = {}
+                for _r in _mc_rows:
+                    _t = str(_r.get("trigger") or "?")
+                    _mc_trig[_t] = _mc_trig.get(_t, 0) + 1
+                _mc_first = float(_mc_rows[0].get("base_mc") or 0.0)
+                _mc_last = float(_mc_rows[-1].get("base_mc") or 0.0)
+                _mc_p65 = _mc_rows[-1].get("conf_p65")
+                _mc_n = _mc_rows[-1].get("n_samples")
+                _mc_head = (
+                    "갱신 %d행(%s) base_mc %.3f→%.3f | conf_p65=%s n_samples=%s"
+                    % (
+                        len(_mc_rows),
+                        " ".join("%s×%d" % (k, v) for k, v in sorted(_mc_trig.items())),
+                        _mc_first, _mc_last,
+                        ("%.4f" % _mc_p65) if _mc_p65 is not None else "미측정",
+                        _mc_n if _mc_n is not None else "미측정",
+                    )
+                )
+            else:
+                # 행이 없다 = 오늘 zone 임계가 0.5%p 이상 움직이지 않았다는 뜻이다.
+                # base_mc 자체를 못 쟀다는 뜻이 **아니다**.
+                _mc_head = (
+                    "갱신 0행(zone 변화폭 0.5%p 미만 — 기록 조건 미달. "
+                    "base_mc 산출 여부는 이 표에서 미측정)"
+                )
+            _mc_zones = _mc_snap()
+            _mc_zone_txt = " ".join(
+                "%s=%.3f" % (z, v) for z, v in sorted(_mc_zones.items())
+            )
+            log_manager.system(
+                "[DynMCDaily] %s %s | 종가 zone_min_conf: %s"
+                % (_mc_date, _mc_head, _mc_zone_txt),
+                "INFO",
+            )
+        except Exception as _mc_e:
+            logger.warning("[DynMCDaily] 일별 min_conf 요약 실패(무해): %s", _mc_e)
 
         # ── STEP 3 재학습 완료 대기 ──────────────────────────────
         # 장중 마지막 30분 배치 재학습이 아직 실행 중이면 완료될 때까지 기다린다.

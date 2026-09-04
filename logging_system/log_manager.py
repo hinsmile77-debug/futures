@@ -235,6 +235,55 @@ class LogManager:
                     counts[lv] += 1
         return counts
 
+    # 예외밀도 태그 소계에서 "태그가 없는 메시지"를 모으는 버킷.
+    # 버리면 소계 합이 exceptions_10m 과 어긋난다(계측 4원칙 ③ 탈락 가시화).
+    NO_TAG_BUCKET = "(태그없음)"
+
+    def get_exception_tag_counts(
+        self,
+        since_sec: int = 600,
+        layer: Optional[str] = None,
+        exclude_prefixes: Optional[List[str]] = None,
+    ) -> Dict[str, int]:
+        """[MW0601 532차 후속 / G-2] 예외밀도(WARNING+)를 **태그별로** 쪼갠 소계.
+
+        `get_level_counts()` 와 **같은 창·같은 제외규칙**으로 세되, 레벨 합계 대신
+        선두 `[태그]` 별 소계를 돌려준다.
+
+        왜: `[Health] … exceptions_10m=44` 는 숫자만 남아서, 그 44가 무엇을 세고
+        있었는지 사후에 알 수 없었다(2026-09-04 장중 실측 — 0→44 로 올랐으나 종류
+        특정 불가). 이 함수는 그 내역을 읽기 위한 **계측 전용**이며 헬스 판정에는
+        관여하지 않는다.
+
+        ⚠ 계측 4원칙 ⑤ — 이 소계의 총합은 `get_level_counts()` 의
+          WARNING+ERROR+CRITICAL 합과 **항상 같아야 한다.** 축이 어긋나면 둘 중
+          하나가 다른 창을 보고 있는 것이다(`tests/test_532_*` 가 이를 고정한다).
+        """
+        cutoff = datetime.datetime.now() - datetime.timedelta(seconds=max(0, int(since_sec)))
+        prefixes = tuple(exclude_prefixes) if exclude_prefixes else ()
+        tag_counts = {}
+
+        layers = [layer] if layer in self._buffers else list(self._buffers.keys())
+        for lay in layers:
+            for entry in self._buffers.get(lay, []):
+                if getattr(entry, "created_at", cutoff) < cutoff:
+                    continue
+                message = str(getattr(entry, "message", ""))
+                if prefixes and message.startswith(prefixes):
+                    continue
+                lv = str(getattr(entry, "level", "INFO") or "INFO").upper()
+                if lv == "WARN":
+                    lv = "WARNING"
+                if lv not in ("WARNING", "ERROR", "CRITICAL"):
+                    continue
+                tag = self.NO_TAG_BUCKET
+                if message.startswith("["):
+                    end = message.find("]")
+                    if end > 1:
+                        tag = message[:end + 1]
+                tag_counts[tag] = tag_counts.get(tag, 0) + 1
+        return tag_counts
+
 
 # 전역 싱글톤
 log_manager = LogManager()

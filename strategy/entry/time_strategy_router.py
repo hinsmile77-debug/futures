@@ -426,6 +426,22 @@ def update_dynamic_mc(
     return base_mc
 
 
+def get_zone_min_conf_snapshot() -> Dict[str, float]:
+    """[MW0601 532차 후속 / G-3] 현재 시각 기준 시간대별 min_confidence 스냅샷.
+
+    `update_dynamic_mc()` 가 매일 base_mc(=conf 분포 p65)를 재산출해 이 값들을 갱신하는데,
+    그 결과가 하루 단위로 어디에 남는지가 없었다 — mc_history.db 는 **변화가 0.5%p 이상일
+    때만** 행을 쓰므로 "오늘 임계가 얼마였나"를 사후에 되짚을 수 없었다.
+    EOD 마감 로그가 이 스냅샷을 한 줄로 남긴다.
+
+    읽기 전용이다 — 사본을 돌려주므로 호출부가 라이브 임계를 바꿀 수 없다.
+    """
+    return dict(
+        (zone, float(params.get("min_confidence", 0.0)))
+        for zone, params in _ZONE_PARAMS.items()
+    )
+
+
 def get_zone_min_confidence(zone: str) -> float:
     """시간대 코드 → 최소 신뢰도 반환 (main.py에서 레짐 기준과 max 비교용)"""
     return _ZONE_PARAMS.get(zone, _ZONE_PARAMS["OTHER"])["min_confidence"]
