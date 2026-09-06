@@ -67,6 +67,67 @@ def is_trading_session(dt: Optional[datetime.datetime] = None) -> bool:
     return is_pre_market(dt) or is_market_open(dt)
 
 
+# ── [MW0601 533차] 세션 분류 — session_bars 적재용 ─────────────────────────
+#: `Dscbo1.FutureCurOnly` 헤더 28(체결유형코드). 0=연속매매(코드 없음).
+AUCTION_CODE_OPEN = 10          # 시가단일가
+AUCTION_CODE_OPEN_EXT = 11      # 시가단일가연장
+AUCTION_CODE_INTRADAY = 20      # 장중단일가 (거래소 CB 뒤 10분 단일가 등)
+AUCTION_CODE_CLOSE = 30         # 종가단일가
+
+SESSION_PRE_AUCTION = "PRE_AUCTION"          # 08:30~08:44 개장 단일가 (예상가만, 체결 없음)
+SESSION_PRE_MARKET = "PRE_MARKET"            # 08:45~08:59 (08:45 봉에 개장 체결 포함)
+SESSION_REGULAR = "REGULAR"                  # 09:00~15:09
+SESSION_POST_FORCE_EXIT = "POST_FORCE_EXIT"  # 15:10~15:34 (만기일 15:10~15:19) — 연속매매, 미륵이는 FLAT
+SESSION_CLOSE_AUCTION = "CLOSE_AUCTION"      # 15:35~15:44 마감 단일가
+SESSION_CLOSE_FILL = "CLOSE_FILL"            # 15:45 마감 체결 (체결유형 30)
+SESSION_EXPIRY_CLOSE = "EXPIRY_CLOSE"        # 만기일 15:20 최종 체결
+SESSION_EXCHANGE_CB = "EXCHANGE_CB"          # 장중단일가 (체결유형 20) — 시각과 무관
+SESSION_AFTER = "AFTER"                      # 마감 이후
+SESSION_OFF = "OFF"                          # 비거래일
+
+
+def classify_session(dt: datetime.datetime, auction_code: Optional[int] = None) -> str:
+    """분봉 ts(분 시작 시각)를 세션 라벨로 분류한다 — `session_bars.session` 원천.
+
+    **기록자가 저장 시점에 박는 태그**다(계측 4원칙 ②·④). 나중에 시각만으로
+    역산하면 만기일 조기마감·거래소 CB 단일가·재기동 복구봉을 구분하지 못한다.
+
+    `auction_code`(FutureCurOnly 헤더 28, 봉 안에서 마지막으로 관측된 비영 값)가
+    있으면 시각보다 우선한다 — 20(장중단일가)은 언제 오든 EXCHANGE_CB, 30(종가단일가)은
+    CLOSE_FILL. 10·11(시가단일가)은 08:45 봉 안에 흡수되므로 PRE_MARKET 그대로다.
+    `None`은 "미수신"이며 0과 같지 않다 — 그때는 시각만으로 분류한다.
+    """
+    if not is_trading_day(dt):
+        return SESSION_OFF
+    if auction_code == AUCTION_CODE_INTRADAY:
+        return SESSION_EXCHANGE_CB
+    if auction_code == AUCTION_CODE_CLOSE:
+        return SESSION_CLOSE_FILL
+
+    t = dt.time()
+    expiry = is_expiry_day(dt)
+    if t < PRE_MARKET_START:
+        return SESSION_PRE_AUCTION
+    if t < PRE_MARKET_END:
+        return SESSION_PRE_MARKET
+    if t < datetime.time(15, 10):
+        return SESSION_REGULAR
+    if expiry:
+        # 만기일: 15:20 최종 체결로 끝난다. 마감 단일가 구간이 따로 없다.
+        if t < datetime.time(15, 20):
+            return SESSION_POST_FORCE_EXIT
+        if t == datetime.time(15, 20):
+            return SESSION_EXPIRY_CLOSE
+        return SESSION_AFTER
+    if t < datetime.time(15, 35):
+        return SESSION_POST_FORCE_EXIT
+    if t < datetime.time(15, 45):
+        return SESSION_CLOSE_AUCTION
+    if t == datetime.time(15, 45):
+        return SESSION_CLOSE_FILL
+    return SESSION_AFTER
+
+
 def minutes_to_close(dt: Optional[datetime.datetime] = None) -> int:
     """장 마감까지 남은 분 수 (만기일은 15:20, 일반일은 15:35 기준)."""
     if dt is None:

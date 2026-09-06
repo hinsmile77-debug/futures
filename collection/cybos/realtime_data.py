@@ -119,6 +119,9 @@ class CybosRealtimeData:
         self._anchor_unavail_warned = False
         self._flag_decoded_ticks = 0      # 체결구분 디코딩 성공 틱 수 (진단용)
         self._flag_unknown_ticks = 0      # 〃 실패 틱 수 — 0이 아니면 원천/파서 재확인
+        # [533차] 헤더 28 체결유형코드 계측 상태
+        self._auction_seen_today = False  # 비영 코드(단일가 체결)를 한 번이라도 받았나
+        self._auction_field_warned = False  # 헤더 28 읽기 실패 경고 1회 제한
         # [404차 후속6] 당일 상한가/하한가 (FutureMst 스냅샷에서 1회 확보, 0.0=미확보)
         self._upper_limit: float = 0.0
         self._lower_limit: float = 0.0
@@ -297,6 +300,32 @@ class CybosRealtimeData:
                 self._flag_decoded_ticks += 1
         except Exception:
             sys_log.debug("[CVD-ANCHOR] 계측 실패 — 이번 틱만 건너뜀", exc_info=True)
+
+        # ── [MW0601 533차 / 풀타임 수집 Phase 1] 헤더 28 체결유형코드 ─────────────
+        # 10 시가단일가 / 11 연장 / 20 장중단일가 / 30 종가단일가, 0 = 연속매매.
+        # 개장(08:45)·마감(15:45)·거래소 CB 체결틱을 봉 안에서 구분하는 유일한 원천이다.
+        # 못 읽으면 None(=미수신, NULL 저장) — 0으로 채우지 않는다(계측 4원칙 ②).
+        # 앵커 블록과 같은 방어: 이 계측이 실패해도 틱 처리는 계속된다.
+        auction_code = None
+        try:
+            _ac_raw = obj.GetHeaderValue(28)
+            if _ac_raw is not None and _safe_str(_ac_raw) != "":
+                auction_code = _safe_int(_ac_raw)
+                if auction_code and not self._auction_seen_today:
+                    self._auction_seen_today = True
+                if auction_code:
+                    sys_log.info(
+                        "[CybosRT-AUCTION] code=%s raw_time=%s price=%.2f cum_vol=%d "
+                        "auction_code=%d recv_type=%s",
+                        self._rt_code, raw_tick_time, price, cum_volume, auction_code,
+                        _safe_str(obj.GetHeaderValue(30)) or "-",
+                    )
+        except Exception:
+            if not self._auction_field_warned:
+                self._auction_field_warned = True
+                sys_log.warning(
+                    "[CybosRT-AUCTION] 헤더 28(체결유형코드) 읽기 실패 — 이 세션은 "
+                    "auction_code=NULL 로 남는다 (원천/인덱스 재확인)", exc_info=True)
         if oi > 0:
             self._last_oi = oi
 
@@ -386,6 +415,7 @@ class CybosRealtimeData:
             anchor_d_buy=anchor_d_buy,
             anchor_d_sell=anchor_d_sell,
             shadow_side=shadow_side,
+            auction_code=auction_code,
         )
 
     def _read_trade_anchor(self, obj):
@@ -520,6 +550,7 @@ class CybosRealtimeData:
         anchor_d_buy: Optional[int] = None,
         anchor_d_sell: Optional[int] = None,
         shadow_side: Optional[str] = None,
+        auction_code: Optional[int] = None,
     ) -> None:
         if self._current_min is not None and bar_min != self._current_min:
             sys_log.info(
@@ -560,6 +591,10 @@ class CybosRealtimeData:
                 "anchor_sell": None,
                 "buy_vol_flag": None,
                 "sell_vol_flag": None,
+                # [533차] 헤더 28 체결유형코드. None=이 봉에서 한 번도 못 받음(NULL),
+                # 0=받았고 전부 연속매매, 10/11/20/30=단일가 체결 포함(마지막 비영 값).
+                "auction_code": None,
+                "auction_ticks": None,
             }
             self._current_min = bar_min
         else:
@@ -593,6 +628,14 @@ class CybosRealtimeData:
             # 반대편도 0으로 확정한다 — 이 봉은 "체결구분을 받았다"는 상태이므로
             # 한쪽만 NULL로 남으면 판독 시 미계측으로 오독된다.
             _bar[_other] = _bar.get(_other) or 0
+        # [533차] 체결유형코드 봉 누적 — 받은 적이 있으면 0이라도 기록(미수신과 구분).
+        if auction_code is not None:
+            if _bar.get("auction_code") is None:
+                _bar["auction_code"] = 0
+                _bar["auction_ticks"] = 0
+            if auction_code:
+                _bar["auction_code"] = auction_code
+                _bar["auction_ticks"] = (_bar.get("auction_ticks") or 0) + 1
 
         if self._on_tick is not None:
             self._on_tick(dict(self._current_bar))

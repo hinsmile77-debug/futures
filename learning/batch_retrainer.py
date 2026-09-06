@@ -2370,7 +2370,11 @@ class BatchRetrainer:
         #   대조가 끊긴다(461차 `mdd_pct` 사고와 같은 유형).
         def _prune_once(_conn):
             _n, _detail = 0, []
-            for table in ("raw_features", "raw_candles", "raw_features_horizon"):
+            # [MW0601 533차 체리픽] `session_bars` 도 같은 52주 FIFO —
+            # 풀타임 봉은 raw_candles 와 **별도 테이블**이라 여기 안 넣으면
+            # 영원히 자란다(적재는 매일 약 400행).
+            for table in ("raw_features", "raw_candles", "raw_features_horizon",
+                          "session_bars"):
                 try:
                     r = _conn.execute(
                         "DELETE FROM {} WHERE ts < ?".format(table), (cutoff,)
