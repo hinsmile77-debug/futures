@@ -31,6 +31,10 @@ SHAP_DB = os.path.join(DB_DIR, "shap_tracker.db")
 TRADES_DB = os.path.join(DB_DIR, "trades.db")
 RAW_DATA_DB = os.path.join(DB_DIR, "raw_data.db")  # 경로 B 학습 데이터
 CHALLENGER_DB = os.path.join(DB_DIR, "challenger.db")  # 챔피언-도전자 전용 DB
+# [MW0601 534차] 당일 맥점 예측(거리 모델·구조 모델) 전용 DB — 하루 2행(08:50/09:30).
+# 별도 파일로 두는 이유: raw_data.db(468MB)·predictions.db(835MB)와 섞으면 대시보드
+# 폴링이 그 큰 파일의 페이지캐시를 계속 건드린다(2026-08-10 CB⑤ 자가유발 전례).
+PREMARKET_LEVELS_DB = os.path.join(DB_DIR, "premarket_levels.db")
 SCALER_MONITOR_DB = os.path.join(
     DB_DIR, "scaler_monitor.db"
 )  # 섹션 8 스케일러 상태 모니터
@@ -43,6 +47,7 @@ META_CONF_STATE_PATH = os.path.join(
 
 # EOD WAL 체크포인트 대상 — 모든 WAL-모드 DB (db_utils.get_connection 이 WAL 설정)
 EOD_WAL_CHECKPOINT_DBS = [
+    PREMARKET_LEVELS_DB,
     RAW_DATA_DB,
     PREDICTIONS_DB,
     TRADES_DB,
