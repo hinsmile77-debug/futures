@@ -76,6 +76,15 @@ def main():
     logger.info("BASE_DIR: %s", BASE_DIR)
     logger.info("=" * 60)
 
+    # [MW0601 534차] 당일 맥점 EOD 단계 — 자동 경로(retrain_eod.py)와 같은 동작.
+    # 수동 실행에서도 이력 캐시가 갱신되게 한다(내일 08:50 산출의 유일한 입력).
+    # 멱등이라 두 경로가 겹쳐도 무해하다(증분 갱신 + 채점 REPLACE).
+    try:
+        from scripts.premarket_levels_eod import run_eod as _levels_eod
+        _levels_eod(log=logger)
+    except Exception as _lv_eod_e:
+        logger.warning("[LEVELS] EOD 단계 실패 (무해): %s", _lv_eod_e)
+
     # ── 임포트 (py37_32 환경 필요) ─────────────────────────────
     try:
         from learning.batch_retrainer import BatchRetrainer, MIN_TRAIN_BARS, MIN_TRAIN_BARS_PER_HORIZON

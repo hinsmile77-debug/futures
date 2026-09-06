@@ -10,6 +10,7 @@ from typing import List, Tuple, Any, Optional, Dict
 import json
 from config.constants import FUTURES_PT_VALUE, get_contract_spec
 from config.settings import PREDICTIONS_DB, SHAP_DB, TRADES_DB, RAW_DATA_DB, DB_DIR, DATA_DIR
+from config.settings import PREMARKET_LEVELS_DB
 from config.settings import (
     FUTURES_COMMISSION_RATE,
     FUTURES_COMMISSION_RATE_LEGACY_KIWOOM,
@@ -3929,6 +3930,172 @@ def fetch_tb_verdicts_judged_on(date_str: str) -> List[str]:
     return [r["horizon"] for r in rows]
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# [MW0601 534차] 당일 맥점 예측 — 거리 모델·구조 모델 (08:50 / 09:30)
+# 근거: docs/미륵이고도화3/당일맥점예측_거리모델_구조모델_구현가이드_2026-09-06.md §6-5
+# ══════════════════════════════════════════════════════════════════════════
+
+def init_premarket_levels_db():
+    """맥점 예측 산출·채점 테이블.
+
+    🔴 저장은 `INSERT OR IGNORE` 다(가이드 §4 굳히기) — 한 번 산출한 단계는 다시
+    계산하지 않는다. 09:30 산출을 09:40에 실행해도 컷은 같지만, **처음 계산한 값**을
+    굳혀야 화면·로그·장후 채점이 같은 수를 본다.
+    """
+    execute(PREMARKET_LEVELS_DB, """
+        CREATE TABLE IF NOT EXISTS premarket_levels (
+            date        TEXT NOT NULL,
+            stage       TEXT NOT NULL,
+            computed_at TEXT NOT NULL,
+            ref_price   REAL,
+            open_price  REAL,
+            atr14       REAL,
+            dist_high   REAL, dist_low  REAL,
+            high50_lo   REAL, high50_hi REAL, high80_lo REAL, high80_hi REAL,
+            low50_lo    REAL, low50_hi  REAL, low80_lo  REAL, low80_hi  REAL,
+            raw80_hi_lo REAL, raw80_hi_hi REAL, raw80_lo_lo REAL, raw80_lo_hi REAL,
+            rhat_scale  REAL,
+            sofar_high  REAL, sofar_low REAL,
+            train_n     INTEGER,
+            struct_up   TEXT,
+            struct_down TEXT,
+            bars        INTEGER,
+            note        TEXT,
+            warnings    TEXT,
+            PRIMARY KEY (date, stage)
+        )
+    """)
+    execute(PREMARKET_LEVELS_DB, """
+        CREATE TABLE IF NOT EXISTS premarket_levels_score (
+            date TEXT NOT NULL, stage TEXT NOT NULL,
+            scored_at TEXT,
+            actual_high REAL, actual_low REAL, bars INTEGER,
+            err_high REAL, err_low REAL,
+            in50_high INTEGER, in50_low INTEGER,
+            in80_high INTEGER, in80_low INTEGER,
+            in80raw_high INTEGER, in80raw_low INTEGER,
+            rhat_scale REAL,
+            struct_near_high REAL, struct_near_low REAL,
+            struct_hit_high INTEGER, struct_hit_low INTEGER,
+            PRIMARY KEY (date, stage)
+        )
+    """)
+
+
+def _pml_band(d, key):
+    b = (d or {}).get(key)
+    return (b[0], b[1]) if b else (None, None)
+
+
+def save_premarket_levels(date_str: str, stage: str, computed_at: str,
+                          out: Optional[dict], note: Optional[str] = None,
+                          warnings: Optional[list] = None, bars: int = 0) -> bool:
+    """단계 1행 저장. **INSERT OR IGNORE** — 이미 굳힌 행은 건드리지 않는다.
+
+    반환: 새로 굳혔으면 True, 이미 있어서 무시했으면 False.
+    out=None 이면 「미산출」 행을 note 와 함께 남긴다 — 컬럼이 전부 NULL 인 것과
+    note 가 설명하는 것을 함께 두어 「미측정 ≠ 0」을 지킨다(계측 4원칙 ②·③).
+    """
+    dist = (out or {}).get("distance")
+    raw = (dist or {}).get("raw")
+    struct = (out or {}).get("structure") or {}
+    h50 = _pml_band(dist, "high50")
+    h80 = _pml_band(dist, "high80")
+    l50 = _pml_band(dist, "low50")
+    l80 = _pml_band(dist, "low80")
+    r_h80 = _pml_band(raw, "high80")
+    r_l80 = _pml_band(raw, "low80")
+    with _lock:
+        with get_conn(PREMARKET_LEVELS_DB) as conn:
+            cur = conn.execute(
+                """INSERT OR IGNORE INTO premarket_levels
+                   (date, stage, computed_at, ref_price, open_price, atr14,
+                    dist_high, dist_low, high50_lo, high50_hi, high80_lo, high80_hi,
+                    low50_lo, low50_hi, low80_lo, low80_hi,
+                    raw80_hi_lo, raw80_hi_hi, raw80_lo_lo, raw80_lo_hi, rhat_scale,
+                    sofar_high, sofar_low, train_n, struct_up, struct_down,
+                    bars, note, warnings)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (date_str, stage, computed_at,
+                 (out or {}).get("ref"), (out or {}).get("open"), (out or {}).get("atr"),
+                 (dist or {}).get("high"), (dist or {}).get("low"),
+                 h50[0], h50[1], h80[0], h80[1], l50[0], l50[1], l80[0], l80[1],
+                 r_h80[0], r_h80[1], r_l80[0], r_l80[1], (dist or {}).get("scale"),
+                 (dist or {}).get("so_far_high"), (dist or {}).get("so_far_low"),
+                 (out or {}).get("train_n"),
+                 json.dumps(struct.get("up"), ensure_ascii=False) if struct else None,
+                 json.dumps(struct.get("down"), ensure_ascii=False) if struct else None,
+                 bars or (out or {}).get("bars"), note,
+                 json.dumps(warnings or (out or {}).get("warnings") or [],
+                            ensure_ascii=False)),
+            )
+            return cur.rowcount > 0
+
+
+def _row_to_premarket_levels(r) -> dict:
+    """DB 행 → 로그·UI 가 쓰는 dict. **굳힌 값을 되읽는 유일한 경로**."""
+    def band(a, b):
+        return (r[a], r[b]) if r[a] is not None and r[b] is not None else None
+
+    def jload(key):
+        try:
+            return json.loads(r[key]) if r[key] else None
+        except Exception:
+            return None
+
+    dist = None
+    if r["dist_high"] is not None:
+        dist = dict(high=r["dist_high"], low=r["dist_low"],
+                    high50=band("high50_lo", "high50_hi"),
+                    high80=band("high80_lo", "high80_hi"),
+                    low50=band("low50_lo", "low50_hi"),
+                    low80=band("low80_lo", "low80_hi"),
+                    scale=r["rhat_scale"],
+                    so_far_high=r["sofar_high"], so_far_low=r["sofar_low"])
+        raw_h = band("raw80_hi_lo", "raw80_hi_hi")
+        raw_l = band("raw80_lo_lo", "raw80_lo_hi")
+        dist["raw"] = dict(high80=raw_h, low80=raw_l) if raw_h and raw_l else None
+    return dict(date=r["date"], stage=r["stage"], computed_at=r["computed_at"],
+                ref=r["ref_price"], open=r["open_price"], atr=r["atr14"],
+                distance=dist, train_n=r["train_n"], bars=r["bars"], note=r["note"],
+                structure=dict(up=jload("struct_up") or [],
+                               down=jload("struct_down") or []),
+                warnings=jload("warnings") or [])
+
+
+def fetch_premarket_levels(date_str: str) -> Dict[str, dict]:
+    """그날 굳힌 단계 전부 — {"0850": {...}, "0930": {...}}."""
+    rows = fetchall(PREMARKET_LEVELS_DB,
+                    "SELECT * FROM premarket_levels WHERE date = ?", (date_str,))
+    return {r["stage"]: _row_to_premarket_levels(r) for r in rows}
+
+
+def save_premarket_levels_score(date_str: str, stage: str, row: dict) -> None:
+    """장후 채점 1행 — 재채점 가능해야 하므로 REPLACE(산출과 달리 굳히기 대상 아님)."""
+    execute(PREMARKET_LEVELS_DB,
+            """INSERT OR REPLACE INTO premarket_levels_score
+               (date, stage, scored_at, actual_high, actual_low, bars,
+                err_high, err_low, in50_high, in50_low, in80_high, in80_low,
+                in80raw_high, in80raw_low, rhat_scale,
+                struct_near_high, struct_near_low, struct_hit_high, struct_hit_low)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (date_str, stage, row.get("scored_at"),
+             row.get("actual_high"), row.get("actual_low"), row.get("bars"),
+             row.get("err_high"), row.get("err_low"),
+             row.get("in50_high"), row.get("in50_low"),
+             row.get("in80_high"), row.get("in80_low"),
+             row.get("in80raw_high"), row.get("in80raw_low"), row.get("rhat_scale"),
+             row.get("struct_near_high"), row.get("struct_near_low"),
+             row.get("struct_hit_high"), row.get("struct_hit_low")))
+
+
+def fetch_premarket_levels_scores(days: int = 60) -> List[sqlite3.Row]:
+    """최근 N거래일 채점 행 — 누적 표(가이드 §8)의 원료."""
+    return fetchall(PREMARKET_LEVELS_DB,
+                    "SELECT * FROM premarket_levels_score "
+                    "ORDER BY date DESC, stage LIMIT ?", (days * 2,))
+
+
 def init_all_dbs():
     """전체 DB 초기화 (main.py에서 1회 호출)"""
     init_predictions_db()
@@ -3937,3 +4104,4 @@ def init_all_dbs():
     init_shap_db()
     init_raw_data_db()
     init_daily_broker_pnl_db()
+    init_premarket_levels_db()

@@ -622,6 +622,18 @@ class TradingSystem:
         self._pm_scaler_trace = []      # [(라벨, z_before, z_after)]
         self._pm_trace_emitted = False  # 하루 1회만 출력
         self._pm_canary_shadow_done = False   # F-Q ② 08:59 섀도 1회 제한
+        # ── [MW0601 534차] 당일 맥점 예측 — 거리 모델·구조 모델 ─────────────
+        # 근거: docs/미륵이고도화3/당일맥점예측_거리모델_구조모델_구현가이드_2026-09-06.md
+        # 🔴 **관측·기록 전용이다** — 진입·청산·신호 어디에도 연결하지 않는다(가이드 §11-1).
+        #    마흐디 이력에서 이 레벨로 진입을 막는 반사실 검증을 했더니 손익이
+        #    나빠졌다(335건 기준 −2.6M~−5.7M원).
+        # 하루 1회 산출 플래그 — `_pm_canary_shadow_done` 과 같은 관례.
+        self._premarket_levels_0850_done = False
+        self._premarket_levels_0930_done = False
+        # 당일 08:45~09:30 봉 버퍼(최대 60개). 장중 DB 스캔을 피하기 위한 것이며
+        # 세션 중간 재기동으로 비어 있으면 levels_store 가 당일 PK 범위 조회로
+        # 폴백한다(전수 스캔 아님 — CLAUDE.md 2026-08-10 CB⑤ 전례).
+        self._levels_day_bars: list = []
         # [MW0601 493차 / F-5] 브로커 실측 당일 net(익일가예탁현금 − 예탁현금).
         # 잔고 push(FLAT일 때)가 채운다. **None이 초기값이다** — 0으로 두면
         # "아직 안 받았다"와 "브로커가 0원이라 한다"가 구분되지 않는다
@@ -4985,11 +4997,65 @@ class TradingSystem:
             except Exception as _pme2:
                 logger.debug("[PreMarket] 예측 스킵: %s", _pme2)
 
+        # ── [MW0601 534차] 08:50 맥점 산출 (거리 모델 M1 + 구조 후보) ──────
+        # 08:45 시가 하나만 쓰므로 언제 계산해도 같지만, **처음 계산한 값을 굳혀**
+        # 화면·로그·장후 채점이 같은 수를 보게 한다(가이드 §4 굳히기).
+        if (not self._premarket_levels_0850_done
+                and datetime.time(8, 50) <= now_dt.time() < datetime.time(9, 0)):
+            self._premarket_levels_0850_done = True
+            self._compute_premarket_levels("0850")
+
         # 대시보드 차트 갱신 (선택적)
         try:
             self.dashboard.minute_chart_candle_closed(candle)
         except Exception:
             pass
+
+    def _compute_premarket_levels(self, stage: str) -> None:
+        """[MW0601 534차] 당일 맥점 예측 1단계 산출 → DB 굳히기 → 로그 → 대시보드.
+
+        🔴 **관측·기록 전용** — 반환값을 진입·청산·사이징 어디에서도 읽지 않는다
+           (가이드 §11-1). 실패해도 파이프라인을 막지 않는다.
+
+        이력은 EOD 에 굳힌 캐시(`data/premarket_levels_history.json`)에서 읽는다 —
+        장중 `raw_candles` 전수 스캔은 2026-08-10 CB⑤ 자가유발의 원인이었다.
+        """
+        try:
+            from features.levels import levels_store as _LS
+        except Exception as _lv_ie:
+            log_manager.system(f"[LEVELS] 모듈 로드 실패 (무해): {_lv_ie}", "WARNING")
+            return
+        try:
+            row = _LS.ensure_stage(stage, today_candles=self._levels_day_bars)
+        except Exception as _lv_e:
+            logger.warning("[LEVELS] %s 산출 실패: %s", stage, _lv_e, exc_info=True)
+            log_manager.system(f"[LEVELS] {stage} 산출 실패 (무해): {_lv_e}", "WARNING")
+            return
+        if not row:
+            return
+        try:
+            if row.get("note"):
+                log_manager.system(
+                    f"[LEVELS {stage[:2]}:{stage[2:]}] 미산출 — {row['note']}", "WARNING")
+            else:
+                for _line in _LS.format_log_lines(row):
+                    log_manager.system(_line, "INFO")
+                if row.get("warnings"):
+                    log_manager.system(
+                        f"[LEVELS {stage[:2]}:{stage[2:]}] 주의 — "
+                        f"{' / '.join(row['warnings'])}", "INFO")
+        except Exception:
+            pass
+        self._push_premarket_levels()
+
+    def _push_premarket_levels(self) -> None:
+        """굳힌 단계 전부를 대시보드로 밀어 넣는다(재기동 복원 경로 겸용)."""
+        try:
+            from utils.db_utils import fetch_premarket_levels
+            _stages = fetch_premarket_levels(datetime.datetime.now().strftime("%Y-%m-%d"))
+            self.dashboard.update_premarket_levels(_stages)
+        except Exception as _lv_pe:
+            logger.debug("[LEVELS] 대시보드 갱신 스킵: %s", _lv_pe)
 
     def _on_candle_closed(self, candle: dict) -> None:
         """분봉 완성 콜백 — Qt 이벤트 스레드에서 호출됨."""
@@ -5002,6 +5068,22 @@ class TradingSystem:
         # 저장만 한다 — 판단·파이프라인은 이 블록을 지나 종전과 똑같이 흐른다.
         # 순서 불변식은 tests/test_533_session_bars.py 가 소스 텍스트로 고정한다.
         self._persist_session_bar(candle)
+
+        # ── [MW0601 534차] 맥점 산출용 당일 봉 버퍼 ────────────────────────
+        # `_persist_session_bar` 와 같은 이유로 **모든 분기보다 앞**에 있어야 한다 —
+        # 09:30 산출은 08:45 시가를 필요로 하는데 그 봉은 프리장 분기로 빠진다.
+        # 09:30 컷을 넘으면 더 담지 않는다(메모리 상한 겸 굳히기 대상 고정).
+        # ⚠ `candle["ts"]` 는 **datetime 객체**다(realtime_data 가 그렇게 만든다).
+        #   문자열로 가정해 슬라이스하면 TypeError 로 조용히 전부 버려진다 —
+        #   `db_utils.candle_ts_str()` 과 같은 방식으로 다룬다.
+        try:
+            _lv_ts = candle.get("ts")
+            _lv_t = (_lv_ts.strftime("%H:%M") if hasattr(_lv_ts, "strftime")
+                     else str(_lv_ts)[11:16])
+            if len(_lv_t) == 5 and _lv_t <= "09:30" and len(self._levels_day_bars) < 60:
+                self._levels_day_bars.append(dict(candle))
+        except Exception:
+            pass
 
         # ── 프리장 처리 경로 (08:45~09:00) ──────────────────────────
         # 진입 없이 scaler warmup · 피처 검증 · GapOffset 사전 설정만 수행
@@ -5846,6 +5928,28 @@ class TradingSystem:
             )
             return
         self._last_pipeline_bar_ts = ts
+
+        # ── [MW0601 534차] 09:30 맥점 재산출 (거리 모델 P1 + 오프닝 레인지) ──
+        # HHMM 정수 비교 관용구. 09:30을 지난 첫 봉에서 1회만 — 09:40에 실행해도
+        # 컷(09:30)은 같지만 **처음 계산한 값**을 굳힌다(가이드 §4).
+        # 관측 전용이라 이 블록의 실패는 파이프라인을 막지 않는다.
+        if not self._premarket_levels_0930_done:
+            try:
+                _lv_dt = ts_raw if hasattr(ts_raw, "hour") else datetime.datetime.now()
+                if _lv_dt.hour * 100 + _lv_dt.minute >= 930:
+                    self._premarket_levels_0930_done = True
+                    # 프리장 봉이 안 와서 08:50 훅이 못 돌았으면 여기서 메운다.
+                    # 08:50 산출은 **08:45 시가 하나만** 쓰므로 언제 계산해도 값이
+                    # 같다(가이드 §4) — 굳히기가 이미 있으면 ensure_stage 가 무시한다.
+                    if not self._premarket_levels_0850_done:
+                        self._premarket_levels_0850_done = True
+                        log_manager.system(
+                            "[LEVELS] 08:50 훅 미발화(프리장 봉 없음) — 09:30에 소급 산출",
+                            "WARNING")
+                        self._compute_premarket_levels("0850")
+                    self._compute_premarket_levels("0930")
+            except Exception as _lv930_e:
+                logger.warning("[LEVELS] 09:30 훅 실패 (무해): %s", _lv930_e)
 
         # ── [S0-A] 64비트 GBM subprocess 완료 체크 ────────────────────────
         # [226차] poll()은 non-blocking — subprocess가 완료되면 returncode 반환.
@@ -12525,6 +12629,10 @@ class TradingSystem:
         self._pre_market_scaler_refitted    = False
         self._pre_market_gap_offset_set     = False
         self._pre_market_conf_history       = []
+        # [MW0601 534차] 맥점 산출 플래그·당일 봉 버퍼 리셋
+        self._premarket_levels_0850_done    = False
+        self._premarket_levels_0930_done    = False
+        self._levels_day_bars               = []
         self.shadow_session.reset_daily()
         self.contrarian_mode.reset_daily()
         self.trend_gate.reset_daily()
@@ -14241,6 +14349,10 @@ class TradingSystem:
 
         # 세션 카운터 증가 + 당일 거래/패널 복원 (Day 3 서비스 단일 호출)
         self.session_recovery_service.restore_on_startup(self)
+
+        # [MW0601 534차] 오늘 이미 굳힌 맥점 단계를 대시보드에 복원 — 장중 재기동
+        # 시에도 화면이 **굳힌 값 그대로**를 보게 한다(가이드 §4).
+        self._push_premarket_levels()
 
         # 이벤트 루프 진입 2초 후 초기 대기 상태 즉시 출력
         QTimer.singleShot(2000, lambda: self._log_waiting_status(datetime.datetime.now()))

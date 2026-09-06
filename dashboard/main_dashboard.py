@@ -1031,6 +1031,17 @@ def mk_badge(text, bg, fg="#ffffff", size=10):
     return lb
 
 
+def _band_txt(label, band):
+    """[MW0601 534차] 거리모델 구간 1개를 문자열로. **없으면 지어내지 않는다.**
+
+    band 가 None 인 것은 「구간이 0~0」이 아니라 「저장되지 않았다」다 —
+    `(0, 0)` 으로 폴백하면 화면이 미측정을 값으로 위장한다(계측 4원칙 ②·④).
+    """
+    if not band or band[0] is None or band[1] is None:
+        return "%s ——" % label
+    return "%s %.0f~%.0f" % (label, band[0], band[1])
+
+
 def mk_sep():
     line = QFrame()
     line.setFrameShape(QFrame.HLine)
@@ -3887,6 +3898,41 @@ class EntryPanel(QWidget):
                 self.atr_gate_detail.setContentsMargins(24, 0, 0, 2)
                 left_lay.addWidget(self.atr_gate_detail)
 
+        # ── [MW0601 534차] 당일 맥점 · 거리 모델 (08:50 / 09:30) ──────────
+        # 근거: docs/미륵이고도화3/당일맥점예측_거리모델_구조모델_구현가이드_2026-09-06.md
+        # 🔴 관측 전용 패널이다 — 여기 표시되는 값은 어떤 게이트에도 입력되지 않는다.
+        left_lay.addWidget(mk_sep())
+        _lv_title = mk_label("당일 맥점 · 거리모델", C['blue'], 9, True)
+        _lv_title.setToolTip('당일 맥점 · 거리 모델 (08:50 / 09:30)\n\n「어느 가격이 저항인가」가 아니라 「시가에서 얼마나 갈 것인가」로 당일 고·저를 낸다.\n\n  08:50  M1 — 고점 = 08:45 시가 + med(u)×ATR14, 저점 = 시가 − med(d)×ATR14\n               med(u)/med(d) = 직전 60세션 중앙값\n               구간 = 훈련 잔차 25/75(50%) · 10/90(80%) 분위 — 정규분포 가정 없음\n  09:30  P1 — 09:30까지의 경로(gap · 전일범위 · u_T · d_T · ret_T)를 넣은\n               중앙값 회귀(LAD, IRLS 30회). 이미 난 고·저를 **하한**으로 잘라\n               그보다 낮게 예측하지 않는다\n\nR̂ 스케일: 당일 실현 범위 R=(고−저)/시가 를 log 회귀로 예측해 구간 폭을\n  R̂/훈련중앙R 배(하한 0.85 · 상한 2.0)로 조정. 조용한 날 과신·시끄러운 날\n  과소신을 함께 좁힌다. 스케일 전 원구간도 DB에 함께 저장돼 장후에 대조된다.\n\n━━ 검증 (144세션 워크포워드, 2026-01-05~09-04) ━━\n  08:50  MAE 14.2pt · 50% 구간 47% · 80% 구간 78% (R̂ 적용 83%)\n  09:30  MAE 11.0pt · 50% 구간 44% · 80% 구간 74% (R̂ 적용 81%)\n  대조군 — 전일 고·저 그대로 MAE 30.9pt / 시가±전일범위÷2 15.3pt\n  ⇒ 전일 고·저를 목표가로 쓰면 오차가 두 배다\n\n  변동성 분위별 08:50 오차: 낮음 9.6pt / 중간 13.5pt / 높음 20.5pt\n  → 신뢰도가 시장 상태에 따라 두 배 차이 난다\n\n🔴 관측·기록 전용이다 — 진입·청산·사이징 어디에도 연결돼 있지 않다.\n   (반사실 검증: 예측 고점 부근 LONG 자제 규칙은 손익을 −2.6M~−5.7M원 악화시켰다)\n「미산출」은 훈련 세션 30 미만이거나 08:45 시가가 결손된 경우다 — 지어내지 않는다.')
+        left_lay.addWidget(_lv_title)
+        # 시점마다 3줄이다 — 메타(ATR·R̂) / 고점 / 저점.
+        # 「각 시점 고·저 예측치」와 50%·80% 구간을 한 눈에 보려면 고·저를 한 줄에
+        # 몰면 안 된다(구간 4개가 한 줄에 겹친다). 상방=적색 / 하방=녹색으로
+        # 오른쪽 구조모델 ▲▼ 색과 맞춘다.
+        self._levels_dist_labels = {}
+        for _lv_stage, _lv_due in (("0850", "08:50"), ("0930", "09:30")):
+            _lv_row = QHBoxLayout()
+            _lv_row.setSpacing(4)
+            _lv_nl = mk_label(_lv_due, C['text2'], 10, True)
+            _lv_nl.setFixedWidth(36)
+            _lv_meta = mk_val_label("——", C['text2'], 9,
+                                    align=Qt.AlignLeft | Qt.AlignVCenter)
+            _lv_meta.setToolTip('당일 맥점 · 거리 모델 (08:50 / 09:30)\n\n「어느 가격이 저항인가」가 아니라 「시가에서 얼마나 갈 것인가」로 당일 고·저를 낸다.\n\n  08:50  M1 — 고점 = 08:45 시가 + med(u)×ATR14, 저점 = 시가 − med(d)×ATR14\n               med(u)/med(d) = 직전 60세션 중앙값\n               구간 = 훈련 잔차 25/75(50%) · 10/90(80%) 분위 — 정규분포 가정 없음\n  09:30  P1 — 09:30까지의 경로(gap · 전일범위 · u_T · d_T · ret_T)를 넣은\n               중앙값 회귀(LAD, IRLS 30회). 이미 난 고·저를 **하한**으로 잘라\n               그보다 낮게 예측하지 않는다\n\nR̂ 스케일: 당일 실현 범위 R=(고−저)/시가 를 log 회귀로 예측해 구간 폭을\n  R̂/훈련중앙R 배(하한 0.85 · 상한 2.0)로 조정. 조용한 날 과신·시끄러운 날\n  과소신을 함께 좁힌다. 스케일 전 원구간도 DB에 함께 저장돼 장후에 대조된다.\n\n━━ 검증 (144세션 워크포워드, 2026-01-05~09-04) ━━\n  08:50  MAE 14.2pt · 50% 구간 47% · 80% 구간 78% (R̂ 적용 83%)\n  09:30  MAE 11.0pt · 50% 구간 44% · 80% 구간 74% (R̂ 적용 81%)\n  대조군 — 전일 고·저 그대로 MAE 30.9pt / 시가±전일범위÷2 15.3pt\n  ⇒ 전일 고·저를 목표가로 쓰면 오차가 두 배다\n\n  변동성 분위별 08:50 오차: 낮음 9.6pt / 중간 13.5pt / 높음 20.5pt\n  → 신뢰도가 시장 상태에 따라 두 배 차이 난다\n\n🔴 관측·기록 전용이다 — 진입·청산·사이징 어디에도 연결돼 있지 않다.\n   (반사실 검증: 예측 고점 부근 LONG 자제 규칙은 손익을 −2.6M~−5.7M원 악화시켰다)\n「미산출」은 훈련 세션 30 미만이거나 08:45 시가가 결손된 경우다 — 지어내지 않는다.')
+            _lv_row.addWidget(_lv_nl)
+            _lv_row.addWidget(_lv_meta, 1)
+            left_lay.addLayout(_lv_row)
+            _lv_hi = mk_val_label("고 ——", C['text2'], 10,
+                                  align=Qt.AlignLeft | Qt.AlignVCenter)
+            _lv_hi.setContentsMargins(36, 0, 0, 0)
+            _lv_hi.setToolTip('당일 맥점 · 거리 모델 (08:50 / 09:30)\n\n「어느 가격이 저항인가」가 아니라 「시가에서 얼마나 갈 것인가」로 당일 고·저를 낸다.\n\n  08:50  M1 — 고점 = 08:45 시가 + med(u)×ATR14, 저점 = 시가 − med(d)×ATR14\n               med(u)/med(d) = 직전 60세션 중앙값\n               구간 = 훈련 잔차 25/75(50%) · 10/90(80%) 분위 — 정규분포 가정 없음\n  09:30  P1 — 09:30까지의 경로(gap · 전일범위 · u_T · d_T · ret_T)를 넣은\n               중앙값 회귀(LAD, IRLS 30회). 이미 난 고·저를 **하한**으로 잘라\n               그보다 낮게 예측하지 않는다\n\nR̂ 스케일: 당일 실현 범위 R=(고−저)/시가 를 log 회귀로 예측해 구간 폭을\n  R̂/훈련중앙R 배(하한 0.85 · 상한 2.0)로 조정. 조용한 날 과신·시끄러운 날\n  과소신을 함께 좁힌다. 스케일 전 원구간도 DB에 함께 저장돼 장후에 대조된다.\n\n━━ 검증 (144세션 워크포워드, 2026-01-05~09-04) ━━\n  08:50  MAE 14.2pt · 50% 구간 47% · 80% 구간 78% (R̂ 적용 83%)\n  09:30  MAE 11.0pt · 50% 구간 44% · 80% 구간 74% (R̂ 적용 81%)\n  대조군 — 전일 고·저 그대로 MAE 30.9pt / 시가±전일범위÷2 15.3pt\n  ⇒ 전일 고·저를 목표가로 쓰면 오차가 두 배다\n\n  변동성 분위별 08:50 오차: 낮음 9.6pt / 중간 13.5pt / 높음 20.5pt\n  → 신뢰도가 시장 상태에 따라 두 배 차이 난다\n\n🔴 관측·기록 전용이다 — 진입·청산·사이징 어디에도 연결돼 있지 않다.\n   (반사실 검증: 예측 고점 부근 LONG 자제 규칙은 손익을 −2.6M~−5.7M원 악화시켰다)\n「미산출」은 훈련 세션 30 미만이거나 08:45 시가가 결손된 경우다 — 지어내지 않는다.')
+            left_lay.addWidget(_lv_hi)
+            _lv_lo = mk_val_label("저 ——", C['text2'], 10,
+                                  align=Qt.AlignLeft | Qt.AlignVCenter)
+            _lv_lo.setContentsMargins(36, 0, 0, 3)
+            _lv_lo.setToolTip('당일 맥점 · 거리 모델 (08:50 / 09:30)\n\n「어느 가격이 저항인가」가 아니라 「시가에서 얼마나 갈 것인가」로 당일 고·저를 낸다.\n\n  08:50  M1 — 고점 = 08:45 시가 + med(u)×ATR14, 저점 = 시가 − med(d)×ATR14\n               med(u)/med(d) = 직전 60세션 중앙값\n               구간 = 훈련 잔차 25/75(50%) · 10/90(80%) 분위 — 정규분포 가정 없음\n  09:30  P1 — 09:30까지의 경로(gap · 전일범위 · u_T · d_T · ret_T)를 넣은\n               중앙값 회귀(LAD, IRLS 30회). 이미 난 고·저를 **하한**으로 잘라\n               그보다 낮게 예측하지 않는다\n\nR̂ 스케일: 당일 실현 범위 R=(고−저)/시가 를 log 회귀로 예측해 구간 폭을\n  R̂/훈련중앙R 배(하한 0.85 · 상한 2.0)로 조정. 조용한 날 과신·시끄러운 날\n  과소신을 함께 좁힌다. 스케일 전 원구간도 DB에 함께 저장돼 장후에 대조된다.\n\n━━ 검증 (144세션 워크포워드, 2026-01-05~09-04) ━━\n  08:50  MAE 14.2pt · 50% 구간 47% · 80% 구간 78% (R̂ 적용 83%)\n  09:30  MAE 11.0pt · 50% 구간 44% · 80% 구간 74% (R̂ 적용 81%)\n  대조군 — 전일 고·저 그대로 MAE 30.9pt / 시가±전일범위÷2 15.3pt\n  ⇒ 전일 고·저를 목표가로 쓰면 오차가 두 배다\n\n  변동성 분위별 08:50 오차: 낮음 9.6pt / 중간 13.5pt / 높음 20.5pt\n  → 신뢰도가 시장 상태에 따라 두 배 차이 난다\n\n🔴 관측·기록 전용이다 — 진입·청산·사이징 어디에도 연결돼 있지 않다.\n   (반사실 검증: 예측 고점 부근 LONG 자제 규칙은 손익을 −2.6M~−5.7M원 악화시켰다)\n「미산출」은 훈련 세션 30 미만이거나 08:45 시가가 결손된 경우다 — 지어내지 않는다.')
+            left_lay.addWidget(_lv_lo)
+            self._levels_dist_labels[_lv_stage] = (_lv_meta, _lv_hi, _lv_lo)
+
         left_lay.addStretch()
         split_lay.addWidget(left_w, 5)
 
@@ -3994,6 +4040,39 @@ class EntryPanel(QWidget):
         )
         right_lay.addWidget(self._layer2_log, 1)
 
+        # ── [MW0601 534차] 당일 맥점 · 구조 모델 (08:50 / 09:30) ──────────
+        # ⚠ 검증에서 무작위 레벨과 구분되지 않았다(극값 안착 49.6% vs 47.1%).
+        #   그래서 제목 옆에 그 사실을 **항상** 병기한다 — 화면이 검증 결과를
+        #   부정하면 안 된다(가이드 §11-2).
+        right_lay.addWidget(mk_sep())
+        _sv_head = QHBoxLayout()
+        _sv_head.setSpacing(4)
+        _sv_title = mk_label("당일 맥점 · 구조모델", C['cyan'], 9, True)
+        _sv_title.setToolTip('당일 맥점 · 구조 모델 (08:50 / 09:30)\n\n전일까지 6세션 1분봉에서 후보 가격을 모아 기준가 위·아래로 가까운 3개씩 낸다.\n  (a) 매물대 봉우리 — 거래량이 아니라 **가격이 머문 시간**\n      (0.5pt 격자 · 3-bin 평활 ≥60분 · ±2.0pt 창 최댓값)\n  (b) 갭 변 — 연속 두 세션의 고저 범위가 겹치지 않는 빈 구간의 양 끝\n  (c) 전일 고·저 / 전일 세션 VWAP / 4세션 VWAP\n  09:30 재산출에는 오프닝 레인지(08:45~09:30) 고·저를 더하고 기준가를 현재가로 바꾼다\n  후보는 1.5pt 안에서 한 레벨로 병합한다\n\n괄호 안 숫자 = **합류**(서로 다른 원천이 같은 자리를 가리킨 개수). 근거 표기 방식이지\n  예측력 점수가 아니다 — 합류가 높을수록 잘 맞는지는 확인되지 않았다.\n\n━━ 검증 (26주 워크포워드, 144세션) ━━\n  일중 극값 ±0.5% 안착    49.6%  vs 무작위 47.1%   → 차이없음\n  레벨 ±0.098ATR 체류분   71.5분 vs 무작위 71.3분  → 차이없음\n  첫 터치 후 되돌림 우선   44.0%  (귀무 50%)        → 열세\n  정거장률(체류 ≥ T75)    28.6%  vs 무작위 26.9%   → 차이없음\n\n🔴 **무작위 레벨과 구분되지 않는다.** 그래서 이 값에 신뢰 문구를 붙이지 않는다.\n   조사한 다른 원천 14종(플로어 피봇·카마릴라·POC/VAH/VAL·VWAP±σ·이동평균·라운드·\n   전주 고저·20세션 고저 등) 어느 것도 개선하지 못했고, 옵션 OI를 넣으면 오히려\n   극값 안착이 44.3%→41.8%로 내려갔다.\n   터치율은 지표가 아니다 — 레벨이 그날 범위 안이면 반드시 터치된다(무작위도 78%).\n\n🔴 관측·기록 전용 — 진입·청산·신호 어디에도 연결돼 있지 않다.')
+        _sv_cap = mk_label("※참고용 — 검증상 무작위와 구분 안 됨", C['text2'], 8)
+        _sv_cap.setToolTip('당일 맥점 · 구조 모델 (08:50 / 09:30)\n\n전일까지 6세션 1분봉에서 후보 가격을 모아 기준가 위·아래로 가까운 3개씩 낸다.\n  (a) 매물대 봉우리 — 거래량이 아니라 **가격이 머문 시간**\n      (0.5pt 격자 · 3-bin 평활 ≥60분 · ±2.0pt 창 최댓값)\n  (b) 갭 변 — 연속 두 세션의 고저 범위가 겹치지 않는 빈 구간의 양 끝\n  (c) 전일 고·저 / 전일 세션 VWAP / 4세션 VWAP\n  09:30 재산출에는 오프닝 레인지(08:45~09:30) 고·저를 더하고 기준가를 현재가로 바꾼다\n  후보는 1.5pt 안에서 한 레벨로 병합한다\n\n괄호 안 숫자 = **합류**(서로 다른 원천이 같은 자리를 가리킨 개수). 근거 표기 방식이지\n  예측력 점수가 아니다 — 합류가 높을수록 잘 맞는지는 확인되지 않았다.\n\n━━ 검증 (26주 워크포워드, 144세션) ━━\n  일중 극값 ±0.5% 안착    49.6%  vs 무작위 47.1%   → 차이없음\n  레벨 ±0.098ATR 체류분   71.5분 vs 무작위 71.3분  → 차이없음\n  첫 터치 후 되돌림 우선   44.0%  (귀무 50%)        → 열세\n  정거장률(체류 ≥ T75)    28.6%  vs 무작위 26.9%   → 차이없음\n\n🔴 **무작위 레벨과 구분되지 않는다.** 그래서 이 값에 신뢰 문구를 붙이지 않는다.\n   조사한 다른 원천 14종(플로어 피봇·카마릴라·POC/VAH/VAL·VWAP±σ·이동평균·라운드·\n   전주 고저·20세션 고저 등) 어느 것도 개선하지 못했고, 옵션 OI를 넣으면 오히려\n   극값 안착이 44.3%→41.8%로 내려갔다.\n   터치율은 지표가 아니다 — 레벨이 그날 범위 안이면 반드시 터치된다(무작위도 78%).\n\n🔴 관측·기록 전용 — 진입·청산·신호 어디에도 연결돼 있지 않다.')
+        _sv_head.addWidget(_sv_title)
+        _sv_head.addWidget(_sv_cap, 1)
+        right_lay.addLayout(_sv_head)
+        self._levels_struct_labels = {}
+        for _sv_stage, _sv_due in (("0850", "08:50"), ("0930", "09:30")):
+            _sv_row = QHBoxLayout()
+            _sv_row.setSpacing(4)
+            _sv_nl = mk_label(_sv_due, C['text2'], 10, True)
+            _sv_nl.setFixedWidth(36)
+            _sv_up = mk_val_label("▲ ——", C['text2'], 10,
+                                  align=Qt.AlignLeft | Qt.AlignVCenter)
+            _sv_up.setToolTip('당일 맥점 · 구조 모델 (08:50 / 09:30)\n\n전일까지 6세션 1분봉에서 후보 가격을 모아 기준가 위·아래로 가까운 3개씩 낸다.\n  (a) 매물대 봉우리 — 거래량이 아니라 **가격이 머문 시간**\n      (0.5pt 격자 · 3-bin 평활 ≥60분 · ±2.0pt 창 최댓값)\n  (b) 갭 변 — 연속 두 세션의 고저 범위가 겹치지 않는 빈 구간의 양 끝\n  (c) 전일 고·저 / 전일 세션 VWAP / 4세션 VWAP\n  09:30 재산출에는 오프닝 레인지(08:45~09:30) 고·저를 더하고 기준가를 현재가로 바꾼다\n  후보는 1.5pt 안에서 한 레벨로 병합한다\n\n괄호 안 숫자 = **합류**(서로 다른 원천이 같은 자리를 가리킨 개수). 근거 표기 방식이지\n  예측력 점수가 아니다 — 합류가 높을수록 잘 맞는지는 확인되지 않았다.\n\n━━ 검증 (26주 워크포워드, 144세션) ━━\n  일중 극값 ±0.5% 안착    49.6%  vs 무작위 47.1%   → 차이없음\n  레벨 ±0.098ATR 체류분   71.5분 vs 무작위 71.3분  → 차이없음\n  첫 터치 후 되돌림 우선   44.0%  (귀무 50%)        → 열세\n  정거장률(체류 ≥ T75)    28.6%  vs 무작위 26.9%   → 차이없음\n\n🔴 **무작위 레벨과 구분되지 않는다.** 그래서 이 값에 신뢰 문구를 붙이지 않는다.\n   조사한 다른 원천 14종(플로어 피봇·카마릴라·POC/VAH/VAL·VWAP±σ·이동평균·라운드·\n   전주 고저·20세션 고저 등) 어느 것도 개선하지 못했고, 옵션 OI를 넣으면 오히려\n   극값 안착이 44.3%→41.8%로 내려갔다.\n   터치율은 지표가 아니다 — 레벨이 그날 범위 안이면 반드시 터치된다(무작위도 78%).\n\n🔴 관측·기록 전용 — 진입·청산·신호 어디에도 연결돼 있지 않다.')
+            _sv_row.addWidget(_sv_nl)
+            _sv_row.addWidget(_sv_up, 1)
+            right_lay.addLayout(_sv_row)
+            _sv_dn = mk_val_label("▼ ——", C['text2'], 10,
+                                  align=Qt.AlignLeft | Qt.AlignVCenter)
+            _sv_dn.setContentsMargins(36, 0, 0, 2)
+            _sv_dn.setToolTip('당일 맥점 · 구조 모델 (08:50 / 09:30)\n\n전일까지 6세션 1분봉에서 후보 가격을 모아 기준가 위·아래로 가까운 3개씩 낸다.\n  (a) 매물대 봉우리 — 거래량이 아니라 **가격이 머문 시간**\n      (0.5pt 격자 · 3-bin 평활 ≥60분 · ±2.0pt 창 최댓값)\n  (b) 갭 변 — 연속 두 세션의 고저 범위가 겹치지 않는 빈 구간의 양 끝\n  (c) 전일 고·저 / 전일 세션 VWAP / 4세션 VWAP\n  09:30 재산출에는 오프닝 레인지(08:45~09:30) 고·저를 더하고 기준가를 현재가로 바꾼다\n  후보는 1.5pt 안에서 한 레벨로 병합한다\n\n괄호 안 숫자 = **합류**(서로 다른 원천이 같은 자리를 가리킨 개수). 근거 표기 방식이지\n  예측력 점수가 아니다 — 합류가 높을수록 잘 맞는지는 확인되지 않았다.\n\n━━ 검증 (26주 워크포워드, 144세션) ━━\n  일중 극값 ±0.5% 안착    49.6%  vs 무작위 47.1%   → 차이없음\n  레벨 ±0.098ATR 체류분   71.5분 vs 무작위 71.3분  → 차이없음\n  첫 터치 후 되돌림 우선   44.0%  (귀무 50%)        → 열세\n  정거장률(체류 ≥ T75)    28.6%  vs 무작위 26.9%   → 차이없음\n\n🔴 **무작위 레벨과 구분되지 않는다.** 그래서 이 값에 신뢰 문구를 붙이지 않는다.\n   조사한 다른 원천 14종(플로어 피봇·카마릴라·POC/VAH/VAL·VWAP±σ·이동평균·라운드·\n   전주 고저·20세션 고저 등) 어느 것도 개선하지 못했고, 옵션 OI를 넣으면 오히려\n   극값 안착이 44.3%→41.8%로 내려갔다.\n   터치율은 지표가 아니다 — 레벨이 그날 범위 안이면 반드시 터치된다(무작위도 78%).\n\n🔴 관측·기록 전용 — 진입·청산·신호 어디에도 연결돼 있지 않다.')
+            right_lay.addWidget(_sv_dn)
+            self._levels_struct_labels[_sv_stage] = (_sv_up, _sv_dn)
+
         split_lay.addWidget(right_w, 6)
         lay.addLayout(split_lay)
 
@@ -4043,6 +4122,62 @@ class EntryPanel(QWidget):
         lay.addWidget(mk_label("당일 진입 통계", C['text2'], 11, True))
         self.stat_label = mk_label("진입 0회 | 자동 0 | 수동 0 | 승률 —% | 손익 ——pt", C['text2'], 11)
         lay.addWidget(self.stat_label)
+
+    def update_premarket_levels(self, stages: dict) -> None:
+        """[MW0601 534차] 당일 맥점 패널 갱신 — 거리 모델(좌) · 구조 모델(우).
+
+        stages: {"0850": row, "0930": row} — `db_utils.fetch_premarket_levels()` 반환.
+        **굳힌 DB 값만** 표시한다(가이드 §4) — 화면이 로그·장후 채점과 같은 수를 본다.
+
+        ⚠ 미산출은 "——" 가 아니라 사유를 쓴다. 값이 없는 것과 0인 것을 화면에서
+          구분하지 못하면 계측 4원칙 ②를 화면 층에서 어기는 셈이다.
+        """
+        stages = stages or {}
+        for _st in ("0850", "0930"):
+            row = stages.get(_st) or {}
+            meta, hi_l, lo_l = self._levels_dist_labels.get(_st, (None, None, None))
+            if meta is not None:
+                dist = row.get("distance")
+                if dist:
+                    _sc = (" · R\u0302\u00d7%.2f" % dist["scale"]) if dist.get("scale") else ""
+                    meta.setText("ATR %.1f%s" % (row.get("atr") or 0.0, _sc))
+                    meta.setStyleSheet(f"color:{C['text2']};font-size:{S.f(9)}px;")
+                    hi_l.setText("고 %.1f   %s   %s"
+                                 % (dist["high"], _band_txt("50%", dist.get("high50")),
+                                    _band_txt("80%", dist.get("high80"))))
+                    lo_l.setText("저 %.1f   %s   %s"
+                                 % (dist["low"], _band_txt("50%", dist.get("low50")),
+                                    _band_txt("80%", dist.get("low80"))))
+                    hi_l.setStyleSheet(
+                        f"color:{C['red']};font-size:{S.f(10)}px;font-weight:bold;")
+                    lo_l.setStyleSheet(
+                        f"color:{C['green']};font-size:{S.f(10)}px;font-weight:bold;")
+                elif row:
+                    meta.setText(row.get("note") or "미산출")
+                    meta.setStyleSheet(f"color:{C['orange']};font-size:{S.f(9)}px;")
+                    for _l in (hi_l, lo_l):
+                        _l.setText("고 ——" if _l is hi_l else "저 ——")
+                        _l.setStyleSheet(f"color:{C['text2']};font-size:{S.f(10)}px;")
+                else:
+                    meta.setText("%s 이후 산출" % ("08:50" if _st == "0850" else "09:30"))
+                    meta.setStyleSheet(f"color:{C['text2']};font-size:{S.f(9)}px;")
+                    for _l in (hi_l, lo_l):
+                        _l.setText("고 ——" if _l is hi_l else "저 ——")
+                        _l.setStyleSheet(f"color:{C['text2']};font-size:{S.f(10)}px;")
+
+            up_l, dn_l = self._levels_struct_labels.get(_st, (None, None))
+            if up_l is not None:
+                st = row.get("structure") or {}
+
+                def _fmt(items):
+                    return "  ".join("%d(%d)" % (k, len(v)) for k, v in items) \
+                        if items else "——"
+                up_l.setText("\u25b2 " + _fmt(st.get("up")))
+                dn_l.setText("\u25bc " + _fmt(st.get("down")))
+                _up_col = C['red'] if st.get("up") else C['text2']
+                _dn_col = C['green'] if st.get("down") else C['text2']
+                up_l.setStyleSheet(f"color:{_up_col};font-size:{S.f(10)}px;")
+                dn_l.setStyleSheet(f"color:{_dn_col};font-size:{S.f(10)}px;")
 
     def update_stats(self, trades: int, wins: int, pnl_pts: float):
         """당일 진입 통계 라벨 갱신"""
@@ -11875,6 +12010,10 @@ class DashboardAdapter:
     def get_disabled_gates(self) -> set:
         """체크박스 OFF 항목의 내부 키 집합 반환"""
         return self._win.entry_panel.get_disabled_gates()
+
+    def update_premarket_levels(self, stages: dict) -> None:
+        """[MW0601 534차] 당일 맥점(거리·구조) 패널 갱신 — 관측 전용."""
+        self._win.entry_panel.update_premarket_levels(stages)
 
     def update_entry_stats(self, trades: int, wins: int, pnl_pts: float):
         """당일 진입 통계 갱신"""

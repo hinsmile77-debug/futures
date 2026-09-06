@@ -365,6 +365,19 @@ def main():
         "true" if _dc_ok else "false", "false" if _dc_ok else "true",
         "unmeasured" if _dc_stalled is None else ("true" if _dc_stalled else "false"))
 
+    # ── [MW0601 534차] 당일 맥점 예측 EOD 단계 ────────────────────────────
+    # ① 이력 캐시 갱신 — **내일 08:50 산출이 이 캐시만 읽는다.** 장중에 468MB
+    #    raw_data.db 를 스캔하지 않기 위한 구조이므로(2026-08-10 CB⑤ 자가유발),
+    #    매일 도는 것이 전제다.
+    # ② 당일 채점 — 실제 고·저 대비 08:50/09:30 오차·구간 안착을 적재.
+    # 🔴 **재학습 try 블록 앞**에 둔다. 재학습이 실패해도 이 단계는 이미 끝나 있어야
+    #    한다 — 맥점은 관측 전용이라 GBM 결과와 독립이며, 실패해도 여기서 삼킨다.
+    try:
+        from scripts.premarket_levels_eod import run_eod as _levels_eod
+        _levels_eod(log=log)
+    except Exception as _lv_eod_e:
+        log.warning("[LEVELS] EOD 단계 실패 (무해): %s", _lv_eod_e)
+
     t_start = time.perf_counter()
 
     try:
