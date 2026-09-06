@@ -2,6 +2,53 @@
 
 ---
 
+## 2026-09-06 (MW0601 533차 — 풀타임 수집 Phase 0·1: `session_bars` 적재 + 헤더 28 파싱)
+
+사용자 지시 「프리장 08:45 ~ 15:45 마감 동시호가 체결가까지 풀타임 수집 검토·구현계획」.
+제안서: `docs/미륵이고도화3/풀타임수집_검토및구현계획_2026-09-06.md`.
+
+### 🔴 발견 — `raw_candles` 는 매일 08:45:18~15:08 봉만 담는다 (384행 고정, 10거래일 실측)
+
+| 결손 | 원인 |
+|---|---|
+| 08:45 개장 체결 1틱 | 구독이 08:45:18 (EarlyWarmup 30초 틱) — 체결이 먼저 지나감. 08:45 봉 O·V 오염 |
+| **15:09 봉** | 마감 콜백이 15:10:00 도착 → `_on_candle_closed` 의 `is_force_exit_time` 가드가 **저장 전에** return |
+| **15:10~15:34 25봉** | 같은 가드. 틱·봉 집계는 정상(`[BAR-CLOSE]` 15:10~15:34 로그 전부 존재) — **저장만 안 한다** |
+| 15:35~15:44 단일가 | 15:40 `daily_close` 가 `realtime_data.stop()` |
+| 15:45 마감 체결 | 프로세스 15:40:39 종료 |
+
+부수 발견: `_path_conditioned_label()` 이 future close 없으면 FLAT 을 돌려주므로 **매일
+14:39~15:08 의 30m 라벨이 전부 FLAT 으로 학습**된다(구조적 절단, 무작위 결손 아님).
+Phase 4 안건 — 학습 분포 변경이라 게이트 필수.
+
+### 결정 (사용자 3건, 2026-09-06)
+1. EOD 작업 스케줄러 `MireukiEODRetrain` **15:45 → 15:50 이동 완료**(StartBoundary 실측).
+   `EOD_RETRAIN_SCHEDULE_HM="1550"` 동기화(435차 규약).
+2. 08:30 개장 단일가 **예상가 수집 제외**.
+3. 별도 수집 프로세스(안 C) — **09-08 장 종료 후** P0-4 결과로 결정.
+
+### 설계 — `raw_candles` 를 늘리지 않고 별도 테이블 `session_bars`
+소비처 46파일 중 `load_features_for_warmup(lookback_bars=30)` 류 「최근 N행」 조회가 다수라
+행을 더하면 어제 마지막 30분 창이 단일가 봉으로 조용히 바뀐다(461차 mdd·493차 수수료 유형).
+`session` 태그는 봉 ts 기준으로 **기록자가 저장 시점에 박는다**(`time_utils.classify_session`,
+체결유형코드 20/30 이 시각보다 우선). 헤더 28 미수신은 NULL, 0 은 「받았고 연속매매」.
+**읽는 코드 0** — 판단 무영향. 소비 전환은 Phase 4에서 채널별 개별 결정.
+
+### 구현
+- `realtime_data._handle_tick` 헤더 28·30 파싱 → 봉 `auction_code`/`auction_ticks`
+  (`[CybosRT-AUCTION]` 로그, 실패 경고 1회)
+- `db_utils.init_raw_data_db` `session_bars` + `save_session_bar` (OHLCV 기본값 없음 —
+  test_457 DB 폴백 규칙 준수)
+- `main._on_candle_closed` **최상단** `_persist_session_bar()` → DBWriter `session_bar` op.
+  `daily_close` 센티널 전 `_db_writer_closed=True` → 이후 봉은 동기 저장
+- `prune_raw_data_db` 에 `session_bars` 포함
+- Phase 0 프로브 `scripts/probe_cybos_session_edge.py` (P0-1~P0-4, DB 접근 없음)
+- 대조 `scripts/session_bars_recon.py` (장후 전용, `guard_intraday`)
+- `tests/test_533_session_bars.py` 9건 — 순서 불변식(세션 적재 < 프리장 < 장외 < force-exit)
+
+### 보류 — Phase 2(프로세스 수명 +6분)
+P0-1 에서 15:45 체결틱(28=30)이 관측된 뒤 배선한다. 관측 없이 늘리면 6분을 그냥 켜두는 것.
+
 ## 2026-08-26 (MW0601 493차 후속8 — 미니선물 사양 반영 + 브로커 사양 설정절 신설)
 
 사용자가 **대신증권 공식 고시 화면**을 제공했다. 지시 2건: ① 미륵이 거래종목이

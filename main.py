@@ -50,6 +50,7 @@ debug_log = logging.getLogger("DEBUG")
 # ── DB 초기화 ──────────────────────────────────────────────────
 from utils.db_utils import (
     init_all_dbs, execute, save_candle, save_features, save_candle_and_features,
+    save_session_bar,
     save_horizon_features, count_raw_candles,
     fetch_recent_raw_features, fetch_recent_raw_candles,
     fetch_today_trades, fetch_pnl_history, normalize_trade_pnl,
@@ -974,6 +975,10 @@ class TradingSystem:
             target=self._db_write_worker, daemon=True, name="DBWriter"
         )
         _db_writer.start()
+        # [533차] daily_close 가 센티널을 넣은 뒤에도 봉이 올 수 있다(Phase 2에서
+        # 15:46까지). 워커가 죽은 큐에 넣으면 조용히 유실되므로 이 플래그로 동기 저장
+        # 경로로 우회한다. 명시 초기화 — getattr 폴백 금지(계측 4원칙 ④).
+        self._db_writer_closed: bool = False
         self._const_out_refit_until = None           # ConstOut 트리거 쿨다운 (30분)
         self._const_out_heavy_cooldown_until = None  # ConstOut 직후 heavy 작업 유예 (3분)
         self._price_momentum_refit_until = None      # D_PRICE_MOMENTUM 쿨다운 (20분)
@@ -2984,6 +2989,10 @@ class TradingSystem:
                 elif op == "horizon_features":
                     _, _ts, _h_name, _h_feats, _regime = item
                     save_horizon_features(_ts, _h_name, _h_feats)
+                elif op == "session_bar":
+                    # [533차] 풀타임 세션 봉 — raw_candles 와 독립 테이블
+                    _, _sb_bar, _sb_session, _sb_source = item
+                    save_session_bar(_sb_bar, _sb_session, _sb_source)
                 elif op == "scaler_monitor":
                     # predict_proba()가 위임한 scaler_events 행 INSERT
                     # WAL 모드 + 배경 스레드 → main pipeline 블로킹 없음
@@ -4986,6 +4995,14 @@ class TradingSystem:
         """분봉 완성 콜백 — Qt 이벤트 스레드에서 호출됨."""
         now = datetime.datetime.now()
 
+        # ── [MW0601 533차 / 풀타임 수집 Phase 1] 세션 봉 무조건 적재 ───────────
+        # 반드시 아래 모든 분기(프리장·장외·force-exit)보다 **앞**에 있어야 한다.
+        # 15:09 봉의 마감 콜백은 15:10:00에 도착해 force-exit 가드가 저장 전에
+        # return 했고, 15:10~15:34 25봉도 같은 이유로 매일 버려졌다(10거래일 실측).
+        # 저장만 한다 — 판단·파이프라인은 이 블록을 지나 종전과 똑같이 흐른다.
+        # 순서 불변식은 tests/test_533_session_bars.py 가 소스 텍스트로 고정한다.
+        self._persist_session_bar(candle)
+
         # ── 프리장 처리 경로 (08:45~09:00) ──────────────────────────
         # 진입 없이 scaler warmup · 피처 검증 · GapOffset 사전 설정만 수행
         if is_pre_market(now):
@@ -5127,6 +5144,35 @@ class TradingSystem:
                 logger=logger,
                 dashboard_logger=log_manager.system,
             )
+
+    def _persist_session_bar(self, candle: dict) -> None:
+        """[533차] `session_bars` 적재 — 세션 태그는 봉 ts 기준으로 여기서 박는다.
+
+        `now` 가 아니라 **봉의 ts** 로 분류한다. 마감 콜백은 다음 분 00초에 오므로
+        now 로 재면 15:09 봉이 POST_FORCE_EXIT 가 된다. 복구 재처리본은
+        `source='rt_recovered'` 로 구분한다(452차 `bar_recovered` 규약 승계).
+        실패해도 파이프라인을 막지 않는다 — 적재 전용 경로다.
+        """
+        try:
+            from config.settings import SESSION_BARS_ENABLED
+            if not SESSION_BARS_ENABLED:
+                return
+            from utils.time_utils import classify_session
+            _bar_ts = candle.get("ts")
+            if not hasattr(_bar_ts, "time"):
+                _bar_ts = datetime.datetime.strptime(str(_bar_ts)[:19], "%Y-%m-%d %H:%M:%S")
+            _session = classify_session(_bar_ts, candle.get("auction_code"))
+            _source = "rt_recovered" if candle.get("bar_recovered") else "rt"
+            if self._db_writer_closed:
+                # daily_close 이후 — 워커가 없다. 동기 저장(장후라 블로킹 무해).
+                save_session_bar(candle, _session, _source)
+                return
+            try:
+                self._db_write_queue.put_nowait(("session_bar", candle, _session, _source))
+            except _queue.Full:
+                save_session_bar(candle, _session, _source)
+        except Exception as _sb_e:
+            logger.warning("[SessionBars] 적재 실패 (파이프라인 무영향): %s", _sb_e)
 
     def _poll_gbm_retrain_subprocess(self) -> None:
         """[381차 후속] GBM 재학습 64비트 서브프로세스 완료 여부를 즉시 확인.
@@ -13036,6 +13082,9 @@ class TradingSystem:
         # 15:10 강제청산 ~ 15:40 사이 큐에 남은 candle/feature/scaler_monitor 기록을
         # 모두 처리한 뒤 체크포인트를 수행해야 WAL에 미반영 데이터가 없다.
         try:
+            # [533차] 센티널 이후 도착하는 session_bar 는 동기 경로로 우회한다.
+            # 플래그를 센티널보다 먼저 세워야 그 사이에 큐로 들어가 유실되는 봉이 없다.
+            self._db_writer_closed = True
             self._db_write_queue.put(None)  # DBWriter 종료 sentinel
             self._db_write_queue.join()     # 모든 pending write 완료 대기
             logger.info("[DBQueue] EOD 플러시 완료")

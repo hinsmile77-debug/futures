@@ -1869,6 +1869,54 @@ def init_raw_data_db():
             regime TEXT NOT NULL
         )
     """)
+    # ── [MW0601 533차] 풀타임 세션 봉 — 08:45 개장 체결 ~ 15:45 마감 체결 전량 ──
+    #
+    # 왜 별도 테이블인가:
+    #   `raw_candles` 는 08:45~15:08 봉만 담고(10거래일 실측 매일 384행) 소비처가
+    #   46파일이다. 그중 `load_features_for_warmup(lookback_bars=30)` ·
+    #   `fetch_recent_raw_candles(limit=60)` 같은 **"최근 N행"** 조회가 다수라, 행을
+    #   더하면 어제 마지막 30분이 "14:39~15:08" 에서 "15:16~15:45(단일가 포함)" 로
+    #   조용히 바뀐다. 461차 mdd_pct·493차 수수료와 같은 유형의 무언 변경이다.
+    #   그래서 원천은 원천끼리 둔다(451차 program_trade_raw 와 같은 원칙).
+    #
+    # 규약:
+    #   · `session` 은 기록자가 저장 시점에 박는다(`utils.time_utils.classify_session`).
+    #   · `auction_code` NULL = 헤더 28을 못 받았다. 0 = 받았는데 연속매매.
+    #     (미측정 ≠ 0 — 계측 4원칙 ②)
+    #   · `source` 'rt' = 실시간 봉 / 'rt_recovered' = 파이프라인 복구 재처리본 /
+    #     'chart_backfill' = 장후 FutOptChart 보충(Phase 3, 미구현).
+    #   · 읽는 코드가 없다(Phase 1). 소비 전환은 Phase 4에서 채널별로 따로 결정.
+    execute(RAW_DATA_DB, """
+        CREATE TABLE IF NOT EXISTS session_bars (
+            ts            TEXT PRIMARY KEY,
+            session       TEXT NOT NULL,
+            open          REAL NOT NULL,
+            high          REAL NOT NULL,
+            low           REAL NOT NULL,
+            close         REAL NOT NULL,
+            volume        INTEGER NOT NULL,
+            buy_vol       INTEGER,
+            sell_vol      INTEGER,
+            anchor_buy    INTEGER,
+            anchor_sell   INTEGER,
+            bid1          REAL,
+            ask1          REAL,
+            bid_qty       INTEGER,
+            ask_qty       INTEGER,
+            oi            INTEGER,
+            tick_count    INTEGER,
+            auction_code  INTEGER,
+            auction_ticks INTEGER,
+            source        TEXT NOT NULL,
+            created_at    TEXT DEFAULT (datetime('now', 'localtime'))
+        )
+    """)
+    try:
+        execute(RAW_DATA_DB,
+                "CREATE INDEX IF NOT EXISTS idx_session_bars_session "
+                "ON session_bars(session, ts)")
+    except Exception:
+        pass
     # [303차] 거래소 CB(단일가/서킷브레이커) 감지 이력 — EOD 리포트 halt 요약용
     execute(RAW_DATA_DB, """
         CREATE TABLE IF NOT EXISTS exchange_cb_halts (
@@ -2067,6 +2115,53 @@ def save_candle_and_features(candle: dict, ts: str, features: dict) -> None:
             conn.execute(
                 "INSERT OR REPLACE INTO raw_features (ts, features) VALUES (?, ?)",
                 (ts, feat_json),
+            )
+
+
+def candle_ts_str(candle: dict) -> str:
+    """봉 dict 의 ts(datetime 또는 문자열)를 'YYYY-MM-DD HH:MM:SS' 로."""
+    ts_raw = candle.get("ts")
+    return ts_raw.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts_raw, "strftime") else str(ts_raw)
+
+
+def save_session_bar(candle: dict, session: str, source: str = "rt") -> None:
+    """[MW0601 533차] 풀타임 세션 봉 1행 저장 (`session_bars`).
+
+    `raw_candles` 와 독립이다 — 같은 봉이 양쪽에 들어가도 된다(384행/일 중복은
+    의도). 값은 **기본값 없이** 읽는다: 없는 키는 NULL 이지 0이 아니다. OHLCV 는
+    NOT NULL 이라 키가 빠지면 IntegrityError 로 실패한다 — 0을 지어내 "정상 봉"으로
+    위장하는 것보다 낫다(계측 4원칙 ②·④, tests/test_457 DB 폴백 규칙).
+    """
+    with _lock:
+        with get_conn(RAW_DATA_DB) as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO session_bars
+                   (ts, session, open, high, low, close, volume, buy_vol, sell_vol,
+                    anchor_buy, anchor_sell, bid1, ask1, bid_qty, ask_qty, oi,
+                    tick_count, auction_code, auction_ticks, source)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    candle_ts_str(candle),
+                    session,
+                    candle.get("open"),
+                    candle.get("high"),
+                    candle.get("low"),
+                    candle.get("close"),
+                    candle.get("volume"),
+                    candle.get("buy_vol"),
+                    candle.get("sell_vol"),
+                    candle.get("anchor_buy"),
+                    candle.get("anchor_sell"),
+                    candle.get("bid1"),
+                    candle.get("ask1"),
+                    candle.get("bid_qty"),
+                    candle.get("ask_qty"),
+                    candle.get("oi"),
+                    candle.get("tick_count"),
+                    candle.get("auction_code"),
+                    candle.get("auction_ticks"),
+                    source,
+                ),
             )
 
 

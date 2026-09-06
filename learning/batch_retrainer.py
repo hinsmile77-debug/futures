@@ -2586,7 +2586,10 @@ class BatchRetrainer:
         deleted = 0
         try:
             with sqlite3.connect(RAW_DATA_DB, timeout=15) as conn:
-                for table in ("raw_features", "raw_candles", "raw_features_horizon"):
+                # [533차] session_bars 도 같은 52주 FIFO — 풀타임 봉은 raw_candles 와
+                # 별도 테이블이라 여기 안 넣으면 영원히 자란다.
+                for table in ("raw_features", "raw_candles", "raw_features_horizon",
+                              "session_bars"):
                     try:
                         r = conn.execute(
                             "DELETE FROM {} WHERE ts < ?".format(table), (cutoff,)
