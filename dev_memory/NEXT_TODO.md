@@ -2,6 +2,33 @@
 
 > 검증 필요 항목, 예정된 작업, 알려진 잠재 이슈.
 
+### 534차 — 533차 체리픽(풀타임 수집 Phase 1) 후속 (MW0602, 2026-09-06)
+
+근거: `dev_memory/DECISION_LOG.md` 2026-09-06(534차) ·
+`docs/미륵이고도화3/풀타임수집_MW0602_적용가이드_2026-09-06.md`.
+
+- 🔴 **O-1 (다음 기동)** — `session_bars` 테이블 생성 확인. `init_all_dbs()` 가
+  만든다. 안 생기면 배선이 죽은 것이다.
+- 🔴 **O-2 (첫 거래일 장후)** — `python scripts/session_bars_recon.py --date YYYY-MM-DD`
+  정상 = `PRE_MARKET 15 / REGULAR 370(15:09 포함) / POST_FORCE_EXIT 25` ·
+  `raw_candles` 교집합 OHLCV 불일치 0 · `raw_candles` 에만 있는 봉 0 ·
+  `[SessionBars] 적재 실패` 0건.
+  ⚠ `CLOSE_AUCTION`·`CLOSE_FILL` 은 Phase 2 전이라 **0이 정상**이다.
+- **O-3 (첫 거래일)** — CREON 채널에서 **헤더 28 체결유형코드가 오는지** 로그 확인.
+  `[CybosRT-AUCTION] 헤더 28 읽기 실패` WARNING 이 뜨면 그 세션은 `auction_code=NULL`
+  로 남고 세션 분류는 시각만으로 된다 — **적재 자체는 정상**이다(가이드 §4-2).
+- **T-1 (Phase 2 안건)** — 프로세스 수명 +6분(15:46까지 구독 → 15:45 마감 체결 회수).
+  ✅ 선행조건 하나는 **이미 충족**이다 — 이 PC 예약작업 `Maitreya_EODretrain` 이
+  이미 **15:50** 이라 EOD 재학습과 겹치지 않는다(MW0601 은 옮겨야 했다).
+  ⚠ 착수 전 MW0601 P0-1 프로브 결과(15:45 체결틱에 코드 30 이 실제로 찍히는가)를
+  볼 것. 독자 확인은 `python scripts/probe_cybos_session_edge.py --until 15:47` 를
+  15:30 에 띄우면 된다(py37_32·관리자, DB 안 열림).
+- **T-2 (Phase 4 안건 · 미조치)** — `batch_retrainer._path_conditioned_label` 이
+  미래 종가 없으면 FLAT 을 반환해 **매일 14:39~15:08 의 30m 라벨이 전부 FLAT 으로
+  학습**된다. 🔴 학습 분포를 바꾸므로 게이트 없이 손대지 말 것.
+- **T-3 (Phase 4 안건)** — `session_bars` 소비 전환. 지금은 **읽는 코드 0**이다.
+  채널별로 따로 결정한다(워밍업 창이 단일가 봉으로 바뀌는 위험 때문).
+
 ### 527차 — 스윙 고점·저점 피처 배선 후속 (MW0602, 2026-09-04)
 
 근거: `dev_memory/DECISION_LOG.md` 2026-09-04(527차),
