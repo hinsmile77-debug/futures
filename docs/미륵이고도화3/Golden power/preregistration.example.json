@@ -1,0 +1,36 @@
+{
+  "_comment": "VALIDATION_CAMPAIGN 신규 채널 사전등록서 예시. 데이터를 보기 전에 채우고, 채운 뒤에는 수정하지 않는다. A안(돌파 x 오더플로 확증) 기준.",
+
+  "channel_id": "gp_break_ofi_confirm",
+  "registered_at": "2026-09-07",
+  "registered_by": "미정",
+
+  "rationale": "gp_break_lo/hi는 25봉 종가 돌파의 정확한 지시함수다. 돌파 단독은 잡음이 크므로 OFI-norm 확증 여부로 진짜와 가짜가 갈리는지 검정한다. 갈리지 않으면 기각한다.",
+
+  "period": 25,
+  "horizon": 15,
+
+  "hypothesis": {
+    "type": "event_spread",
+    "event": "gp_break_hi",
+    "confirm": "ofi_norm",
+    "confirm_q": 0.7,
+    "direction": "confirmed > unconfirmed"
+  },
+
+  "pass_threshold": 0.0004,
+  "_threshold_note": "15분 로그수익률 스프레드 4bp. 왕복 비용과 슬리피지를 넘어야 의미가 있다는 기준으로 설정. 실제 값은 미륵이 체결비용 실측으로 대체할 것.",
+
+  "min_samples": 400,
+  "_samples_note": "돌파 이벤트 수 기준. 상위 30%/하위 70% 분할 후 각 군 최소 120건을 확보하려면 400건이 필요. 기존 채널 실측 도달속도(9~16주)를 감안하면 도달까지 상당 기간 소요 예상.",
+
+  "min_sessions": 60,
+
+  "holdout_start": "2026-09-08",
+  "_holdout_note": "explore 모드에 사용한 구간과 절대 겹치지 않게 설정할 것. 겹치면 사전등록의 의미가 사라진다.",
+
+  "rerun_policy": "홀드아웃 평가는 1회만. FAIL 시 재시도 금지, 신규 채널로 재등록해야 함.",
+
+  "on_pass": "주간회의 상정 대상. 자동 적용 아님.",
+  "on_fail": "미적용 확정. 확정 결정 레지스트리(settings.py VALIDATION_CAMPAIGN_DECISIONS)에 등재하여 재론 방지."
+}
