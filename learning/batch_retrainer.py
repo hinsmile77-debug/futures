@@ -2368,8 +2368,24 @@ class BatchRetrainer:
         #   의 여유를 갉아먹는다.
         # ⚠ 로그 태그 `[Retrain]`·`[GBM]` 은 **바꾸지 않는다** — 바꾸면 과거 로그와의
         #   대조가 끊긴다(461차 `mdd_pct` 사고와 같은 유형).
-        def _prune_once(_conn):
-            _n, _detail = 0, []
+        # ── [MW0602 538차 후속 / 1-3] O-58 원인조사 — 진단 기록만 추가 ────────────
+        # 2026-08-31·09-07 두 번 연속 `database table is locked` 로 실패했는데,
+        # 종전 실패 로그로는 **어느 테이블에서 멈췄는지조차** 알 수 없었다:
+        #   ① `_prune_once` 가 `_detail` 을 **성공 경로에서만** 반환해, 예외가 나는
+        #      순간 부분 진행 기록이 통째로 사라진다.
+        #   ② 그래서 실패 로그의 `대상=` 은 늘 폴백 문자열 `_tables` 를 찍었고, 그
+        #      문자열은 533차가 추가한 `session_bars` 가 빠진 **낡은 목록**이다.
+        #      아무것도 측정하지 않았는데 "측정된 대상"처럼 보인다 —
+        #      계측 4원칙 ④(폴백 가시화) 위반이고 `_entry_horizon_pre` 와 같은 형태다.
+        # 🔴 게다가 락 종류가 다르다. `database table is locked` 는 **SQLITE_LOCKED**
+        #    이고 `database is locked`(SQLITE_BUSY)가 아니다. busy_timeout 은
+        #    SQLITE_LOCKED 에 적용되지 않으므로 `timeout=15` 도 1초 뒤 재시도도
+        #    **애초에 듣지 않는 레버**였다. 이 구분을 남기지 않으면 다음 월요일에도
+        #    "15초나 기다렸는데 왜"에서 조사가 멈춘다.
+        # ⚠ 실행 경로·반환값·재시도 횟수·로그 태그는 **바꾸지 않는다**(위 492차 주석).
+        #   아래는 전부 기록만 늘린 것이다.
+        def _prune_once(_conn, _detail):
+            _n = 0
             # [MW0601 533차 체리픽] `session_bars` 도 같은 52주 FIFO —
             # 풀타임 봉은 raw_candles 와 **별도 테이블**이라 여기 안 넣으면
             # 영원히 자란다(적재는 매일 약 400행).
@@ -2388,16 +2404,71 @@ class BatchRetrainer:
                         continue
                     _detail.append("%s:%s" % (table, _msg))
                     raise
+            # 체크포인트도 실패 단계다 — DELETE 가 아니라 여기서 걸렸는지 구분한다.
+            # (`진입` 만 있고 `ok` 가 없으면 wal_checkpoint 에서 raise 된 것)
+            _detail.append("checkpoint:진입")
             _conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
-            return _n, _detail
+            _detail.append("checkpoint:ok")
+            return _n
 
-        _tables = "raw_features,raw_candles,raw_features_horizon"
+        def _lock_class(_e):
+            """SQLITE_LOCKED / SQLITE_BUSY 구분 — 대응 레버가 서로 다르다."""
+            _m = str(_e).lower()
+            if "table is locked" in _m:
+                return "SQLITE_LOCKED(같은 프로세스 내 점유 — busy_timeout 무효)"
+            if "database is locked" in _m:
+                return "SQLITE_BUSY(다른 커넥션 점유 — busy_timeout 적용 대상)"
+            return "기타(%s)" % type(_e).__name__
+
+        def _lock_evidence():
+            """실패 시점 점유 증거 — 전부 best-effort.
+
+            못 재면 `0` 이 아니라 **`미측정`** 이라고 쓴다(계측 4원칙 ②).
+            어떤 예외도 EOD 체인으로 새어 나가면 안 되므로 항목마다 감싼다.
+            """
+            _ev = []
+            try:                                  # (a) 살아 있는 스레드 = 락 보유 후보
+                import threading
+                _names = [t.name for t in threading.enumerate()]
+                _head = ",".join(_names[:8])
+                if len(_names) > 8:               # 계측 4원칙 ③ 탈락 가시화
+                    _head += " 외 %d개" % (len(_names) - 8)
+                _ev.append("스레드=%d개[%s]" % (len(_names), _head))
+            except Exception as _te:
+                _ev.append("스레드=미측정(%s)" % _te)
+            try:                                  # (b) 닫히지 않은 커넥션 = 유력 용의자
+                # `with sqlite3.connect(...)` 는 커밋만 하고 close 하지 않는다 —
+                # 이 프로세스에 누수 커넥션이 남아 있으면 여기서 드러난다.
+                import gc
+                _ev.append("열린커넥션=%d개" % len(
+                    [_o for _o in gc.get_objects()
+                     if isinstance(_o, sqlite3.Connection)]))
+            except Exception as _ce:
+                _ev.append("열린커넥션=미측정(%s)" % _ce)
+            for _sfx in ("-wal", "-shm"):         # (c) 리더가 붙어 있으면 WAL 이 안 준다
+                try:
+                    _p = RAW_DATA_DB + _sfx
+                    _ev.append("%s=%dB" % (
+                        _sfx[1:], os.path.getsize(_p) if os.path.exists(_p) else 0))
+                except Exception:
+                    _ev.append("%s=미측정" % _sfx[1:])
+            try:                                  # (d) journal_mode 는 가정이 아니라 실측
+                _c = sqlite3.connect(RAW_DATA_DB, timeout=1)
+                try:
+                    _jm = _c.execute("PRAGMA journal_mode").fetchone()
+                    _ev.append("journal=%s" % (_jm[0] if _jm else "?"))
+                finally:
+                    _c.close()
+            except Exception as _pe:
+                _ev.append("journal=미측정(%s)" % _pe)
+            return " ".join(_ev)
+
         deleted, detail, last_err = 0, [], None
         for _attempt in (1, 2):
             deleted, detail = 0, []          # 재시도 시 1차 집계를 이월하지 않는다
             try:
                 with sqlite3.connect(RAW_DATA_DB, timeout=15) as conn:
-                    deleted, detail = _prune_once(conn)
+                    deleted = _prune_once(conn, detail)
                 last_err = None
                 break
             except Exception as e:
@@ -2407,7 +2478,8 @@ class BatchRetrainer:
                     logger.info(
                         "[Retrain] DB pruning 1차 실패 — 1초 후 1회 재시도 "
                         "(cutoff=%s keep=%d주 대상=%s): %s",
-                        cutoff[:10], keep_weeks, "/".join(detail) or _tables, e,
+                        cutoff[:10], keep_weeks,
+                        "/".join(detail) or "(진행 없음)", e,
                     )
                     time.sleep(1.0)
         if last_err is None:
@@ -2420,8 +2492,35 @@ class BatchRetrainer:
                 "[Retrain] DB pruning 실패(2회, 반환=0행): %s | cutoff=%s keep=%d주 "
                 "대상=%s — 아무것도 삭제되지 않았다(커밋 미완). "
                 "다음 월요일 EOD 에 재시도된다",
-                last_err, cutoff[:10], keep_weeks, "/".join(detail) or _tables,
+                last_err, cutoff[:10], keep_weeks,
+                "/".join(detail) or "(진행 없음)",
             )
+            # [538차 후속 / 1-3] 최종 실패에서만 1줄 더 — 주 1회이므로 비용 무시 가능.
+            # 진단 자체가 EOD 를 깨뜨리는 일이 없도록 통째로 감싼다.
+            _stage = detail[-1] if detail else "(진행 없음)"
+            try:
+                logger.warning(
+                    "[Retrain] DB pruning 진단: 락종류=%s | 마지막단계=%s | %s",
+                    _lock_class(last_err), _stage, _lock_evidence(),
+                )
+                # 🔴 [538차 후속] 멈춘 단계가 체크포인트면 **외부 점유가 아니다**.
+                #    `PRAGMA wal_checkpoint` 는 쓰기 트랜잭션 안에서 부를 수 없고,
+                #    여기서는 바로 앞 DELETE 들이 아직 커밋되지 않은 상태다
+                #    (`with sqlite3.connect(...)` 는 블록을 나갈 때 커밋한다).
+                #    실측 4/4: journal=delete/wal × 삭제대상 유/무 전 조합에서
+                #    같은 `database table is locked` 가 난다 — 즉 **자기 자신이
+                #    건 락**이고 재시도·busy_timeout 으로는 절대 풀리지 않는다.
+                #    로그가 이 사실을 직접 말하게 둔다(다음 조사자가 다시 외부
+                #    커넥션을 찾아 헤매지 않도록).
+                if _stage.startswith("checkpoint:"):
+                    logger.warning(
+                        "[Retrain] DB pruning 진단(원인 후보): 체크포인트를 **커밋 전에** "
+                        "호출하고 있다 — 외부 커넥션 점유가 아니라 자기 트랜잭션이 원인일 "
+                        "수 있다. 조치는 매매 무관하나 첫 성공 시 52주 초과분이 실제로 "
+                        "삭제되므로 사용자 승인 후 반영할 것(NEXT_TODO `1-3`)"
+                    )
+            except Exception as _de:
+                logger.warning("[Retrain] DB pruning 진단 실패: %s", _de)
         return deleted
 
     def get_stats(self) -> dict:
