@@ -7703,6 +7703,315 @@ def eval_grade_ev_inversion() -> dict:
 # 리포트 생성
 # ──────────────────────────────────────────────────────────────
 
+# ──────────────────────────────────────────────────────────────
+# [58]/[59] GOLDEN POWER 교차 — 신호 단위 사전등록 채널 2종 (MW0601 541차)
+# ──────────────────────────────────────────────────────────────
+
+def _gp_sim_one(i, hi, lo, cl, hhmm, direction, atr, sim, cost_pt):
+    """단일 TP·단일 스톱 브래킷. 동시 도달 시 **스톱 우선**(보수).
+
+    반환: (gross_pt, net_pt, 사유). `session_end` 이후 봉은 강제청산으로 종료한다.
+    """
+    c0 = cl[i]
+    stop = c0 - direction * sim["stop_atr"] * atr
+    tp = c0 + direction * sim["tp_atr"] * atr
+    n = len(cl)
+    out, px = "TIME", cl[min(i + sim["max_bars"], n - 1)]
+    for j in range(i + 1, min(i + 1 + sim["max_bars"], n)):
+        if hhmm[j] >= sim["session_end"]:
+            out, px = "FORCE", cl[j]
+            break
+        hit_stop = (lo[j] <= stop) if direction > 0 else (hi[j] >= stop)
+        hit_tp = (hi[j] >= tp) if direction > 0 else (lo[j] <= tp)
+        if hit_stop:
+            out, px = "STOP", stop
+            break
+        if hit_tp:
+            out, px = "TP", tp
+            break
+    gross_pt = direction * (px - c0)
+    return gross_pt, gross_pt - cost_pt, out
+
+
+def _gp_day_verdict(rows, ch, control_rows):
+    """일자단위 부호검정 + 최선 N일 제거 + 무작위 대조. 사전등록 기준으로만 판정한다."""
+    r = {"n": len(rows), "n_days": 0, "net_krw_total": 0.0, "net_krw_per": None,
+         "gross_krw_per": None, "tp_rate": None, "day_pos": 0, "day_neg": 0,
+         "sign_p": None, "net_wo_best_days": None, "control_net_per": None,
+         "beats_control": None, "verdict": "INSUFFICIENT"}
+    if not rows:
+        r["reason"] = "전향 표본 0건 (data_start=%s)" % ch["data_start"]
+        return r
+    by_day = {}
+    for x in rows:
+        by_day.setdefault(x["day"], []).append(x)
+    r["n_days"] = len(by_day)
+    day_net = {d: sum(y["net_krw"] for y in v) for d, v in by_day.items()}
+    r["net_krw_total"] = round(sum(day_net.values()), 0)
+    r["net_krw_per"] = round(sum(x["net_krw"] for x in rows) / float(len(rows)), 0)
+    r["gross_krw_per"] = round(sum(x["gross_krw"] for x in rows) / float(len(rows)), 0)
+    r["tp_rate"] = round(sum(1 for x in rows if x["out"] == "TP") / float(len(rows)), 4)
+    pos = sum(1 for v in day_net.values() if v > 0)
+    neg = sum(1 for v in day_net.values() if v < 0)
+    r["day_pos"], r["day_neg"] = pos, neg
+    r["sign_p"] = round(_sign_test_p(pos, pos + neg), 4) if (pos + neg) else None
+    # 최선 N일 제거 후에도 흑자 유지 요구 — 며칠에 몰린 이익을 배제한다(313차 3 역방향)
+    k = int(ch.get("drop_best_days", 3))
+    best = sorted(day_net.values(), reverse=True)[:k]
+    r["net_wo_best_days"] = round(sum(day_net.values()) - sum(best), 0)
+    # 무작위 대조 — 같은 고변동 분에서 방향만 무작위. 함께 흑자면 레짐 효과다.
+    if control_rows:
+        r["control_n"] = len(control_rows)
+        r["control_net_per"] = round(
+            sum(x["net_krw"] for x in control_rows) / float(len(control_rows)), 0)
+        r["beats_control"] = bool(r["net_krw_per"] > r["control_net_per"])
+
+    # ── 판정 (사전등록 기준으로만) ──
+    need_n = int(ch["min_samples"])
+    need_d = int(ch["min_days"])
+    if r["n"] < need_n or r["n_days"] < need_d:
+        r["reason"] = "표본 미달 — 신호 %d/%d · 거래일 %d/%d" % (
+            r["n"], need_n, r["n_days"], need_d)
+        return r
+    if ch.get("require_beat_random_control"):
+        cmin = int(ch.get("control_min_samples", 0))
+        if not control_rows or len(control_rows) < cmin:
+            r["reason"] = "대조군 표본 미달 — %d/%d" % (len(control_rows or []), cmin)
+            return r
+        if not r["beats_control"]:
+            r["verdict"] = "FAIL"
+            r["reason"] = "무작위 대조를 못 이긴다 (신호 %s vs 대조 %s원/건) — 레짐 효과" % (
+                _fmt_krw(r["net_krw_per"]), _fmt_krw(r["control_net_per"]))
+            return r
+    alpha = float(ch.get("alpha", 0.05))
+    ok_sign = (r["sign_p"] is not None and r["sign_p"] < alpha and pos > neg)
+    ok_net = r["net_krw_per"] > 0
+    ok_robust = (r["net_wo_best_days"] or 0) > 0
+    if ok_net and ok_sign and ok_robust:
+        r["verdict"] = "PASS"
+        r["reason"] = "건당 %s원 · 일자 %d/%d p=%.4f · 최선%d일 제거 후 %s원" % (
+            _fmt_krw(r["net_krw_per"]), pos, neg, r["sign_p"], k,
+            _fmt_krw(r["net_wo_best_days"]))
+    else:
+        r["verdict"] = "FAIL"
+        miss = []
+        if not ok_net:
+            miss.append("건당 net %s원 <= 0" % _fmt_krw(r["net_krw_per"]))
+        if not ok_sign:
+            miss.append("일자 부호검정 미통과(%d/%d p=%s)" % (pos, neg, r["sign_p"]))
+        if not ok_robust:
+            miss.append("최선%d일 제거 시 %s원" % (k, _fmt_krw(r["net_wo_best_days"])))
+        r["reason"] = " / ".join(miss)
+    return r
+
+
+def eval_gp_cross_channels() -> dict:
+    """[58] `gp_cross_highvol_watch` / [59] `gp_cross_any_watch` — 540차 배선.
+
+    기존 채널과 다른 점 세 가지 (그래서 집계 경로가 별도다)
+    -------------------------------------------------------
+    1. **모집단이 체결이 아니라 신호다.** 이 신호가 뜬 분에 미륵이는 88.3%가 등급 X
+       (진입 후보조차 아님)이고 실제 집행은 0.4%뿐이다. `trades`를 세면 표본이 0이 된다.
+       그래서 `raw_features`의 교차 플래그를 모집단으로 삼고 봉으로 시뮬한다.
+    2. **비용이 핀값이 아니라 실측 요율이다.** 사전등록이 `cost_source=
+       "BROKER_CHANNEL_SPECS"`로 명시했다(493차 — 핀값은 왕복비용을 6.5배 낙관한다).
+       `_roundtrip_cost_pt()`(핀값)를 쓰지 않는 **유일한 채널**이며, 그래서 다른 채널의
+       손익과 직접 비교하면 안 된다. 리포트에 그 사실을 함께 찍는다.
+    3. **무작위 대조를 함께 돌린다.** 같은 고변동 분에서 방향만 무작위로 넣어, 신호가
+       레짐 효과인지 신호 효과인지 가른다(`require_beat_random_control`).
+
+    소급을 세지 않는다 — `data_start`(2026-09-08) 이전 분은 제외한다. 소급 116건은
+    가설의 출처이지 근거가 아니다(SOP 11 K-1).
+    두 채널은 `require_tight` 하나만 다르다. [59]는 **대조 전용**이며 승격 후보가 아니다.
+    """
+    ch1 = VALIDATION_CAMPAIGN.get("gp_cross_highvol_watch") or {}
+    ch2 = VALIDATION_CAMPAIGN.get("gp_cross_any_watch") or {}
+    out = {"tight": {"verdict": "INSUFFICIENT"}, "any": {"verdict": "INSUFFICIENT"}}
+    if not ch1 or not ch2:
+        out["error"] = "채널 정의 없음 (VALIDATION_CAMPAIGN)"
+        return out
+    if not (ch1.get("enabled") and ch2.get("enabled")):
+        out["error"] = "채널 비활성"
+        return out
+
+    period = int(ch1["period"])
+    sim = dict(ch1["sim"])
+    start = ch1["data_start"]
+    out["data_start"] = start
+    out["atr_bp_min"] = ch1["atr_bp_min"]
+    out["cost_rate"] = FUTURES_COMMISSION_RATE
+    out["cost_source"] = ch1.get("cost_source")
+    out["slip_ticks_per_side"] = sim.get("slip_ticks_per_side", 1.0)
+
+    k_up = "gp_cross_up_%d" % period
+    k_dn = "gp_cross_dn_%d" % period
+    k_tt = "gp_cross_tight_%d" % period
+    k_rd = "gp_ready_%d" % period
+
+    # 1. 신호 분 수집 (raw_features)
+    sig = []
+    n_rows = n_ready = n_key_missing = 0
+    try:
+        with _conn(RAW_DATA_DB) as conn:
+            cur = conn.execute(
+                "SELECT ts, features FROM raw_features WHERE ts >= ? ORDER BY ts",
+                (start + " 00:00:00",))
+            while True:
+                chunk = cur.fetchmany(4000)
+                if not chunk:
+                    break
+                for row in chunk:
+                    n_rows += 1
+                    try:
+                        d = json.loads(row["features"])
+                    except Exception:
+                        continue
+                    if k_up not in d:
+                        n_key_missing += 1
+                        continue
+                    if not d.get(k_rd):
+                        continue      # 워밍업 — 0으로 위장하지 않는다(계측 4원칙 2)
+                    n_ready += 1
+                    up = float(d.get(k_up) or 0)
+                    dn = float(d.get(k_dn) or 0)
+                    if up <= 0 and dn <= 0:
+                        continue
+                    sig.append({
+                        "ts": row["ts"], "dir": 1 if up > 0 else -1,
+                        "tight": bool(d.get(k_tt)),
+                        "atr_bp": float(d.get("atr_bp") or 0.0),
+                        "atr_bp_measured": bool(d.get("atr_bp_measured")),
+                        "atr": float(d.get("atr") or 0.0),
+                    })
+    except Exception as e:
+        out["error"] = str(e)
+        return out
+    out["n_feature_rows"] = n_rows
+    out["n_ready_rows"] = n_ready
+    out["n_key_missing"] = n_key_missing
+    out["n_cross_raw"] = len(sig)
+    if n_rows and n_key_missing == n_rows:
+        # 생산부(피처 배선)가 없는 브랜치·구간 — INSUFFICIENT 로 읽으면 오독이다(487차 F-8B)
+        out["tight"] = {"verdict": "NOT_AVAILABLE_ON_THIS_BRANCH",
+                        "reason": "raw_features 에 %s 키가 없다 — 피처 배선 확인" % k_up}
+        out["any"] = dict(out["tight"])
+        return out
+
+    # 2. 봉 맵
+    with _conn(RAW_DATA_DB) as conn:
+        bars = [dict(r) for r in conn.execute(
+            "SELECT ts, high, low, close FROM raw_candles WHERE ts >= ? ORDER BY ts",
+            (start + " 00:00:00",))]
+    by_day = {}
+    for b in bars:
+        by_day.setdefault(b["ts"][:10], []).append(b)
+    day_idx = {}
+    for d_, v in by_day.items():
+        day_idx[d_] = {b["ts"]: i for i, b in enumerate(v)}
+
+    slip_pt = float(sim.get("slip_ticks_per_side", 1.0)) * TICK_SIZE
+
+    def _run(events):
+        rows = []
+        for e in events:
+            day = e["ts"][:10]
+            v = by_day.get(day)
+            if not v:
+                continue
+            i = day_idx[day].get(e["ts"])
+            if i is None:
+                continue
+            hi = [b["high"] for b in v]
+            lo = [b["low"] for b in v]
+            cl = [b["close"] for b in v]
+            hhmm = [b["ts"][11:16] for b in v]
+            c0 = cl[i]
+            # 왕복 비용 = 수수료(실측요율 x2) + 슬리피지(편도 x2)
+            cost_pt = 2.0 * c0 * FUTURES_COMMISSION_RATE + 2.0 * slip_pt
+            g, netp, o = _gp_sim_one(i, hi, lo, cl, hhmm, e["dir"], e["atr"], sim, cost_pt)
+            rows.append({"day": day, "ts": e["ts"], "out": o,
+                         "gross_krw": g * MINI_FUTURES_PT_VALUE,
+                         "net_krw": netp * MINI_FUTURES_PT_VALUE})
+        return rows
+
+    def _nonoverlap(events):
+        keep, last = [], {}
+        gap = int(sim.get("nonoverlap_min", 3)) * 60
+        for e in sorted(events, key=lambda x: x["ts"]):
+            day = e["ts"][:10]
+            try:
+                t = datetime.datetime.strptime(e["ts"], _TS_FMT)
+            except ValueError:
+                continue
+            p = last.get(day)
+            if p is None or (t - p).total_seconds() >= gap:
+                keep.append(e)
+                last[day] = t
+        return keep
+
+    def _in_window(e):
+        hh = e["ts"][11:16]
+        return sim["session_start"] <= hh < sim["session_end"]
+
+    gate_bp = float(ch1["atr_bp_min"])
+    base = [e for e in sig if _in_window(e) and e["atr"] > 1e-6
+            and e["atr_bp_measured"] and e["atr_bp"] >= gate_bp]
+    out["n_after_gate"] = len(base)
+
+    ev_tight = _nonoverlap([e for e in base if e["tight"]])
+    ev_any = _nonoverlap(list(base))
+
+    # 3. 무작위 대조 — 같은 고변동 분, 방향만 무작위
+    ctrl_rows = []
+    try:
+        import random as _rnd
+        rng = _rnd.Random(20260907)      # 고정 시드 — 주마다 값이 흔들리지 않게
+        pool = []
+        with _conn(RAW_DATA_DB) as conn:
+            cur = conn.execute(
+                "SELECT ts, features FROM raw_features WHERE ts >= ? ORDER BY ts",
+                (start + " 00:00:00",))
+            while True:
+                chunk = cur.fetchmany(4000)
+                if not chunk:
+                    break
+                for row in chunk:
+                    hh = row["ts"][11:16]
+                    if not (sim["session_start"] <= hh < sim["session_end"]):
+                        continue
+                    try:
+                        d = json.loads(row["features"])
+                    except Exception:
+                        continue
+                    if not d.get("atr_bp_measured"):
+                        continue
+                    if float(d.get("atr_bp") or 0) < gate_bp:
+                        continue
+                    a = float(d.get("atr") or 0.0)
+                    if a <= 1e-6:
+                        continue
+                    pool.append({"ts": row["ts"], "atr": a,
+                                 "dir": 1 if rng.random() < 0.5 else -1})
+        ctrl_rows = _run(_nonoverlap(pool))
+    except Exception as e:
+        out["control_error"] = str(e)
+    out["n_control"] = len(ctrl_rows)
+
+    out["tight"] = _gp_day_verdict(_run(ev_tight), ch1, ctrl_rows)
+    out["any"] = _gp_day_verdict(_run(ev_any), ch2, ctrl_rows)
+    out["any"]["role"] = ch2.get("role")
+    # [59]는 대조 전용 — PASS 로 승격 후보가 되지 않도록 어휘를 바꾼다
+    if out["any"]["verdict"] in ("PASS", "FAIL"):
+        out["any"]["verdict_raw"] = out["any"]["verdict"]
+        out["any"]["verdict"] = (
+            "SUPPORTS_HYP" if out["any"]["verdict_raw"] == "FAIL" else "REJECTS_HYP")
+        out["any"]["interpretation"] = (
+            "순수 교차가 지면 「반대편 0 수렴」 조건이 일한다는 뜻(가설 지지)"
+            if out["any"]["verdict_raw"] == "FAIL"
+            else "순수 교차만으로도 이긴다면 tight 조건은 불필요(가설 기각)")
+    return out
+
+
 def _fmt_verdict(v: str) -> str:
     return {
         "PASS": "✅ PASS", "FAIL": "❌ FAIL",
@@ -7803,6 +8112,7 @@ def build_report(days: int) -> tuple:
     efs = eval_exit_fill_slippage_watch(days)
     reg = resolve_and_eval_regime_exhaustion()
     teg = resolve_and_eval_trend_efficiency_gate()   # [57] MW0602 502차 U-2 체리픽
+    gpx = eval_gp_cross_channels()                   # [58]/[59] MW0601 541차
     wcw = eval_weight_collapse_watch(days)
     msz = eval_meta_size_zero_shadow()        # [34] MW0601 422차 후속
     dev = eval_direction_ev_watch()
@@ -7913,6 +8223,7 @@ def build_report(days: int) -> tuple:
         "chase_foreign_combo_watch": cfc, "exit_fill_slippage_watch": efs,
         "regime_exhaustion_watch": reg, "toxicity_block_shadow": txb,
         "trend_efficiency_entry_gate": teg,   # [57] MW0602 502차 U-2 체리픽
+        "gp_cross_channels": gpx,             # [58]/[59] MW0601 541차
         "weight_collapse_watch": wcw,
         "direction_ev_watch": dev, "mfe_capture_watch": mcw,
         "guard_shadow": gsc, "intraday_cv_watch": icw,
@@ -8198,6 +8509,17 @@ def build_report(days: int) -> tuple:
         " · ".join(_teg_bits) or "—",
         teg.get("start_date", "—"), teg.get("n_pending", 0),
         _dm("trend_efficiency_entry_gate")))
+    # [MW0601 541차] GP 교차 2채널. 신호 단위이며 **비용이 실측 요율**이라
+    # 다른 채널의 손익과 직접 비교하면 안 된다(아래 §[58] 고지 참조).
+    _gt, _ga = gpx.get("tight") or {}, gpx.get("any") or {}
+    L.append("| [58] GP 교차 x 고변동 (좁은) | %s | 신호 %s건/%s일 · 건당 %s원 · %s |" % (
+        _fmt_verdict(_gt.get("verdict", "")), _gt.get("n", 0), _gt.get("n_days", 0),
+        _fmt_krw(_gt.get("net_krw_per")) if _gt.get("net_krw_per") is not None else "—",
+        _gt.get("reason", "—")))
+    L.append("| [59] GP 교차 x 고변동 (순수·대조) | %s | 신호 %s건/%s일 · 건당 %s원 · %s |" % (
+        _fmt_verdict(_ga.get("verdict", "")), _ga.get("n", 0), _ga.get("n_days", 0),
+        _fmt_krw(_ga.get("net_krw_per")) if _ga.get("net_krw_per") is not None else "—",
+        _ga.get("reason", "—")))
     L.append("| [23-B] TP1/손절 초기 기하 A/B | %s | %s (진입 %s건/%s일)%s |" % (
         _fmt_verdict(_g23.get("verdict", "")), _g23.get("reason", _g23.get("error", "—")),
         _g23.get("n_trades", "—"), _g23.get("n_days", "—"), _dm("tp1_geometry_shadow")))
@@ -11725,6 +12047,92 @@ def build_report(days: int) -> tuple:
     L.append("")
     L.append("> 이 리포트는 권고만 출력한다. 정책 적용/롤백은 주간 회의에서 수동 결정하고")
     L.append("> `dev_memory/DECISION_LOG.md`에 기록할 것 (§2 사전등록 원칙, §9 계엄령).")
+
+    # ── [58]/[59] GP 교차 — MW0601 541차 ──────────────────────────
+    L.append("")
+    L.append("## [58] GOLDEN POWER 교차 x 고변동 — 좁은 교차 (540차 신설 · 신호 단위)")
+    L.append("")
+    _gt = gpx.get("tight") or {}
+    _ga = gpx.get("any") or {}
+    if gpx.get("error"):
+        L.append("⚠ 오류: %s" % gpx["error"])
+    L.append("| 항목 | 값 |")
+    L.append("|---|---|")
+    L.append("| 판정 | %s |" % _fmt_verdict(_gt.get("verdict", "")))
+    L.append("| 판정 창 (전향 전용) | %s ~ |" % gpx.get("data_start", "—"))
+    L.append("| 신호 정의 (고정) | `GB20[t-1] < 0.5 <= GB20[t]` **그리고** `GS20[t] <= 0.05` (SHORT 대칭) |")
+    L.append("| 게이트 (고정) | 상대ATR `atr_bp` >= %s bp |" % gpx.get("atr_bp_min", "—"))
+    L.append("| 청산 (고정) | 스톱 1.5ATR / TP 0.5ATR / 최대 60봉 / 15:10 강제 |")
+    L.append("| 표본 | 신호 **%s건** / %s거래일 (합격선 %s건 · %s일) |" % (
+        _gt.get("n", 0), _gt.get("n_days", 0),
+        (VALIDATION_CAMPAIGN.get("gp_cross_highvol_watch") or {}).get("min_samples", "—"),
+        (VALIDATION_CAMPAIGN.get("gp_cross_highvol_watch") or {}).get("min_days", "—")))
+    L.append("| 건당 net / gross | **%s원** / %s원 |" % (
+        _fmt_krw(_gt.get("net_krw_per")) if _gt.get("net_krw_per") is not None else "—",
+        _fmt_krw(_gt.get("gross_krw_per")) if _gt.get("gross_krw_per") is not None else "—"))
+    L.append("| TP 선도달 | %s |" % (
+        ("%.1f%%" % (_gt["tp_rate"] * 100)) if _gt.get("tp_rate") is not None else "—"))
+    L.append("| 일자 +/- · 부호검정 | %s/%s · p=%s |" % (
+        _gt.get("day_pos", 0), _gt.get("day_neg", 0), _gt.get("sign_p", "—")))
+    L.append("| 최선 3일 제거 후 | %s원 |" % (
+        _fmt_krw(_gt.get("net_wo_best_days")) if _gt.get("net_wo_best_days") is not None else "—"))
+    L.append("| 무작위 대조 (같은 고변동 분) | n=%s · 건당 %s원 · 신호가 이기는가 **%s** |" % (
+        gpx.get("n_control", 0),
+        _fmt_krw(_gt.get("control_net_per")) if _gt.get("control_net_per") is not None else "—",
+        _gt.get("beats_control")))
+    L.append("| 원천 진단 | features행 %s · ready %s · 키결손 %s · 교차 %s · 게이트통과 %s |" % (
+        gpx.get("n_feature_rows", 0), gpx.get("n_ready_rows", 0),
+        gpx.get("n_key_missing", 0), gpx.get("n_cross_raw", 0), gpx.get("n_after_gate", 0)))
+    if _gt.get("reason"):
+        L.append("| 사유 | %s |" % _gt["reason"])
+    L.append("")
+    L.append("## [59] GOLDEN POWER 교차 x 고변동 — 순수 교차 (**대조 전용**)")
+    L.append("")
+    L.append("| 항목 | 값 |")
+    L.append("|---|---|")
+    L.append("| 판정 | %s |" % _fmt_verdict(_ga.get("verdict", "")))
+    L.append("| 신호 정의 | [58]과 같되 **반대편 조건 없음**(`require_tight=False`) |")
+    L.append("| 표본 | 신호 **%s건** / %s거래일 (합격선 %s건 · %s일) |" % (
+        _ga.get("n", 0), _ga.get("n_days", 0),
+        (VALIDATION_CAMPAIGN.get("gp_cross_any_watch") or {}).get("min_samples", "—"),
+        (VALIDATION_CAMPAIGN.get("gp_cross_any_watch") or {}).get("min_days", "—")))
+    L.append("| 건당 net | %s원 |" % (
+        _fmt_krw(_ga.get("net_krw_per")) if _ga.get("net_krw_per") is not None else "—"))
+    L.append("| 일자 +/- · 부호검정 | %s/%s · p=%s |" % (
+        _ga.get("day_pos", 0), _ga.get("day_neg", 0), _ga.get("sign_p", "—")))
+    if _ga.get("interpretation"):
+        L.append("| 해석 | %s |" % _ga["interpretation"])
+    if _ga.get("reason"):
+        L.append("| 사유 | %s |" % _ga["reason"])
+    L.append("")
+    L.append("> **무엇을 묻나.** *\"GB(Golden Buy)가 0.5를 상향 돌파하고 GS(Golden Sell)는")
+    L.append("> 0에 수렴하는 순간에 진입하면, 고변동 구간에서 비용을 넘는가.\"*")
+    L.append("> ")
+    L.append("> 🔴 **승률로 읽지 말 것.** 이 격자(스톱1.5ATR/TP0.5ATR)의 **손익분기 승률이**")
+    L.append("> **정확히 75.0%**다(1.5/(1.5+0.5)). 소급 실측 TP 선도달 75.6%는 무작위 73.2%보다")
+    L.append("> 유의하게 높지만(p=0.044) **손익분기를 넘는 몫은 +0.6%p 뿐**이다. 승률 75%는")
+    L.append("> 이 격자에서 **본전**이며, 청산격자 19개 전수에서 무조건 적용 시 net 흑자는 0개였다.")
+    L.append("> ")
+    L.append("> 🔴 **비용이 다른 채널과 다르다.** 사전등록이 `cost_source=BROKER_CHANNEL_SPECS`")
+    L.append("> 로 명시해 **실측 요율(%.6f%%)** 을 쓴다 — 핀값 `COST_MODEL_COMMISSION_RATE`" % (
+        (gpx.get("cost_rate") or 0) * 100))
+    L.append("> 를 쓰는 다른 채널의 건당 손익과 **직접 비교하면 안 된다**(493차: 핀값은 왕복비용을")
+    L.append("> 6.5배 낙관한다). 슬리피지는 캠페인 공통 %s틱/편도." % gpx.get("slip_ticks_per_side", 1.0))
+    L.append("> ")
+    L.append("> ⚠ **소급을 세지 않는다.** 판정창은 배선 다음 거래일부터다. 소급 116건(건당")
+    L.append("> +6,513원)은 **가설의 출처이지 근거가 아니다**(SOP §11 K-1). 그 소급값은")
+    L.append("> **전·후반 경계에 민감**해서 5/1 경계면 전반 +10,685원인데 5/15 경계면 −13,343원")
+    L.append("> 으로 뒤집힌다 — 승격 전 전향 검증이 필요한 직접 이유다.")
+    L.append("> ")
+    L.append("> ⚠ **[59]는 승격 후보가 아니다.** 「반대편 0 수렴」 조건이 실제로 일하는지를")
+    L.append("> 가르는 **대조**다. 소급상 순수 교차는 건당 −8,548원이고 [58]이 아닌 것만 보면")
+    L.append("> −8,992원이라 그 조건이 사실상 전부를 설명한다. [59]는 빈도가 [58]의 25배라")
+    L.append("> **표본이 먼저 찬다 — 먼저 판정된다고 그쪽을 채택하지 말 것.**")
+    L.append("> ")
+    L.append("> ⚠ **미륵이 진입과 겹치지 않는다.** 신호분의 88.3%가 등급 X(진입 후보조차 아님)")
+    L.append("> 이고 실제 집행은 0.4%다. 확증 필터가 아니라 **별도 관측 채널**이다.")
+    L.append("> 근거: `docs/미륵이고도화3/Golden power/GP교차신호_검증_MW0601-20260907.md`")
+    L.append("")
 
     return "\n".join(L), metrics
 
