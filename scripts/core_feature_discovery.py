@@ -29,11 +29,21 @@ import sqlite3
 import sys
 from collections import OrderedDict, defaultdict
 
-import numpy as np
-
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
+
+# ── [MW0601 537차] BLAS DLL 경로 보장 — **numpy import보다 먼저** ──────────────
+# conda 활성화 없이 이 스크립트를 돌리면(맨손 `py310_64\python.exe`) MKL delay-load가
+# 실패해 첫 BLAS 호출에서 **stderr 없이 프로세스가 즉사**한다(0xC06D007F).
+# 이 파일은 26주 WFA 재검증 L1이라 purged CV·상관을 반드시 밟는다.
+# L2(`horizon_signal_tradability.py`)에만 들어 있던 조치를 L1·L3에 맞춘다.
+# 근거: docs/정기점검/매일점검/MW0601-20260907-BLAS즉사-딥다이브.md
+from utils.dll_bootstrap import ensure_conda_dll_path  # noqa: E402
+ensure_conda_dll_path()
+
+import numpy as np  # noqa: E402
+
 RAW_DB = os.path.join(_ROOT, "data", "db", "raw_data.db")
 
 from utils.analysis_db import (  # noqa: E402

@@ -40,15 +40,22 @@ import os
 import sqlite3
 import sys
 
-import joblib
-import numpy as np
-import pandas as pd
-from sklearn.ensemble import HistGradientBoostingClassifier
-from sklearn.model_selection import TimeSeriesSplit
-
 _PROJECT_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
+
+# ── [MW0601 537차] BLAS DLL 경로 보장 — **numpy import보다 먼저** ──────────────
+# 26주 WFA 재검증 L3. conda 활성화 없이 돌리면 첫 BLAS 호출에서 stderr 없이 즉사한다
+# (0xC06D007F). L2에만 있던 조치를 L1·L3에 맞춘다.
+# 근거: docs/정기점검/매일점검/MW0601-20260907-BLAS즉사-딥다이브.md
+from utils.dll_bootstrap import ensure_conda_dll_path  # noqa: E402
+ensure_conda_dll_path()
+
+import joblib  # noqa: E402
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
+from sklearn.ensemble import HistGradientBoostingClassifier  # noqa: E402
+from sklearn.model_selection import TimeSeriesSplit  # noqa: E402
 
 from config.settings import HORIZON_THRESHOLDS, RAW_DATA_DB, MODEL_DIR, HORIZON_DIR  # noqa: E402
 from learning.batch_retrainer import (  # noqa: E402

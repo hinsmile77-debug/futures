@@ -39,8 +39,6 @@ import os
 import sys
 from typing import Optional
 
-import numpy as np
-
 # 콘솔이 cp949면 em-dash(U+2014) 등에서 UnicodeEncodeError가 난다 — utf-8로 고정.
 if hasattr(sys.stdout, "reconfigure"):
     try:
@@ -52,6 +50,14 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_HERE)
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
+
+# ── [MW0601 537차] BLAS DLL 경로 보장 — **numpy import보다 먼저** ─────────────
+# conda 활성화 없이 돌리면 첫 BLAS 호출에서 stderr 없이 프로세스가 즉사한다(0xC06D007F).
+# 근거: docs/정기점검/매일점검/MW0601-20260907-BLAS즉사-딥다이브.md
+from utils.dll_bootstrap import ensure_conda_dll_path  # noqa: E402
+ensure_conda_dll_path()
+
+import numpy as np  # noqa: E402
 
 try:
     import joblib
