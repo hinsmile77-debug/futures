@@ -264,6 +264,15 @@ def refresh_history_cache(db_path=None, path=None, force_full=False):
     🔴 장중에 부르지 말 것(가이드 §11-6).
     """
     cache = {} if force_full else load_history_cache(path)
+    # [MW0601 542차 이식] 경로 격자 세대가 다르면 **전량 재생성**한다. 증분으로는
+    # 과거 세션의 격자 경로를 채울 수 없다 — 캐시가 보관하는 봉은 최근 7세션뿐이고,
+    # 수동 산출의 재적합은 60세션 경로를 요구한다. 전량 재생성 실측 0.8초(EOD 전용).
+    rebuilt = bool(force_full)
+    if cache and cache.get("path_grid") != PL.PATH_GRID_ID:
+        logger.info("[LEVELS] 경로 격자 세대 변경(%s → %s) — 이력 캐시 전량 재생성",
+                    cache.get("path_grid"), PL.PATH_GRID_ID)
+        cache = {}
+        rebuilt = True
     summaries = [PL.summary_from_dict(s) for s in cache.get("summaries", [])]
     bars_by_day = dict((d, [PL.bar_from_dict(b) for b in bs])
                        for d, bs in (cache.get("bars") or {}).items())
@@ -288,14 +297,16 @@ def refresh_history_cache(db_path=None, path=None, force_full=False):
     bars_by_day = dict((k, v) for k, v in bars_by_day.items() if k in keep)
     payload = dict(
         updated_at=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        path_grid=PL.PATH_GRID_ID,      # [542차] 격자 세대 — 다르면 다음 EOD 가 재생성
         last_date=summaries[-1].d if summaries else None,
         summaries=[PL.summary_to_dict(s) for s in summaries],
         bars=dict((d, [PL.bar_to_dict(b) for b in bs]) for d, bs in bars_by_day.items()),
         excluded=dict(list(cache.get("excluded", {}).items()) + list(excluded.items())),
     )
     save_history_cache(payload, path)
+    _grid_n = sum(1 for s in summaries if s.paths)
     return dict(sessions=len(summaries), added=added, excluded=excluded,
-                last_date=payload["last_date"])
+                last_date=payload["last_date"], rebuilt=rebuilt, grid_sessions=_grid_n)
 
 
 def history_from_cache(path=None):
@@ -309,8 +320,9 @@ def history_from_cache(path=None):
 
 # ---------------------------------------------------------------- 파라미터
 
-def prepare_params(summaries, bars_by_day, target_date, db_path=None, excluded=None):
-    # type: (List[PL.SessionSummary], Dict[str, List[PL.Bar]], str, Optional[str], Optional[dict]) -> Optional[dict]
+def prepare_params(summaries, bars_by_day, target_date, db_path=None, excluded=None,
+                   at_key=None):
+    # type: (List[PL.SessionSummary], Dict[str, List[PL.Bar]], str, Optional[str], Optional[dict], Optional[str]) -> Optional[dict]
     """target_date **이전** 세션만으로 거리 모델 파라미터와 구조 후보를 만든다.
 
     반환 None = ATR 을 낼 이력조차 없음. p1/p2/rhat* 는 개별적으로 None 일 수 있으며
@@ -353,8 +365,21 @@ def prepare_params(summaries, bars_by_day, target_date, db_path=None, excluded=N
     # 옵션 OI 원천은 미륵에 체인 스냅샷이 없어 미사용(가이드 §3-1(d) — 검증에서도
     # 넣으면 극값 안착이 44.3%→41.8% 로 내려갔다). "없다"는 사실을 남긴다.
     # ⚠ **상수다.** 매일 같은 문구이므로 항상 마지막에 둔다(위 F-5).
+    # [MW0601 542차 이식] 수동 산출 전용 — 클릭 시각으로 재적합한 P1·R̂.
+    # 08:50/09:30 경로는 at_key=None 이라 **무영향**이다.
+    p_at = rhat_at = None
+    if at_key:
+        p_at = PL.fit_stage2_at(past, len(past), at_key)
+        rhat_at = PL.fit_rhat(past, len(past), True, at_key)
+        if p_at is None:
+            # 왜 못 냈는지 남긴다 — 「거리 미산출」만 보면 훈련 부족인지 캐시
+            # 세대 문제인지 구분할 수 없다(계측 4원칙 ③).
+            _gn = sum(1 for s in past[-PL.TRAIN_SESSIONS:] if (s.paths or {}).get(at_key))
+            warnings.append("%s 격자 경로 %d세션(<%d) — EOD 이력 캐시 재생성 필요"
+                            % (at_key, _gn, PL.MIN_TRAIN_SESSIONS))
     warnings.append("옵션 OI 원천 없음(설계상 제외)")
     return dict(prev=prev, atr=atr, atr5=atr5, p1=p1, p2=p2, rhat1=rhat1, rhat2=rhat2,
+                p_at=p_at, rhat_at=rhat_at, at_key=at_key,
                 candidates=cands, warnings=warnings, history_sessions=len(past),
                 history_last=prev.d)
 
@@ -454,6 +479,21 @@ def format_log_lines(out):
             head.split("|")[0] + "| " + format_structure(out["structure"])]
 
 
+def format_manual_log_lines(row):
+    # type: (dict) -> List[str]
+    """[MW0601 542차 이식] 수동 산출 로그 2줄 — 화면과 같은 수·같은 사유를 남긴다."""
+    if row.get("note"):
+        return ["[LEVELS 수동 %s] 미산출 — %s" % (row.get("computed_at"), row["note"])]
+    head = ("[LEVELS 수동 %s] 컷=%s 모델=%s ref=%.2f ATR=%.1f | "
+            % (row.get("computed_at"), row.get("at") or "—", row.get("model"),
+               row.get("ref") or 0.0, row.get("atr") or 0.0))
+    dist = row.get("distance")
+    d_txt = format_distance(dist) if dist else (row.get("distance_note")
+                                                or "거리 미산출")
+    return [head + d_txt,
+            head.split("|")[0] + "| " + format_structure(row["structure"])]
+
+
 # ---------------------------------------------------------------- 오케스트레이션
 
 def ensure_stage(stage, now=None, today_candles=None, db_path=None, cache_path=None):
@@ -502,6 +542,102 @@ def ensure_stage(stage, now=None, today_candles=None, db_path=None, cache_path=N
         warnings=(res["out"] or {}).get("warnings") or params.get("warnings"),
         bars=res["bars"])
     return db_utils.fetch_premarket_levels(date_str).get(stage)
+
+
+def compute_manual(now=None, today_candles=None, db_path=None, cache_path=None,
+                   persist=True):
+    # type: (Optional[datetime.datetime], Optional[Sequence[dict]], Optional[str], Optional[str], bool) -> dict
+    """[MW0601 542차 이식] **수동 산출** — 클릭 시각 기준 거리·구조 맥점.
+
+    08:50/09:30 과 다른 점은 셋뿐이다.
+
+      ① **굳히지 않는다.** 같은 날 여러 번 눌릴 수 있고 그때마다 경로가 다르므로
+         매번 새 관측이다. 기록은 별도 테이블에 append-only 로 남긴다
+         (`premarket_levels` 를 건드리면 장후 채점·60일 누적 창이 오염된다).
+      ② **거리 모델을 클릭 시각으로 재적합한다**(`p_at`). 09:30 모델을 임의 시각에
+         적용하는 것은 훈련 시점 밖 외삽이라 하지 않는다.
+      ③ 09:00 이전이면 시점 조건부 모델이 없으므로 **M1(시가 기준)만** 낸다.
+
+    그날 경고는 `stage_warnings()` 를 그대로 태운다 — 정시 행과 **같은 어휘**로
+    같은 상태를 설명하기 위해서다(구조 후보 0개 · R̂ 절단 · 외삽).
+
+    반환: UI·로그가 그대로 쓰는 dict. 미산출도 **사유를 담아** 돌려준다(예외를 던지지
+    않는다) — 관측 전용이라 호출측 파이프라인을 막을 이유가 없다.
+    """
+    from utils import db_utils
+
+    now = now or datetime.datetime.now()
+    date_str = now.strftime("%Y-%m-%d")
+    hhmm = now.strftime("%H:%M")
+    clicked_at = now.strftime("%H:%M:%S")
+    at = PL.snap_to_grid(hhmm)                      # None = 09:00 이전
+    at_key = PL.grid_key(at) if at else None
+    cut = at or hhmm
+
+    def _row(out=None, note=None, bars=0, bars_source=None):
+        r = dict(out or {})
+        r.update(date=date_str, stage="MANUAL", computed_at=clicked_at, at=at,
+                 clicked_hhmm=hhmm, note=note, bars=bars, bars_source=bars_source)
+        r.setdefault("model", None)
+        r["warnings"] = list((out or {}).get("warnings") or [])
+        if persist:
+            try:
+                db_utils.save_premarket_levels_manual(date_str, clicked_at, r)
+            except Exception:
+                logger.warning("[LEVELS] 수동 산출 기록 실패 (무해)", exc_info=True)
+        return r
+
+    # 봉 원천 — dev 의 굳힌 테이블에는 이 컬럼이 없으므로 **수동 테이블에만** 남긴다.
+    # 폴백이 상시화되면 「장중 DB를 읽지 않는다」는 설계 전제가 조용히 무너진다.
+    bars = bars_from_candles(today_candles, until=cut)
+    buf_n = len(bars)
+    bars_source = "buffer"
+    if not bars or bars[0].t > "08:50":
+        # 정시 산출과 달리 이 경로는 **사용자가 아무 때나 누른다** — DB 가 아직
+        # 없거나 잠긴 순간도 포함된다. 예외를 밖으로 내보내면 화면이 「산출 중…」에
+        # 멈춘다(계측 4원칙 ④). 실패도 사유가 있는 결과로 돌려준다.
+        try:
+            bars = load_today_bars(date_str, until=cut, db_path=db_path)
+            bars_source = ("db_fallback(버퍼 0봉)" if buf_n == 0
+                           else "db_fallback(버퍼 %d봉 첫봉부적합)" % buf_n)
+        except Exception as e:
+            return _row(note="당일 봉 조회 실패: %s" % e, bars=0,
+                        bars_source="db_fallback(실패)")
+    if not bars:
+        return _row(note="당일 봉 0개 — 미산출", bars=0, bars_source=bars_source)
+    if bars[0].t > "08:50":
+        return _row(note="첫 봉 %s (08:45 시가 결손) — 미산출" % bars[0].t,
+                    bars=len(bars), bars_source=bars_source)
+
+    summaries, bars_by_day = history_from_cache(cache_path)
+    params = prepare_params(summaries, bars_by_day, date_str, db_path=db_path,
+                            excluded=load_history_cache(cache_path).get("excluded"),
+                            at_key=at_key)
+    if params is None:
+        return _row(note="이력 캐시 없음 — EOD refresh_history_cache() 미실행",
+                    bars=len(bars), bars_source=bars_source)
+    try:
+        out = PL.compute_manual(at, bars, params["prev"], params["atr"],
+                                params.get("p1"), params.get("p_at"),
+                                params["candidates"], params.get("rhat1"),
+                                params.get("rhat_at"), params.get("atr5"))
+    except Exception as e:
+        return _row(note="산출 실패: %s" % e, bars=len(bars), bars_source=bars_source)
+    out["date"] = date_str
+    out["bars"] = len(bars)
+    out["train_n"] = ((params.get("p_at") or {}).get("n") if at
+                      else (params.get("p1") or {}).get("n"))
+    out["warnings"] = stage_warnings(out) + list(params.get("warnings") or [])
+    if at is None:
+        out["warnings"].insert(
+            0, "09:00 이전 — 시점 조건부 모델 없음, M1(시가 기준) 사용")
+    if out.get("distance") is None:
+        # 「거리 미산출」만 두면 훈련 부족인지 캐시 세대 문제인지 화면에서 구분이
+        # 안 된다 — 사유를 값 옆에 붙인다(계측 4원칙 ③).
+        _why = [w for w in out["warnings"] if "격자" in w or "미산출" in w]
+        out["distance_note"] = ("거리 미산출 — %s"
+                                % (_why[0] if _why else "훈련 표본 부족"))
+    return _row(out=out, bars=len(bars), bars_source=bars_source)
 
 
 # ---------------------------------------------------------------- 장후 채점

@@ -49,8 +49,13 @@ def run_eod(date_str=None, refresh=True, log=None):
         try:
             r = LS.refresh_history_cache()
             out["refreshed"] = r
-            say("[LEVELS] 이력 캐시 갱신 — %d세션(~%s), 신규 %d일",
-                r["sessions"], r["last_date"], len(r["added"]))
+            # [542차 이식] 격자 경로 세션 수를 함께 찍는다 — 수동 산출의 거리
+            # 모델은 이 값이 30 미만이면 나오지 않는다. 안 찍으면 「왜 거리가
+            # 안 나오지」를 화면에서만 발견하게 된다(계측 4원칙 ③).
+            say("[LEVELS] 이력 캐시 갱신 — %d세션(~%s), 신규 %d일, 격자경로 %d세션%s",
+                r["sessions"], r["last_date"], len(r["added"]),
+                r.get("grid_sessions", 0),
+                " (전량 재생성)" if r.get("rebuilt") else "")
             if r["excluded"]:
                 say("[LEVELS] 품질 제외 %d일: %s", len(r["excluded"]),
                     ", ".join("%s(%s)" % kv for kv in sorted(r["excluded"].items())))

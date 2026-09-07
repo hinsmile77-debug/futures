@@ -3,6 +3,87 @@
 
 ---
 
+## 2026-09-07 (MW0601 → dev 이식 — 수동 맥점 산출 버튼: 542차 적응판)
+
+원 커밋 `a21e270`(v9-dev / **MW0601**). **매매 정책 무변경 · 관측 전용.**
+🔴 **기계적 체리픽으로는 런타임에 죽는다** — 그래서 적응 이식했다(아래 §조정).
+
+### 무엇을 가져왔나
+
+진입 패널 맥점 섹션에 **「수동 산출」 버튼**을 두고, 누른 시각 기준 거리·구조 맥점을
+「수동」 행(거리 3줄 · 구조 2줄)에 표시한다. 정시 08:50/09:30 두 행은 **굳힌 값**이라
+이 버튼으로 바뀌지 않는다.
+
+🔴 **핵심 판단 — 09:30 모델을 임의 시각에 그대로 쓰지 않는다.**
+P1 은 09:30 경로로 훈련된 회귀다. 13:00 클릭에 그 계수를 그대로 쓰면 계수도 잔차
+분위도 훈련 시점 밖 외삽이 된다 — 값은 그럴듯하게 나오고 예외도 안 난다.
+대신 EOD 캐시에 세션별 **5분 격자 경로**(09:00~15:05, `PATH_GRID_ID`)를 굳혀두고,
+클릭 시각을 격자에 내림 스냅해 **그 시각으로 P1·R̂ 를 재적합**한다. 수식·훈련창
+(60세션)·잔차 분위·경로 하한 정의는 09:30 과 완전히 같고 경로를 잰 시각만 다르다.
+09:00 이전에는 시점 조건부 모델이 없으므로 **M1(시가 기준)만** 낸다.
+
+원 브랜치 실측(2026-09-07): 09:33 클릭 → 컷 09:30 산출이 굳힌 09:30 행과 **비트 동일**
+(ref 1091.16 · 고 1095.3000 · 저 1077.3194 · 50% 1093.078~1099.375 · 구조 상방 [1095] ·
+하방 [1087, 1077, 1074]). 이 등가는 이 브랜치에서도
+`tests/test_542_manual_levels.py::test_manual_at_0930_matches_frozen_stage` 가 고정한다.
+⚠ **다른 시각의 커버리지는 측정되지 않았다** — 재적합이라 계통 오차는 없지만 그
+사실 자체를 값과 함께 기억할 것(툴팁에 박아 두었다).
+
+### 이 브랜치에서 조정한 것 — dev API 가 달라서 그대로는 안 붙는다
+
+`91fb5a9`(MW0602 538차)가 같은 계측 5건을 **독립 구현**했고 이름·모양이 다르다.
+원 커밋을 그대로 체리픽하면 자동병합 4파일 + 충돌 3곳인데, **자동병합된 쪽이 이
+브랜치에 없는 함수를 부른다** ⇒ 빌드는 되고 런타임에 NameError — 오늘 고친 GP 교차
+결함(`76d1a9b`)과 같은 유형이다. 그래서 아래를 바꿔 옮겼다.
+
+| 원본(v9-dev) | 이 브랜치 |
+|---|---|
+| `rhat_scale()` + `rhat_trace()` | **`rhat_diag()`** 하나(scale 포함), 결과는 `out["rhat"]` |
+| `structure_diagnostics()`/`structure_note()` 로 빈 쪽 사유 | **`stage_warnings()`** 가 낸다(구조 후보 0개 · R̂ 절단 · 외삽) |
+| 대시보드에 `_levels_side_text()` 신설 | dev 의 `_fmt(items)` 어휘 유지 — 사유는 **툴팁** |
+| `prepare_params(…, at_key)` | `prepare_params(…, db_path, excluded, at_key)` (538차 인자 보존) |
+| `bars_source` 를 굳힌 테이블에도 기록 | dev 스키마 무변경 — **수동 테이블에만** 기록 |
+
+「정시 행과 수동 행이 같은 상태를 다른 말로 설명하면 두 현상으로 오해한다」가 그
+선택의 기준이다. 그래서 어휘는 **이 브랜치 쪽에 맞췄다.**
+
+### 🔴 굳히기를 오염시키지 않는다 — 별도 테이블 `premarket_levels_manual`
+
+`premarket_levels` 는 「하루 2행」이 전제다: `score_day()` 가 전 행을 채점하고
+`fetch_premarket_levels_scores(days)` 가 `LIMIT days*2` 로 60일 창을 잰다. 수동 행이
+섞이면 채점 대상과 누적 창이 **조용히** 줄어든다. 굳히기(INSERT OR IGNORE)도 하지
+않는다 — 같은 날 여러 번 누르는 것이 정상이고 그때마다 입력이 다르므로 매번 새
+관측이다. 대신 `payload` 에 화면·로그가 쓴 dict 을 그대로 담아 사후 재구성 경로를
+남긴다. dev 의 기존 스키마는 **한 컬럼도 건드리지 않았다.**
+
+### 조치
+
+- `features/levels/premarket_levels.py` — 격자 상수 4종 · `path_grid_times()` ·
+  `snap_to_grid()`(내림) · `session_paths()`(봉 1회 훑기) · `path_of()`(없으면 None) ·
+  `SessionSummary.paths` · `fit_stage2_at()` · `fit_rhat(…, key)` · `compute_manual()`.
+  기존 `fit_stage2` 는 key=None 위임이라 **09:30 동작 무변경**.
+- `features/levels/levels_store.py` — `prepare_params(at_key=)` · `compute_manual()` ·
+  `format_manual_log_lines()` · 캐시 `path_grid` 세대가 다르면 **전량 재생성**.
+- `utils/db_utils.py` — `premarket_levels_manual` 테이블 + save/fetch.
+- `dashboard/main_dashboard.py` — 버튼 · 「수동」 행 · `update_manual_levels()`.
+- `main.py` — 시그널 배선 · `_on_manual_levels_requested()`(반환값 없음) · 당일 봉
+  버퍼 **종일** 확장(09:30·60봉 → 15:40·480봉; 정시 산출은 `until=cut` 이라 무영향) ·
+  재기동 시 마지막 수동 행 복원.
+- `scripts/premarket_levels_eod.py` — 갱신 로그에 「격자경로 N세션」 병기.
+- `tests/test_542_manual_levels.py` — 23종(dev 적응판).
+
+### 검증
+
+`test_542`(23) + `test_534`(dev판) + `test_502`·`test_540`·`test_541` = **92 passed
+1 skipped**. `main.py` 참조 46개 파일 전수 실행은 이식 **전후가 동일**하다
+(15 failed / 44 passed — 워크트리에 `data/` 런타임 DB 가 없어 나는 기존 실패다).
+
+⚠ **이 브랜치의 첫 클릭은 거리 모델이 안 나온다** — 격자 경로는 EOD 가 채운다.
+다음 EOD 로그의 「격자경로 N세션 (전량 재생성)」을 확인할 것. 그 전에는 구조 모델만
+뜨고 거리 자리에 「격자 경로 0세션(<30) — EOD 이력 캐시 재생성 필요」가 뜬다.
+
+---
+
 ## 2026-09-07 (MW0601 → dev 이식 — GP 교차 피처 NameError: feature_builder 임포트 누락)
 
 원 커밋 `3111e4b`(v9-dev / **MW0601**). 원 PC 에서 542차 회귀 스위트를 돌리다

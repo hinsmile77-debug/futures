@@ -3448,6 +3448,30 @@ def init_premarket_levels_db():
             PRIMARY KEY (date, stage)
         )
     """)
+    # ── [MW0601 542차 이식] 수동 산출 관측 로그 — **별도 테이블** ─────────
+    # 🔴 `premarket_levels` 에 넣지 않는다. 그 테이블은 「하루 2행」이 전제다:
+    #    `score_day()` 가 전 행을 채점하고 `fetch_premarket_levels_scores(days)` 가
+    #    `LIMIT days*2` 로 60일 창을 잰다. 수동 행이 섞이면 채점 대상과 누적 창이
+    #    **조용히** 오염된다 — 이 프로젝트가 가장 비싸게 배운 실패 형태다.
+    # 굳히기(INSERT OR IGNORE)도 하지 않는다 — 같은 날 여러 번 누르는 것이 정상이고
+    # 그때마다 입력(경로)이 다르므로 매번 새 관측이다.
+    execute(PREMARKET_LEVELS_DB, """
+        CREATE TABLE IF NOT EXISTS premarket_levels_manual (
+            date        TEXT NOT NULL,
+            clicked_at  TEXT NOT NULL,     -- 버튼을 누른 시각 HH:MM:SS
+            at_time     TEXT,              -- 격자 컷 HH:MM (NULL = 09:00 이전, M1)
+            model       TEXT,              -- 'M1' | 'P@HH:MM'
+            ref_price   REAL, open_price REAL, atr14 REAL,
+            dist_high   REAL, dist_low REAL,
+            sofar_high  REAL, sofar_low REAL,
+            rhat_scale  REAL, rhat_clip TEXT, train_n INTEGER,
+            struct_up   TEXT, struct_down TEXT,
+            bars        INTEGER, bars_source TEXT,
+            note        TEXT, warnings TEXT,
+            payload     TEXT,              -- 화면·로그가 쓴 dict 그대로(JSON)
+            PRIMARY KEY (date, clicked_at)
+        )
+    """)
 
 
 def _pml_band(d, key):
@@ -3578,6 +3602,57 @@ def fetch_premarket_levels_scores(days: int = 60) -> List[sqlite3.Row]:
     return fetchall(PREMARKET_LEVELS_DB,
                     "SELECT * FROM premarket_levels_score "
                     "ORDER BY date DESC, stage LIMIT ?", (days * 2,))
+
+
+def save_premarket_levels_manual(date_str: str, clicked_at: str, row: dict) -> None:
+    """[MW0601 542차 이식] 수동 산출 1건 — append-only 관측 로그.
+
+    `payload` 에 화면·로그가 쓴 dict 을 **그대로** 담는다. 굳히기가 없는 대신 이걸로
+    「그때 화면에 무엇이 떠 있었는가」를 사후에 재구성한다(가이드 §4 의 취지 유지).
+    미산출도 사유(note)와 함께 남긴다 — 값이 없는 것과 안 눌린 것은 다르다.
+    """
+    dist = row.get("distance") or {}
+    struct = row.get("structure") or {}
+    rhat = row.get("rhat") or {}
+    execute(PREMARKET_LEVELS_DB,
+            """INSERT OR REPLACE INTO premarket_levels_manual
+               (date, clicked_at, at_time, model, ref_price, open_price, atr14,
+                dist_high, dist_low, sofar_high, sofar_low, rhat_scale, rhat_clip,
+                train_n, struct_up, struct_down, bars, bars_source, note, warnings,
+                payload)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (date_str, clicked_at, row.get("at"), row.get("model"),
+             row.get("ref"), row.get("open"), row.get("atr"),
+             dist.get("high"), dist.get("low"),
+             dist.get("so_far_high"), dist.get("so_far_low"),
+             dist.get("scale"), rhat.get("clip"), row.get("train_n"),
+             json.dumps(struct.get("up"), ensure_ascii=False) if struct else None,
+             json.dumps(struct.get("down"), ensure_ascii=False) if struct else None,
+             row.get("bars"), row.get("bars_source"), row.get("note"),
+             json.dumps(row.get("warnings") or [], ensure_ascii=False),
+             json.dumps(row, ensure_ascii=False, default=str)))
+
+
+def fetch_premarket_levels_manual(date_str: str, limit: int = 20) -> List[dict]:
+    """그날 수동 산출 — **새 것부터**. payload 를 풀어 화면이 그대로 쓰게 돌려준다."""
+    rows = fetchall(PREMARKET_LEVELS_DB,
+                    "SELECT * FROM premarket_levels_manual WHERE date = ? "
+                    "ORDER BY clicked_at DESC LIMIT ?", (date_str, limit))
+    out = []
+    for r in rows:
+        try:
+            d = json.loads(r["payload"]) if r["payload"] else {}
+        except Exception:
+            d = {}
+        if not isinstance(d, dict):
+            d = {}
+        d.setdefault("date", r["date"])
+        d.setdefault("computed_at", r["clicked_at"])
+        d.setdefault("at", r["at_time"])
+        d.setdefault("model", r["model"])
+        d.setdefault("note", r["note"])
+        out.append(d)
+    return out
 
 
 def init_all_dbs():

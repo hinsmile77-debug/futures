@@ -3182,6 +3182,9 @@ class EntryPanel(QWidget):
     sig_reverse_entry_toggled    = pyqtSignal(bool)
     sig_manual_entry_requested   = pyqtSignal(str)   # "LONG" or "SHORT"
     sig_instant_exit_requested   = pyqtSignal()      # 즉시 전량청산
+    # [MW0601 542차 이식] 수동 맥점 산출 — 클릭 시각 기준 거리·구조 맥점 재산출 요청.
+    # 🔴 관측 전용이다. 이 시그널의 결과는 어떤 게이트·사이징에도 들어가지 않는다.
+    sig_manual_levels_requested  = pyqtSignal()
     sig_auto_mode_changed        = pyqtSignal(bool)  # True=Auto ON, False=Auto OFF
     sig_max_qty_changed          = pyqtSignal(int)   # 최대허용수량 변경
     sig_layer2_gate_toggled      = pyqtSignal(bool)  # Layer 2 게이트 ON/OFF
@@ -3831,13 +3834,54 @@ class EntryPanel(QWidget):
         left_lay.addWidget(mk_sep())
         _lv_title = mk_label("당일 맥점 · 거리모델", C['blue'], 9, True)
         _lv_title.setToolTip('당일 맥점 · 거리 모델 (08:50 / 09:30)\n\n「어느 가격이 저항인가」가 아니라 「시가에서 얼마나 갈 것인가」로 당일 고·저를 낸다.\n\n  08:50  M1 — 고점 = 08:45 시가 + med(u)×ATR14, 저점 = 시가 − med(d)×ATR14\n               med(u)/med(d) = 직전 60세션 중앙값\n               구간 = 훈련 잔차 25/75(50%) · 10/90(80%) 분위 — 정규분포 가정 없음\n  09:30  P1 — 09:30까지의 경로(gap · 전일범위 · u_T · d_T · ret_T)를 넣은\n               중앙값 회귀(LAD, IRLS 30회). 이미 난 고·저를 **하한**으로 잘라\n               그보다 낮게 예측하지 않는다\n\nR̂ 스케일: 당일 실현 범위 R=(고−저)/시가 를 log 회귀로 예측해 구간 폭을\n  R̂/훈련중앙R 배(하한 0.85 · 상한 2.0)로 조정. 조용한 날 과신·시끄러운 날\n  과소신을 함께 좁힌다. 스케일 전 원구간도 DB에 함께 저장돼 장후에 대조된다.\n\n━━ 검증 (144세션 워크포워드, 2026-01-05~09-04) ━━\n  08:50  MAE 14.2pt · 50% 구간 47% · 80% 구간 78% (R̂ 적용 83%)\n  09:30  MAE 11.0pt · 50% 구간 44% · 80% 구간 74% (R̂ 적용 81%)\n  대조군 — 전일 고·저 그대로 MAE 30.9pt / 시가±전일범위÷2 15.3pt\n  ⇒ 전일 고·저를 목표가로 쓰면 오차가 두 배다\n\n  변동성 분위별 08:50 오차: 낮음 9.6pt / 중간 13.5pt / 높음 20.5pt\n  → 신뢰도가 시장 상태에 따라 두 배 차이 난다\n\n🔴 관측·기록 전용이다 — 진입·청산·사이징 어디에도 연결돼 있지 않다.\n   (반사실 검증: 예측 고점 부근 LONG 자제 규칙은 손익을 −2.6M~−5.7M원 악화시켰다)\n「미산출」은 훈련 세션 30 미만이거나 08:45 시가가 결손된 경우다 — 지어내지 않는다.')
-        left_lay.addWidget(_lv_title)
+        _lv_head = QHBoxLayout()
+        _lv_head.setSpacing(4)
+        _lv_head.addWidget(_lv_title, 1)
+        # [MW0601 542차 이식] 수동 산출 버튼 — 08:50/09:30 정시 산출 사이·이후 임의
+        # 시각에 「지금 기준」 맥점을 낸다. 정시 두 행은 **굳힌 값**이라 이 버튼으로
+        # 바뀌지 않으며, 결과는 아래 「수동」 행에만 들어간다.
+        self.btn_manual_levels = QPushButton("수동 산출")
+        self.btn_manual_levels.setFixedWidth(64)
+        self.btn_manual_levels.setStyleSheet(
+            f"QPushButton{{background:{C['bg3']};color:{C['cyan']};"
+            f"border:1px solid {C['cyan']};border-radius:3px;padding:2px;"
+            f"font-size:{S.f(9)}px;}}"
+            f"QPushButton:hover{{background:{C['cyan']};color:#000;}}"
+            f"QPushButton:disabled{{color:{C['text2']};border-color:{C['border']};}}"
+        )
+        self.btn_manual_levels.setToolTip(
+            '수동 맥점 산출 — 누른 시각 기준 거리·구조 맥점 (542차 이식)\n\n'
+            '정시(08:50 / 09:30) 두 행은 굳힌 값이라 그대로 두고, 아래 「수동」 행에만\n'
+            '결과가 들어간다. 같은 날 몇 번이든 누를 수 있고 그때마다 새 관측이다.\n\n'
+            '━━ 거리 모델 ━━\n'
+            '  09:00 이후 — 클릭 시각을 5분 격자(09:00~15:05)에 스냅해, **그 시각의\n'
+            '    경로로 P1 을 다시 적합**한 뒤 예측한다. 수식·훈련창(60세션)·잔차\n'
+            '    분위·R̂ 정의는 09:30 과 완전히 같고 경로를 잰 시각만 다르다.\n'
+            '    🔴 09:30 모델을 그대로 13:00 에 쓰지 않는다 — 그것은 훈련 시점 밖\n'
+            '       외삽이라 값은 나오지만 근거가 없다.\n'
+            '    이미 난 고·저를 하한으로 자르므로 장 후반에는 점추정이 「지금까지의\n'
+            '    고·저」에 붙고 구간만 좁아진다 — 정상 동작이다.\n'
+            '  09:00 이전 — 시점 조건부 모델이 없어 M1(시가 기준)만 낸다.\n\n'
+            '━━ 구조 모델 ━━\n'
+            '  후보(전일까지 6세션 매물대·갭 변·전일 고저/VWAP)에 그 시각까지의\n'
+            '  오프닝 레인지 고·저를 더하고, 기준가를 **직전 봉 종가**로 바꿔 위·아래\n'
+            '  가까운 3개씩 다시 고른다.\n\n'
+            '검증 신뢰도는 09:30 지점에서만 측정됐다(MAE 11.0pt · 80% 구간 81%).\n'
+            '다른 시각의 커버리지는 아직 측정되지 않았다 — 재적합이라 계통 오차는\n'
+            '없지만, **측정되지 않았다는 사실 자체**를 값과 함께 기억할 것.\n\n'
+            '그날 사유(구조 후보 0개 · R̂ 절단 · 외삽)는 수동 행 툴팁에 함께 뜬다.\n\n'
+            '🔴 관측·기록 전용 — 진입·청산·사이징 어디에도 연결돼 있지 않다.'
+        )
+        self.btn_manual_levels.clicked.connect(self._on_manual_levels_clicked)
+        _lv_head.addWidget(self.btn_manual_levels)
+        left_lay.addLayout(_lv_head)
         # 시점마다 3줄이다 — 메타(ATR·R̂) / 고점 / 저점.
         # 「각 시점 고·저 예측치」와 50%·80% 구간을 한 눈에 보려면 고·저를 한 줄에
         # 몰면 안 된다(구간 4개가 한 줄에 겹친다). 상방=적색 / 하방=녹색으로
         # 오른쪽 구조모델 ▲▼ 색과 맞춘다.
         self._levels_dist_labels = {}
-        for _lv_stage, _lv_due in (("0850", "08:50"), ("0930", "09:30")):
+        for _lv_stage, _lv_due in (("0850", "08:50"), ("0930", "09:30"),
+                                   ("MANUAL", "수동")):
             _lv_row = QHBoxLayout()
             _lv_row.setSpacing(4)
             _lv_nl = mk_label(_lv_due, C['text2'], 10, True)
@@ -3859,6 +3903,9 @@ class EntryPanel(QWidget):
             _lv_lo.setToolTip('당일 맥점 · 거리 모델 (08:50 / 09:30)\n\n「어느 가격이 저항인가」가 아니라 「시가에서 얼마나 갈 것인가」로 당일 고·저를 낸다.\n\n  08:50  M1 — 고점 = 08:45 시가 + med(u)×ATR14, 저점 = 시가 − med(d)×ATR14\n               med(u)/med(d) = 직전 60세션 중앙값\n               구간 = 훈련 잔차 25/75(50%) · 10/90(80%) 분위 — 정규분포 가정 없음\n  09:30  P1 — 09:30까지의 경로(gap · 전일범위 · u_T · d_T · ret_T)를 넣은\n               중앙값 회귀(LAD, IRLS 30회). 이미 난 고·저를 **하한**으로 잘라\n               그보다 낮게 예측하지 않는다\n\nR̂ 스케일: 당일 실현 범위 R=(고−저)/시가 를 log 회귀로 예측해 구간 폭을\n  R̂/훈련중앙R 배(하한 0.85 · 상한 2.0)로 조정. 조용한 날 과신·시끄러운 날\n  과소신을 함께 좁힌다. 스케일 전 원구간도 DB에 함께 저장돼 장후에 대조된다.\n\n━━ 검증 (144세션 워크포워드, 2026-01-05~09-04) ━━\n  08:50  MAE 14.2pt · 50% 구간 47% · 80% 구간 78% (R̂ 적용 83%)\n  09:30  MAE 11.0pt · 50% 구간 44% · 80% 구간 74% (R̂ 적용 81%)\n  대조군 — 전일 고·저 그대로 MAE 30.9pt / 시가±전일범위÷2 15.3pt\n  ⇒ 전일 고·저를 목표가로 쓰면 오차가 두 배다\n\n  변동성 분위별 08:50 오차: 낮음 9.6pt / 중간 13.5pt / 높음 20.5pt\n  → 신뢰도가 시장 상태에 따라 두 배 차이 난다\n\n🔴 관측·기록 전용이다 — 진입·청산·사이징 어디에도 연결돼 있지 않다.\n   (반사실 검증: 예측 고점 부근 LONG 자제 규칙은 손익을 −2.6M~−5.7M원 악화시켰다)\n「미산출」은 훈련 세션 30 미만이거나 08:45 시가가 결손된 경우다 — 지어내지 않는다.')
             left_lay.addWidget(_lv_lo)
             self._levels_dist_labels[_lv_stage] = (_lv_meta, _lv_hi, _lv_lo)
+        # 수동 행은 아직 눌리지 않은 상태다 — "미산출"이 아니라 "안 눌렀다"이므로
+        # 정시 행과 같은 문구를 쓰지 않는다(계측 4원칙 ②를 화면 층에서도 지킨다).
+        self._levels_dist_labels["MANUAL"][0].setText("버튼을 누른 시각 기준으로 산출")
 
         left_lay.addStretch()
         split_lay.addWidget(left_w, 5)
@@ -3982,7 +4029,8 @@ class EntryPanel(QWidget):
         _sv_head.addWidget(_sv_cap, 1)
         right_lay.addLayout(_sv_head)
         self._levels_struct_labels = {}
-        for _sv_stage, _sv_due in (("0850", "08:50"), ("0930", "09:30")):
+        for _sv_stage, _sv_due in (("0850", "08:50"), ("0930", "09:30"),
+                                   ("MANUAL", "수동")):
             _sv_row = QHBoxLayout()
             _sv_row.setSpacing(4)
             _sv_nl = mk_label(_sv_due, C['text2'], 10, True)
@@ -4105,6 +4153,91 @@ class EntryPanel(QWidget):
                 _dn_col = C['green'] if st.get("down") else C['text2']
                 up_l.setStyleSheet(f"color:{_up_col};font-size:{S.f(10)}px;")
                 dn_l.setStyleSheet(f"color:{_dn_col};font-size:{S.f(10)}px;")
+
+    def _on_manual_levels_clicked(self):
+        """[MW0601 542차 이식] 수동 산출 버튼 — 「산출 중」을 먼저 그리고 요청만 낸다.
+
+        실제 산출은 main.py 핸들러가 하고 `update_manual_levels()` 로 돌아온다.
+        버튼을 잠그지 않는다 — 산출이 60~70ms 라 잠금이 화면에 보이지도 않고,
+        중복 클릭은 관측 한 건이 더 남을 뿐이다(굳히기 대상이 아니다).
+        ⚠ 핸들러는 실패해도 반드시 `update_manual_levels()` 를 불러야 한다.
+          안 부르면 화면이 「산출 중…」에 영구히 멈춰 실패가 숨는다.
+        """
+        self.update_manual_levels(None)
+        self.sig_manual_levels_requested.emit()
+
+    def update_manual_levels(self, row) -> None:
+        """[MW0601 542차 이식] 수동 산출 결과 — 거리(좌)·구조(우) 「수동」 행만 갱신.
+
+        row: `levels_store.compute_manual()` 반환 dict. None = 클릭 직후(산출 중).
+        ⚠ 08:50/09:30 행은 건드리지 않는다 — 그쪽은 굳힌 값이고 이쪽은 매번 새
+          관측이다. 두 성격을 한 행에 섞으면 화면이 굳히기 규약을 부정하게 된다.
+        구조 빈 쪽 표기는 정시 행과 **같은 어휘**(「——」)를 쓰고, 왜 비었는지는
+        `warnings`(구조 후보 0개 · R̂ 절단 · 외삽)로 툴팁에 붙인다.
+        """
+        meta, hi_l, lo_l = self._levels_dist_labels.get("MANUAL", (None, None, None))
+        up_l, dn_l = self._levels_struct_labels.get("MANUAL", (None, None))
+        if meta is None:
+            return
+        if row is None:
+            meta.setText("산출 중…")
+            meta.setStyleSheet(f"color:{C['cyan']};font-size:{S.f(9)}px;")
+            return
+
+        _t = (row.get("computed_at") or "")[:8]
+        dist = row.get("distance")
+        _wr = row.get("warnings") or []
+        _tip = ["수동 산출 %s" % _t,
+                "컷 %s · 모델 %s · 봉 %s(%s) · 훈련 %s세션"
+                % (row.get("at") or "—", row.get("model") or "—", row.get("bars"),
+                   row.get("bars_source") or "—", row.get("train_n"))]
+        if dist and dist.get("so_far_high") is not None:
+            _tip.append("현재까지 실현 고 %.2f / 저 %.2f — 점추정이 여기에 붙으면"
+                        " 회귀 예측이 하한 아래였다는 뜻이다(정상)"
+                        % (dist["so_far_high"], dist["so_far_low"]))
+        if _wr:
+            _tip.append("주의: " + " / ".join(_wr))
+        _tip_txt = "\n".join(_tip)
+
+        if dist:
+            _sc = (" · R\u0302\u00d7%.2f" % dist["scale"]) if dist.get("scale") else ""
+            meta.setText("%s · 컷 %s · %s · ATR %.1f%s"
+                         % (_t, row.get("at") or "—", row.get("model") or "—",
+                            row.get("atr") or 0.0, _sc))
+            meta.setStyleSheet(f"color:{C['cyan']};font-size:{S.f(9)}px;")
+            hi_l.setText("고 %.1f   %s   %s"
+                         % (dist["high"], _band_txt("50%", dist.get("high50")),
+                            _band_txt("80%", dist.get("high80"))))
+            lo_l.setText("저 %.1f   %s   %s"
+                         % (dist["low"], _band_txt("50%", dist.get("low50")),
+                            _band_txt("80%", dist.get("low80"))))
+            hi_l.setStyleSheet(f"color:{C['red']};font-size:{S.f(10)}px;font-weight:bold;")
+            lo_l.setStyleSheet(f"color:{C['green']};font-size:{S.f(10)}px;font-weight:bold;")
+        else:
+            # 값이 없으면 **사유**를 쓴다 — "——" 로 두면 안 눌린 것과 구분되지 않는다.
+            meta.setText("%s · %s" % (_t, row.get("note") or row.get("distance_note")
+                                      or "거리 미산출"))
+            meta.setStyleSheet(f"color:{C['orange']};font-size:{S.f(9)}px;")
+            for _l in (hi_l, lo_l):
+                _l.setText("고 \u2014\u2014" if _l is hi_l else "저 \u2014\u2014")
+                _l.setStyleSheet(f"color:{C['text2']};font-size:{S.f(10)}px;")
+        for _l in (meta, hi_l, lo_l):
+            _l.setToolTip(_tip_txt)
+
+        if up_l is not None:
+            st = row.get("structure") or {}
+
+            def _fmt(items):
+                return "  ".join("%d(%d)" % (k, len(v)) for k, v in items) \
+                    if items else "\u2014\u2014"
+            up_l.setText("\u25b2 " + _fmt(st.get("up")))
+            dn_l.setText("\u25bc " + _fmt(st.get("down")))
+            _up_col = C['red'] if st.get("up") else C['text2']
+            _dn_col = C['green'] if st.get("down") else C['text2']
+            up_l.setStyleSheet(f"color:{_up_col};font-size:{S.f(10)}px;")
+            dn_l.setStyleSheet(f"color:{_dn_col};font-size:{S.f(10)}px;")
+            for _l in (up_l, dn_l):
+                _l.setToolTip(_tip_txt)
 
     def update_stats(self, trades: int, wins: int, pnl_pts: float):
         """당일 진입 통계 라벨 갱신"""
@@ -10937,6 +11070,7 @@ class DashboardAdapter:
         self.sig_reverse_entry_toggled    = self._win.entry_panel.sig_reverse_entry_toggled
         self.sig_manual_entry_requested   = self._win.entry_panel.sig_manual_entry_requested
         self.sig_instant_exit_requested   = self._win.entry_panel.sig_instant_exit_requested
+        self.sig_manual_levels_requested  = self._win.entry_panel.sig_manual_levels_requested
         self.sig_auto_mode_changed        = self._win.entry_panel.sig_auto_mode_changed
         self.sig_tp1_protect_mode_changed = self._win.exit_panel.sig_tp1_protect_mode_changed
         self.sig_manual_exit_requested    = self._win.exit_panel.sig_manual_exit_requested
@@ -11501,6 +11635,13 @@ class DashboardAdapter:
     def update_premarket_levels(self, stages: dict) -> None:
         """[MW0601 534차] 당일 맥점(거리·구조) 패널 갱신 — 관측 전용."""
         self._win.entry_panel.update_premarket_levels(stages)
+
+    def update_manual_levels(self, row) -> None:
+        """[MW0601 542차 이식] 수동 맥점 산출 결과 갱신 — 관측 전용.
+
+        row=None 이면 「산출 중…」. 정시 두 행은 건드리지 않는다.
+        """
+        self._win.entry_panel.update_manual_levels(row)
 
     def update_entry_stats(self, trades: int, wins: int, pnl_pts: float):
         """당일 진입 통계 갱신"""
