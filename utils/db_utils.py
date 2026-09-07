@@ -3962,9 +3962,37 @@ def init_premarket_levels_db():
             bars        INTEGER,
             note        TEXT,
             warnings    TEXT,
+            -- ── [MW0601 534차 후속] 2026-09-07 08:50 점검에서 나온 계측 결손 5건 ──
+            -- F-2: 당일 봉을 **어디서** 읽었는가. 'buffer' | 'db_fallback(...)'.
+            --      개수(bars)만으로는 두 경로가 구분되지 않아, 폴백 상시화가
+            --      아무도 모르게 진행될 수 있었다(계측 4원칙 ④).
+            bars_source TEXT,
+            -- F-1: 선택 단계의 탈락 진단. 「상방 없음」이 수집 실패인지 갭 때문인지
+            --      결과만 보고는 구분할 수 없다(계측 4원칙 ③).
+            cand_total  INTEGER, cand_above INTEGER, cand_below INTEGER,
+            struct_note TEXT,
+            -- F-4: R̂ 산출의 입력·중간값 JSON. 값 하나만 남기면 왜 그 값이 나왔는지
+            --      사후 재구성이 안 된다(2026-09-07: raw 0.390 → 하한 0.85 로 clip).
+            rhat_trace  TEXT,
+            -- F-5: 기준가 O 의 출처와 구독 지연. 거리 모델 전체가 O 하나에 걸려
+            --      있는데 08:45 구독이 개장 후 몇 초 뒤였는지 미기록이었다.
+            open_bar_ts TEXT,
+            subscribe_lag_sec REAL,
             PRIMARY KEY (date, stage)
         )
     """)
+    # 기존 DB 마이그레이션 — 없으면 추가, 있으면 무시(멱등).
+    # ⚠ 장중에 실행되면 라이브 프로세스의 INSERT 와 겹칠 수 있으나, 저장 SQL 이
+    #   컬럼을 명시 나열하므로 추가 컬럼은 NULL 이 될 뿐 실패하지 않는다.
+    for _col, _type in [("bars_source", "TEXT"), ("cand_total", "INTEGER"),
+                        ("cand_above", "INTEGER"), ("cand_below", "INTEGER"),
+                        ("struct_note", "TEXT"), ("rhat_trace", "TEXT"),
+                        ("open_bar_ts", "TEXT"), ("subscribe_lag_sec", "REAL")]:
+        try:
+            execute(PREMARKET_LEVELS_DB,
+                    "ALTER TABLE premarket_levels ADD COLUMN %s %s" % (_col, _type))
+        except sqlite3.OperationalError:
+            pass    # duplicate column name — 이미 있다
     execute(PREMARKET_LEVELS_DB, """
         CREATE TABLE IF NOT EXISTS premarket_levels_score (
             date TEXT NOT NULL, stage TEXT NOT NULL,
@@ -3989,7 +4017,9 @@ def _pml_band(d, key):
 
 def save_premarket_levels(date_str: str, stage: str, computed_at: str,
                           out: Optional[dict], note: Optional[str] = None,
-                          warnings: Optional[list] = None, bars: int = 0) -> bool:
+                          warnings: Optional[list] = None, bars: int = 0,
+                          bars_source: Optional[str] = None,
+                          extra: Optional[dict] = None) -> bool:
     """단계 1행 저장. **INSERT OR IGNORE** — 이미 굳힌 행은 건드리지 않는다.
 
     반환: 새로 굳혔으면 True, 이미 있어서 무시했으면 False.
@@ -4005,6 +4035,8 @@ def save_premarket_levels(date_str: str, stage: str, computed_at: str,
     l80 = _pml_band(dist, "low80")
     r_h80 = _pml_band(raw, "high80")
     r_l80 = _pml_band(raw, "low80")
+    _diag = (struct or {}).get("diag") or {}
+    _extra = extra or {}
     with _lock:
         with get_conn(PREMARKET_LEVELS_DB) as conn:
             cur = conn.execute(
@@ -4014,8 +4046,11 @@ def save_premarket_levels(date_str: str, stage: str, computed_at: str,
                     low50_lo, low50_hi, low80_lo, low80_hi,
                     raw80_hi_lo, raw80_hi_hi, raw80_lo_lo, raw80_lo_hi, rhat_scale,
                     sofar_high, sofar_low, train_n, struct_up, struct_down,
-                    bars, note, warnings)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    bars, note, warnings,
+                    bars_source, cand_total, cand_above, cand_below, struct_note,
+                    rhat_trace, open_bar_ts, subscribe_lag_sec)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                           ?,?,?,?,?,?,?,?)""",
                 (date_str, stage, computed_at,
                  (out or {}).get("ref"), (out or {}).get("open"), (out or {}).get("atr"),
                  (dist or {}).get("high"), (dist or {}).get("low"),
@@ -4027,7 +4062,14 @@ def save_premarket_levels(date_str: str, stage: str, computed_at: str,
                  json.dumps(struct.get("down"), ensure_ascii=False) if struct else None,
                  bars or (out or {}).get("bars"), note,
                  json.dumps(warnings or (out or {}).get("warnings") or [],
-                            ensure_ascii=False)),
+                            ensure_ascii=False),
+                 bars_source,
+                 _diag.get("total"), _diag.get("above"), _diag.get("below"),
+                 (struct or {}).get("note"),
+                 json.dumps((dist or {}).get("rhat_trace"), ensure_ascii=False)
+                 if (dist or {}).get("rhat_trace") else None,
+                 (out or {}).get("open_bar_ts"),
+                 _extra.get("subscribe_lag_sec")),
             )
             return cur.rowcount > 0
 
@@ -4055,11 +4097,22 @@ def _row_to_premarket_levels(r) -> dict:
         raw_h = band("raw80_hi_lo", "raw80_hi_hi")
         raw_l = band("raw80_lo_lo", "raw80_lo_hi")
         dist["raw"] = dict(high80=raw_h, low80=raw_l) if raw_h and raw_l else None
+    keys = r.keys()
     return dict(date=r["date"], stage=r["stage"], computed_at=r["computed_at"],
                 ref=r["ref_price"], open=r["open_price"], atr=r["atr14"],
                 distance=dist, train_n=r["train_n"], bars=r["bars"], note=r["note"],
+                bars_source=(r["bars_source"] if "bars_source" in keys else None),
+                open_bar_ts=(r["open_bar_ts"] if "open_bar_ts" in keys else None),
+                subscribe_lag_sec=(r["subscribe_lag_sec"]
+                                   if "subscribe_lag_sec" in keys else None),
+                rhat_trace=(jload("rhat_trace") if "rhat_trace" in keys else None),
                 structure=dict(up=jload("struct_up") or [],
-                               down=jload("struct_down") or []),
+                               down=jload("struct_down") or [],
+                               note=(r["struct_note"] if "struct_note" in keys else None),
+                               diag=(dict(total=r["cand_total"], above=r["cand_above"],
+                                          below=r["cand_below"])
+                                     if "cand_total" in keys
+                                     and r["cand_total"] is not None else None)),
                 warnings=jload("warnings") or [])
 
 

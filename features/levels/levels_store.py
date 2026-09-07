@@ -311,9 +311,15 @@ def compute_stage(stage, target_date, today_bars, params):
         return dict(out=None, note="산출 실패: %s" % e, bars=len(bars))
     out["date"] = target_date
     out["bars"] = len(bars)
+    out["open_bar_ts"] = bars[0].t
     out["train_n"] = (params.get("p1") or {}).get("n") if stage == "0850" \
         else (params.get("p2") or {}).get("n")
     out["warnings"] = list(params.get("warnings") or [])
+    # [534차 후속 F-1/F-3] 한쪽이 빈 이유를 경고로 올린다 — 「상방 없음」이
+    # 수집 실패인지 갭 때문인지 결과만 보고는 구분할 수 없다(계측 4원칙 ③).
+    _sn = (out.get("structure") or {}).get("note")
+    if _sn:
+        out["warnings"].append(_sn)
     return dict(out=out, note=None, bars=len(bars))
 
 
@@ -336,8 +342,11 @@ def format_structure(struct):
     # type: (dict) -> str
     def side(items):
         return " ".join("%d(%d)" % (k, len(v)) for k, v in items) if items else "없음"
-    return ("구조 상방 %s | 하방 %s  ※참고용 — 검증상 무작위와 구분 안 됨"
-            % (side(struct["up"]), side(struct["down"])))
+    _d = struct.get("diag") or {}
+    _cnt = (" [후보 %d개 · 위 %d / 아래 %d]"
+            % (_d["total"], _d["above"], _d["below"])) if _d else ""
+    return ("구조 상방 %s | 하방 %s%s  ※참고용 — 검증상 무작위와 구분 안 됨"
+            % (side(struct["up"]), side(struct["down"]), _cnt))
 
 
 def format_log_lines(out):
@@ -352,8 +361,9 @@ def format_log_lines(out):
 
 # ---------------------------------------------------------------- 오케스트레이션
 
-def ensure_stage(stage, now=None, today_candles=None, db_path=None, cache_path=None):
-    # type: (str, Optional[datetime.datetime], Optional[Sequence[dict]], Optional[str], Optional[str]) -> Optional[dict]
+def ensure_stage(stage, now=None, today_candles=None, db_path=None, cache_path=None,
+                 extra=None):
+    # type: (str, Optional[datetime.datetime], Optional[Sequence[dict]], Optional[str], Optional[str], Optional[dict]) -> Optional[dict]
     """때가 됐고 아직 안 굳혔으면 단계를 산출해 DB에 굳히고, **DB에서 되읽어** 돌려준다.
 
     today_candles: main.py 메모리 버퍼(candle dict 리스트). 없거나 부족하면 당일 봉을
@@ -370,10 +380,19 @@ def ensure_stage(stage, now=None, today_candles=None, db_path=None, cache_path=N
     if existing:
         return existing   # 굳히기 — 다시 계산하지 않는다
 
+    # [MW0601 534차 후속 F-2] **어느 원천을 썼는지 남긴다**(계측 4원칙 ④).
+    # 메모리 버퍼가 비면 조용히 DB 폴백으로 도는데, 그게 상시화되면 「장중 DB를
+    # 읽지 않는다」는 이 모듈의 설계 전제가 아무도 모르게 무너진다. `bars` 개수만
+    # 봐서는 두 경로를 구분할 수 없다 — 2026-09-06 datetime 함정이 그 침묵 때문에
+    # 위험했다(버퍼가 항상 비는데 화면은 정상으로 보였을 것).
     cut = STAGE_CUT[stage]
     bars = bars_from_candles(today_candles, until=cut)
+    buf_n = len(bars)
+    bars_source = "buffer"
     if not bars or bars[0].t > "08:50":
         bars = load_today_bars(date_str, until=cut, db_path=db_path)
+        bars_source = ("db_fallback(버퍼 0봉)" if buf_n == 0
+                       else "db_fallback(버퍼 %d봉 첫봉부적합)" % buf_n)
 
     summaries, bars_by_day = history_from_cache(cache_path)
     params = prepare_params(summaries, bars_by_day, date_str)
@@ -381,13 +400,17 @@ def ensure_stage(stage, now=None, today_candles=None, db_path=None, cache_path=N
     if params is None:
         db_utils.save_premarket_levels(
             date_str, stage, computed_at, None,
-            note="이력 캐시 없음 — EOD refresh_history_cache() 미실행", bars=len(bars))
+            note="이력 캐시 없음 — EOD refresh_history_cache() 미실행", bars=len(bars),
+            bars_source=bars_source)
         return db_utils.fetch_premarket_levels(date_str).get(stage)
 
     res = compute_stage(stage, date_str, bars, params)
     db_utils.save_premarket_levels(date_str, stage, computed_at, res["out"],
-                                   note=res["note"], warnings=params.get("warnings"),
-                                   bars=res["bars"])
+                                   note=res["note"],
+                                   warnings=(res["out"] or {}).get("warnings")
+                                   or params.get("warnings"),
+                                   bars=res["bars"], bars_source=bars_source,
+                                   extra=extra)
     return db_utils.fetch_premarket_levels(date_str).get(stage)
 
 

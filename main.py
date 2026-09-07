@@ -634,6 +634,9 @@ class TradingSystem:
         # 세션 중간 재기동으로 비어 있으면 levels_store 가 당일 PK 범위 조회로
         # 폴백한다(전수 스캔 아님 — CLAUDE.md 2026-08-10 CB⑤ 전례).
         self._levels_day_bars: list = []
+        # [534차 후속 F-5] 실시간 구독이 실제로 붙은 시각. **None 이 초기값이다** —
+        # 0 으로 두면 "구독 지연 0초"와 "미측정"이 같아 보인다(계측 4원칙 ②·④).
+        self._rt_subscribe_at = None
         # [MW0601 493차 / F-5] 브로커 실측 당일 net(익일가예탁현금 − 예탁현금).
         # 잔고 push(FLAT일 때)가 채운다. **None이 초기값이다** — 0으로 두면
         # "아직 안 받았다"와 "브로커가 0원이라 한다"가 구분되지 않는다
@@ -5042,8 +5045,19 @@ class TradingSystem:
         except Exception as _lv_ie:
             log_manager.system(f"[LEVELS] 모듈 로드 실패 (무해): {_lv_ie}", "WARNING")
             return
+        # [534차 후속 F-5] 구독 지연(초) — 08:45:00 기준. 미측정이면 None 그대로.
+        _lag = None
+        if self._rt_subscribe_at is not None:
+            try:
+                _lag = round(max(0.0, (self._rt_subscribe_at
+                                       - self._rt_subscribe_at.replace(
+                                           hour=8, minute=45, second=0,
+                                           microsecond=0)).total_seconds()), 1)
+            except Exception:
+                _lag = None
         try:
-            row = _LS.ensure_stage(stage, today_candles=self._levels_day_bars)
+            row = _LS.ensure_stage(stage, today_candles=self._levels_day_bars,
+                                   extra=dict(subscribe_lag_sec=_lag))
         except Exception as _lv_e:
             logger.warning("[LEVELS] %s 산출 실패: %s", stage, _lv_e, exc_info=True)
             log_manager.system(f"[LEVELS] {stage} 산출 실패 (무해): {_lv_e}", "WARNING")
@@ -5057,6 +5071,14 @@ class TradingSystem:
             else:
                 for _line in _LS.format_log_lines(row):
                     log_manager.system(_line, "INFO")
+                # F-2: 당일 봉을 어디서 읽었는지. db_fallback 이 매일 찍히면
+                # 메모리 버퍼가 죽은 것이다 — 그때 설계 전제가 무너진다.
+                log_manager.system(
+                    f"[LEVELS {stage[:2]}:{stage[2:]}] 봉원천={row.get('bars_source')}"
+                    f" {row.get('bars')}봉 · 기준봉={row.get('open_bar_ts')}"
+                    f" · 구독지연={row.get('subscribe_lag_sec')}s",
+                    "WARNING" if str(row.get("bars_source") or "").startswith("db_")
+                    else "INFO")
                 if row.get("warnings"):
                     log_manager.system(
                         f"[LEVELS {stage[:2]}:{stage[2:]}] 주의 — "
@@ -14465,8 +14487,19 @@ class TradingSystem:
                     _rd_ew = getattr(self, "realtime_data", None)
                     if _rd_ew is not None and not getattr(_rd_ew, "_running", False):
                         _rd_ew.start(load_history=True)
+                        # [MW0601 534차 후속 F-5] 구독 시각을 남긴다 — 거리 모델은
+                        # 08:45 봉의 open(=기준가 O) 하나에 고·저 예측 전부를 건다.
+                        # 구독이 개장(08:45:00) 뒤에 붙으면 그 사이 체결을 놓쳐 O 가
+                        # 밀리는데(533차 기록), 몇 초 늦었는지가 어디에도 안 남아
+                        # 사후에 O 오차를 재구성할 수 없었다.
+                        self._rt_subscribe_at = datetime.datetime.now()
                         log_manager.system(
-                            "[EarlyWarmup] Cybos RT 08:45 선행 구독 시작 (프리장 봉 15봉 확보)",
+                            "[EarlyWarmup] Cybos RT 08:45 선행 구독 시작 (프리장 봉 15봉 확보)"
+                            " — 개장 대비 +%.1fs"
+                            % max(0.0, (self._rt_subscribe_at
+                                        - self._rt_subscribe_at.replace(
+                                            hour=8, minute=45, second=0,
+                                            microsecond=0)).total_seconds()),
                             "INFO",
                         )
             except Exception as _ea_e:

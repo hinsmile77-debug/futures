@@ -4168,16 +4168,39 @@ class EntryPanel(QWidget):
             up_l, dn_l = self._levels_struct_labels.get(_st, (None, None))
             if up_l is not None:
                 st = row.get("structure") or {}
+                _dg = st.get("diag") or {}
 
-                def _fmt(items):
-                    return "  ".join("%d(%d)" % (k, len(v)) for k, v in items) \
-                        if items else "——"
-                up_l.setText("\u25b2 " + _fmt(st.get("up")))
-                dn_l.setText("\u25bc " + _fmt(st.get("down")))
-                _up_col = C['red'] if st.get("up") else C['text2']
-                _dn_col = C['green'] if st.get("down") else C['text2']
+                def _fmt(items, side):
+                    """[MW0601 534차 후속 F-1] 빈 쪽은 **왜 비었는지**를 쓴다.
+
+                    「——」로만 두면 *구조 후보 수집 실패*와 *갭으로 후보가 전부
+                    반대쪽에 깔린 것*이 화면에서 구분되지 않는다 — 2026-09-07
+                    08:50 이 실제로 그랬다(갭업 +34.2pt, 후보 10개 전원이 기준가
+                    아래, 최고 후보 1077 = −11.3pt). 계측 4원칙 ③(탈락 가시화).
+                    """
+                    if items:
+                        return "  ".join("%d(%d)" % (k, len(v)) for k, v in items)
+                    if not _dg:
+                        return "——"          # 진단 없는 구세대 행
+                    if not _dg.get("total"):
+                        return "없음 (후보 0개 — 이력 봉 부족)"
+                    _other = _dg.get("below") if side == "up" else _dg.get("above")
+                    if _other:
+                        return ("없음 (후보 %d개 전부 %s)"
+                                % (_dg["total"],
+                                   "기준가 아래" if side == "up" else "기준가 위"))
+                    return "없음"
+                up_l.setText("\u25b2 " + _fmt(st.get("up"), "up"))
+                dn_l.setText("\u25bc " + _fmt(st.get("down"), "down"))
+                # 빈 쪽은 회색이 아니라 주황 — "값이 없다"가 아니라 "볼 것이 있다".
+                _up_col = C['red'] if st.get("up") else (C['orange'] if _dg else C['text2'])
+                _dn_col = C['green'] if st.get("down") else (C['orange'] if _dg else C['text2'])
                 up_l.setStyleSheet(f"color:{_up_col};font-size:{S.f(10)}px;")
                 dn_l.setStyleSheet(f"color:{_dn_col};font-size:{S.f(10)}px;")
+                _note = st.get("note")
+                if _note:
+                    up_l.setToolTip(_note)
+                    dn_l.setToolTip(_note)
 
     def update_stats(self, trades: int, wins: int, pnl_pts: float):
         """당일 진입 통계 라벨 갱신"""

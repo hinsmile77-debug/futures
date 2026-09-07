@@ -259,6 +259,29 @@ def rhat_scale(params, x):
     return min(RHAT_CAP, max(RHAT_FLOOR, r / params["med_r"]))
 
 
+def rhat_trace(params, x):
+    # type: (Optional[dict], Optional[List[float]]) -> Optional[dict]
+    """[MW0601 534차 후속 F-4] R̂ 산출의 **입력과 중간값**.
+
+    스케일 값 하나만 남기면 「왜 그 값이 나왔는가」를 사후에 재구성할 수 없다.
+    2026-09-07 이 그 사례다 — 갭 0.83 ATR 인 날 R̂ 이 **하한 0.85** 에 붙어 구간을
+    좁혔는데(직관과 반대), 입력이 없어 회귀 탓인지 med_r 탓인지 가릴 수 없었다.
+
+    ⚠ **판정에 쓰지 않는다** — 하루 표본으로 파라미터를 바꾸지 않는다(313차).
+      60일 누적 뒤 §5 채택 재판정의 원료다.
+    반환: x(입력 벡터) · raw(clip 전 R̂/med_r) · clipped(적용값) · floor_hit/cap_hit.
+    """
+    if not params or x is None or len(x) != len(params["beta"]):
+        return None
+    r = math.exp(float(np.array(x) @ np.array(params["beta"])))
+    raw = r / params["med_r"]
+    clipped = min(RHAT_CAP, max(RHAT_FLOOR, raw))
+    return dict(x=[round(float(v), 6) for v in x], r_hat=round(r, 6),
+                med_r=round(float(params["med_r"]), 6), raw=round(raw, 6),
+                clipped=round(clipped, 6), n=params.get("n"),
+                floor_hit=bool(raw < RHAT_FLOOR), cap_hit=bool(raw > RHAT_CAP))
+
+
 def _band(ref, atr, center, q, sign, scale=1.0):
     lo = ref + sign * (center + q[0] * scale) * atr
     hi = ref + sign * (center + q[1] * scale) * atr
@@ -396,6 +419,52 @@ def select_nearest(merged, ref, n=3):
     return ups, dns
 
 
+def structure_diagnostics(merged, ref):
+    # type: (Dict[int, List[str]], float) -> dict
+    """[MW0601 534차 후속 F-1] 선택 단계의 **탈락 진단**.
+
+    🔴 「상방 없음」이 *수집 실패*인지 *갭으로 전부 아래에 깔린 것*인지, 결과만
+    보고는 구분할 수 없다 — 실제로 2026-09-07 08:50 이 그랬다(갭업 +34.24pt,
+    후보 10개 **전원**이 기준가 아래, 최고 후보 1077 = −11.26pt).
+    필터는 제외 개수와 사유를 남긴다(계측 4원칙 ③).
+
+    반환: total(후보 총수) · above/below(기준가 위·아래 개수) ·
+         top/bottom(후보 최고·최저 레벨) · gap_above/gap_below(기준가에서
+         가장 가까운 후보까지 pt, 없으면 None).
+    """
+    keys = sorted(merged)
+    above = [k for k in keys if k > ref + 1]
+    below = [k for k in keys if k < ref - 1]
+    return dict(
+        total=len(keys), above=len(above), below=len(below),
+        top=(keys[-1] if keys else None), bottom=(keys[0] if keys else None),
+        gap_above=((above[0] - ref) if above else None),
+        gap_below=((ref - below[-1]) if below else None),
+    )
+
+
+def structure_note(diag, ref):
+    # type: (dict, float) -> Optional[str]
+    """한쪽이 비었을 때 **왜 비었는지** 한 줄. 정상이면 None.
+
+    ⚠ 이 문구가 있다고 결함이 아니다 — 갭이 크면 한쪽이 비는 것이 설계상 정상이다
+    (구조 후보는 전일까지 %d세션에서만 뽑는다). 그 사실을 남기지 않으면 다음 점검이
+    정상을 고장으로 오판한다.
+    """ % LOOKBACK
+    if diag["total"] == 0:
+        return "구조 후보 0개 — 이력 봉 부족(수집 결손 의심)"
+    parts = []
+    if diag["above"] == 0:
+        parts.append("상방 없음(후보 %d개 전부 기준가 아래 · 최고 %s, %+.1fpt)"
+                     % (diag["total"], diag["top"], (diag["top"] - ref)))
+    if diag["below"] == 0:
+        parts.append("하방 없음(후보 %d개 전부 기준가 위 · 최저 %s, %+.1fpt)"
+                     % (diag["total"], diag["bottom"], (diag["bottom"] - ref)))
+    if not parts:
+        return None
+    return " / ".join(parts) + " — 기준가가 이력 %d세션 후보 분포 밖이다(갭 큰 날 정상)" % LOOKBACK
+
+
 # ---------------------------------------------------------------- 단계 산출
 
 def compute_stage(stage, today_bars, prev, atr, p1, p2, candidates,
@@ -417,6 +486,7 @@ def compute_stage(stage, today_bars, prev, atr, p1, p2, candidates,
     xf = _x_fixed(today, prev, atr5)
     if stage == "0850":
         ref = o
+        rh_x, rh_params = xf, rhat1
         dist = distance_stage1(p1, o, atr, rhat_scale(rhat1, xf)) if p1 else None
         merged = candidates
     else:
@@ -426,13 +496,19 @@ def compute_stage(stage, today_bars, prev, atr, p1, p2, candidates,
         path = path_at(early, STAGE2_TIME, o, atr)
         ref = early[-1].c
         x2 = (xf + [math.log(max(path[0] + path[1], 1e-3)), abs(path[2])]) if xf else None
+        rh_x, rh_params = x2, rhat2
         dist = (distance_stage2(p2, o, atr, o - prev.c, prev.h - prev.l, path,
                                 rhat_scale(rhat2, x2)) if p2 else None)
         merged = with_opening_range(candidates, early, STAGE2_TIME)
     ups, dns = select_nearest(merged, ref)
+    diag = structure_diagnostics(merged, ref)
+    if dist is not None:
+        # F-4: 스케일 값 옆에 그 값을 만든 입력을 붙인다(판정 아님, 기록).
+        dist["rhat_trace"] = rhat_trace(rh_params, rh_x)
     return dict(stage=stage, ref=ref, open=o, atr=atr, distance=dist,
                 structure=dict(up=[(k, merged[k]) for k in ups],
-                               down=[(k, merged[k]) for k in dns]))
+                               down=[(k, merged[k]) for k in dns],
+                               diag=diag, note=structure_note(diag, ref)))
 
 
 # ---------------------------------------------------------------- 부수

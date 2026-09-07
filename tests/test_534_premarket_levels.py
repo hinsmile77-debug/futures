@@ -354,6 +354,200 @@ def test_roundtrip_db_row_preserves_bands(tmp_path, monkeypatch):
     assert row["structure"]["up"] == [list(x) for x in out["structure"]["up"]]
 
 
+# ──────────────────────────── 534차 후속 (2026-09-07 08:50 점검) F-1~F-5
+
+def test_f1_structure_diagnostics_explains_empty_side():
+    """🔴 F-1 — 「상방 없음」이 **왜** 비었는지 남는다(계측 4원칙 ③).
+
+    2026-09-07 08:50 실측: 갭업 +34.24pt 로 시가가 이력 6세션 후보 분포 위로
+    빠져나가 후보 10개 **전원**이 기준가 아래였다(최고 1077 = −11.26pt).
+    그때 로그·DB·UI 는 전부 「상방 없음」/「▲ ——」만 찍어 *수집 실패*와
+    구분되지 않았다 — 정상을 고장으로 오판하게 만드는 형태다.
+    """
+    merged = {1037: ["a"], 1068: ["b"], 1074: ["c"], 1077: ["d"]}
+    diag = PL.structure_diagnostics(merged, 1088.26)
+    assert diag["total"] == 4 and diag["above"] == 0 and diag["below"] == 4
+    assert diag["top"] == 1077 and diag["gap_above"] is None
+    assert diag["gap_below"] == pytest.approx(11.26)
+    note = PL.structure_note(diag, 1088.26)
+    assert "상방 없음" in note
+    assert "후보 4개 전부 기준가 아래" in note    # 총수는 진단값 그대로
+    assert "1077" in note                        # 최고 후보를 명시한다
+    assert "-11.3pt" in note                     # 기준가에서 얼마나 떨어졌는지도
+
+    # 반대 방향(갭다운)도 같은 방식으로 설명된다
+    diag2 = PL.structure_diagnostics(merged, 1000.0)
+    assert diag2["above"] == 4 and diag2["below"] == 0
+    assert "하방 없음" in PL.structure_note(diag2, 1000.0)
+
+    # 양쪽 다 있으면 사유가 없다 — 정상 상태에 잡음을 만들지 않는다
+    assert PL.structure_note(PL.structure_diagnostics(merged, 1070.0), 1070.0) is None
+
+    # 후보 자체가 없으면 그건 갭이 아니라 이력 결손이다 — 다르게 말한다
+    empty = PL.structure_diagnostics({}, 1000.0)
+    assert "이력 봉 부족" in PL.structure_note(empty, 1000.0)
+
+
+def test_f1_compute_stage_raises_reason_into_warnings():
+    """구조 사유가 warnings 로 올라와 로그·DB 에 함께 남는다."""
+    p = _params()
+    p["candidates"] = {295: ["a"], 290: ["b"]}      # 전부 기준가(300) 아래
+    bars = _bars(300.0, 310.0, 290.0, 305.0, n=10)
+    out = LS.compute_stage("0850", "2026-09-07", bars, p)["out"]
+    assert out["structure"]["up"] == []
+    assert out["structure"]["diag"]["above"] == 0
+    assert any("상방 없음" in w for w in out["warnings"])
+
+
+def test_f2_bars_source_is_recorded(tmp_path, monkeypatch):
+    """🔴 F-2 — 당일 봉을 **어디서** 읽었는지 남는다(계측 4원칙 ④).
+
+    메모리 버퍼가 비면 조용히 DB 폴백으로 도는데, 개수(bars)만으로는 두 경로가
+    구분되지 않았다. 폴백이 상시화되면 「장중 DB 를 읽지 않는다」는 이 모듈의
+    설계 전제가 아무도 모르게 무너진다.
+    """
+    from config import settings
+    from utils import db_utils
+
+    db = str(tmp_path / "src.db")
+    monkeypatch.setattr(db_utils, "PREMARKET_LEVELS_DB", db, raising=False)
+    monkeypatch.setattr(settings, "PREMARKET_LEVELS_DB", db, raising=False)
+    db_utils.init_premarket_levels_db()
+
+    # 이력 캐시·DB 를 타지 않도록 빈 캐시 + 빈 raw DB 를 물린다
+    raw = str(tmp_path / "raw.db")
+    import sqlite3
+    con = sqlite3.connect(raw)
+    con.execute("CREATE TABLE raw_candles (ts TEXT PRIMARY KEY, open REAL, high REAL,"
+                " low REAL, close REAL, volume INTEGER)")
+    con.commit()
+    con.close()
+    cache = str(tmp_path / "hist.json")
+
+    base = datetime.datetime(2026, 9, 7, 8, 45)
+    candles = [dict(ts=base, open=300.0, high=301.0, low=299.0, close=300.5, volume=9)]
+    now = datetime.datetime(2026, 9, 7, 8, 50)
+    row = LS.ensure_stage("0850", now=now, today_candles=candles,
+                          db_path=raw, cache_path=cache)
+    assert row["bars_source"] == "buffer"
+
+    # 버퍼가 비면 폴백이라는 사실이 문자열로 남는다
+    db2 = str(tmp_path / "src2.db")
+    monkeypatch.setattr(db_utils, "PREMARKET_LEVELS_DB", db2, raising=False)
+    db_utils.init_premarket_levels_db()
+    row2 = LS.ensure_stage("0850", now=now, today_candles=[],
+                           db_path=raw, cache_path=cache)
+    assert str(row2["bars_source"]).startswith("db_fallback")
+
+
+def test_f4_rhat_trace_records_inputs_and_clip():
+    """🔴 F-4 — R̂ 이 왜 그 값이 됐는지 재구성 가능해야 한다.
+
+    2026-09-07: 갭 0.83 ATR 인 날 R̂ 원값이 **0.390** 이라 구간을 61% 좁힐 뻔했고
+    하한 0.85 가 그것을 막았다. 값 하나만 저장했으면 회귀 탓인지 med_r 탓인지
+    가릴 수 없었다.
+    ⚠ 기록 전용 — 하루 표본으로 파라미터를 바꾸지 않는다(313차).
+    """
+    import math
+    params = dict(beta=[1.0], med_r=1.0, n=60)
+    t = PL.rhat_trace(params, [math.log(0.01)])
+    assert t["floor_hit"] is True and t["cap_hit"] is False
+    assert t["clipped"] == pytest.approx(PL.RHAT_FLOOR)
+    assert t["raw"] == pytest.approx(0.01, abs=1e-6)
+    assert t["x"] == [pytest.approx(math.log(0.01))]
+    assert t["n"] == 60
+    assert PL.rhat_trace(None, [0.0]) is None
+    assert PL.rhat_trace(params, None) is None
+
+    # compute_stage 산출물에 실려 나온다
+    p = _params()
+    bars = _bars(300.0, 310.0, 290.0, 305.0, n=10)
+    out = LS.compute_stage("0850", "2026-09-07", bars, p)["out"]
+    assert out["distance"]["rhat_trace"] is not None
+    assert "raw" in out["distance"]["rhat_trace"]
+
+
+def test_f5_open_bar_and_subscribe_lag_roundtrip(tmp_path, monkeypatch):
+    """🔴 F-5 — 기준가 O 의 출처(봉)와 구독 지연이 남는다.
+
+    거리 모델은 08:45 봉의 open 하나에 고·저 예측 전부를 건다. 구독이 개장 뒤에
+    붙으면 그 사이 체결을 놓쳐 O 가 밀리는데(2026-09-07 실측 **08:45:07**,
+    +7초), 몇 초 늦었는지가 어디에도 없어 사후 재구성이 불가능했다.
+    ⚠ 미측정은 **None** 이다 — 0 으로 채우면 "지연 0초"와 구분되지 않는다.
+    """
+    from utils import db_utils
+
+    db = str(tmp_path / "lag.db")
+    monkeypatch.setattr(db_utils, "PREMARKET_LEVELS_DB", db, raising=False)
+    db_utils.init_premarket_levels_db()
+    p = _params()
+    bars = _bars(300.0, 310.0, 290.0, 305.0, n=10)
+    out = LS.compute_stage("0850", "2026-09-07", bars, p)["out"]
+    db_utils.save_premarket_levels("2026-09-07", "0850", "08:50:00", out,
+                                   bars_source="buffer",
+                                   extra=dict(subscribe_lag_sec=7.0))
+    row = db_utils.fetch_premarket_levels("2026-09-07")["0850"]
+    assert row["open_bar_ts"] == "08:45"
+    assert row["subscribe_lag_sec"] == pytest.approx(7.0)
+    assert row["bars_source"] == "buffer"
+
+    db_utils.save_premarket_levels("2026-09-08", "0850", "08:50:00", out,
+                                   bars_source="buffer", extra=None)
+    row2 = db_utils.fetch_premarket_levels("2026-09-08")["0850"]
+    assert row2["subscribe_lag_sec"] is None      # 미측정 ≠ 0
+
+
+def test_schema_migration_is_idempotent(tmp_path, monkeypatch):
+    """구세대 DB 에 컬럼을 덧붙이고, 두 번 불러도 안전해야 한다."""
+    import sqlite3
+    from utils import db_utils
+
+    db = str(tmp_path / "old.db")
+    con = sqlite3.connect(db)
+    con.execute("""CREATE TABLE premarket_levels (
+        date TEXT NOT NULL, stage TEXT NOT NULL, computed_at TEXT NOT NULL,
+        ref_price REAL, open_price REAL, atr14 REAL, dist_high REAL, dist_low REAL,
+        high50_lo REAL, high50_hi REAL, high80_lo REAL, high80_hi REAL,
+        low50_lo REAL, low50_hi REAL, low80_lo REAL, low80_hi REAL,
+        raw80_hi_lo REAL, raw80_hi_hi REAL, raw80_lo_lo REAL, raw80_lo_hi REAL,
+        rhat_scale REAL, sofar_high REAL, sofar_low REAL, train_n INTEGER,
+        struct_up TEXT, struct_down TEXT, bars INTEGER, note TEXT, warnings TEXT,
+        PRIMARY KEY (date, stage))""")
+    con.execute("INSERT INTO premarket_levels (date, stage, computed_at) "
+                "VALUES ('2026-09-01','0850','08:50:00')")
+    con.commit()
+    con.close()
+
+    monkeypatch.setattr(db_utils, "PREMARKET_LEVELS_DB", db, raising=False)
+    db_utils.init_premarket_levels_db()
+    db_utils.init_premarket_levels_db()        # 두 번째 호출도 조용히 지나가야 한다
+    row = db_utils.fetch_premarket_levels("2026-09-01")["0850"]
+    assert row["bars_source"] is None          # 구세대 행 = 미측정
+    assert row["structure"]["diag"] is None
+    assert row["rhat_trace"] is None
+
+
+def test_ui_empty_side_shows_reason_not_dashes():
+    """🔴 F-1 화면 층 — 빈 쪽이 「——」가 아니라 사유를 쓴다."""
+    pytest.importorskip("PyQt5")
+    from PyQt5.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    from dashboard.main_dashboard import EntryPanel
+
+    panel = EntryPanel()
+    panel.update_premarket_levels({"0850": dict(
+        distance=None, atr=41.1, note=None,
+        structure=dict(up=[], down=[[1077, ["매물대"]]],
+                       diag=dict(total=10, above=0, below=10),
+                       note="상방 없음(후보 10개 전부 기준가 아래 …)"))})
+    up, dn = panel._levels_struct_labels["0850"]
+    assert "없음" in up.text() and "후보 10개" in up.text()
+    assert "——" not in up.text()
+    assert up.toolTip().startswith("상방 없음")
+    assert "1077" in dn.text()
+    del panel
+
+
 # ────────────────────────────────────────────── ④ 관측 전용 불변식
 
 _DECISION_FILES = [
