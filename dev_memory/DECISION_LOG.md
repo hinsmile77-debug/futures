@@ -3,6 +3,48 @@
 
 ---
 
+## 2026-09-07 (MW0602 536차 — v9-dev 537차 체리픽: py310_64 BLAS 즉사 · 부트스트랩 적용 누락)
+
+원 커밋 `732953d`(v9-dev / MW0601). 체리픽 `49e421b`.
+
+### 왜 가져왔나 — dev 에도 결손이 실재했다
+
+체리픽 **전** 이 브랜치를 실측한 결과 동일 취약점이 그대로 있었다:
+`retrain_intraday.py` 의 `ensure_conda_dll_path` 호출 **0건**, `main.py` 의 py310_64
+`Popen` 에 `env=` **없음**, 26주 WFA 하네스 **L1·L3·L3' 미보호**(L2만 보호).
+즉 MW0602 도 재학습이 BLAS 를 밟는 순간 **stderr 없이 즉사**할 수 있는 상태였다.
+
+### 무엇인가 — 환경 손상이 아니다
+
+conda 활성화 없이 `python.exe` 를 직접 부르면 그 env 의 `Libraryin` 이 PATH 에 없어
+MKL delay-load 가 실패한다(`0xC06D007F`). **패키지는 멀쩡하다** — 맨손 실행 ✗ /
+PATH 보강 ✓ / `conda run` ✓ 로 확인됐다. ⚠ **재설치로 가지 말 것.**
+448차가 `utils/dll_bootstrap.py` 로 이미 고쳐 둔 문제이고, 새 것은 **적용 누락**이다.
+
+지금 사고가 없던 것은 우연이다 — 장중 경량 재학습이 HistGBM/RobustScaler 만 써서
+BLAS 를 안 밟았을 뿐이고, 상관·회귀가 한 줄 들어오면 모델 미교체 → CB③ HALT 로 간다.
+
+### MW0602 쪽 조정 (원 커밋과 다른 점)
+
+- **`CLAUDE.md` 는 BLAS 절만 반영**했다. 원 패치가 문맥으로 끌고 온
+  「장중 라이브 DB 분석 금지」(456차)는 이 브랜치에 없던 절이라 **제외**했다 —
+  배포 범위 밖의 내용을 조용히 들여오지 않기 위해서다. 필요하면 별건으로 판단할 것.
+- **`dev_memory` 는 MW0601 기재분을 옮기지 않았다.** dev 원본을 유지하고 이 항목으로
+  대체한다(533차 체리픽 때의 관례).
+- 🔴 **`scripts/cal_functional_form_study.py` · `scripts/loo_feature_ablation_purged_cv.py`
+  추가 수정.** v9-dev 에 없는 **MW0602 전용** 스크립트인데 같은 결손이 있었고,
+  이번에 들여온 감사기(`scripts/audit_dll_bootstrap.py`)가 잡아냈다. 둘을 열어두면
+  `tests/test_537_dll_bootstrap_coverage.py` 가 이 브랜치에서 실패한다.
+  ⇒ **감사기가 배포 당일 즉시 값을 했다.**
+
+### 검증 (이 브랜치에서 실행)
+
+문법 8파일 OK · `audit_dll_bootstrap.py --fail-on-gap` rc=0 ·
+`tests/test_537_dll_bootstrap_coverage.py` **8 passed**.
+⏳ **V5(다음 장중 재학습)·V6(다음 EOD)은 미확인** — `NEXT_TODO.md` 참조.
+
+---
+
 ## 2026-08-31 (MW0602 505차 — v9-dev 504차 후속 체리픽 · 의존물 결손 발견)
 
 **계기**: 사용자 지시 — *"v9-dev 브렌치 504차 후속 커밋 검토하고 MW0602 미륵이에
