@@ -840,6 +840,8 @@ class TradingSystem:
         self.dashboard.sig_reverse_entry_toggled.connect(self._on_reverse_entry_toggled)
         self.dashboard.sig_manual_entry_requested.connect(self._on_manual_entry_requested)
         self.dashboard.sig_instant_exit_requested.connect(self._on_instant_exit_requested)
+        # [MW0601 542차] 수동 맥점 산출 — 관측 전용(진입·청산·사이징 무관)
+        self.dashboard.sig_manual_levels_requested.connect(self._on_manual_levels_requested)
         self.dashboard.sig_auto_mode_changed.connect(self._on_auto_mode_changed)
         self.dashboard.sig_layer2_gate_toggled.connect(self._on_layer2_gate_ui_toggled)
         self.dashboard.sig_tp1_protect_mode_changed.connect(self._on_tp1_protect_mode_changed)
@@ -5090,11 +5092,54 @@ class TradingSystem:
     def _push_premarket_levels(self) -> None:
         """굳힌 단계 전부를 대시보드로 밀어 넣는다(재기동 복원 경로 겸용)."""
         try:
-            from utils.db_utils import fetch_premarket_levels
-            _stages = fetch_premarket_levels(datetime.datetime.now().strftime("%Y-%m-%d"))
-            self.dashboard.update_premarket_levels(_stages)
+            from utils.db_utils import (fetch_premarket_levels,
+                                        fetch_premarket_levels_manual)
+            _today = datetime.datetime.now().strftime("%Y-%m-%d")
+            self.dashboard.update_premarket_levels(fetch_premarket_levels(_today))
+            # [542차] 오늘 마지막 수동 산출도 되살린다 — 장중 재기동 뒤 화면이
+            # 「아직 안 눌렀다」로 돌아가면 눌렀던 사실 자체가 사라진다.
+            _mrows = fetch_premarket_levels_manual(_today, limit=1)
+            if _mrows:
+                self.dashboard.update_manual_levels(_mrows[0])
         except Exception as _lv_pe:
             logger.debug("[LEVELS] 대시보드 갱신 스킵: %s", _lv_pe)
+
+    def _on_manual_levels_requested(self) -> None:
+        """[MW0601 542차] 수동 맥점 산출 — 대시보드 버튼 → 클릭 시각 기준 재산출.
+
+        🔴 **관측·기록 전용** — 이 메서드는 아무것도 돌려주지 않는다. 결과를 진입·
+           청산·사이징 어디에서도 읽지 않는다(가이드 §11-1).
+        ⚠ 어떤 경로로 끝나든 `update_manual_levels()` 를 부른다 — 안 부르면 화면이
+          「산출 중…」에 멈춰 실패가 조용히 숨는다(계측 4원칙 ④).
+        실측 60~70ms 라 Qt 스레드에서 동기로 돈다. 이력은 EOD 캐시에서 읽으므로
+        장중 DB 전수 스캔이 없다(2026-08-10 CB⑤ 자가유발 전례).
+        """
+        row = None
+        try:
+            from features.levels import levels_store as _LS
+            _t0 = time.time()
+            row = _LS.compute_manual(today_candles=self._levels_day_bars)
+            _ms = (time.time() - _t0) * 1000.0
+            for _line in _LS.format_manual_log_lines(row):
+                log_manager.system(_line, "INFO")
+            log_manager.system(
+                f"[LEVELS 수동] 봉원천={row.get('bars_source')} {row.get('bars')}봉"
+                f" · 기준봉={row.get('open_bar_ts')} · 산출 {_ms:.0f}ms",
+                "WARNING" if str(row.get("bars_source") or "").startswith("db_")
+                else "INFO")
+            if row.get("warnings"):
+                log_manager.system(
+                    f"[LEVELS 수동] 주의 — {' / '.join(row['warnings'])}", "INFO")
+        except Exception as _mv_e:
+            logger.warning("[LEVELS] 수동 산출 실패 (무해): %s", _mv_e, exc_info=True)
+            log_manager.system(f"[LEVELS 수동] 산출 실패 (무해): {_mv_e}", "WARNING")
+            row = dict(stage="MANUAL",
+                       computed_at=datetime.datetime.now().strftime("%H:%M:%S"),
+                       note="산출 실패: %s" % _mv_e)
+        try:
+            self.dashboard.update_manual_levels(row)
+        except Exception:
+            logger.debug("[LEVELS] 수동 결과 대시보드 갱신 스킵", exc_info=True)
 
     def _on_candle_closed(self, candle: dict) -> None:
         """분봉 완성 콜백 — Qt 이벤트 스레드에서 호출됨."""
@@ -5111,7 +5156,7 @@ class TradingSystem:
         # ── [MW0601 534차] 맥점 산출용 당일 봉 버퍼 ────────────────────────
         # `_persist_session_bar` 와 같은 이유로 **모든 분기보다 앞**에 있어야 한다 —
         # 09:30 산출은 08:45 시가를 필요로 하는데 그 봉은 프리장 분기로 빠진다.
-        # 09:30 컷을 넘으면 더 담지 않는다(메모리 상한 겸 굳히기 대상 고정).
+        # [542차] 수동 산출이 임의 시각 컷을 쓰므로 **종일** 담는다(15:40·480봉 상한).
         # ⚠ `candle["ts"]` 는 **datetime 객체**다(realtime_data 가 그렇게 만든다).
         #   문자열로 가정해 슬라이스하면 TypeError 로 조용히 전부 버려진다 —
         #   `db_utils.candle_ts_str()` 과 같은 방식으로 다룬다.
@@ -5119,7 +5164,7 @@ class TradingSystem:
             _lv_ts = candle.get("ts")
             _lv_t = (_lv_ts.strftime("%H:%M") if hasattr(_lv_ts, "strftime")
                      else str(_lv_ts)[11:16])
-            if len(_lv_t) == 5 and _lv_t <= "09:30" and len(self._levels_day_bars) < 60:
+            if len(_lv_t) == 5 and _lv_t <= "15:40" and len(self._levels_day_bars) < 480:
                 self._levels_day_bars.append(dict(candle))
         except Exception:
             pass

@@ -52,6 +52,18 @@ MIN_TRAIN_SESSIONS = 30   # 이보다 적으면 거리 모델을 내지 않는�
 ATR_N = 14
 STAGE2_TIME = "09:30"
 
+# ── [MW0601 542차] 시점 격자 — 수동(임의 시각) 산출용 ─────────────────────
+# 🔴 P1 은 **09:30 경로로 훈련된 모델**이다. 13:00 클릭에 그대로 적용하면 계수도
+#   잔차 분위도 훈련 시점 밖 외삽이 된다 — 그럴듯한 값이 나오지만 근거가 없다.
+#   그래서 EOD 캐시에 세션별 **격자 시각 경로**를 굳혀두고, 클릭 시각을 격자에
+#   스냅해 **그 시각 기준으로 P1 을 재적합**한다. 수식·훈련창·구간 정의는 09:30 과
+#   완전히 같고, 바뀌는 것은 경로를 잰 시각뿐이다.
+# ⚠ 격자를 바꾸면 PATH_GRID_ID 를 함께 바꿀 것 — EOD 가 캐시를 전량 재생성한다.
+PATH_GRID_START = "09:00"
+PATH_GRID_END = "15:05"
+PATH_GRID_STEP_MIN = 5
+PATH_GRID_ID = "0900-1505-5m"
+
 # ── R̂ 스케일링 (가이드 §5 채택) ───────────────────────────────────────────
 # 당일 실현 범위 R=(고−저)/시가 를 log 회귀로 예측해 구간 폭을 R̂/훈련중앙R 배로 조정.
 # 하한 0.85: 폭 +3%/−1% 인데 커버리지 78→83% / 74→81%. 하한 1.0 은 폭 +9~11% 라
@@ -90,6 +102,9 @@ class SessionSummary:
     d_t: Optional[float] = None     # lp_t / ATR14
     ret_t: Optional[float] = None   # cp_t / ATR14
     atr: Optional[float] = None     # 그 세션 기준 ATR14 (전일까지)
+    # [542차] 격자 시각별 경로 {"HHMM": [hp, lp, cp]} — pt 단위(ATR 정규화 전).
+    # 키가 없으면 **미측정**이다(그 시각까지 봉이 없었다) — 0 으로 채우지 않는다.
+    paths: Optional[Dict[str, List[float]]] = None
 
 
 # ---------------------------------------------------------------- 요약·ATR
@@ -104,6 +119,7 @@ def summarize_session(d, bars):
         s.hp_t = max(b.h for b in early) - s.o
         s.lp_t = s.o - min(b.l for b in early)
         s.cp_t = early[-1].c - s.o
+        s.paths = session_paths(bars, s.o)      # [542차] 임의 시각 재적합용
     return s
 
 
@@ -115,6 +131,84 @@ def path_at(bars, at, o, atr):
     return ((max(b.h for b in early) - o) / atr,
             (o - min(b.l for b in early)) / atr,
             (early[-1].c - o) / atr)
+
+
+def path_grid_times():
+    # type: () -> List[str]
+    """["09:00", "09:05", …, "15:05"] — 경로를 굳혀둘 시각."""
+    def _m(hhmm):
+        return int(hhmm[:2]) * 60 + int(hhmm[3:])
+    out = []
+    t = _m(PATH_GRID_START)
+    end = _m(PATH_GRID_END)
+    while t <= end:
+        out.append("%02d:%02d" % (t // 60, t % 60))
+        t += PATH_GRID_STEP_MIN
+    return out
+
+
+def grid_key(hhmm):
+    # type: (str) -> str
+    return hhmm.replace(":", "")
+
+
+def snap_to_grid(hhmm):
+    # type: (str) -> Optional[str]
+    """hhmm 이하의 가장 늦은 격자 시각. 격자 시작(09:00) 전이면 **None**.
+
+    None 은 「시점 조건부 모델이 없다」는 뜻이지 「0」이 아니다 — 호출측은 그때
+    P1 을 억지로 쓰지 말고 M1(시가 기준)만 내야 한다.
+    """
+    ok = [t for t in path_grid_times() if t <= hhmm]
+    return ok[-1] if ok else None
+
+
+def session_paths(bars, o):
+    # type: (Sequence[Bar], float) -> Dict[str, List[float]]
+    """격자 시각별 (hp, lp, cp) pt. 누적 최대·최소라 봉을 한 번만 훑는다.
+
+    · 첫 봉보다 이른 격자 시각은 **키 자체를 만들지 않는다**(미측정 ≠ 0).
+    · 마지막 봉보다 늦은 격자 시각은 세션 종료값으로 채운다 — 그 시각까지 실제로
+      일어난 전부가 그것이다. (봉 300개 미만 세션은 애초에 요약에 들어오지 않는다)
+    """
+    grid = path_grid_times()
+    out = {}     # type: Dict[str, List[float]]
+    gi = 0
+    hi = lo = last = None
+    for b in bars:
+        while gi < len(grid) and b.t > grid[gi]:
+            if last is not None:
+                out[grid_key(grid[gi])] = [round(hi - o, 3), round(o - lo, 3),
+                                           round(last - o, 3)]
+            gi += 1
+        hi = b.h if hi is None else max(hi, b.h)
+        lo = b.l if lo is None else min(lo, b.l)
+        last = b.c
+    while gi < len(grid):
+        if last is not None:
+            out[grid_key(grid[gi])] = [round(hi - o, 3), round(o - lo, 3),
+                                       round(last - o, 3)]
+        gi += 1
+    return out
+
+
+def path_of(s, key=None):
+    # type: (SessionSummary, Optional[str]) -> Optional[Tuple[float, float, float]]
+    """ATR 단위 경로 (u, d, ret). key=None 이면 09:30 확정 경로.
+
+    ⚠ 없으면 **None** 이다 — 0 튜플을 돌려주면 "한 틱도 안 움직인 세션"과 구분이
+      안 되고, 그 세션이 훈련 표본에 섞인다(계측 4원칙 ②).
+    """
+    if key is None:
+        if s.u_t is None:
+            return None
+        return (s.u_t, s.d_t, s.ret_t)
+    if not s.atr or s.atr <= 0:
+        return None
+    p = (s.paths or {}).get(key)
+    if not p:
+        return None
+    return (p[0] / s.atr, p[1] / s.atr, p[2] / s.atr)
 
 
 def atr_of(summaries, upto, n=ATR_N):
@@ -188,7 +282,16 @@ def _x2(gap, r1, u_t, d_t, ret_t):
 
 def fit_stage2(summaries, end):
     # type: (Sequence[SessionSummary], int) -> Optional[dict]
-    """P1: 09:30 경로 회귀. summaries[end-60:end] 중 경로·ATR·전일이 있는 세션으로 맞춘다.
+    """P1(09:30) — `fit_stage2_at` 의 key=None 경로. 동작은 542차 이전과 같다."""
+    return fit_stage2_at(summaries, end, None)
+
+
+def fit_stage2_at(summaries, end, key=None):
+    # type: (Sequence[SessionSummary], int, Optional[str]) -> Optional[dict]
+    """P1: 경로 회귀. summaries[end-60:end] 중 경로·ATR·전일이 있는 세션으로 맞춘다.
+
+    key=None 이면 09:30 확정 경로, 아니면 그 격자 시각의 경로다 — **수식·훈련창·
+    잔차 분위 정의는 완전히 같다.** 바뀌는 것은 경로를 잰 시각뿐이다(542차).
 
     잔차는 **경로 하한 적용 후**로 계산한다 — 그래야 구간이 맞는다(가이드 §2-3).
     """
@@ -196,11 +299,13 @@ def fit_stage2(summaries, end):
     for i in range(max(1, end - TRAIN_SESSIONS), end):
         s = summaries[i]
         p = summaries[i - 1]
-        if s.atr and s.u_t is not None:
+        path = path_of(s, key)
+        if s.atr and path is not None:
+            u_t, d_t, ret_t = path
             gap = (s.o - p.c) / s.atr
             r1 = (p.h - p.l) / s.atr
-            rows.append((_x2(gap, r1, s.u_t, s.d_t, s.ret_t),
-                         (s.h - s.o) / s.atr, (s.o - s.l) / s.atr, s.u_t, s.d_t))
+            rows.append((_x2(gap, r1, u_t, d_t, ret_t),
+                         (s.h - s.o) / s.atr, (s.o - s.l) / s.atr, u_t, d_t))
     if len(rows) < MIN_TRAIN_SESSIONS:
         return None
     X = np.array([r[0] for r in rows])
@@ -228,9 +333,12 @@ def _x_fixed(s, prev, atr5):
             (prev.c - prev.l) / (prev.h - prev.l)]
 
 
-def fit_rhat(summaries, end, with_path):
-    # type: (Sequence[SessionSummary], int, bool) -> Optional[dict]
-    """log R 회귀. with_path=False → 08:50 용(확정분만), True → 09:30 용(+경로 2항)."""
+def fit_rhat(summaries, end, with_path, key=None):
+    # type: (Sequence[SessionSummary], int, bool, Optional[str]) -> Optional[dict]
+    """log R 회귀. with_path=False → 08:50 용(확정분만), True → 경로 2항 포함.
+
+    [542차] key 는 경로를 잰 격자 시각(None = 09:30 확정 경로).
+    """
     rows = []
     for i in range(max(1, end - TRAIN_SESSIONS), end):
         s = summaries[i]
@@ -239,9 +347,10 @@ def fit_rhat(summaries, end, with_path):
         if x is None:
             continue
         if with_path:
-            if s.u_t is None:
+            path = path_of(s, key)
+            if path is None:
                 continue
-            x = x + [math.log(max(s.u_t + s.d_t, 1e-3)), abs(s.ret_t)]
+            x = x + [math.log(max(path[0] + path[1], 1e-3)), abs(path[2])]
         rows.append((x, math.log((s.h - s.l) / s.o)))
     if len(rows) < MIN_TRAIN_SESSIONS:
         return None
@@ -506,6 +615,60 @@ def compute_stage(stage, today_bars, prev, atr, p1, p2, candidates,
         # F-4: 스케일 값 옆에 그 값을 만든 입력을 붙인다(판정 아님, 기록).
         dist["rhat_trace"] = rhat_trace(rh_params, rh_x)
     return dict(stage=stage, ref=ref, open=o, atr=atr, distance=dist,
+                structure=dict(up=[(k, merged[k]) for k in ups],
+                               down=[(k, merged[k]) for k in dns],
+                               diag=diag, note=structure_note(diag, ref)))
+
+
+def compute_manual(at, today_bars, prev, atr, p1, p_at, candidates,
+                   rhat1=None, rhat_at=None, atr5=None):
+    # type: (Optional[str], Sequence[Bar], SessionSummary, float, Optional[dict], Optional[dict], Dict[int, List[str]], Optional[dict], Optional[dict], Optional[float]) -> dict
+    """[MW0601 542차] **임의 시각** 산출 — 수동 버튼 전용.
+
+    `at` 은 `snap_to_grid()` 가 돌려준 격자 컷("HH:MM") 또는 None(격자 시작 전).
+
+      at 있음 — 거리 모델은 **그 시각으로 재적합한 P1**(`p_at`)이다. 예측·구간·
+                R̂ 산출식은 09:30 과 완전히 같고, 이미 난 고·저를 하한으로 자른다.
+      at None — 09:00 이전이라 시점 조건부 모델이 없다. **M1(시가 기준)만** 낸다.
+                🔴 P1 을 훈련 시각 밖에 적용하지 않는다 — 그것이 이 분기의 이유다.
+
+    `p_at` 이 None 이면(격자 경로 표본 부족) **distance=None** 이다 — 지어내지
+    않는다(가이드 §11-4). 구조 모델은 그때도 낸다(이력만 있으면 되므로).
+
+    반환 dict 은 `compute_stage()` 와 같은 모양에 `at`·`model` 두 키가 더 붙는다.
+    🔴 굳히기 대상이 아니다 — 수동 산출은 같은 날 여러 번 눌릴 수 있고, 그때마다
+       입력(경로)이 다르므로 **매번 새 관측**이다. 기록은 append-only 로 남긴다.
+    """
+    if not today_bars:
+        raise ValueError("당일 봉이 없다")
+    if not atr or atr <= 0:
+        raise ValueError("ATR14 가 없다")
+    o = today_bars[0].o
+    cut = at or today_bars[-1].t
+    early = [b for b in today_bars if b.t <= cut]
+    if not early:
+        raise ValueError("%s 까지의 봉이 없다" % cut)
+    ref = early[-1].c
+    today = SessionSummary(d="", o=o, h=o, l=o, c=o, atr=atr)
+    xf = _x_fixed(today, prev, atr5)
+    if at is None:
+        dist = distance_stage1(p1, o, atr, rhat_scale(rhat1, xf)) if p1 else None
+        model = "M1"
+        rh_x, rh_params = xf, rhat1
+    else:
+        path = path_at(early, cut, o, atr)
+        x2 = (xf + [math.log(max(path[0] + path[1], 1e-3)), abs(path[2])]) if xf else None
+        dist = (distance_stage2(p_at, o, atr, o - prev.c, prev.h - prev.l, path,
+                                rhat_scale(rhat_at, x2)) if p_at else None)
+        model = "P@%s" % cut
+        rh_x, rh_params = x2, rhat_at
+    merged = with_opening_range(candidates, early, cut)
+    ups, dns = select_nearest(merged, ref)
+    diag = structure_diagnostics(merged, ref)
+    if dist is not None:
+        dist["rhat_trace"] = rhat_trace(rh_params, rh_x)
+    return dict(stage="MANUAL", at=cut, model=model, ref=ref, open=o, atr=atr,
+                distance=dist,
                 structure=dict(up=[(k, merged[k]) for k in ups],
                                down=[(k, merged[k]) for k in dns],
                                diag=diag, note=structure_note(diag, ref)))
