@@ -10,3 +10,7 @@ out_sideways_*.csv
 # 포지션 원장(96KB). out_track2_* 와 같은 성격이라 제외한다.
 # 요약표 out_rules_signal.csv(8.8KB)는 근거라서 커밋한다.
 out_rules_trades.csv
+
+# 교차신호 이벤트 원장 — 재현은 gp_cross_signal.py 재실행
+out_gp_cross_events.csv
+out_gp_cross_filter.csv
