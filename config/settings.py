@@ -4728,7 +4728,15 @@ VALIDATION_CAMPAIGN = {
         # 🔴 게이트 — 고정
         "atr_bp_min": 16.0,              # 상대 ATR 하한. 절대 pt 가 아니다(시기 오염 회피)
         # 🔴 청산 — 고정(격자 전수 탐색의 최선)
-        "sim": {"stop_atr": 1.5, "tp_atr": 0.5, "max_bars": 60, "nonoverlap_min": 3},
+        "sim": {"stop_atr": 1.5, "tp_atr": 0.5, "max_bars": 60, "nonoverlap_min": 3,
+                # ⚠ [540차 후속 / 541차] 초판 등록에 **슬리피지와 세션창이 빠져 있었다.**
+                #   전향 표본이 아직 0건인 지금(data_start 2026-09-08 이전) 확정한다 —
+                #   관측 후 조정이 아니므로 사후 최적화가 아니다. 이후 변경 금지.
+                #   슬리피지는 캠페인 공통 가정(`slippage_ticks_per_side`)과 같은 1틱/편도.
+                #   소급 실측은 0틱이었고, 1틱을 얹으면 건당 흑자폭이 약 2,000원 줄어든다.
+                "slip_ticks_per_side": 1.0,
+                # 세션창 — 워밍업(GP20+ATR14) 이후 ~ 15:10 강제청산 직전
+                "session_start": "09:15", "session_end": "15:10"},
         # 사전등록 합격선
         "min_samples": 60,               # 전향 신호 수 (소급 116 은 세지 않는다)
         "min_days": 40,
@@ -4763,7 +4771,9 @@ VALIDATION_CAMPAIGN = {
         "tight_eps": 0.05,
         "require_tight": False,          # ← GP-1 과 갈리는 유일한 조건
         "atr_bp_min": 16.0,
-        "sim": {"stop_atr": 1.5, "tp_atr": 0.5, "max_bars": 60, "nonoverlap_min": 3},
+        "sim": {"stop_atr": 1.5, "tp_atr": 0.5, "max_bars": 60, "nonoverlap_min": 3,
+                "slip_ticks_per_side": 1.0,          # GP-1 과 동일(대조 조건 유지)
+                "session_start": "09:15", "session_end": "15:10"},
         "min_samples": 300,              # 빈도가 25배라 상향
         "min_days": 40,
         "alpha": 0.05,
