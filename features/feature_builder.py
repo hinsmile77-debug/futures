@@ -35,6 +35,10 @@ from config.settings import (
     CHASE_FILTER_LOOKBACK_MIN, REGIME_EXHAUSTION_LOOKBACK_MIN,
     EXHAUSTION_RESTORE_MODE, TOXICITY_CANCEL_CHURN_CEILING,
     SWING_EXTREME_WINDOWS, SWING_EXTREME_MIN_BARS,
+    # [MW0601 542차 곁가지 이식] 540차 이식분이 이 셋을 import 하지 않은 채
+    #   본문에서 썼다 — `build()` 가 매 분 NameError 를 던졌고 except 블록도
+    #   같은 이름을 써서 예외가 밖으로 새어 나갔다(tests/test_502 u1e 가 잡는다).
+    GP_CROSS_PERIOD, GP_CROSS_LEVEL, GP_CROSS_TIGHT_EPS,
 )
 
 logger = logging.getLogger("SIGNAL")
