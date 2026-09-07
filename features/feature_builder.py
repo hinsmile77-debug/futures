@@ -52,6 +52,77 @@ except Exception:
 _CVD_DEBIAS_LIVE = str(_CVD_DEBIAS_MODE).lower() == "live"
 
 
+def compute_gp_cross_features(closes, atr, period=20, cross=0.5, eps=0.05):
+    """[MW0601 540차] GOLDEN POWER 교차 피처 — 순수 함수(테스트 가능). **기록 전용.**
+
+    대신 사이보스 GOLDEN POWER 복원 산식:
+        Golden Buy(n)  = (종가 − n봉 최저종가) / 종가 × 200
+        Golden Sell(n) = (n봉 최고종가 − 종가) / 종가 × 200
+    1.0 = 이격 0.5%. 상한 없음, 하한 0.
+
+    교차 = 이번 봉에 그 선이 `cross`(0.5)를 **아래에서 위로** 통과했는가.
+    전봉 값은 상태로 들고 있지 않고 **같은 종가 버퍼에서 다시 계산**한다 — 재기동·결손 시
+    상태가 어긋나지 않는다(계측 4원칙 ④, `_entry_horizon_pre` 계열 사고 예방).
+
+    Args:
+        closes: 종가 버퍼. 오래된 → 최신, **현재 봉 포함**. 세션 리셋 전제.
+        atr: 현재 ATR(pt). None·0 이면 `atr_bp_measured=False`.
+        period: 룩백 봉 수(사이보스 기본 25, 사용자 차트 20).
+        cross: 교차 임계.
+        eps: 반대편 「0에 수렴」 판정 임계(관측용 — 채널이 소비한다).
+
+    Returns:
+        7키. 워밍업 구간은 값 0 + `gp_ready_%d=False` (0으로 위장하지 않는다 — 계측 4원칙 ②).
+    """
+    out = {
+        "gp_buy_%d" % period: 0.0,
+        "gp_sell_%d" % period: 0.0,
+        "gp_cross_up_%d" % period: 0.0,
+        "gp_cross_dn_%d" % period: 0.0,
+        "gp_cross_tight_%d" % period: 0.0,
+        "gp_ready_%d" % period: False,
+        "atr_bp": 0.0,
+        "atr_bp_measured": False,
+    }
+    n = len(closes) if closes else 0
+    if n < period:
+        return out
+
+    def _gp(window):
+        c = float(window[-1])
+        if c <= 0:
+            return None, None
+        lo = min(window)
+        hi = max(window)
+        return (c - lo) / c * 200.0, (hi - c) / c * 200.0
+
+    gb, gs = _gp(closes[-period:])
+    if gb is None:
+        return out
+    out["gp_buy_%d" % period] = float(gb)
+    out["gp_sell_%d" % period] = float(gs)
+
+    # 교차는 전봉 GP 가 있어야 판정된다 → period+1 봉 필요
+    if n >= period + 1:
+        pgb, pgs = _gp(closes[-(period + 1):-1])
+        if pgb is not None:
+            up = (pgb < cross) and (gb >= cross)
+            dn = (pgs < cross) and (gs >= cross)
+            out["gp_cross_up_%d" % period] = 1.0 if up else 0.0
+            out["gp_cross_dn_%d" % period] = 1.0 if dn else 0.0
+            # 반대편이 0 에 수렴한 「좁은」 교차인가 (사용자 관찰 형태)
+            tight = (up and gs <= eps) or (dn and gb <= eps)
+            out["gp_cross_tight_%d" % period] = 1.0 if tight else 0.0
+        out["gp_ready_%d" % period] = True
+
+    # 상대 ATR(bp) — 채널 게이트 축이자 26주 항목 ATR_MIN_ENTRY 의 시기중립 대조축
+    c_now = float(closes[-1])
+    if atr is not None and atr > 1e-6 and c_now > 0:
+        out["atr_bp"] = float(atr / c_now * 10000.0)
+        out["atr_bp_measured"] = True
+    return out
+
+
 class FeatureBuilder:
     """Assemble per-minute model features from bars and intraminute hoga updates."""
 
@@ -545,6 +616,27 @@ class FeatureBuilder:
             _mark_feature_error(_exc)
             logger.warning("[FeatureBuilder] SwingExtreme 오류 — 폴백 사용: %s", _exc)
             features.update(self.swing.fallback())
+
+        # [MW0601 540차] GOLDEN POWER 교차 피처 — 기록 전용(소비자 없음).
+        # 사전등록 채널 `gp_cross_highvol_watch`(좁은 교차) · `gp_cross_any_watch`(순수 교차)가
+        # 소비한다. 진입·사이징 경로에는 붙이지 않는다 — settings 주석 참조.
+        try:
+            features.update(compute_gp_cross_features(
+                list(self._close_history), _atr_now,
+                period=GP_CROSS_PERIOD, cross=GP_CROSS_LEVEL, eps=GP_CROSS_TIGHT_EPS,
+            ))
+        except Exception as _exc:
+            _mark_feature_error(_exc)
+            logger.warning("[FeatureBuilder] GP 교차 피처 오류 — ready=False: %s", _exc)
+            features.update({
+                "gp_buy_%d" % GP_CROSS_PERIOD: 0.0,
+                "gp_sell_%d" % GP_CROSS_PERIOD: 0.0,
+                "gp_cross_up_%d" % GP_CROSS_PERIOD: 0.0,
+                "gp_cross_dn_%d" % GP_CROSS_PERIOD: 0.0,
+                "gp_cross_tight_%d" % GP_CROSS_PERIOD: 0.0,
+                "gp_ready_%d" % GP_CROSS_PERIOD: False,
+                "atr_bp": 0.0, "atr_bp_measured": False,
+            })
 
         # 마디가(Round Number) 거리 — 방향 인자 없이 상/하 최근접 레벨 중 더 가까운 쪽만 사용
         # (nearest_round_distance()는 direction 인자가 필요해 피처 생성 시점엔 사용 불가).
