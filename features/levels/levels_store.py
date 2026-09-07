@@ -51,6 +51,11 @@ STAGE_CUT = {"0850": "08:45", "0930": PL.STAGE2_TIME}
 STAGE_DUE = {"0850": datetime.time(8, 50), "0930": datetime.time(9, 30)}
 STAGE0930_MIN_BARS = 5          # 09:30 이전 봉이 이보다 적으면 미산출
 
+# [MW0602 538차 / F-2] 이력 신선도 경고의 머리말. 호출측(main.py)이 이 경고만
+# WARNING 으로 승격한다 — 나머지 단계 경고(R̂ 절단은 실측 25~27% 일)는 INFO 로 둔다.
+# 매일 뜨는 WARNING 은 333차 후속5 가 대시보드에서 걷어낸 그 노이즈가 된다.
+STALE_HISTORY_MARK = "이력 캐시 낡음"
+
 
 # ---------------------------------------------------------------- DB 읽기
 
@@ -130,6 +135,62 @@ def load_today_bars(date_str, until=None, db_path=None):
     if until:
         bars = [b for b in bars if b.t <= until]
     return bars
+
+
+def latest_session_before(date_str, db_path=None, hops=5, skip=()):
+    # type: (str, Optional[str], int, Sequence[str]) -> Optional[str]
+    """`raw_candles` 에 있는 **date_str 직전 세션 날짜**. 없으면 None.
+
+    🔴 전수 스캔이 아니다 — `ts` 가 PRIMARY KEY 라 `ORDER BY ts DESC LIMIT 1` 은
+    인덱스 역방향 seek 1행이다(MW0602 실측 0.0ms). `skip` 에 든 날짜(품질 제외)는
+    건너뛰며 최대 `hops` 번만 되짚는다 — 무한 되짚기를 만들지 않는다.
+    """
+    con = _ro_conn(db_path)
+    try:
+        cur = date_str
+        for _ in range(max(1, hops)):
+            row = con.execute(
+                "SELECT ts FROM raw_candles WHERE ts < ? ORDER BY ts DESC LIMIT 1",
+                (cur + " 00:00:00",)).fetchone()
+            if not row:
+                return None
+            d = row[0][:10]
+            if d not in skip:
+                return d
+            cur = d
+        return None
+    finally:
+        con.close()
+
+
+def history_freshness_warning(summaries, target_date, excluded=None, db_path=None):
+    # type: (Sequence[PL.SessionSummary], str, Optional[dict], Optional[str]) -> Optional[str]
+    """[MW0602 538차 / F-2] 이력 캐시가 낡았으면 그 사실을 문자열로 돌려준다.
+
+    🔴 **왜 필요한가.** 08:50 산출의 유일한 입력은 EOD 가 굳힌 이력 캐시다. EOD 가
+    실패하거나 안 돌면 `prev`(전일 종가·전일 고·저)·ATR·구조 후보가 전부 하루 이상
+    낡은 채로 **아무 경고 없이** 산출된다 — 결과는 그럴듯한 수라서 눈으로 안 잡힌다.
+    534차 원본은 `prepare_params()` 가 `history_last`/`history_sessions` 를 반환하는데
+    **코드베이스 어디서도 읽지 않았다**(2026-09-07 전수 grep). 계측 4원칙 ④ 그대로다.
+
+    판정 방식: `raw_candles` 의 직전 세션 날짜와 캐시의 마지막 세션을 맞대본다.
+    품질 제외된 날(`excluded`)은 캐시가 옳으므로 건너뛴다. 프로브가 실패하면
+    **경고하지 않는다** — 없는 사실을 지어내지 않는다(계측 4원칙 ②).
+    """
+    past = [x for x in summaries if x.d < target_date]
+    if not past:
+        return None
+    try:
+        latest = latest_session_before(target_date, db_path=db_path,
+                                       skip=tuple(excluded or ()))
+    except Exception:
+        logger.debug("[LEVELS] 이력 신선도 프로브 실패 — 경고 생략", exc_info=True)
+        return None
+    if not latest or latest <= past[-1].d:
+        return None
+    return ("%s — 마지막 세션 %s 인데 raw_candles 에 %s 가 있다"
+            "(EOD refresh_history_cache() 누락 의심)"
+            % (STALE_HISTORY_MARK, past[-1].d, latest))
 
 
 def bars_from_candles(candles, until=None):
@@ -248,8 +309,8 @@ def history_from_cache(path=None):
 
 # ---------------------------------------------------------------- 파라미터
 
-def prepare_params(summaries, bars_by_day, target_date):
-    # type: (List[PL.SessionSummary], Dict[str, List[PL.Bar]], str) -> Optional[dict]
+def prepare_params(summaries, bars_by_day, target_date, db_path=None, excluded=None):
+    # type: (List[PL.SessionSummary], Dict[str, List[PL.Bar]], str, Optional[str], Optional[dict]) -> Optional[dict]
     """target_date **이전** 세션만으로 거리 모델 파라미터와 구조 후보를 만든다.
 
     반환 None = ATR 을 낼 이력조차 없음. p1/p2/rhat* 는 개별적으로 None 일 수 있으며
@@ -269,7 +330,16 @@ def prepare_params(summaries, bars_by_day, target_date):
     atr5 = PL.atr_of(past, len(past), 5)
     hist_bars = [(s.d, bars_by_day[s.d]) for s in past[-PL.LOOKBACK:] if s.d in bars_by_day]
     cands = PL.structural_candidates(hist_bars)
+    # 🔴 [MW0602 538차 / F-5] 경고는 **변수 먼저, 상수 마지막**이다.
+    #   534차 원본은 상수 1건("옵션 OI 원천 없음")이 항상 먼저 나와 로그의 「주의」
+    #   줄이 121행 전부 같은 문자열이었다 — 468차 G-2 가 잡으려던 고착 지표 그대로다.
+    #   상수를 지우지는 않는다(그 사실도 기록이다). 순서만 바꿔 그날 달라진 것이
+    #   앞에 오게 한다.
     warnings = []
+    stale = history_freshness_warning(summaries, target_date, excluded=excluded,
+                                      db_path=db_path)
+    if stale:
+        warnings.append(stale)
     if len(hist_bars) < PL.LOOKBACK:
         warnings.append("구조 후보 이력 %d세션(%d 필요)" % (len(hist_bars), PL.LOOKBACK))
     try:
@@ -278,11 +348,12 @@ def prepare_params(summaries, bars_by_day, target_date):
             warnings.append("분기 만기 창 — 구조 후보 롤 오염 가능")
     except Exception:
         pass
-    # 옵션 OI 원천은 미륵에 체인 스냅샷이 없어 미사용(가이드 §3-1(d) — 검증에서도
-    # 넣으면 극값 안착이 44.3%→41.8% 로 내려갔다). "없다"는 사실을 남긴다.
-    warnings.append("옵션 OI 원천 없음(설계상 제외)")
     if p1 is None:
         warnings.append("M1 미산출 — 훈련 세션 %d(<%d)" % (len(past), PL.MIN_TRAIN_SESSIONS))
+    # 옵션 OI 원천은 미륵에 체인 스냅샷이 없어 미사용(가이드 §3-1(d) — 검증에서도
+    # 넣으면 극값 안착이 44.3%→41.8% 로 내려갔다). "없다"는 사실을 남긴다.
+    # ⚠ **상수다.** 매일 같은 문구이므로 항상 마지막에 둔다(위 F-5).
+    warnings.append("옵션 OI 원천 없음(설계상 제외)")
     return dict(prev=prev, atr=atr, atr5=atr5, p1=p1, p2=p2, rhat1=rhat1, rhat2=rhat2,
                 candidates=cands, warnings=warnings, history_sessions=len(past),
                 history_last=prev.d)
@@ -313,8 +384,41 @@ def compute_stage(stage, target_date, today_bars, params):
     out["bars"] = len(bars)
     out["train_n"] = (params.get("p1") or {}).get("n") if stage == "0850" \
         else (params.get("p2") or {}).get("n")
-    out["warnings"] = list(params.get("warnings") or [])
+    # [MW0602 538차 / F-3·F-5] 그날 달라진 것을 앞에 세운다. `params["warnings"]` 는
+    # 이미 「변수 … 상수」 순이므로 단계 경고를 앞에 붙이면 상수는 계속 마지막이다.
+    out["warnings"] = stage_warnings(out) + list(params.get("warnings") or [])
     return dict(out=out, note=None, bars=len(bars))
+
+
+def stage_warnings(out):
+    # type: (dict) -> List[str]
+    """산출 1건에서 **그날에만 해당하는** 주의사항. 값을 바꾸지 않는다 — 기록만 한다.
+
+    셋을 낸다.
+      ① 구조 후보가 한쪽에 0개 — 「없음」은 *측정했는데 없다*이지 미측정이 아니다.
+         2026-09-07 08:50 이 그 경우다(시가가 6세션 후보 전부보다 위). 이 사실이
+         남아야 장후 채점의 측면 탈락(F-1)과 대조된다.
+      ② R̂ 절단 — 절단됐다면 그날 구간폭을 정한 것은 회귀가 아니라 **상수**다.
+         MW0602 백필 실측으로 하한 절단은 25~27%, 상한은 5회 발생한다.
+      ③ R̂ 외삽 — 산출일 x 가 훈련 지지구간 밖. 2026-09-07 08:50 이 그 경우로,
+         `log(ATR/O)` 가 훈련 60세션 최솟값 아래였다(시가만 하룻밤 +3.31% 뛰고
+         ATR 은 그대로라 상대변동성이 창 최저가 됐다). 계수가 7열 중 최대(+0.804)라
+         가장 크게 외삽되는 열이기도 하다.
+    """
+    w = []
+    st = out.get("structure") or {}
+    if not st.get("up"):
+        w.append("구조 상방 후보 0개 — 기준가가 후보 전부보다 위(측정됨, 미측정 아님)")
+    if not st.get("down"):
+        w.append("구조 하방 후보 0개 — 기준가가 후보 전부보다 아래(측정됨, 미측정 아님)")
+    rd = out.get("rhat") or {}
+    if rd.get("clip") and rd["clip"] != "none":
+        w.append("R̂ %s 절단 — 원비 %.3f → %.2f (구간폭을 회귀가 아니라 상수가 정했다)"
+                 % ("하한" if rd["clip"] == "floor" else "상한",
+                    rd.get("raw") or float("nan"), rd.get("scale") or float("nan")))
+    if rd.get("extrap"):
+        w.append("R̂ 외삽 — 훈련 지지구간 밖: %s" % ", ".join(rd["extrap"]))
+    return w
 
 
 # ---------------------------------------------------------------- 포맷
@@ -376,7 +480,10 @@ def ensure_stage(stage, now=None, today_candles=None, db_path=None, cache_path=N
         bars = load_today_bars(date_str, until=cut, db_path=db_path)
 
     summaries, bars_by_day = history_from_cache(cache_path)
-    params = prepare_params(summaries, bars_by_day, date_str)
+    # [538차 F-2] 품질 제외 목록을 함께 넘긴다 — 제외된 날 때문에 캐시가 낡아
+    # 보이는 오탐을 막는다.
+    params = prepare_params(summaries, bars_by_day, date_str, db_path=db_path,
+                            excluded=load_history_cache(cache_path).get("excluded"))
     computed_at = now.strftime("%H:%M:%S")
     if params is None:
         db_utils.save_premarket_levels(
@@ -385,9 +492,15 @@ def ensure_stage(stage, now=None, today_candles=None, db_path=None, cache_path=N
         return db_utils.fetch_premarket_levels(date_str).get(stage)
 
     res = compute_stage(stage, date_str, bars, params)
-    db_utils.save_premarket_levels(date_str, stage, computed_at, res["out"],
-                                   note=res["note"], warnings=params.get("warnings"),
-                                   bars=res["bars"])
+    # 🔴 [538차] `res["out"]["warnings"]` 를 먼저 쓴다 — 그쪽에만 단계 경고
+    #   (구조 후보 0개 · R̂ 절단 · 외삽)가 들어 있다. `params["warnings"]` 를
+    #   그대로 넘기면 truthy 라서 `save_premarket_levels` 의 폴백이 안 걸리고
+    #   단계 경고가 **조용히 사라진다** — 2026-09-07 py37_32 스모크에서 실제로
+    #   그렇게 사라지는 것을 보고 잡았다. 미산출(out=None)일 때만 params 를 쓴다.
+    db_utils.save_premarket_levels(
+        date_str, stage, computed_at, res["out"], note=res["note"],
+        warnings=(res["out"] or {}).get("warnings") or params.get("warnings"),
+        bars=res["bars"])
     return db_utils.fetch_premarket_levels(date_str).get(stage)
 
 
@@ -448,18 +561,38 @@ def score_day(date_str, db_path=None):
 
 def cumulative_scores(days=60):
     # type: (int) -> Dict[str, dict]
-    """누적 집계 — {stage: {n, mae, in50, in80, in80raw, nraw, s_hit, s_n}}.
+    """누적 집계 — {stage: {n, mae, in50, in80, in80raw, nraw, s_hit, s_n, s_skip, days}}.
 
     ⚠ 80% 안착은 R̂ 스케일 구간, in80raw 는 스케일 전이다 — **두 열의 차이가 §5
     채택의 손익**이며, 60일 넘게 쌓이면 그 실측으로 채택을 재판정한다(가이드 §8).
+
+    🔴 **[MW0602 538차 / F-1] 구조 안착은 측면(상방·하방) 단위로 센다.**
+    534차 원본은 `struct_near_high is not None **and** struct_near_low is not None`
+    이라 **한쪽 후보가 0개면 반대쪽의 측정된 결과까지 버렸다.** 그 조건은 구조
+    후보가 한쪽에만 없는 날 — 즉 시가가 6세션 후보 범위를 벗어난 갭 데이 — 을
+    골라서 탈락시키므로 단순한 표본 손실이 아니라 **선택 편향**이다.
+
+    MW0602 실측(2026-09-07, 채점 120행): **12행(10%)이 그렇게 통째로 탈락**했고
+    그 안에서 측정된 쪽은 5적중 / 7미적중이었다. 2026-09-07 08:50 산출도 상방
+    후보 0개라 같은 경로였다.
+
+    바뀐 것은 **집계 방식뿐이며 `premarket_levels_score` 행은 그대로다** — 과거
+    행을 다시 세면 값이 달라진다. 가이드 §8 의 기대치(무작위 ~47%)는 측면 단위
+    비율이라 그대로 비교할 수 있다. 이 지표는 아직 어떤 리포트에도 게시된 적이
+    없으므로(`cumulative_markdown` 은 `--markdown` 수동 경로 전용, EOD 맥점 체인은
+    MW0602 에서 미실행) 끊어질 시계열이 없다.
+
+    미측정은 0 이 아니다(계측 4원칙 ②) — 후보가 없어 못 잰 측면은 `s_skip` 으로
+    따로 센다. 분모(`s_n`)에 넣으면 "안 맞았다"로 위장된다.
     """
     from utils import db_utils
 
     agg = {}
     for r in db_utils.fetch_premarket_levels_scores(days):
         a = agg.setdefault(r["stage"], dict(n=0, abs_err=0.0, in50=0, in80=0,
-                                            in80raw=0, nraw=0, s_hit=0, s_n=0, days=0))
-        a["days"] += 1
+                                            in80raw=0, nraw=0, s_hit=0, s_n=0,
+                                            s_skip=0, days=0, rows=0))
+        a["rows"] += 1
         if r["err_high"] is not None and r["err_low"] is not None:
             a["n"] += 2
             a["abs_err"] += abs(r["err_high"]) + abs(r["err_low"])
@@ -468,9 +601,20 @@ def cumulative_scores(days=60):
             if r["in80raw_high"] is not None and r["in80raw_low"] is not None:
                 a["nraw"] += 2
                 a["in80raw"] += (r["in80raw_high"] or 0) + (r["in80raw_low"] or 0)
-        if r["struct_near_high"] is not None and r["struct_near_low"] is not None:
-            a["s_n"] += 2
-            a["s_hit"] += (r["struct_hit_high"] or 0) + (r["struct_hit_low"] or 0)
+        # 「산출이 아예 없던 행(미산출)」과 「산출은 했는데 그 측면 후보가 0개」를
+        # 가른다. 전자는 구조 통계와 무관하고(세지 않는다), 후자만 s_skip 이다.
+        computed = (r["err_high"] is not None
+                    or r["struct_near_high"] is not None
+                    or r["struct_near_low"] is not None)
+        if computed:
+            a["days"] += 1
+            for near, hit in (("struct_near_high", "struct_hit_high"),
+                              ("struct_near_low", "struct_hit_low")):
+                if r[near] is None:
+                    a["s_skip"] += 1
+                else:
+                    a["s_n"] += 1
+                    a["s_hit"] += (r[hit] or 0)
     for a in agg.values():
         a["mae"] = a["abs_err"] / a["n"] if a["n"] else None
     return agg

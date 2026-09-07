@@ -57,7 +57,18 @@ STAGE2_TIME = "09:30"
 # 하한 0.85: 폭 +3%/−1% 인데 커버리지 78→83% / 74→81%. 하한 1.0 은 폭 +9~11% 라
 # "넓혀서 맞춘 것"이 된다.
 RHAT_FLOOR = 0.85
-RHAT_CAP = 2.0            # 검증에서 닿은 적 없음 — 회귀 폭주 안전장치
+# ⚠ [MW0602 538차 문서-코드 정정] 원 주석은 "검증에서 닿은 적 없음"이었으나 **틀렸다.**
+#   MW0602 백필 실측(2026-06-23~09-04): 상한 2.0 에 08:50 2회 / 09:30 3회 닿았고,
+#   하한 0.85 는 12/48(25%) · 13/49(27%) 다. 절단은 드문 사고가 아니라 상시 동작이며,
+#   절단되면 그 날 구간폭은 회귀가 아니라 **상수가 결정한다**. 그래서 538차부터
+#   `rhat_diag()` 가 원비(raw)·절단 방향·외삽 피처를 함께 남긴다(계측 4원칙 ④).
+RHAT_CAP = 2.0            # 회귀 폭주 안전장치 — 실제로 닿는다(위 주석)
+
+# R̂ 회귀 설계행렬의 열 이름 — 외삽 진단이 사람이 읽을 수 있게 하려고 둔다.
+# `_x_fixed()` 의 반환 순서와 **반드시 같아야 한다**.
+RHAT_X_NAMES = ("const", "log(ATR/O)", "log(ATR5/ATR)", "log(prevR/ATR)",
+                "gap", "|gap|", "prevClosePos")
+RHAT_X_NAMES_PATH = RHAT_X_NAMES + ("log(u_T+d_T)", "|ret_T|")
 
 
 @dataclass
@@ -247,16 +258,49 @@ def fit_rhat(summaries, end, with_path):
         return None
     X = np.array([r[0] for r in rows])
     y = np.array([r[1] for r in rows])
+    # [538차] 훈련 지지구간을 함께 저장한다 — 산출일의 x 가 이 밖이면 **외삽**이고,
+    # 그 사실이 남지 않으면 "회귀가 낸 값"과 "지지 없는 구간에서 낸 값"이 구분되지
+    # 않는다(계측 4원칙 ②). 판정에는 쓰지 않는다 — 기록만 한다.
     return dict(n=len(rows), beta=[float(b) for b in lad_fit(X, y)],
-                med_r=float(np.exp(np.median(y))))
+                med_r=float(np.exp(np.median(y))),
+                x_lo=[float(v) for v in X.min(axis=0)],
+                x_hi=[float(v) for v in X.max(axis=0)],
+                x_names=list(RHAT_X_NAMES_PATH if X.shape[1] == len(RHAT_X_NAMES_PATH)
+                             else RHAT_X_NAMES))
+
+
+def rhat_diag(params, x):
+    # type: (Optional[dict], Optional[List[float]]) -> Optional[dict]
+    """R̂ 스케일 + **그 값이 어떻게 나왔는지**(계측 4원칙 ④).
+
+    반환 키:
+      scale  — 실제로 쓰이는 값. `rhat_scale()` 과 **비트 단위로 같다**(무변경).
+      raw    — 절단 전 원비 exp(x·β)/med_r. `scale != raw` 면 상수가 폭을 정한 것이다.
+      clip   — "floor" | "cap" | "none".
+      extrap — 훈련 지지구간 [x_lo, x_hi] 를 벗어난 열 이름들. 비면 내삽이다.
+               ⚠ 판정에 쓰지 않는다 — 스케일 값은 외삽 여부와 무관하게 그대로다.
+    """
+    if not params or x is None or len(x) != len(params["beta"]):
+        return None
+    raw = math.exp(float(np.array(x) @ np.array(params["beta"]))) / params["med_r"]
+    scale = min(RHAT_CAP, max(RHAT_FLOOR, raw))
+    clip = "floor" if raw < RHAT_FLOOR else ("cap" if raw > RHAT_CAP else "none")
+    extrap = []
+    lo = params.get("x_lo")
+    hi = params.get("x_hi")
+    names = params.get("x_names") or []
+    if lo and hi and len(lo) == len(x):
+        for i, v in enumerate(x):
+            if v < lo[i] or v > hi[i]:
+                extrap.append(names[i] if i < len(names) else "x%d" % i)
+    return dict(scale=scale, raw=float(raw), clip=clip, extrap=extrap)
 
 
 def rhat_scale(params, x):
     # type: (Optional[dict], Optional[List[float]]) -> Optional[float]
-    if not params or x is None or len(x) != len(params["beta"]):
-        return None
-    r = math.exp(float(np.array(x) @ np.array(params["beta"])))
-    return min(RHAT_CAP, max(RHAT_FLOOR, r / params["med_r"]))
+    """실사용 스케일 — 538차 이전과 값이 같다(진단만 분리했다)."""
+    d = rhat_diag(params, x)
+    return d["scale"] if d else None
 
 
 def _band(ref, atr, center, q, sign, scale=1.0):
@@ -417,7 +461,8 @@ def compute_stage(stage, today_bars, prev, atr, p1, p2, candidates,
     xf = _x_fixed(today, prev, atr5)
     if stage == "0850":
         ref = o
-        dist = distance_stage1(p1, o, atr, rhat_scale(rhat1, xf)) if p1 else None
+        diag = rhat_diag(rhat1, xf)
+        dist = distance_stage1(p1, o, atr, (diag or {}).get("scale")) if p1 else None
         merged = candidates
     else:
         early = [b for b in today_bars if b.t <= STAGE2_TIME]
@@ -426,11 +471,14 @@ def compute_stage(stage, today_bars, prev, atr, p1, p2, candidates,
         path = path_at(early, STAGE2_TIME, o, atr)
         ref = early[-1].c
         x2 = (xf + [math.log(max(path[0] + path[1], 1e-3)), abs(path[2])]) if xf else None
+        diag = rhat_diag(rhat2, x2)
         dist = (distance_stage2(p2, o, atr, o - prev.c, prev.h - prev.l, path,
-                                rhat_scale(rhat2, x2)) if p2 else None)
+                                (diag or {}).get("scale")) if p2 else None)
         merged = with_opening_range(candidates, early, STAGE2_TIME)
     ups, dns = select_nearest(merged, ref)
-    return dict(stage=stage, ref=ref, open=o, atr=atr, distance=dist,
+    # [538차] `rhat` 는 **관측 기록**이다 — 거리·구간 값은 위에서 이미 확정됐고
+    # 이 키를 지워도 산출값이 바뀌지 않는다(계측 4원칙 ④의 "폴백 가시화").
+    return dict(stage=stage, ref=ref, open=o, atr=atr, distance=dist, rhat=diag,
                 structure=dict(up=[(k, merged[k]) for k in ups],
                                down=[(k, merged[k]) for k in dns]))
 

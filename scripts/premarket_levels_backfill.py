@@ -33,13 +33,17 @@ from features.levels import levels_store as LS
 from features.levels import premarket_levels as PL
 
 
-def backfill(dates, sessions, force=False, quiet=False):
+def backfill(dates, sessions, force=False, quiet=False, excluded=None):
     summaries = [PL.summarize_session(d, bars) for d, bars in sessions]
     PL.fill_derived(summaries)
     bars_by_day = dict(sessions)
     n_new = 0
+    # [538차 F-2] 재현본의 `summaries` 는 그 자리에서 만든 것이라 캐시 신선도와
+    # 무관하지만, **품질 제외일을 넘겨주지 않으면** 제외일 직후 날짜에서 프로브가
+    # 「캐시 낡음」을 오탐한다(제외일이 raw_candles 엔 있으니까).
     for target in dates:
-        params = LS.prepare_params(summaries, bars_by_day, target)
+        params = LS.prepare_params(summaries, bars_by_day, target,
+                                   excluded=excluded)
         if params is None:
             print("[%s] 이력 부족 — 건너뜀" % target)
             continue
@@ -53,9 +57,11 @@ def backfill(dates, sessions, force=False, quiet=False):
         for stage in ("0850", "0930"):
             res = LS.compute_stage(stage, target, today_bars, params)
             # computed_at 은 재현본임을 드러낸다 — 라이브 산출 시각과 헷갈리면 안 된다
+            # [538차] 단계 경고는 `res["out"]` 에만 있다 — ensure_stage 와 같은 이유.
             new = db_utils.save_premarket_levels(
                 target, stage, "backfill", res["out"], note=res["note"],
-                warnings=params.get("warnings"), bars=res["bars"])
+                warnings=(res["out"] or {}).get("warnings") or params.get("warnings"),
+                bars=res["bars"])
             n_new += int(new)
             if not quiet and new and res["out"]:
                 for line in LS.format_log_lines(res["out"]):
@@ -78,8 +84,9 @@ def print_cumulative(days=60):
         print("누적 채점 없음")
         return
     print("")
-    print("| 단계 | n(일) | 거리 MAE pt | 50% | 80%(R̂) | 80% 원구간 | 구조 ±0.5% |")
-    print("|---|---|---|---|---|---|---|")
+    print("| 단계 | n(일) | 거리 MAE pt | 50% | 80%(R̂) | 80% 원구간 "
+          "| 구조 ±0.5% | 구조 n(측면) | 후보0 측면 |")
+    print("|---|---|---|---|---|---|---|---|---|")
     for stage in sorted(agg):
         a = agg[stage]
         mae = "%.1f" % a["mae"] if a["mae"] is not None else "—"
@@ -87,9 +94,12 @@ def print_cumulative(days=60):
         c80 = "%.0f%%" % (a["in80"] / a["n"] * 100) if a["n"] else "—"
         craw = "%.0f%%" % (a["in80raw"] / a["nraw"] * 100) if a["nraw"] else "—"
         sh = "%.0f%%" % (a["s_hit"] / a["s_n"] * 100) if a["s_n"] else "—"
-        print("| %s:%s | %d | %s | %s | %s | %s | %s |"
-              % (stage[:2], stage[2:], a["n"] // 2, mae, c50, c80, craw, sh))
+        print("| %s:%s | %d | %s | %s | %s | %s | %s | %d | %d |"
+              % (stage[:2], stage[2:], a["n"] // 2, mae, c50, c80, craw, sh,
+                 a.get("s_n", 0), a.get("s_skip", 0)))
     print("")
+    print("> 구조 ±0.5% 의 분모는 측면(상방·하방)이다 — 「후보0 측면」은 후보가 없어"
+          " 못 잰 측면 수이며 분모에 넣지 않는다([MW0602 538차 F-1], 계측 4원칙 ②).")
     print("> 기대치(144세션 검증): 08:50 MAE 14.2 · 80% 78%(R̂ 83%) / "
           "09:30 MAE 11.0 · 80% 74%(R̂ 81%). 구조 ±0.5% 는 무작위와 같은 ~47% 가 정상 —"
           " 그보다 유의하게 높지 않다고 해서 결함이 아니다(가이드 §8).")
@@ -116,7 +126,7 @@ def main(argv=None):
         dates = all_days[-1:]
     print("이력 %d세션 (%s ~ %s) · 재현 대상 %d일"
           % (len(sessions), all_days[0], all_days[-1], len(dates)))
-    n_new = backfill(dates, sessions, force=a.force, quiet=a.quiet)
+    n_new = backfill(dates, sessions, force=a.force, quiet=a.quiet, excluded=excluded)
     print("새로 굳힌 단계 %d개" % n_new)
     print_cumulative(max(a.days, 60))
     return 0

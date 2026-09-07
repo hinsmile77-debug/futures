@@ -3419,6 +3419,20 @@ def init_premarket_levels_db():
             PRIMARY KEY (date, stage)
         )
     """)
+    # ── [MW0602 538차 / F-3] R̂ 진단 3열 (기존 DB 마이그레이션) ─────────────
+    # 저장되는 `rhat_scale` 은 **절단 후** 값이라, 사후에 "회귀가 낸 값인가 상수가
+    # 낸 값인가"를 셀 수 없었다. MW0602 백필 실측으로 절단은 상시 동작임이 확인됐다
+    # (하한 25~27% · 상한 5회). 세 열은 기록 전용이며 산출값을 바꾸지 않는다.
+    # ⚠ 2026-09-07 이전 행은 NULL = **미측정**이지 "절단 없음"이 아니다(계측 4원칙 ②).
+    with _lock:
+        with get_conn(PREMARKET_LEVELS_DB) as conn:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(premarket_levels)")}
+            for _c, _t in (("rhat_raw", "REAL"),      # 절단 전 원비 exp(x·β)/med_r
+                           ("rhat_clip", "TEXT"),     # floor | cap | none
+                           ("rhat_extrap", "TEXT")):  # 훈련 지지구간 밖 열 이름(쉼표)
+                if _c not in cols:
+                    conn.execute(
+                        "ALTER TABLE premarket_levels ADD COLUMN %s %s" % (_c, _t))
     execute(PREMARKET_LEVELS_DB, """
         CREATE TABLE IF NOT EXISTS premarket_levels_score (
             date TEXT NOT NULL, stage TEXT NOT NULL,
@@ -3452,6 +3466,7 @@ def save_premarket_levels(date_str: str, stage: str, computed_at: str,
     """
     dist = (out or {}).get("distance")
     raw = (dist or {}).get("raw")
+    _rd = (out or {}).get("rhat") or {}   # [538차 F-3] R̂ 진단 — 기록 전용
     struct = (out or {}).get("structure") or {}
     h50 = _pml_band(dist, "high50")
     h80 = _pml_band(dist, "high80")
@@ -3468,8 +3483,8 @@ def save_premarket_levels(date_str: str, stage: str, computed_at: str,
                     low50_lo, low50_hi, low80_lo, low80_hi,
                     raw80_hi_lo, raw80_hi_hi, raw80_lo_lo, raw80_lo_hi, rhat_scale,
                     sofar_high, sofar_low, train_n, struct_up, struct_down,
-                    bars, note, warnings)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    bars, note, warnings, rhat_raw, rhat_clip, rhat_extrap)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (date_str, stage, computed_at,
                  (out or {}).get("ref"), (out or {}).get("open"), (out or {}).get("atr"),
                  (dist or {}).get("high"), (dist or {}).get("low"),
@@ -3481,7 +3496,9 @@ def save_premarket_levels(date_str: str, stage: str, computed_at: str,
                  json.dumps(struct.get("down"), ensure_ascii=False) if struct else None,
                  bars or (out or {}).get("bars"), note,
                  json.dumps(warnings or (out or {}).get("warnings") or [],
-                            ensure_ascii=False)),
+                            ensure_ascii=False),
+                 _rd.get("raw"), _rd.get("clip"),
+                 (",".join(_rd.get("extrap") or []) or None) if _rd else None),
             )
             return cur.rowcount > 0
 
@@ -3509,9 +3526,22 @@ def _row_to_premarket_levels(r) -> dict:
         raw_h = band("raw80_hi_lo", "raw80_hi_hi")
         raw_l = band("raw80_lo_lo", "raw80_lo_hi")
         dist["raw"] = dict(high80=raw_h, low80=raw_l) if raw_h and raw_l else None
+    # [538차 F-3] R̂ 진단 — 열이 없는 구세대 DB·행에서는 **None**(미측정)이다.
+    def col(key):
+        try:
+            return r[key]
+        except (IndexError, KeyError):
+            return None
+
+    rhat = None
+    if col("rhat_clip") is not None:
+        _ex = col("rhat_extrap")
+        rhat = dict(scale=r["rhat_scale"], raw=col("rhat_raw"), clip=col("rhat_clip"),
+                    extrap=[x for x in (_ex or "").split(",") if x])
     return dict(date=r["date"], stage=r["stage"], computed_at=r["computed_at"],
                 ref=r["ref_price"], open=r["open_price"], atr=r["atr14"],
-                distance=dist, train_n=r["train_n"], bars=r["bars"], note=r["note"],
+                distance=dist, rhat=rhat,
+                train_n=r["train_n"], bars=r["bars"], note=r["note"],
                 structure=dict(up=jload("struct_up") or [],
                                down=jload("struct_down") or []),
                 warnings=jload("warnings") or [])

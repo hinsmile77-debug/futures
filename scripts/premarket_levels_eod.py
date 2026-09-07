@@ -64,6 +64,7 @@ def run_eod(date_str=None, refresh=True, log=None):
         else:
             say("[LEVELS] %s 채점 — 실제 고 %.2f 저 %.2f (봉 %d)",
                 date_str, sc["actual_high"], sc["actual_low"], sc["bars"])
+            stages_meta = db_utils.fetch_premarket_levels(date_str)
             for stage, row in sorted(sc["stages"].items()):
                 if row.get("err_high") is None:
                     say("[LEVELS]   %s:%s 거리 미산출", stage[:2], stage[2:])
@@ -76,6 +77,13 @@ def run_eod(date_str=None, refresh=True, log=None):
                     _mark(row.get("in80raw_high"), row.get("in80raw_low")),
                     ("%.2f" % row["rhat_scale"]) if row.get("rhat_scale") else "—",
                     _near(row))
+            # [538차 F-3] 그날 구간폭을 회귀가 정했는지 상수가 정했는지 남긴다.
+            _rd = (stages_meta.get(stage) or {}).get("rhat") or {}
+            if _rd.get("clip", "none") != "none" or _rd.get("extrap"):
+                say("[LEVELS]   %s:%s R̂ 진단 — 원비 %.3f · 절단 %s · 외삽 %s",
+                    stage[:2], stage[2:], _rd.get("raw") or float("nan"),
+                    _rd.get("clip") or "—",
+                    ", ".join(_rd.get("extrap") or []) or "없음")
     except Exception as e:
         say("[LEVELS] 채점 실패 (무해): %s", e)
     try:
@@ -105,8 +113,9 @@ def cumulative_markdown(days=60):
     if not agg:
         lines.append("> 채점 없음 — `premarket_levels_score` 가 비어 있다.")
         return "\n".join(lines) + "\n"
-    lines.append("| 단계 | n(일) | 거리 MAE pt | 50% | 80%(R̂) | 80% 원구간 | 구조 ±0.5% |")
-    lines.append("|---|---|---|---|---|---|---|")
+    lines.append("| 단계 | n(일) | 거리 MAE pt | 50% | 80%(R̂) | 80% 원구간 "
+                 "| 구조 ±0.5% | 구조 n(측면) | 후보0 측면 |")
+    lines.append("|---|---|---|---|---|---|---|---|---|")
     for stage in sorted(agg):
         a = agg[stage]
         mae = "%.1f" % a["mae"] if a["mae"] is not None else "—"
@@ -114,9 +123,16 @@ def cumulative_markdown(days=60):
         c80 = "%.0f%%" % (a["in80"] / a["n"] * 100) if a["n"] else "—"
         craw = "%.0f%%" % (a["in80raw"] / a["nraw"] * 100) if a["nraw"] else "—"
         sh = "%.0f%%" % (a["s_hit"] / a["s_n"] * 100) if a["s_n"] else "—"
-        lines.append("| %s:%s | %d | %s | %s | %s | %s | %s |"
-                     % (stage[:2], stage[2:], a["n"] // 2, mae, c50, c80, craw, sh))
+        lines.append("| %s:%s | %d | %s | %s | %s | %s | %s | %d | %d |"
+                     % (stage[:2], stage[2:], a["n"] // 2, mae, c50, c80, craw, sh,
+                        a.get("s_n", 0), a.get("s_skip", 0)))
     lines.append("")
+    lines.append("> **구조 ±0.5% 의 분모는 「측면」이다** — 상방·하방을 따로 센다"
+                 "([MW0602 538차 F-1]). 534차까지는 한쪽 후보가 0개면 반대쪽의 "
+                 "측정된 결과까지 버렸고, 그 조건이 갭 데이를 골라 탈락시켜 "
+                 "**선택 편향**이 됐다(당시 실측 120행 중 12행 탈락). "
+                 "「후보0 측면」은 후보가 없어 못 잰 측면 수이며 **분모에 넣지 않는다** "
+                 "— 미측정은 0 이 아니다(계측 4원칙 ②).")
     lines.append("> 80% 안착은 R̂ 스케일 구간, 「원구간」은 스케일 전 — **두 열의 차이가 "
                  "R̂ 채택(가이드 §5)의 손익**이며, 60일 넘게 쌓이면 그 실측으로 채택을 "
                  "재판정한다. 기대치(144세션 검증): 08:50 83% vs 78%, 09:30 81% vs 74%.")

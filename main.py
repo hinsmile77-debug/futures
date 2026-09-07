@@ -4483,6 +4483,15 @@ class TradingSystem:
                     log_manager.system(
                         f"[LEVELS {stage[:2]}:{stage[2:]}] 주의 — "
                         f"{' / '.join(row['warnings'])}", "INFO")
+                    # [MW0602 538차 / F-2] 이력 신선도만 WARNING 으로 올린다.
+                    # 「캐시가 낡았다」는 *산출값 전체가 하루 낡은 전일 기준*이라는
+                    # 뜻이라 다른 주의와 급이 다르다. 나머지(R̂ 절단 25~27%일 ·
+                    # 구조 후보 0개)를 함께 올리면 대시보드 경보가 상시 켜져
+                    # 333차 후속5 가 걷어낸 노이즈로 되돌아간다.
+                    for _lv_w in row["warnings"]:
+                        if _lv_w.startswith(_LS.STALE_HISTORY_MARK):
+                            log_manager.system(
+                                f"[LEVELS {stage[:2]}:{stage[2:]}] {_lv_w}", "WARNING")
         except Exception:
             pass
         self._push_premarket_levels()
