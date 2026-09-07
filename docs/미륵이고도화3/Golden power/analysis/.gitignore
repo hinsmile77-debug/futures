@@ -1,0 +1,12 @@
+# 런타임 산출물 — 커밋 금지 (feedback_git_commit_scope)
+# 스냅샷은 라이브 DB 사본(105MB)이고, track1 CSV는 이벤트 원장(7MB)이다.
+# 재현은 gp_extract.py 재실행으로 한다 — 파일을 들고 다닐 이유가 없다.
+_snapshot/
+_k_gp.json
+out_track1_*.csv
+out_track2_*.csv
+__pycache__/
+out_sideways_*.csv
+# 포지션 원장(96KB). out_track2_* 와 같은 성격이라 제외한다.
+# 요약표 out_rules_signal.csv(8.8KB)는 근거라서 커밋한다.
+out_rules_trades.csv
