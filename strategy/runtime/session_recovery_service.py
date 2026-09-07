@@ -114,10 +114,32 @@ class SessionRecoveryService:
         # 돌기 시작하면 그 안의 `singleShot(10, _stage2)` 는 정상 동작한다.
         system._dashboard_call(_stage1)
 
+    # ── [MW0601 538차 / G-1 + F-1 보강 계측] 날짜 전환 자체를 로그로 남긴다 ──────
+    # 아래 `increment_session()` 의 날짜 전환 분기는 새 딕셔너리를 **통째로** 만든다.
+    # 그래서 전날 EOD 가 써둔 완료 마커 2종이 여기서 조용히 사라진다는 것이 유력
+    # 가설이었는데(0904·0907 리포트 이상점 1-1), 532차가 그 가설의 확인 수단으로
+    # 사전등록한 `main.py:_write_session_state()` 의 `[SessionStateDrop]` WARNING 은
+    # 09-03·09-04·09-07 **세 거래일 연속 한 번도 나오지 않았다**(0907 리포트 1-4).
+    # 532차 자신의 문구대로 읽으면 그 부재는 "원인이 다른 곳"이라는 신호인데,
+    # 0907 장전은 재현 횟수만으로 "확정"을 선언했다 — 판정 근거가 갈린 상태다.
+    #
+    # 그래서 여기서 하는 일은 **원인을 고치는 것이 아니라 전환 순간을 직접 재는 것**
+    # 뿐이다. F-1 본체(마커 이어받기)는 사용자 승인 대기다(0907 리포트 「사용자 조치 3」).
+    # 이어받은 키와 버려진 키를 **양쪽 다** 남기므로(계측 4원칙 ⑤ — 대사는 모든 축을
+    # 건다), 다음 기동 로그 한 줄로 "여기서 지워지는가 / 다른 곳인가"가 갈린다.
+    #
+    # ⚠ 동작은 바꾸지 않는다 — 버려지던 키는 이 변경 뒤에도 똑같이 버려진다.
+    # ⚠ 사각지대 하나는 남는다: `_read_session_state()` 가 파일 읽기에 실패하면
+    #   **오늘 날짜**를 담은 기본 dict 를 돌려주므로 이 분기 자체를 타지 않는다.
+    #   그 경우는 여기서 관측되지 않는다(고치려면 읽기 폴백을 바꿔야 하는데 그것은
+    #   동작 변경이라 이 계측 작업의 범위 밖이다 — 계측 4원칙 ④의 미해소 잔여분).
+    _MARKER_KEYS = ("p8_last_success_date", "eod_retrain_ok_date")
+
     def increment_session(self, system: Any) -> int:
         data = system._read_session_state()
         today = datetime.date.today().isoformat()
         if data.get("date") != today:
+            prev = data
             data = {
                 "date": today,
                 "count": 0,
@@ -127,6 +149,7 @@ class SessionRecoveryService:
                 ).strip().lower(),
                 "auto_shutdown_done_date": "",
             }
+            self._log_session_rollover(prev, data)
 
         data["count"] = data.get("count", 0) + 1
         data["reverse_entry_enabled"] = bool(system._reverse_entry_enabled)
@@ -135,6 +158,43 @@ class SessionRecoveryService:
         ).strip().lower()
         system._write_session_state(data)
         return int(data["count"])
+
+    def _log_session_rollover(self, prev: dict, new: dict) -> None:
+        """[MW0601 538차 / G-1] 날짜 전환 시 이어받은 키·버려진 키를 남긴다.
+
+        정상 전환도 INFO 로 남긴다 — "무엇이 사라졌는가"는 사라진 뒤만 봐서는 알 수
+        없고, 직전에 무엇이 있었는지가 같은 줄에 있어야 특정된다(532차 G-1 과 같은 취지).
+
+        ⚠ 로그는 모듈 로거(`logger`)로만 낸다. `log_manager` 로 WARNING 을 내면
+          `exceptions_10m` 에 합산돼 헬스 degraded 를 자체 유발한다(F-17 전례).
+        ⚠ 이 함수는 어떤 예외도 밖으로 내보내지 않는다 — 계측이 기동을 막으면 안 된다.
+        """
+        try:
+            prev_date = str(prev.get("date") or "미측정")
+            new_date = str(new.get("date") or "미측정")
+            prev_keys = set(prev.keys())
+            new_keys = set(new.keys())
+            carried = sorted(prev_keys & new_keys)
+            dropped = sorted(prev_keys - new_keys)
+            logger.info(
+                "[SessionRollover] %s → %s 전환 — 이어받은 키(%d개)=%s / "
+                "새로 초기화된 키(%d개)=%s",
+                prev_date, new_date,
+                len(carried), (carried or "없음"),
+                len(dropped), (dropped or "없음"),
+            )
+            lost = [k for k in self._MARKER_KEYS if prev.get(k) and not new.get(k)]
+            if lost:
+                logger.warning(
+                    "[SessionStateDrop] 완료 마커 소실 %s — 날짜 전환(%s → %s)이 새 "
+                    "딕셔너리를 만들면서 이어받지 않았다 (호출부=%s). F-1 미적용 "
+                    "상태에서는 이것이 현재 동작이며, 이 줄의 출현 자체가 0907 리포트 "
+                    "이상점 1-4(판정 근거 정합성)의 확인 수단이다",
+                    lost, prev_date, new_date,
+                    "session_recovery_service.py:increment_session",
+                )
+        except Exception as _roll_e:
+            logger.debug("[SessionRollover] 전환 계측 실패(무해): %s", _roll_e)
 
     def restore_daily_state(self, system: Any) -> None:
         today_str = datetime.date.today().isoformat()
