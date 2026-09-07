@@ -226,7 +226,14 @@ def test_channel_is_wired_into_report():
 
 
 def test_evaluator_runs_on_live_db_without_error():
-    """실 DB 로 한 번 돌려 예외가 없고 진단 필드가 채워지는지 — 죽은 계측 방지."""
+    """실 DB 로 한 번 돌려 예외가 없고 진단 필드가 채워지는지 — 죽은 계측 방지.
+
+    ⚠ DB 는 런타임 산출물이라 커밋되지 않는다(워크트리·CI 에는 없다).
+    없으면 **건너뛴다** — 그건 환경 조건이지 로직 결함이 아니다.
+    있으면 반드시 무예외로 돌아야 한다.
+    """
+    if not os.path.exists(settings.RAW_DATA_DB):
+        pytest.skip("raw_data.db 없음 — 런타임 산출물이라 이 환경에는 없다")
     out = G.eval_gp_cross_channels()
     assert "error" not in out, out.get("error")
     for k in ("data_start", "atr_bp_min", "cost_rate", "n_feature_rows", "n_cross_raw"):
