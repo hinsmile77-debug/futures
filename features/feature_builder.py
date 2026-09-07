@@ -34,6 +34,10 @@ from config.settings import (
     CHASE_FILTER_LOOKBACK_MIN, REGIME_EXHAUSTION_LOOKBACK_MIN,
     SWING_FEATURE_LOOKBACKS_MIN, SWING_FEATURE_DIST_CLIP_ATR,   # [529차] 스윙 위치 피처
     EXHAUSTION_RESTORE_MODE, TOXICITY_CANCEL_CHURN_CEILING,
+    # [MW0601 542차] 540차가 이 셋을 import 하지 않은 채 본문에서 썼다 —
+    #   `build()` 가 매 분 NameError 를 던졌고 except 블록도 같은 이름을 써서
+    #   예외가 밖으로 새어 나갔다(tests/test_502 u1e 가 잡았다).
+    GP_CROSS_PERIOD, GP_CROSS_LEVEL, GP_CROSS_TIGHT_EPS,
 )
 
 logger = logging.getLogger("SIGNAL")
