@@ -20,6 +20,14 @@ import logging
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
 
+# ── [MW0601 537차] BLAS DLL 경로 보장 — numpy를 끌어오는 import보다 먼저 ────────
+# `EOD_RETRAIN.bat`은 conda activate 후 이 파일을 부르므로 그 경로에서는 무해하지만,
+# 맨손으로(`py310_64\python.exe scripts/eod_retrain.py`) 돌리면 MKL delay-load가
+# 실패해 stderr 없이 즉사한다(0xC06D007F). 루트 `retrain_eod.py`(448차)와 맞춘다.
+# 근거: docs/정기점검/매일점검/MW0601-20260907-BLAS즉사-딥다이브.md
+from utils.dll_bootstrap import ensure_conda_dll_path  # noqa: E402
+ensure_conda_dll_path()
+
 # ── 로그 설정 ─────────────────────────────────────────────────
 _today = datetime.datetime.now().strftime("%Y%m%d")
 _log_dir = os.path.join(BASE_DIR, "logs")

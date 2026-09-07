@@ -1609,11 +1609,28 @@ class TradingSystem:
             # (= 457차 이전 동작). retrain_intraday.py는 argv[4]가 없어도 동작하므로
             # 구버전 스크립트와 섞여도 안전하다.
             _hz_s = ",".join(str(h) for h in (horizons or []))
+            # [MW0601 537차] 자식(py310_64)에게 **그 env의 Library\bin**을 앞세운
+            # PATH를 넘긴다. 자식은 기본적으로 py37_32의 환경을 상속하는데, 두 env의
+            # MKL은 파일명이 달라(mkl_rt.1.dll vs mkl_rt.3.dll) 상속된 경로에는
+            # 자식이 찾는 DLL이 없다 → BLAS를 밟는 순간 stderr 없이 즉사(0xC06D007F).
+            # retrain_intraday.py 도 스스로 부트스트랩을 부르지만(이중화), 앞으로
+            # 추가될 자식이 그것을 잊어도 여기서 막힌다.
+            # ⚠ 조립 실패 시 env=None 폴백 — 이 수정이 재학습을 새로 깨뜨릴 수 없게 한다.
+            # 근거: docs/정기점검/매일점검/MW0601-20260907-BLAS즉사-딥다이브.md
+            try:
+                from utils.dll_bootstrap import child_env_for
+                _child_env = child_env_for(PYTHON_64_EXEC)
+            except Exception as _envexc:
+                log_manager.system(
+                    f"[GBM-64] 자식 env 조립 실패 — 상속 환경으로 진행: {_envexc}", "WARNING",
+                )
+                _child_env = None
             _proc = subprocess.Popen(
                 [PYTHON_64_EXEC, _script, _rpath, _force_s, _intraday_s, _hz_s],
                 stdout=subprocess.DEVNULL,
                 stderr=_stderr_fh if _stderr_fh is not None else subprocess.DEVNULL,
                 creationflags=subprocess.CREATE_NO_WINDOW,
+                env=_child_env,
             )
         except FileNotFoundError:
             if _stderr_fh:

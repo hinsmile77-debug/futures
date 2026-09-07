@@ -29,6 +29,33 @@ KOSPI 200 선물 1분봉 기반 방향 예측 + 자동매매 시스템 (별칭: 
 > EOD 로그에 `Python 3.10.20 64-bit`가 찍혀도 정상 — 이상 환경이 아님.
 > `EOD_RETRAIN.bat`도 **`py310_64`** 전용 (191차 결정). `scripts\eod_retrain.py`도 동일. 두 파일 모두 py37_32 언급은 구버전 잔재이며, py37_32로 실행하면 OOM 재발 — 다시 거론하지 말 것.
 
+### 🔴 conda env를 활성화하지 않고 `python.exe`를 직접 부르지 말 것 [2026-09-07 537차]
+
+**증상**: `np.corrcoef`·`np.linalg.*`·`scipy.stats` 등 **BLAS/LAPACK을 타는 호출에서
+프로세스가 stderr 한 줄 없이 즉사**한다(`0xC06D007F` = STATUS_DELAY_LOAD_FAILED).
+예외가 아니라 프로세스 종료라 `try/except`로 못 잡고 로그도 안 남는다.
+원소별 연산·sklearn 트리 계열(HistGBM·RF·RobustScaler)은 멀쩡히 돌아 **부분 생존**한다.
+
+⚠ **"numpy/BLAS가 손상됐다"고 진단하지 말 것 — 패키지는 멀쩡하다.**
+그 env의 `Library\bin`이 PATH에 없어 MKL delay-load가 실패하는 것뿐이다
+(py37_32 `mkl_rt.1.dll` vs py310_64 `mkl_rt.3.dll` — 이름이 달라 상속된 PATH로는 못 찾는다).
+재설치로 가면 멀쩡한 학습 환경을 망가뜨린다.
+
+**조치**: 진입점 최상단에서 **numpy import보다 먼저** 부른다.
+
+```python
+from utils.dll_bootstrap import ensure_conda_dll_path   # 448차
+ensure_conda_dll_path()
+```
+
+- 타 env 인터프리터를 자식으로 띄울 때는 `child_env_for(exe)`로 `Popen(env=)`를 채운다
+  (537차 — `main.py`의 py310_64 재학습 spawn이 이 경로다).
+- 회귀 가드: `python scripts/audit_dll_bootstrap.py --fail-on-gap` ·
+  `tests/test_537_dll_bootstrap_coverage.py`. 강제 대상은 **자동 식별**한다(손 목록 없음).
+- 테스트는 `conda run -n py37_32 python -m pytest ...`로 돌린다 — 맨손 실행 시
+  `win32com`이 `0xc0000139`로 깨져 수집 단계에서 5건이 실패한다(같은 계열, 프로덕션 무관).
+- 근거·실측: `docs/정기점검/매일점검/MW0601-20260907-BLAS즉사-딥다이브.md`
+
 ### 🔴 장중 라이브 DB 분석 금지 [2026-08-10 456차]
 
 **프리장 08:45 ~ 본장 마감(15:35, 만기일 15:20) 사이에는 라이브 DB에 분석 쿼리를 돌리지 말 것.**
