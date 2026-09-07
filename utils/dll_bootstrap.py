@@ -50,7 +50,7 @@ from __future__ import annotations
 import os
 import sys
 
-__all__ = ["ensure_conda_dll_path"]
+__all__ = ["ensure_conda_dll_path", "child_env_for"]
 
 # 이 env 안에서 DLL이 놓이는 하위 경로들. `Library\bin`이 실측상 필요충분이지만
 # conda 배포에 따라 나머지가 존재할 수 있어 있으면 함께 넣는다(없으면 조용히 건너뜀).
@@ -93,6 +93,51 @@ def ensure_conda_dll_path(verbose: bool = False) -> list:
         if verbose:
             sys.stderr.write("[dll_bootstrap] PATH 보강: %s\n" % os.pathsep.join(added))
     return added
+
+
+def child_env_for(executable, base_env=None):
+    """다른 env의 인터프리터를 자식으로 띄울 때 넘길 환경 딕셔너리를 만든다.
+
+    왜 필요한가 — `ensure_conda_dll_path()`는 **자기 프로세스**를 고친다. 그런데
+    `main.py`(py37_32)가 `Popen([py310_64\\python.exe, ...])`로 **다른 env**를 띄우면
+    자식은 부모의 PATH를 상속한다. 두 env의 MKL은 파일명이 달라
+    (`mkl_rt.1.dll` vs `mkl_rt.3.dll`) 상속된 경로에는 자식이 찾는 DLL이 없다.
+    자식 스크립트가 스스로 부트스트랩을 부르면 해결되지만, **부르는 것을 잊으면**
+    조용히 즉사한다(실제로 `retrain_intraday.py`가 448차 이후 줄곧 그 상태였다).
+    이 함수는 그 기억 의존을 **spawn 관문 한 곳**에서 제거한다.
+
+    Args:
+        executable: 자식으로 띄울 python.exe 절대경로.
+        base_env:   기반 환경(기본 `os.environ`). 병합이 아니라 **복사본**을 만든다 —
+                    `Popen(env=)`는 환경을 대체하므로 부분 딕셔너리를 넘기면
+                    PATH 외 모든 변수가 사라진다.
+
+    Returns:
+        새 환경 dict. Windows가 아니거나 경로를 못 찾으면 base_env의 복사본을
+        그대로 돌려준다(호출부가 분기하지 않아도 되게).
+    """
+    env = dict(os.environ if base_env is None else base_env)
+    if os.name != "nt" or not executable:
+        return env
+
+    root = os.path.dirname(os.path.abspath(executable))
+    cur = env.get("PATH", "")
+    have = {p.strip().rstrip("\\").lower() for p in cur.split(os.pathsep) if p.strip()}
+
+    add = []
+    for sub in _SUBDIRS:
+        d = os.path.join(root, sub)
+        if os.path.isdir(d) and d.rstrip("\\").lower() not in have:
+            add.append(d)
+    # env 루트 자체도 넣는다 — python3x.dll 이 여기 있다.
+    if os.path.isdir(root) and root.rstrip("\\").lower() not in have:
+        add.append(root)
+
+    if add:
+        # **앞에 붙인다.** 부모(py37_32)의 Library\bin 이 이미 PATH에 있으므로
+        # 뒤에 붙이면 이름이 겹치는 조합에서 부모 것이 먼저 걸릴 수 있다.
+        env["PATH"] = os.pathsep.join(add + ([cur] if cur else []))
+    return env
 
 
 def selftest() -> int:

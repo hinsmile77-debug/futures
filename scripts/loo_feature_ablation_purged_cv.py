@@ -28,15 +28,21 @@ import json
 import os
 import sys
 
-import joblib
-import numpy as np
-import pandas as pd
-from sklearn.ensemble import HistGradientBoostingClassifier
-from sklearn.model_selection import TimeSeriesSplit
-
 _PROJECT_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
+
+# ── [MW0601 537차] BLAS DLL 경로 보장 — **numpy import보다 먼저** ─────────────
+# conda 활성화 없이 돌리면 첫 BLAS 호출에서 stderr 없이 프로세스가 즉사한다(0xC06D007F).
+# 근거: docs/정기점검/매일점검/MW0601-20260907-BLAS즉사-딥다이브.md
+from utils.dll_bootstrap import ensure_conda_dll_path  # noqa: E402
+ensure_conda_dll_path()
+
+import joblib  # noqa: E402
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
+from sklearn.ensemble import HistGradientBoostingClassifier  # noqa: E402
+from sklearn.model_selection import TimeSeriesSplit  # noqa: E402
 
 from scripts.validate_feature_set_purged_cv import (  # noqa: E402
     load_data, build_labels, purge_train_tail, HORIZONS_MIN,

@@ -1,4 +1,4 @@
-"""
+r"""
 미륵이 장중 GBM 재학습 스크립트 (py310_64 전용)
 -----------------------------------------------
 32비트 main.py가 subprocess로 호출 — 64비트 환경에서 OOM 없이 실행.
@@ -31,6 +31,22 @@ _ROOT = os.path.dirname(os.path.abspath(__file__))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+# ── [MW0601 537차] BLAS DLL 경로 보장 — **numpy import보다 먼저** ──────────────
+# 이 스크립트는 `main.py`(py37_32)가 `Popen([PYTHON_64_EXEC, ...])`로 띄우며,
+# 자식은 **py37_32의 환경을 상속**한다. 두 env의 MKL은 파일명이 달라
+# (py37_32 `mkl_rt.1.dll` vs py310_64 `mkl_rt.3.dll`) 상속된 PATH로는 찾을 수 없고,
+# BLAS를 밟는 순간 **stderr 한 줄 없이 프로세스가 즉사**한다(0xC06D007F).
+# 448차가 `retrain_eod.py`에 넣은 것과 같은 조치인데 이쪽만 빠져 있었다.
+# ⚠ 지금 사고가 없는 것은 장중 경량 모드가 HistGBM/RobustScaler만 써서
+#   BLAS를 안 밟기 때문이다 — 상관·회귀·scipy.stats가 한 줄 들어오면 즉사한다.
+# 근거: docs/정기점검/매일점검/MW0601-20260907-BLAS즉사-딥다이브.md
+_dll_added = []
+try:
+    from utils.dll_bootstrap import ensure_conda_dll_path
+    _dll_added = ensure_conda_dll_path()
+except Exception as _dll_exc:                      # 부트스트랩 실패로 재학습을 막지 않는다
+    _dll_added = ["<bootstrap 실패: %s>" % _dll_exc]
+
 _NOW_STR  = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 _LOG_PATH = os.path.join(_ROOT, "logs", f"retrain_intraday_{_NOW_STR}.log")
 os.makedirs(os.path.join(_ROOT, "logs"), exist_ok=True)
@@ -54,6 +70,12 @@ def _check_env():
     log.info("=" * 50)
     log.info("미륵이 장중 재학습 시작 | Python %s %s", sys.version.split()[0], bits)
     log.info("=" * 50)
+    # [537차] 계측 4원칙 ④ — 조치가 실제로 적용됐는지 로그로 남긴다.
+    #   "보강 N개" = 이 프로세스가 PATH를 고쳤다(정상 — 부모가 py37_32라 당연하다)
+    #   "이미 충족" = 부모가 이미 py310_64 활성화 상태였다(수동 실행 등)
+    #   "bootstrap 실패" = 모듈 import 실패 — BLAS를 밟으면 즉사할 수 있다
+    log.info("[DLL] BLAS 경로 %s", ("보강 %d개: %s" % (len(_dll_added), _dll_added))
+             if _dll_added else "이미 충족")
     if bits != "64-bit":
         log.error("32-bit Python 감지 — py310_64 환경으로 실행해야 합니다. 종료.")
         sys.exit(2)
