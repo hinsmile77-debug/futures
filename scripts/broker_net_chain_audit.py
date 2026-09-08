@@ -186,6 +186,21 @@ def _guard_present():
     return "base_dep" in src and "롤오버" in src
 
 
+def _fmt_krw(v):
+    """원화 금액을 부호 + 천단위 구분으로 찍는다. 미측정은 `-` (계측 4원칙 ②).
+
+    🔴 [547차] 종전 구현은 `("%+,.0f" % v)` 였고 이는 **항상** ValueError 로 죽는다
+    — printf 계열 포맷에는 `,` 천단위 플래그가 없다(그건 str.format 쪽 문법이다).
+    그런데 이 헬퍼는 **D1 오염이나 D2 불연속이 있을 때만** 호출된다. 즉 진단이
+    아무것도 못 찾은 날에는 한 번도 실행되지 않아, 무언가를 찾아낸 바로 그
+    순간에만 죽는 계측이었다(`--json` 경로는 이 앞에서 return 하므로 무사했다).
+    2026-09-07 D1 오염 1일이 이 크래시에 가려 사람 눈에 안 보였다.
+    """
+    if v is None:
+        return "-"
+    return "{:+,.0f}".format(v)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--since", default="", help="YYYY-MM-DD 이후만")
@@ -246,7 +261,7 @@ def main():
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 1 if (contaminated or chain_breaks or skip_days) else 0
 
-    W = lambda v: ("%+,.0f" % v).replace(",", ",") if v is not None else "-"
+    W = _fmt_krw
     print("브로커 net 예탁금 체인 진단 — 로그 %d일 / DB %d행" % (len(days), len(db)))
     print("")
 
