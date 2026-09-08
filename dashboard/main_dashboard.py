@@ -362,6 +362,24 @@ C = {
 }
 
 
+# ── [MW0601 545차] ProfitGuard L1~L4 배지 기본 툴팁 ─────────────
+# 실제 상태가 들어오면 render_profit_guard()가 통째로 교체한다. 이 문구가
+# 화면에 남아 있으면 **아직 한 번도 갱신되지 않았다**는 뜻이다(초기값과 정상값을
+# 같은 픽셀로 그리지 않는다 — 계측 4원칙 ④).
+_PG_TIP_DEFAULT = (
+    "ProfitGuard — 당일 수익 보존 4중 가드\n"
+    "  L1 피크 트레일링   : 당일 피크 대비 일정 비율 하락 시 당일 중단(래치)\n"
+    "  L2 수익구간 티어   : 수익 구간별 최소 등급 상향 · 최상위는 당일 중단(래치)\n"
+    "  L3 오후 리스크압축 : 오후 진입 횟수/품질 제한 (조건부 — 래치 아님)\n"
+    "  L4 수익CB          : 수익 상태에서 연속 손실 시 당일 중단(래치)\n"
+    "\n"
+    "칩 색: 회색=정상 · 파랑=감시 · 주황=차단중 · 빨강=당일중단(래치) · 보라=미측정\n"
+    "래치 또는 갱신 실패 시에만 깜빡인다.\n"
+    "\n"
+    "PG —— : 아직 갱신되지 않음 (매분 파이프라인이 STEP 9 뒤에 갱신)"
+)
+
+
 # ── 주문/체결 탭 툴팁 — 진입·청산 전체 흐름 ─────────────────
 _ORDER_TAB_TIP = (
     "<div style='font-family:Consolas,monospace;font-size:12px;line-height:1.6'>"
@@ -10125,6 +10143,14 @@ class MireukDashboard(QMainWindow):
         self._phase5_blink_timer.timeout.connect(self._blink_phase5_gate)
         self._phase5_blink_timer.start()
 
+        # ── [MW0601 545차] ProfitGuard 배지 깜박임 (700ms) ──────
+        # 당일 진입이 **래치로 끊긴** 동안, 또는 배지 갱신 자체가 실패한 동안에만
+        # 실제로 깜빡인다. 평상시에는 타이머가 돌아도 스타일을 건드리지 않는다.
+        self._pg_blink_timer = QTimer(self)
+        self._pg_blink_timer.setInterval(700)
+        self._pg_blink_timer.timeout.connect(self._blink_profit_guard)
+        self._pg_blink_timer.start()
+
         self._minute_chart_dialog = MinuteChartDialog(self)
         self._minute_chart_shortcut = QShortcut(QKeySequence(MinuteChartDialog.SHORTCUT_TEXT), self)
         self._minute_chart_shortcut.activated.connect(self.toggle_minute_chart_dialog)
@@ -10248,16 +10274,43 @@ class MireukDashboard(QMainWindow):
         self.lbl_cb = mk_badge("CB NORMAL", C['bg3'], C['text2'], 11)
         self.lbl_cb.setToolTip(_CB_TIP)
         
-        # L2 영구중단 배지
-        self.lbl_l2_halt = mk_badge("L2 —", C['bg3'], C['text2'], 10)
-        self.lbl_l2_halt.setToolTip(
-            "L2 Tier Gate — 수익 구간 도달 시 금일 거래 영구 중단\n"
-            "  L2 —   : 정상 (중단 임계 미달)\n"
-            "  L2 중단 : Tier 4 (누적 +400만원↑) 도달 → 당일 진입 전면 차단\n"
-            "  매분 파이프라인마다 ProfitGuard 상태 확인"
-        )
-        self.lbl_l2_halt.setMinimumWidth(80)  # 크기 고정으로 항상 보임
+        # ── [MW0601 545차] ProfitGuard L1~L4 배지 ─────────────────────
+        # 종전에는 L2 하나만, 그것도 **죽은 채로** 표시했다
+        # (`_TierGate.is_halted` 부재 → 갱신 함수가 매번 AttributeError로 죽고,
+        #  호출부가 logger.debug/except:pass로 삼켜 초기 텍스트에 4개월간 굳었다).
+        # 4개 레이어를 각각 칩으로 띄우고, 당일 진입이 래치로 끊긴 동안에는
+        # 상단 라벨과 구속 칩을 **깜빡여** 「얼마 벌어서 · 무엇 때문에 멈췄는지」를
+        # 운영자가 헤더만 보고 알 수 있게 한다.
+        # ⚠ 상시 깜빡임은 신호가 아니다(472차 Phase5 배지 교훈) — **래치 또는
+        #   갱신 실패일 때만** 깜빡인다. 감시(armed)·조건부차단(block)은 색만 바꾼다.
+        self.lbl_l2_halt = mk_badge("PG ——", C['bg3'], C['text2'], 9)  # 하위호환 이름 유지
+        self.lbl_l2_halt.setMinimumWidth(S.p(150))
         self.lbl_l2_halt.setAlignment(Qt.AlignCenter)
+        self.lbl_pg_layers = {}
+        _pg_chip_row = QHBoxLayout()
+        _pg_chip_row.setContentsMargins(0, 0, 0, 0)
+        _pg_chip_row.setSpacing(S.p(2))
+        for _pg_k in ("L1", "L2", "L3", "L4"):
+            _pg_chip = mk_badge(_pg_k, C['bg3'], C['text2'], 8)
+            _pg_chip.setAlignment(Qt.AlignCenter)
+            _pg_chip.setMinimumWidth(S.p(31))
+            self.lbl_pg_layers[_pg_k] = _pg_chip
+            _pg_chip_row.addWidget(_pg_chip)
+        self._pg_box = QWidget()
+        _pg_lay = QVBoxLayout(self._pg_box)
+        _pg_lay.setContentsMargins(0, 0, 0, 0)
+        _pg_lay.setSpacing(1)
+        _pg_lay.addWidget(self.lbl_l2_halt, 0, Qt.AlignCenter)
+        _pg_lay.addLayout(_pg_chip_row)
+        self._pg_box.setToolTip(_PG_TIP_DEFAULT)
+        # 깜빡임/색 상태 — 명시 초기화한다. 속성 조회 폴백(기본값을 주는
+        # getattr 형태)으로 런타임 상태를 읽지 않는다(계측 4원칙 ④).
+        self._pg_blink_on: bool = True
+        self._pg_blink_active: bool = False
+        self._pg_blink_chip: str = ""
+        self._pg_color: str = C['bg3']
+        self._pg_fg: str = C['text2']
+        self._pg_chip_color: str = C['bg3']
 
         # ── SHS / EKS 배지 ───────────────────────────────────────
         self.lbl_shs = mk_badge("SHS ——", C['bg3'], C['text2'], 11)
@@ -10675,7 +10728,7 @@ class MireukDashboard(QMainWindow):
         header.addStretch()
         for w in [self.lbl_ecb, self.lbl_regime, self._micro_box, self.lbl_cycle, self.lbl_gamma, self.lbl_pos, self.lbl_cb]:
             header.addWidget(w)
-        header.addWidget(self.lbl_l2_halt)  # L2 halt badge (CB 오른쪽)
+        header.addWidget(self._pg_box)  # [545차] ProfitGuard L1~L4 배지 (CB 오른쪽)
         header.addWidget(self.lbl_shs)        # SHS / EKS badge
         header.addWidget(self.lbl_shadow)     # ShadowSession 상태 배지
         header.addWidget(self.lbl_code_change)  # [234차] 종목변경 재시작 배지
@@ -11306,6 +11359,199 @@ class MireukDashboard(QMainWindow):
         self._phase5_blink_on = not self._phase5_blink_on
         col = self._phase5_color if self._phase5_blink_on else C['bg3']
         self.lbl_phase5_gate.setStyleSheet(self._phase5_style(col))
+
+    # ── [MW0601 545차] ProfitGuard L1~L4 배지 렌더링 ────────────────
+    #
+    # 상태 5종을 **색으로** 구분한다. 종전 배지의 결함은 "정상"과 "갱신 실패"가
+    # 같은 회색 픽셀이었다는 것이다 — 그래서 2026-09-08 09:21 L2-Tier4가 실제로
+    # 래치된 순간에도 화면은 정상을 표시했다(계측 4원칙 ④).
+    _PG_STATE_STYLE = {
+        "idle":       (C['bg3'],    C['text2'], "정상"),
+        "armed":      (C['blue'],   "#ffffff",  "감시"),
+        "block":      (C['orange'], "#ffffff",  "차단중"),
+        "halt":       (C['red'],    "#ffffff",  "당일중단"),
+        "unmeasured": (C['purple'], "#ffffff",  "미측정"),
+    }
+    _PG_STATE_MARK = {
+        "idle": "", "armed": "▲", "block": "⛔", "halt": "🔒", "unmeasured": "?",
+    }
+    _PG_RANK = {"idle": 0, "unmeasured": 1, "armed": 2, "block": 3, "halt": 4}
+
+    def _apply_pg_main_style(self, bg, fg):
+        self.lbl_l2_halt.setStyleSheet(
+            f"background:{bg};color:{fg};"
+            f"border:1px solid {C['border']};"
+            f"border-radius:{S.p(3)}px;"
+            f"font-size:{S.f(9)}px;font-weight:bold;"
+            f"padding:{S.p(1)}px {S.p(4)}px;"
+        )
+
+    def _apply_pg_chip_style(self, key, bg, fg):
+        lbl = self.lbl_pg_layers.get(key)
+        if lbl is None:
+            return
+        lbl.setStyleSheet(
+            f"background:{bg};color:{fg};"
+            f"border-radius:{S.p(3)}px;"
+            f"font-size:{S.f(8)}px;font-weight:bold;"
+            f"padding:{S.p(1)}px {S.p(2)}px;"
+        )
+
+    def render_profit_guard(self, st):
+        """ProfitGuard.guard_status() 결과를 헤더 배지에 그린다 [545차].
+
+        `st=None`은 **갱신 실패**다 — 정상(회색)과 구분해 보라색으로 깜빡인다.
+        """
+        # ── 갱신 실패 ────────────────────────────────────────────
+        if not isinstance(st, dict):
+            self.lbl_l2_halt.setText("  PG ⚠ 갱신실패  ")
+            self._pg_color, self._pg_fg = C['purple'], "#ffffff"
+            self._pg_chip_color = C['purple']
+            self._pg_blink_active = True
+            self._pg_blink_chip = ""
+            self._pg_blink_on = True
+            self._apply_pg_main_style(self._pg_color, self._pg_fg)
+            for k in ("L1", "L2", "L3", "L4"):
+                self.lbl_pg_layers[k].setText("  %s?  " % k)
+                self._apply_pg_chip_style(k, C['bg3'], C['purple'])
+            self._pg_box.setToolTip(
+                "ProfitGuard 배지 갱신 실패\n"
+                "  guard_status() 호출이 예외로 끝났다. 이 상태에서는 L1~L4의\n"
+                "  실제 발동 여부를 화면으로 알 수 없다 — SYSTEM 로그의\n"
+                "  '[ProfitGuard] 배지 갱신 실패'를 확인할 것."
+            )
+            return
+
+        layers   = st.get("layers") or {}
+        measured = bool(st.get("measured"))
+        pnl      = st.get("daily_pnl_krw")
+        halted   = bool(st.get("halted"))
+        blocking = bool(st.get("blocking"))
+        halt_layer = st.get("halt_layer") or ""
+        halt_label = st.get("halt_label") or ""
+
+        # ── 칩 4개 ───────────────────────────────────────────────
+        worst = "idle"
+        for k in ("L1", "L2", "L3", "L4"):
+            state = (layers.get(k) or {}).get("state", "unmeasured")
+            bg, fg, _ko = self._PG_STATE_STYLE.get(state, self._PG_STATE_STYLE["unmeasured"])
+            mark = self._PG_STATE_MARK.get(state, "")
+            self.lbl_pg_layers[k].setText("  %s%s  " % (k, mark))
+            self._apply_pg_chip_style(k, bg, fg)
+            if self._PG_RANK.get(state, 0) > self._PG_RANK.get(worst, 0):
+                worst = state
+
+        # ── 본 라벨 ──────────────────────────────────────────────
+        _money = "미측정" if pnl is None else "{:+,.0f}원".format(pnl)
+        # ⚠ 순서 주의 — **래치가 미측정보다 먼저다.** 손익을 못 재도 "멈췄다"는
+        #   사실은 알 수 있고, 그게 운영자가 가장 먼저 봐야 할 정보다.
+        #   (반대로 두면 구 API 경로처럼 measured=False 인 호출에서 중단이 가려진다.)
+        if halted:
+            text, color, fg = "🔒 %s 중단 %s" % (halt_label, _money), C['red'], "#ffffff"
+        elif blocking:
+            text, color, fg = "⛔ %s %s" % (halt_label, _money), C['orange'], "#ffffff"
+        elif not measured:
+            text, color, fg = "PG 미측정", C['purple'], "#ffffff"
+        elif worst == "armed":
+            text, color, fg = "PG 감시 %s" % _money, C['blue'], "#ffffff"
+        else:
+            text, color, fg = "PG 정상 %s" % _money, C['bg3'], C['green']
+
+        self.lbl_l2_halt.setText("  %s  " % text)
+        self._pg_color, self._pg_fg = color, fg
+        self._pg_chip_color = C['red'] if halted else color
+        # 상시 깜빡임은 신호가 아니다 — **래치**일 때만 깜빡인다(472차 교훈).
+        self._pg_blink_active = halted
+        self._pg_blink_chip = halt_layer if halted else ""
+        # 꺼진 위상에서 갱신돼 배지가 사라진 채 굳는 것을 막는다.
+        self._pg_blink_on = True
+        self._apply_pg_main_style(color, fg)
+        self._pg_box.setToolTip(self._pg_tooltip(st))
+
+    # [MW0601 546차] 판정 손익 원천 라벨 — 로그 토큰을 사람 말로 옮긴다.
+    # `strategy/profit_guard.py:_PNL_SRC_LABEL` 과 같은 뜻이어야 한다.
+    _PG_SRC_LABEL = {
+        "engine_system_only": "시스템 자동매매 실현 net (외부·수동 제외)",
+        "broker_net_est":     "브로커 실현손익 − 수수료 (계좌 전체)",
+        "broker":             "브로커 실현손익 gross (계좌 전체)",
+        "engine":             "엔진 실현 net (계좌 전체)",
+    }
+
+    def _pg_tooltip(self, st):
+        pnl = st.get("daily_pnl_krw")
+        src = st.get("pnl_source") or ""
+        thr = st.get("stop_threshold")
+        out = ["ProfitGuard — 당일 수익 보존 4중 가드"]
+        out.append("  판정손익 : %s" % (
+            "미측정" if pnl is None else "{:+,.0f}원".format(pnl)))
+        out.append("  손익 원천 : %s" % (
+            self._PG_SRC_LABEL.get(src, src or "미측정")))
+        # ── 시스템 한정 축일 때: 무엇이 빠졌는지 숫자로 보여준다 ──────────
+        # 「+0원인데 계좌는 벌고 있다」가 화면에서 모순으로 보이지 않도록,
+        # 제외분을 같은 자리에 적는다(계측 4원칙 ③ — 탈락을 가시화한다).
+        if st.get("system_only"):
+            _sl = st.get("system_legs")
+            _ol = st.get("other_legs") or 0
+            _on = st.get("other_net_krw")
+            if _sl == 0:
+                out.append("    · 시스템 청산 0레그 — 아직 시스템이 실현한 손익이 없다")
+                out.append("      (미측정이 아니라 **알려진 0원**이다)")
+            else:
+                out.append("    · 시스템 청산 %d레그" % int(_sl or 0))
+            if _ol:
+                out.append("    · 제외분(외부·수동·복구) %d레그 %s — 판정에 넣지 않는다" % (
+                    int(_ol), "{:+,.0f}원".format(_on or 0.0)))
+            out.append("    ⚠ 실현 전용 축이다 — 보유 중 미실현은 반영되지 않는다.")
+        if thr and pnl is not None:
+            out.append("  중단 임계 {:,.0f}원 대비 달성률 {:.1%}".format(thr, pnl / thr))
+        out.append("")
+        for k in ("L1", "L2", "L3", "L4"):
+            d = (st.get("layers") or {}).get(k) or {}
+            state = d.get("state", "unmeasured")
+            _bg, _fg, ko = self._PG_STATE_STYLE.get(state, self._PG_STATE_STYLE["unmeasured"])
+            out.append("  %s %-9s [%s] %s" % (k, d.get("title", ""), ko, d.get("detail", "")))
+        out.append("")
+        if st.get("halted"):
+            out.append("🔒 당일 진입 중단 — %s" % (st.get("halt_label") or ""))
+            out.append("   %s" % (st.get("halt_reason") or ""))
+            out.append("   해제: 다음 거래일 리셋(reset_daily)까지 유지된다.")
+            out.append("   ⚠ 대시보드에서 파라미터를 바꿔도 래치는 풀리지 않는다")
+            out.append("     (update_config는 cfg만 교체한다).")
+        elif st.get("blocking"):
+            out.append("⛔ 현재 진입 차단 — %s (조건이 풀리면 재개)" % (st.get("halt_label") or ""))
+            out.append("   %s" % (st.get("halt_reason") or ""))
+        elif not st.get("measured"):
+            # 미측정을 "허용"으로 단정하지 않는다(계측 4원칙 ②).
+            out.append("? 판정 불가 — 일일손익이 아직 측정되지 않았다")
+        else:
+            out.append("✓ 진입 허용 상태")
+        out.append("금일 ProfitGuard 차단 누계 {:,}건".format(int(st.get("blocked_today") or 0)))
+        return "\n".join(out)
+
+    def _blink_profit_guard(self):
+        """래치(또는 갱신 실패) 상태에서만 실제로 깜빡인다 [545차].
+
+        **상시 깜빡임은 신호가 아니다** — 472차 Phase5 배지가 기각된 계획을 두 달
+        넘게 깜빡여 경보 피로로 그 자리의 가치를 0으로 만든 전례를 따른다.
+        """
+        if not self._pg_blink_active:
+            if not self._pg_blink_on:
+                self._pg_blink_on = True
+                self._apply_pg_main_style(self._pg_color, self._pg_fg)
+                if self._pg_blink_chip:
+                    self._apply_pg_chip_style(self._pg_blink_chip, self._pg_chip_color, "#ffffff")
+            return
+        self._pg_blink_on = not self._pg_blink_on
+        if self._pg_blink_on:
+            self._apply_pg_main_style(self._pg_color, self._pg_fg)
+        else:
+            self._apply_pg_main_style(C['bg3'], self._pg_color)
+        chip = self._pg_blink_chip
+        if chip and chip in self.lbl_pg_layers:
+            if self._pg_blink_on:
+                self._apply_pg_chip_style(chip, self._pg_chip_color, "#ffffff")
+            else:
+                self._apply_pg_chip_style(chip, C['bg3'], self._pg_chip_color)
 
     def _tick_header(self):
         """1초마다 헤더 가동 경과시간 + 파이프라인 생존 바 갱신."""
@@ -11996,31 +12242,52 @@ class DashboardAdapter:
             f"font-size:{S.f(11)}px;font-weight:bold;"
         )
 
-    def update_l2_halt_badge(self, is_halted: bool, threshold: float = 0.0):
-        """L2 Tier Gate 영구중단 상태 배지 업데이트"""
-        lbl = getattr(self._win, "lbl_l2_halt", None)
-        if lbl is None:
+    def update_profit_guard_badge(self, status):
+        """[MW0601 545차] ProfitGuard L1~L4 배지 갱신.
+
+        `status`는 `ProfitGuard.guard_status()` 결과 dict. `None`을 넘기면
+        **갱신 실패** 상태로 그린다 — 정상(회색)과 같은 픽셀로 그리지 않는다
+        (계측 4원칙 ④). 종전 `update_l2_halt_badge`는 L2 하나만 실었고, 그나마
+        `_TierGate.is_halted` 부재로 4개월간 한 번도 호출이 성공하지 못했다.
+        """
+        win = getattr(self, "_win", None)
+        if win is None or not hasattr(win, "render_profit_guard"):
             return
-        
-        if is_halted:
-            lbl.setText(f"  🔒 L2 중단  ({threshold/1e6:.1f}M원)")
-            lbl.setStyleSheet(
-                f"background:#C62828;color:#fff;"
-                f"border:2px solid #FF5252;"
-                f"border-radius:{S.p(3)}px;"
-                f"font-size:{S.f(10)}px;font-weight:bold;"
-                f"padding:{S.p(1)}px {S.p(3)}px;"
-            )
-        else:
-            # 비활성 상태: 텍스트 유지, 색상만 회색으로
-            lbl.setText("L2 —")
-            lbl.setStyleSheet(
-                f"background:{C['bg3']};color:{C['text2']};"
-                f"border:1px solid {C['border']};"
-                f"border-radius:{S.p(3)}px;"
-                f"font-size:{S.f(10)}px;"
-                f"padding:{S.p(1)}px {S.p(3)}px;"
-            )
+        win.render_profit_guard(status)
+
+    def update_l2_halt_badge(self, is_halted: bool, threshold: float = 0.0):
+        """구(舊) L2 전용 API — 하위호환 shim [545차].
+
+        L2 래치 여부만 아는 호출부를 위해 최소 dict를 합성해 새 렌더러로 넘긴다.
+        L1·L3·L4는 **모른다**는 사실을 `unmeasured`로 남긴다(0이나 '정상'으로
+        채우지 않는다 — 계측 4원칙 ②). 신규 호출부는 `update_profit_guard_badge`
+        를 쓸 것.
+        """
+        _unk = {"state": "unmeasured", "detail": "구 API 호출 — 미측정"}
+        _l2 = {
+            "state": "halt" if is_halted else "idle",
+            "detail": ("중단 임계 {:,.0f}원 도달".format(threshold) if is_halted
+                       else "Tier 0 (정상)"),
+        }
+        layers = {}
+        for k, title in (("L1", "피크 트레일링"), ("L2", "수익구간 티어"),
+                         ("L3", "오후 리스크압축"), ("L4", "수익CB(연속손실)")):
+            d = dict(_l2) if k == "L2" else dict(_unk)
+            d["name"], d["title"] = k, title
+            layers[k] = d
+        self.update_profit_guard_badge({
+            "measured": False,
+            "daily_pnl_krw": None,
+            "pnl_source": None,
+            "halted": bool(is_halted),
+            "blocking": bool(is_halted),
+            "halt_layer": "L2" if is_halted else "",
+            "halt_label": "L2-Tier" if is_halted else "",
+            "halt_reason": layers["L2"]["detail"] if is_halted else "",
+            "layers": layers,
+            "stop_threshold": float(threshold or 0.0) or None,
+            "blocked_today": 0,
+        })
 
     def update_shadow_badge(
         self,
@@ -12449,16 +12716,21 @@ class DashboardAdapter:
         self._init_l2_halt_badge()
 
     def _init_l2_halt_badge(self):
-        """L2 배지 초기화 (최초 한 번만)"""
-        if hasattr(self, '_profit_guard') and self._profit_guard is not None:
-            try:
-                l2_info = self._profit_guard.get_l2_halt_info()
-                self.update_l2_halt_badge(
-                    is_halted=l2_info['is_halted'],
-                    threshold=l2_info['halt_threshold']
-                )
-            except Exception:
-                pass
+        """ProfitGuard 배지 최초 1회 초기화 [545차 개편].
+
+        🔴 종전에는 `except Exception: pass` 였다. 그래서
+        `get_l2_halt_info()`의 AttributeError가 **어디에도 남지 않고** 배지가
+        초기 텍스트에 굳었다 — 이제 실패를 화면(보라색 '갱신실패')과 로그에
+        모두 남긴다(계측 4원칙 ④).
+        """
+        guard = self._profit_guard
+        if guard is None:
+            return
+        try:
+            self.update_profit_guard_badge(guard.guard_status())
+        except Exception as e:
+            logger.warning("[ProfitGuard] 배지 초기화 실패 — %r", e)
+            self.update_profit_guard_badge(None)
 
     def refresh_profit_guard(self, daily_pnl_krw: float, today_trades: list):
         """매분 파이프라인 완료 후 수익 가드 패널 갱신."""

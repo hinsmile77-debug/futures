@@ -904,14 +904,37 @@ class ProfitGuardPanel(QWidget):
 
     @staticmethod
     def _rows_to_dicts(rows) -> list:
-        """sqlite3.Row / 혼합 리스트를 dict 리스트로 변환."""
+        """sqlite3.Row / 혼합 리스트를 dict 리스트로 변환.
+
+        🔴 [MW0601 546차] `PROFIT_GUARD_SYSTEM_ONLY_PNL` 이 켜져 있으면 여기서
+        **시스템 자동매매 분만 남긴다.** 이 패널이 `_today_trades` 로 하는 일은
+        전부 ProfitGuard 관련이다 — 챔피언/챌린저 시뮬레이션, 골든아워, 차단
+        로그, 그리고 `_auto_refresh()` 의 `daily_pnl = sum(...)`. 라이브 게이트가
+        시스템 한정 축으로 판정하는데 패널만 계좌 전체로 시뮬레이션하면
+        **화면이 제안하는 임계와 실제로 발동하는 임계가 달라진다.**
+
+        ⚠ 이 필터는 이 패널 안에서만 유효하다. 손익 리포트·잔고·PnL 히스토리는
+          종전대로 계좌 전체를 본다(「얼마 벌었나」와 「시스템을 보호하려면」은
+          다른 질문이다 — 423차 `fetch_ev_by_grade(system_only=…)` 와 같은 구분).
+        ⚠ `entry_source` 가 없는 행(구버전·미기록)은 **제외**된다. 시스템으로
+          승격하면 311차 이전 구간이 섞여 부호가 뒤집힐 수 있다(423차 실측).
+        """
         result = []
         for r in (rows or []):
             try:
                 result.append(dict(r) if not isinstance(r, dict) else r)
             except Exception:
                 pass
-        return result
+        try:
+            from config.settings import (
+                PROFIT_GUARD_SYSTEM_ONLY_PNL as _ONLY,
+                PROFIT_GUARD_SYSTEM_SOURCES as _SRC,
+            )
+        except Exception:
+            return result
+        if not _ONLY:
+            return result
+        return [t for t in result if t.get("entry_source") in _SRC]
 
     # ── 갱신 ─────────────────────────────────────────────────────
     def refresh(self, daily_pnl_krw: float, today_trades: list):

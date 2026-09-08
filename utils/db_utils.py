@@ -2258,7 +2258,11 @@ def fetch_pnl_history(limit_days: int = 90) -> List[sqlite3.Row]:
 def fetch_today_trades(today_str: str = None) -> List[sqlite3.Row]:
     """당일 체결 완료 거래 목록 (entry_ts LIKE today_str%).
     반환 컬럼: direction, entry_price, exit_price, quantity, pnl_pts, pnl_krw,
-               exit_reason, grade, entry_ts, exit_ts
+               exit_reason, grade, entry_ts, exit_ts, entry_source
+
+    ⚠ [MW0601 546차] `entry_source` 추가 — **컬럼 추가만 했다.** 행 필터·정렬·
+      기존 컬럼은 무변경이라 모든 호출부가 그대로 동작한다(이름 접근).
+      `NULL` = **미측정**(311차 이전 구간)이며 'SYSTEM_AUTO'가 아니다.
     """
     import datetime as _dt
     if today_str is None:
@@ -2274,7 +2278,8 @@ def fetch_today_trades(today_str: str = None) -> List[sqlite3.Row]:
                   COALESCE(forward_net_pnl_krw, forward_pnl_krw, net_pnl_krw, pnl_krw) AS forward_pnl_krw,
                   gross_pnl_krw, commission_krw, formula_version,
                   forward_gross_pnl_krw, forward_commission_krw,
-                  exit_reason, grade, entry_ts, exit_ts
+                  exit_reason, grade, entry_ts, exit_ts,
+                  entry_source
            FROM trades
            WHERE exit_ts LIKE ?
            ORDER BY exit_ts ASC""",
@@ -2335,6 +2340,69 @@ def fetch_regime_stats() -> List[sqlite3.Row]:
            GROUP BY regime
            ORDER BY regime""",
     )
+
+
+def sum_today_system_net_krw(rows, sources=None) -> dict:
+    """[MW0601 546차] 당일 거래 행에서 **시스템 자동매매 분**만 실현 net 합계.
+
+    `fetch_today_trades()` 가 준 행을 그대로 받는다(추가 쿼리 없음 — ProfitGuard 는
+    매분 호출되므로 장중 DB 재조회를 만들지 않는다. 456차 장중 DB 금지 취지).
+
+    Args:
+        rows:    fetch_today_trades() 반환 행 (또는 같은 키를 가진 dict 목록)
+        sources: 시스템으로 인정할 `entry_source` 튜플. None 이면 settings 값.
+
+    Returns:
+        {"net_krw": float, "legs": int, "other_net_krw": float, "other_legs": int,
+         "unknown_legs": int}
+
+    🔴 **미측정 ≠ 0**(계측 4원칙 ②). `legs == 0` 은 "시스템이 0원 벌었다"가 아니라
+      **"아직 시스템 청산이 없다"** 이다. 호출부가 둘을 구분해 표시해야 한다.
+      `entry_source` 가 NULL 인 행은 `unknown_legs` 로 따로 센다 — 311차 이전
+      구간이며 **시스템으로 간주하지 않는다**(423차 실측에서 이 구간 6건이
+      A급 30일 합계의 부호를 통째로 뒤집었다).
+
+    ⚠ 행은 **청산 레그** 단위다(계측 4원칙 ①). 합계는 레그 합이라 포지션 합과
+      같지만, `legs` 를 "거래 건수"로 읽지 말 것 — TP1/TP2/TP3 는 3레그다.
+    """
+    if sources is None:
+        try:
+            from config.settings import PROFIT_GUARD_SYSTEM_SOURCES as _S
+            sources = _S
+        except Exception:
+            sources = ("SYSTEM_AUTO",)
+    sources = tuple(sources or ())
+
+    net = 0.0
+    other = 0.0
+    legs = 0
+    other_legs = 0
+    unknown_legs = 0
+    for r in (rows or []):
+        try:
+            keys = r.keys() if hasattr(r, "keys") else ()
+            src = r["entry_source"] if "entry_source" in keys else None
+        except Exception:
+            src = None
+        try:
+            pnl = float(r["pnl_krw"] or 0.0)
+        except Exception:
+            continue
+        if src in sources:
+            net += pnl
+            legs += 1
+        else:
+            other += pnl
+            other_legs += 1
+            if not src:
+                unknown_legs += 1
+    return {
+        "net_krw":       round(net, 0),
+        "legs":          legs,
+        "other_net_krw": round(other, 0),
+        "other_legs":    other_legs,
+        "unknown_legs":  unknown_legs,
+    }
 
 
 def fetch_ev_by_grade(days_back: int = 30, system_only: bool = False) -> List[sqlite3.Row]:

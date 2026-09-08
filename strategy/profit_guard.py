@@ -81,7 +81,16 @@ class ProfitGuardConfig:
 # main.py의 `[DebugPnL]` 줄은 **등급이 이미 X가 아닌 경우에만** 찍혀 커버리지가
 # 08-18 기준 37/160(23%)뿐이다. 여기서 남기면 **모든 차단 줄**이 단위를 갖는다
 # (계측 4원칙 ①·④). GR-1 스크립트가 이 토큰으로 단위를 구분한다.
-_PNL_SRC_LABEL = {"broker": "broker(gross)", "engine": "engine(net)"}
+_PNL_SRC_LABEL = {
+    "broker": "broker(gross)",
+    "engine": "engine(net)",
+    "broker_net_est": "broker(net추정·계좌전체)",
+    # 🔴 [MW0601 546차] ProfitGuard 판정 전용 축 — `trades.entry_source` 가
+    #   SYSTEM_AUTO 인 청산 레그의 **실현 net 합계**. 외부(수동)·브로커 복구·
+    #   유령 체결·야간세션·이월분이 **빠진다**. 2026-09-08 사용자 지시.
+    #   ⚠ 실현 전용이라 보유 중에는 움직이지 않는다(계좌 gross 축과 다르다).
+    "engine_system_only": "engine(net·시스템진입만)",
+}
 
 
 # ── Layer 1: 피크 트레일링 가드 ──────────────────────────────────
@@ -199,6 +208,23 @@ class _TierGate:
         self._halted = False
         self._halt_tier = 0
         self._halt_threshold = 0.0
+
+    @property
+    def is_halted(self) -> bool:
+        """거래중단 래치 여부.
+
+        🔴 [MW0601 545차] **형제 게이트 3종의 인터페이스를 맞춘다.**
+        `_TrailingGuard`는 일반 속성(`self.is_halted`), `_ProfitCB`는 `@property`로
+        `is_halted`를 노출하는데 **여기만 빠져 있었다.** 그래서
+        `ProfitGuard.get_l2_halt_info()`·`status_dict()`가 작성된 날
+        (28차 `47721d6`, 2026-05-14)부터 호출될 때마다 `AttributeError`로 죽었고,
+        호출부가 `logger.debug`(main.py)·`except: pass`(dashboard)로 삼켜
+        **L2 배지가 약 4개월간 초기 텍스트 "L2 —"(=정상)에 굳어 있었다.**
+        2026-09-08 09:21 Tier4가 실제로 래치된 순간에도 배지는 정상을 표시했다 —
+        계측 4원칙 ④(폴백이 정상값처럼 보인다)의 UI판이다.
+        회귀 가드: `tests/test_545_profit_guard_badge_status.py`
+        """
+        return self._halted
 
     @property
     def halt_threshold(self) -> float:
@@ -437,6 +463,170 @@ class ProfitGuard:
             'is_halted': self._tier.is_halted,
             'halt_threshold': self._tier.halt_threshold,
             'halt_tier': self._tier.halt_tier,
+        }
+
+    # ── [MW0601 545차 신설] L1~L4 통합 상태 (읽기 전용) ──────────────
+    #
+    # 왜 새로 만드는가 — 종전에는 배지가 볼 수 있는 창구가 `get_l2_halt_info()`
+    # **하나뿐**이었고 이름 그대로 L2만 실었다. 그래서 L1 트레일링이 래치돼
+    # 진입이 끊긴 날에도 화면에는 L2 상태밖에 나오지 않았다(2026-09-08 09:40이
+    # 정확히 그랬다 — L2-Tier4 19건 뒤 L1-Trail 168건). 4개 레이어를 한 번에
+    # 돌려주고, **지금 무엇이 구속하고 있는지**(binding)를 명시한다.
+    #
+    # 🔴 **이 메서드는 상태를 바꾸지 않는다.** `get_l2_halt_info(pnl)`는 인자를
+    #   받으면 임계 도달 시 `_halted`를 **켜버리는데**(안전망 의도), 조회 함수가
+    #   래치를 만들면 "누가 언제 멈췄나"의 출처가 흐려진다. 래치는 매분
+    #   `is_entry_allowed()`가 만드는 것이 유일한 경로여야 한다. 하위호환을 위해
+    #   `get_l2_halt_info()`의 기존 동작은 그대로 두고, 배지는 이쪽만 쓴다.
+    #
+    # 🔴 **미측정과 0을 구분한다**(계측 4원칙 ②). `daily_pnl_krw=None`이면
+    #   티어·오후모드 판정이 성립하지 않으므로 `measured=False`로 돌려주고
+    #   숫자를 지어내지 않는다.
+    _LAYER_TITLES = {
+        "L1": "피크 트레일링",
+        "L2": "수익구간 티어",
+        "L3": "오후 리스크압축",
+        "L4": "수익CB(연속손실)",
+    }
+
+    def guard_status(
+        self,
+        daily_pnl_krw: Optional[float] = None,
+        size_mult: Optional[float] = None,
+        now: Optional[datetime.datetime] = None,
+    ) -> dict:
+        """L1~L4 전 레이어 상태를 한 번에 반환한다(부작용 없음).
+
+        각 레이어 `state`:
+            idle       정상 (감시 조건 미달)
+            armed      감시 활성 (아직 차단은 아님)
+            block      지금 차단 중이나 **래치는 아니다** (조건이 풀리면 재개)
+            halt       당일 래치 — `reset_daily()` 전까지 회복 불가
+            unmeasured 판정 입력(daily_pnl_krw) 미제공
+        """
+        cfg = self.cfg
+        measured = daily_pnl_krw is not None
+        pnl = float(daily_pnl_krw) if measured else None
+        if now is None:
+            now = now_kst()
+
+        layers: dict = {}
+
+        # ── L1 피크 트레일링 ──────────────────────────────────────
+        _peak = self._trail.peak_pnl
+        _floor = self._trail.trail_floor(cfg)
+        if self._trail.is_halted:
+            _l1 = ("halt", self._trail._halt_reason or "트레일링 발동")
+        elif _floor is not None:
+            _l1 = ("armed", "피크 {:+,.0f}원 · 보호선 {:+,.0f}원({:.0%} 하락 시 중단)".format(
+                _peak, _floor, cfg.trail_ratio))
+        else:
+            _l1 = ("idle", "발동금액 {:+,.0f}원 미달 (피크 {:+,.0f}원)".format(
+                cfg.trail_activation_krw, _peak))
+        layers["L1"] = {"state": _l1[0], "detail": _l1[1]}
+
+        # ── L2 수익구간 티어 ──────────────────────────────────────
+        _tier = self._tier.get_tier(pnl, cfg) if measured else None
+        _min_mult = self._tier.get_min_mult(pnl, cfg) if measured else None
+        _stop_thr = None
+        for _t, _mm, _mq in cfg.profit_tiers:
+            if _mq == 0:
+                _stop_thr = float(_t)
+                break
+        if self._tier.is_halted:
+            _l2 = ("halt", "Tier {} 중단 임계 {:,.0f}원 도달 → 당일 영구 중단".format(
+                self._tier.halt_tier, self._tier.halt_threshold))
+        elif not measured:
+            _l2 = ("unmeasured", "일일손익 미측정 — 티어 판정 불가")
+        elif size_mult is not None and _min_mult is not None and size_mult < _min_mult:
+            _l2 = ("block", "Tier {}: size_mult {:.1f} < 최소 {:.1f} 요구".format(
+                _tier, size_mult, _min_mult))
+        elif _tier:
+            _l2 = ("armed", "Tier {} — 최소 size_mult {:.1f} 요구".format(_tier, _min_mult or 0.0))
+        else:
+            _l2 = ("idle", "Tier 0 (정상)")
+        layers["L2"] = {"state": _l2[0], "detail": _l2[1]}
+
+        # ── L3 오후 리스크압축 ────────────────────────────────────
+        _aft_n = self._arisk.afternoon_count
+        _aft_max = cfg.afternoon_max_trades
+        if not cfg.afternoon_enabled:
+            _l3 = ("idle", "비활성 (afternoon_enabled=False)")
+        elif not measured:
+            _l3 = ("unmeasured", "일일손익 미측정 — 오후모드 판정 불가")
+        elif now.hour < cfg.afternoon_cutoff_hour:
+            _l3 = ("idle", "{}시 이전 (오후모드 미적용)".format(cfg.afternoon_cutoff_hour))
+        elif pnl < cfg.afternoon_min_pnl_krw:
+            _l3 = ("idle", "당일손익 {:+,.0f}원 < 발동선 {:+,.0f}원".format(
+                pnl, cfg.afternoon_min_pnl_krw))
+        elif _aft_n >= _aft_max:
+            _l3 = ("block", "오후 진입 횟수 소진 ({}/{}회)".format(_aft_n, _aft_max))
+        elif size_mult is not None and size_mult < cfg.afternoon_min_rr / 2.0:
+            _l3 = ("block", "오후 신호 품질 미달 (mult {:.1f} < 기준 {:.1f})".format(
+                size_mult, cfg.afternoon_min_rr / 2.0))
+        else:
+            _l3 = ("armed", "오후모드 — 잔여 진입 {}/{}회".format(
+                max(0, _aft_max - _aft_n), _aft_max))
+        layers["L3"] = {"state": _l3[0], "detail": _l3[1]}
+
+        # ── L4 수익CB (연속손실) ──────────────────────────────────
+        _consec = self._pcb.consec_loss
+        if self._pcb.is_halted:
+            _l4 = ("halt", "수익 보존 CB 발동 ({}연속 손실) → 당일 진입 중단".format(_consec))
+        elif not cfg.profit_cb_enabled:
+            _l4 = ("idle", "비활성 (profit_cb_enabled=False)")
+        elif _consec > 0:
+            _l4 = ("armed", "연속 손실 {}/{}회".format(_consec, cfg.profit_cb_consec_loss))
+        else:
+            _l4 = ("idle", "연속 손실 0회 (발동선 당일 {:+,.0f}원 이상 & {}연속)".format(
+                cfg.profit_cb_min_pnl_krw, cfg.profit_cb_consec_loss))
+        layers["L4"] = {"state": _l4[0], "detail": _l4[1]}
+
+        for _k, _v in layers.items():
+            _v["name"] = _k
+            _v["title"] = self._LAYER_TITLES[_k]
+
+        # ── 구속 레이어 — is_entry_allowed()와 **같은 순서**로 고른다 ────
+        halt_layer = ""
+        halt_state = ""
+        for _k in ("L1", "L2", "L3", "L4"):
+            if layers[_k]["state"] in ("halt", "block"):
+                halt_layer, halt_state = _k, layers[_k]["state"]
+                break
+
+        halt_label = ""
+        if halt_layer == "L1":
+            halt_label = "L1-Trail"
+        elif halt_layer == "L2":
+            halt_label = "L2-Tier{}".format(
+                self._tier.halt_tier if self._tier.is_halted else (_tier or 0))
+        elif halt_layer == "L3":
+            halt_label = "L3-Afternoon"
+        elif halt_layer == "L4":
+            halt_label = "L4-ProfitCB"
+
+        return {
+            "measured":       measured,
+            "daily_pnl_krw":  pnl,
+            "pnl_source":     self._pnl_source,
+            # halted = 당일 래치(회복 불가). blocking = 지금 진입이 막혀 있다.
+            "halted":         bool(halt_state == "halt"),
+            "blocking":       bool(halt_layer),
+            "halt_layer":     halt_layer,
+            "halt_label":     halt_label,
+            "halt_reason":    layers[halt_layer]["detail"] if halt_layer else "",
+            "layers":         layers,
+            "peak_pnl":       _peak,
+            "trail_floor":    _floor,
+            "tier":           _tier,
+            "tier_min_mult":  _min_mult,
+            "stop_threshold": _stop_thr,
+            "halt_threshold": self._tier.halt_threshold,
+            "halt_tier":      self._tier.halt_tier,
+            "afternoon_count": _aft_n,
+            "afternoon_max":  _aft_max,
+            "pcb_consec":     _consec,
+            "blocked_today":  self._blocked_today,
         }
 
     def to_state_dict(self) -> dict:

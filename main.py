@@ -54,6 +54,7 @@ from utils.db_utils import (
     save_horizon_features, count_raw_candles,
     fetch_recent_raw_features, fetch_recent_raw_candles,
     fetch_today_trades, fetch_pnl_history, normalize_trade_pnl,
+    sum_today_system_net_krw,
     save_daily_stats, fetch_trend_daily, fetch_trend_weekly,
     fetch_trend_monthly, fetch_trend_yearly,
     is_plausible_futures_trade,
@@ -67,6 +68,7 @@ from utils.db_utils import (
 )
 from config.settings import (
     TRADES_DB, DB_DIR, HORIZONS, HORIZON_DIR, PARTIAL_EXIT_RATIOS,
+    PROFIT_GUARD_SYSTEM_ONLY_PNL, PROFIT_GUARD_SYSTEM_SOURCES,  # [546차] 판정 손익 축
     VALIDATION_CAMPAIGN,                  # [MW0602 502차 U-2] [57] te 게이트 섀도 임계 조회
     SIGNAL_DECAY_EXIT_ENABLED,
     LOSS_TIER1_ENABLED, LOSS_TIER1_TICK_ENABLED,
@@ -790,6 +792,10 @@ class TradingSystem:
         self.current_intraday_regime = INTRADAY_NORMAL   # Layer 2 장중 전술 레짐
         self._verified_today: int = 0        # 당일 SGD 검증 누적 건수
         self._efficacy_tick:  int = 0        # 5분마다 효과 검증 패널 갱신용
+        # [MW0601 545차] ProfitGuard 배지 갱신 실패를 세션당 1회만 WARNING 으로
+        # 올리기 위한 플래그. 속성 조회 폴백(기본값을 주는 getattr 형태)으로 읽지 않도록
+        # 여기서 명시 초기화한다(계측 4원칙 ④ / tests/test_457_fallback_visibility).
+        self._pg_badge_err_logged: bool = False
         self._last_block_reason: str = ""    # 직전 진입 차단 이유 (중복 로그 방지)
         self._last_recovery_ts:  str = ""    # 마지막 복구 처리 분봉 ts (동일 분봉 반복 방지)
         # 거래소 CB 대기 모드
@@ -1161,6 +1167,26 @@ class TradingSystem:
         # [311차 후속] 진입 출처 태그 — trades.entry_source에 그대로 기록되어
         # 유령/정상 레코드를 사후 구분한다(306차 pending_miss 유령 포지션 사후분석 대응).
         self._entry_source:       str  = "SYSTEM_AUTO"
+        # ── 🔴 [MW0601 546차 / 사용자 지시] ProfitGuard 판정용 **시스템 한정**
+        #      당일 실현 net 누적기 ─────────────────────────────────────────
+        # 「판정에서 외부매매 손익 분리하고 시스템 자동 매매에만 적용」.
+        #
+        # 왜 DB 조회가 아니라 인메모리 누적인가 — ProfitGuard 는 **매분** STEP 7
+        # 에서 호출된다. 매분 trades.db 를 다시 읽으면 456차가 금지한 장중 DB
+        # 접근을 정확히 그 빈도로 만든다. 그래서 청산 기록 지점
+        # (`_record_trade_result`, DB INSERT 와 **같은 자리·같은 값**)에서 더하고,
+        # 세션 재시작 시에만 당일 행으로 1회 복원한다.
+        #
+        # ⚠ **미측정 ≠ 0**(계측 4원칙 ②). `_sys_daily_legs == 0` 은 "시스템이
+        #   0원 벌었다"가 아니라 "아직 시스템 청산이 없다"이다. ProfitGuard 의
+        #   판정 결과는 둘이 같지만(어떤 레이어도 발동 안 함) 배지·로그는 구분한다.
+        # ⚠ 단위는 **레그별 실현 net(원)** 이다(계측 4원칙 ①). `_sys_daily_legs`
+        #   를 "거래 건수"로 읽지 말 것 — TP1/TP2/TP3 는 3레그다.
+        self._sys_daily_net_krw:   float = 0.0
+        self._sys_daily_legs:      int   = 0
+        self._sys_daily_other_krw: float = 0.0   # 외부·수동·복구분(표시 전용)
+        self._sys_daily_other_legs: int  = 0
+        self._sys_daily_date:      str   = datetime.date.today().isoformat()
         # [260704 감사 P1] 지정가 우선 집행 상태 (LIMIT_ENTRY_FIRST_ENABLED=False면 미사용)
         self._pending_limit_is_active: bool = False
         self._pending_limit_order_no: str = ""
@@ -3688,6 +3714,10 @@ class TradingSystem:
             )
             return
         executed_metrics, forward_metrics = self._trade_metrics_pair(result)
+        # [MW0601 546차] 이 레그의 진입 출처 — DB INSERT 와 ProfitGuard 누적이
+        # **같은 값**을 쓰도록 한 번만 읽어 지역변수로 고정한다. 둘이 갈리면
+        # "배지가 말하는 손익"과 "DB 가 말하는 손익"이 어긋난다.
+        _entry_src_this_leg = getattr(self, "_entry_source", "SYSTEM_AUTO")
         execute(
             TRADES_DB,
             """INSERT INTO trades
@@ -3733,7 +3763,7 @@ class TradingSystem:
                 getattr(self, "_entry_was_restart",  0),
                 getattr(self, "_entry_had_partial",  0),
                 result.get("entry_horizon") or "",
-                getattr(self, "_entry_source", "SYSTEM_AUTO"),
+                _entry_src_this_leg,
                 getattr(self, "_entry_kelly_advised_skip", 0),
                 getattr(self, "_entry_raw_grade", ""),
                 # [MW0601 417차 / ②] 진입 계약수. 바로 위 quantity는 이번 청산
@@ -3763,6 +3793,29 @@ class TradingSystem:
                 executed_metrics.get("commission_rate_used"),
             ),
         )
+        # ── [MW0601 546차] ProfitGuard 판정용 시스템 한정 누적 ────────────
+        # DB INSERT 와 **같은 자리·같은 값**이다. 여기서 갈리면 배지가 말하는
+        # 손익과 DB 가 말하는 손익이 어긋난다.
+        # ⚠ 날짜 전환 가드 — `daily_close()` 를 못 타고 자정을 넘긴 세션에서
+        #   전날 값이 이월되는 것을 막는다(계측 4원칙 ④: 폴백을 조용히 쓰지 않는다).
+        _today_key = datetime.date.today().isoformat()
+        if self._sys_daily_date != _today_key:
+            log_manager.system(
+                "[ProfitGuard] 시스템손익 누적기 날짜 전환 %s → %s — 리셋"
+                % (self._sys_daily_date, _today_key), "WARNING")
+            self._sys_daily_date = _today_key
+            self._sys_daily_net_krw = 0.0
+            self._sys_daily_legs = 0
+            self._sys_daily_other_krw = 0.0
+            self._sys_daily_other_legs = 0
+        _leg_net = float(executed_metrics["net_pnl_krw"])
+        if _entry_src_this_leg in PROFIT_GUARD_SYSTEM_SOURCES:
+            self._sys_daily_net_krw += _leg_net
+            self._sys_daily_legs += 1
+        else:
+            self._sys_daily_other_krw += _leg_net
+            self._sys_daily_other_legs += 1
+
         # [MW0601 490차 / F-G] CB③ 조건 성립 창에서 진입한 포지션의 손익 누산.
         # ⚠ **레그를 세지 않고 레그 금액을 합산한다** — 한 포지션의 모든 청산 레그
         #   합계가 그 포지션의 실현 순손익이므로 이것이 포지션 단위 집계다
@@ -9242,26 +9295,54 @@ class TradingSystem:
                     _daily_pnl_source = "broker_net_est"
                 except Exception as _pnl_e:
                     logger.warning("[PnL] 브로커 일일손익 float 변환 실패 — 내부 추정값 사용: %s", _pnl_e)
+        # ── 🔴 [MW0601 546차 / 사용자 지시] ProfitGuard 판정 손익 축 교체 ──────
+        #
+        # 「판정에서 외부매매 손익 분리하고 시스템 자동 매매에만 적용」.
+        #
+        # 위에서 구한 `_daily_pnl_now`(broker_net_est 또는 engine net)는 **계좌
+        # 전체**다 — 외부(수동) 매매·야간세션·이월분이 전부 섞인다. 2026-09-08
+        # 09:21 이 그래서 터졌다: 시스템 자동진입 0건인 날, 외부 매매가 만든
+        # +513,967원으로 `L2-Tier4`(임계 500,000원)가 당일 영구 중단으로 래치됐다.
+        #
+        # 여기서 **ProfitGuard 에 넘기는 값만** 시스템 자동매매분으로 좁힌다.
+        # 대시보드 잔고·손익 리포트·EOD 대사·전환기준 ① 은 종전 원천 그대로다.
+        #
+        # ⚠ 이 자리에서만 갈아끼운다 — `_daily_pnl_now` 자체를 덮어쓰면 아래
+        #   `[DebugPnL]` 이 교체 사실을 못 남기고, 다른 소비처까지 조용히 바뀐다.
+        _pg_pnl_now    = _daily_pnl_now
+        _pg_pnl_source = _daily_pnl_source
+        if PROFIT_GUARD_SYSTEM_ONLY_PNL:
+            _pg_pnl_now    = float(self._sys_daily_net_krw)
+            # 원천 토큰에 축을 박는다 — **모든 차단 로그**가 어느 축으로 판정됐는지
+            # 스스로 말한다(계측 4원칙 ①·④, 477차 GR-3 관례).
+            _pg_pnl_source = "engine_system_only"
         # grade X 시 size_mult=0.0을 ProfitGuard에 전달하면 Tier0(min_mult=0.6)이
         # 불필요하게 발동해 중복 차단 로그가 쌓임 (ZeroDiag→grade X→size_mult=0 경로).
         # Tier4(daily_pnl>=400만 완전중단) 감지는 size_mult=1.0으로도 작동하므로 대체.
         _size_mult_for_pg = 1.0 if _final_grade == "X" else (_cr["size_mult"] if _cr else 1.0)
         _pg_allowed, _pg_reason = self.profit_guard.is_entry_allowed(
-            _daily_pnl_now, _size_mult_for_pg,
+            _pg_pnl_now, _size_mult_for_pg,
             # [MW0601 477차 후속7 / GR-3] 이번 판정이 gross(broker)로 계산됐는지
             # net(engine)으로 계산됐는지를 **모든 차단 줄**에 남긴다. 아래
             # `[DebugPnL]` 줄은 등급이 이미 X면 찍히지 않아 커버리지가 23%뿐이다
             # (08-18 실측 37/160). 계측 4원칙 ①(단위 명시)·④(폴백 가시화).
-            pnl_source=_daily_pnl_source,
+            pnl_source=_pg_pnl_source,
         )
         if not _pg_allowed and _final_grade not in ("X",):
             _final_grade = "X"
             _grade_x_source = _grade_x_source or "ProfitGuard 진입 차단 (%s)" % _pg_reason
             log_manager.signal(f"[ProfitGuard] 진입 차단: {_pg_reason}")
             _broker_str = "n/a" if _broker_daily_pnl_now is None else f"{_broker_daily_pnl_now:+,.0f}"
+            # [MW0601 546차] `used` 는 **판정에 실제로 쓴 값**이다. 계좌 전체
+            # (engine/broker)와 시스템 한정(sys)을 나란히 남겨, 어느 축으로
+            # 막혔는지와 두 축이 얼마나 벌어졌는지를 한 줄에서 읽게 한다.
+            _sys_str = (f"{self._sys_daily_net_krw:+,.0f}원({self._sys_daily_legs}레그)"
+                        if self._sys_daily_legs else "미측정(시스템 청산 0건)")
             log_manager.signal(
-                f"[ProfitGuard][DebugPnL] source={_daily_pnl_source} used={_daily_pnl_now:+,.0f}원 "
-                f"engine={_engine_daily_pnl_now:+,.0f}원 broker={_broker_str}원"
+                f"[ProfitGuard][DebugPnL] source={_pg_pnl_source} used={_pg_pnl_now:+,.0f}원 "
+                f"| sys={_sys_str} 외부={self._sys_daily_other_krw:+,.0f}원"
+                f"({self._sys_daily_other_legs}레그) "
+                f"| engine={_engine_daily_pnl_now:+,.0f}원 broker={_broker_str}원"
             )
 
         _hc_block = self.circuit_breaker.high_conf_entry_block(confidence)
@@ -10998,15 +11079,41 @@ class TradingSystem:
         except Exception as _mc_e:
             logger.debug("[Dashboard] update_model_cards 실패: %s", _mc_e)
 
-        # ── L2 Tier Gate 영구중단 배지 갱신 ────────────────────
+        # ── [MW0601 545차] ProfitGuard L1~L4 배지 갱신 ──────────
+        # 종전에는 `get_l2_halt_info()`로 **L2만** 그렸고, 그 함수가
+        # `_TierGate.is_halted` 부재로 매번 AttributeError를 냈는데 아래
+        # `except`가 `logger.debug`로 삼켜 **어떤 로그파일에도 남지 않았다**.
+        # 그래서 배지가 초기 텍스트 "L2 —"(=정상)에 4개월간 굳었고,
+        # 2026-09-08 09:21 L2-Tier4 래치 순간에도 화면은 정상을 표시했다.
+        # ⇒ ① 4개 레이어를 한 번에 그리고 ② 실패를 세션당 1회 WARNING 으로
+        #    올리며 ③ 배지 자체를 '갱신실패'(보라)로 바꿔 침묵을 없앤다.
         try:
-            l2_info = self.profit_guard.get_l2_halt_info(_daily_pnl_now)
-            self.dashboard.update_l2_halt_badge(
-                is_halted=l2_info['is_halted'],
-                threshold=l2_info['halt_threshold']
+            _pg_st = self.profit_guard.guard_status(
+                _pg_pnl_now, _size_mult_for_pg, _ts_dt_obj,
             )
-        except Exception as _l2_e:
-            logger.debug("[Dashboard] L2 배지 갱신 실패: %s", _l2_e)
+            # [546차] 배지가 판정과 **같은 축**을 보게 한다.
+            # ⚠ 시스템 청산 0레그를 `measured=False`(보라)로 칠하지 않는다.
+            #   그건 **알려진 0**이지 미측정이 아니다 — 매일 첫 시스템 청산
+            #   전까지 배지가 종일 경보색이 되면 계측 4원칙 ④가 경계한
+            #   경보 피로 그 자체다. 대신 레그 수를 실어 툴팁이 설명한다.
+            _pg_st["pnl_source"] = _pg_pnl_source
+            _pg_st["system_only"] = bool(PROFIT_GUARD_SYSTEM_ONLY_PNL)
+            _pg_st["system_legs"] = self._sys_daily_legs
+            _pg_st["other_net_krw"] = self._sys_daily_other_krw
+            _pg_st["other_legs"] = self._sys_daily_other_legs
+            self.dashboard.update_profit_guard_badge(_pg_st)
+        except Exception as _pg_e:
+            if not self._pg_badge_err_logged:
+                self._pg_badge_err_logged = True
+                log_manager.system(
+                    "[ProfitGuard] 배지 갱신 실패 — %r (이후 동일 오류는 debug)"
+                    % (_pg_e,), "WARNING")
+            else:
+                logger.debug("[Dashboard] ProfitGuard 배지 갱신 실패: %s", _pg_e)
+            try:
+                self.dashboard.update_profit_guard_badge(None)
+            except Exception:
+                pass
 
         if not self._is_const_out_heavy_cooldown_active(_ts_dt_obj):
             # 🧠 자가학습 모니터 패널 갱신 (매분)
@@ -12694,6 +12801,14 @@ class TradingSystem:
         self._cb3_daily_halt_eod = int(self.circuit_breaker.daily_halt_count)
         self.circuit_breaker.reset_daily()
         self.profit_guard.reset_daily()
+        # [MW0601 546차] ProfitGuard 판정 손익(시스템 한정) 누적기도 함께 리셋한다.
+        # 가드와 그 입력이 같은 시점에 0으로 돌아가야 다음날 첫 분에 전날 값으로
+        # 판정하는 일이 없다.
+        self._sys_daily_net_krw = 0.0
+        self._sys_daily_legs = 0
+        self._sys_daily_other_krw = 0.0
+        self._sys_daily_other_legs = 0
+        self._sys_daily_date = datetime.date.today().isoformat()
         self.online_learner.reset_daily()
         # [311차 후속 B안] 극단성 보정기 — GBM 배치재학습과 같은 리듬(일 1회)으로 재적합.
         # reset_daily 없음 — 버퍼(BATCH_SIZE=5000)는 날짜 경계와 무관하게 계속 누적.
@@ -14046,7 +14161,12 @@ class TradingSystem:
         # 수익 보존 가드 패널 갱신 (청산 직후 최신 트레이드 반영)
         try:
             today_trades = fetch_today_trades() or []
-            daily_pnl = self.position.daily_stats()["pnl_krw"]
+            # [MW0601 546차] 패널도 게이트와 **같은 축**을 본다 — 화면의
+            # 손익과 실제 판정 근거가 다르면 운영자가 발동 시점을 못 읽는다.
+            if PROFIT_GUARD_SYSTEM_ONLY_PNL:
+                daily_pnl = float(self._sys_daily_net_krw)
+            else:
+                daily_pnl = self.position.daily_stats()["pnl_krw"]
             self.dashboard.refresh_profit_guard(daily_pnl, today_trades)
         except Exception as _pge2:
             apply_error_policy(
