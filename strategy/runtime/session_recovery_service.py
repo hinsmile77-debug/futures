@@ -7,7 +7,7 @@ from typing import Any
 from PyQt5.QtCore import QTimer
 
 from logging_system.log_manager import log_manager
-from utils.db_utils import fetch_today_trades
+from utils.db_utils import fetch_today_trades, sum_today_system_net_krw
 
 logger = logging.getLogger("SYSTEM")
 
@@ -214,6 +214,34 @@ class SessionRecoveryService:
 
         system.position.reset_daily()
         system.position.restore_daily_stats(rows)
+
+        # ── [MW0601 546차] ProfitGuard 판정용 **시스템 한정** 누적기 복원 ──────
+        # 라이브 경로는 `_record_trade_result()` 에서 매 청산 레그마다 더하지만,
+        # 세션이 재시작되면 그 누적이 통째로 사라진다. 여기서 당일 행으로 1회
+        # 복원하지 않으면 재시작 직후 ProfitGuard 가 **당일 손익 0원**으로 판정해
+        # 이미 걸렸어야 할 보호가 풀린다(래치 자체는 아래 profit_guard 상태
+        # 복원이 살리지만, L1 피크·L2 티어는 이 값으로 다시 계산된다).
+        # ⚠ 여기서만 DB 를 읽는다 — 매분 조회는 456차 장중 DB 금지에 걸린다.
+        try:
+            _sys = sum_today_system_net_krw(rows)
+            system._sys_daily_net_krw    = float(_sys["net_krw"])
+            system._sys_daily_legs       = int(_sys["legs"])
+            system._sys_daily_other_krw  = float(_sys["other_net_krw"])
+            system._sys_daily_other_legs = int(_sys["other_legs"])
+            system._sys_daily_date       = today_str
+            # ⚠ `%` 포매팅은 천단위 콤마(`%,.0f`)를 지원하지 않는다 — ValueError.
+            #   포맷을 먼저 만들어 넘긴다.
+            logger.info(
+                "[Restore] ProfitGuard 시스템손익 복원: sys={:+,.0f}원({}레그) "
+                "외부={:+,.0f}원({}레그) 출처미기록={}레그".format(
+                    _sys["net_krw"], _sys["legs"],
+                    _sys["other_net_krw"], _sys["other_legs"], _sys["unknown_legs"])
+            )
+        except Exception as _sys_e:
+            # 복원 실패를 조용히 넘기면 ProfitGuard 가 0원으로 판정한다 —
+            # 폴백을 쓴 사실을 남긴다(계측 4원칙 ④).
+            logger.warning(
+                "[Restore] ProfitGuard 시스템손익 복원 실패 — 0원에서 시작한다: %s", _sys_e)
 
         # ── ProfitGuard + CircuitBreaker 상태 복원 ────────────────────────────
         # ui_prefs의 state_persist_enabled 플래그가 True일 때만 복원.

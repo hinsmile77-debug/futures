@@ -3,6 +3,82 @@
 
 ---
 
+## 2026-09-08 (MW0601 → dev 이식 — ProfitGuard L1~L4 배지 + 판정 손익 시스템 한정: 545·546차 적응판)
+
+원 커밋 `5a11474`(v9-dev, MW0601 545·546차). 🔴 **546차는 매매 정책 변경이다** —
+이 브랜치(MW0602 운영)의 ProfitGuard 발동 시점이 바뀐다. 사용자 지시로 이식했다.
+
+### 왜 가져왔나
+
+**dev 에도 같은 결함이 있었다.** `_TierGate` 에만 `is_halted` 가 없어
+(`_TrailingGuard` 는 일반 속성, `_ProfitCB` 는 `@property` 로 노출)
+`get_l2_halt_info()` 가 호출될 때마다 `AttributeError` 로 죽고, 호출부가
+`logger.debug` / `except: pass` 로 삼켜 **L2 배지가 초기 텍스트에 굳어 있었다.**
+28차(`47721d6`, 2026-05-14) 이래 양 갈래 모두 한 번도 동작한 적이 없다 —
+회귀가 아니라 태생이라 브랜치를 가리지 않는다.
+
+계기는 MW0601 의 2026-09-08 이다. 시스템 자동진입 0건인 날 ProfitGuard 가
+09:21 `L2-Tier4` 로 당일 영구 중단 래치(190 사이클 중 187 을 grade=X 로 강제).
+그 손익은 시스템이 번 것이 아니었다 — 장 시작 전 브로커 실현손익이 이미
++446,000원이었고 외부(수동) 매매가 634,000원까지 밀어올렸다.
+실측 `used=+513,967 engine=+67,967 broker=+513,967`.
+
+### 적응한 곳 (기계적 체리픽이 아니다)
+
+| dev 와의 차이 | 조치 |
+|---|---|
+| **477차 GR-3 `pnl_source` 배선이 없다** — `is_entry_allowed` 에 인자 자체가 없고 `_PNL_SRC_LABEL` 도 없다 | 546차가 **판정 축을 바꾸므로 어느 축으로 막혔는지가 로그에 남아야 한다.** 최소한만 들여왔다 — `_pnl_source` 속성 · 선택 인자 · `_block()` 의 `\| src=…` 접미. **인자를 안 주면 문구가 종전과 같다**(하위호환). dev 에는 이 줄을 읽는 파서(`profit_guard_latch_watch.py`)가 없어 깨질 소비처가 없다 |
+| **490차 F-G(`_entry_in_cb3_would_halt`) 블록이 없다** | 546차 누적기만 취하고 그 블록은 뺐다 |
+| **468차 G-3 청산 2축 분류(`classify_exit`)가 있다** (v9-dev 에는 없다) | 유지하고 546차 지역변수를 그 뒤에 붙였다 |
+| settings import 주석 어휘(`[502차 U-2]` vs `[MW0602 502차 U-2]`) | dev 쪽 유지 |
+
+그 밖(`utils/db_utils.py` · `dashboard/main_dashboard.py` ·
+`dashboard/panels/profit_guard_panel.py` · `strategy/runtime/session_recovery_service.py` ·
+`config/settings.py`)은 자동 병합됐다.
+
+### 들어온 것
+
+**545차 — 배지 (매매 정책 무변경, 관측 전용)**
+`_TierGate.is_halted` 신설 · `ProfitGuard.guard_status()` 신설(L1~L4 + 구속
+레이어, `halted`(래치)와 `blocking`(조건부) 분리, **읽기 전용** — 조회가 래치를
+만들지 않는다, 미측정≠0) · 헤더 배지를 본라벨 + L1~L4 칩으로 교체
+(회색=정상/파랑=감시/주황=차단중/빨강=당일중단/보라=미측정·갱신실패,
+**깜빡임은 래치·갱신실패일 때만** — 472차 경보 피로 교훈) · 갱신 실패를
+세션당 1회 WARNING + 배지 '갱신실패' 로 가시화.
+
+**546차 — 판정 손익 = 시스템 자동매매 한정 (🔴 매매 정책 변경)**
+임계·티어 구성·판정식 **무변경**. `daily_pnl_krw` 하나가 계좌 전체 →
+`trades.entry_source='SYSTEM_AUTO'` 레그의 실현 net 이 됐다. 누적은
+`_record_trade_result`(DB INSERT 와 같은 자리·같은 값), 복원은 세션 재시작 시
+1회, 리셋은 `daily_close` + 자정 넘김 가드. **매분 DB 조회를 만들지 않는다**
+(456차 장중 DB 금지). 판정·배지·패널이 같은 축을 본다.
+
+### ⚠ 이 브랜치에서 확인할 것
+
+- **`data/profit_guard_prefs.json` 은 PC 로컬(gitignore)이다.** MW0601 실측은
+  `profit_tiers` 5단계가 **전부 500,000원**(코드 기본 4,000,000 의 1/8)이었다.
+  이 PC 값이 다르면 체감 변화도 다르다 — 먼저 그 파일을 확인할 것.
+- **불연속 3건**: ① ProfitGuard 가 보는 일일손익 시계열이 이 커밋에서 끊긴다
+  ② 축이 gross→net · 계좌→엔진 · **미실현포함→실현전용** 으로 동시에 바뀐다
+  (같은 임계라도 **더 늦게 닿는다**) ③ `trades.entry_source` 자체가 2026-09-02 에
+  불연속(518차 F-3).
+- **임계 재보정은 하지 않았다** — 축과 임계를 같이 바꾸면 사후에 어느 쪽 효과인지
+  분리할 수 없다(313차). `NEXT_TODO` 546-1·546-2.
+- **전환기준 ① 판정은 무변경** — 여전히 브로커 실측 net(계좌 전체).
+- 되돌리려면 `config/settings.py:PROFIT_GUARD_SYSTEM_ONLY_PNL = False` 한 줄.
+
+### 검증 (이 브랜치)
+
+`test_426_profit_guard_l1` · `test_545_profit_guard_badge_status`(19) ·
+`test_546_profit_guard_system_only_pnl`(17) = **45 passed**.
+변경 7파일 `py_compile` 통과.
+⚠ `import main` 하는 테스트(`test_497` 등)는 **이식 검증에서 제외했다** — 격리
+워크트리에는 `config/secrets.py`(gitignore)와 `data/` 가 없고, 라이브 세션이
+도는 PC 에서 `main` 을 import 하면 COM·DB 경로를 건드린다. 이 브랜치를 실제로
+체크아웃해 돌리는 PC 에서 한 번 더 확인할 것.
+
+---
+
 ## 2026-09-07 (MW0601 → dev 이식 — 수동 맥점 산출 버튼: 542차 적응판)
 
 원 커밋 `a21e270`(v9-dev / **MW0601**). **매매 정책 무변경 · 관측 전용.**
