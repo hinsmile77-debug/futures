@@ -13755,6 +13755,25 @@ class TradingSystem:
         except Exception:
             logger.exception("[SchedForceExit] 안전망 예외 — 30초 후 재시도")
 
+        # ── [MW0601 550차] 마감 뒤 마지막 봉 시간 기준 플러시 ──────────────────
+        # 15:35 마감 단일가부터 체결틱이 없어 15:34 봉이 다음 분 롤오버를 영원히
+        # 못 받고 15:40 구독 종료 때 버려졌다(09-07~09-09 3일 모두 실측). 정규장
+        # 마감 +1분(15:36, 만기일 15:21)부터 30초 틱마다 확인한다 — 장중에는 절대
+        # 부르지 않는다(부분 봉이 파이프라인에 들어가고 ExchangeCB 감지가 깨진다).
+        # 플러시된 봉의 콜백은 세션 적재 뒤 `is_market_open` 가드에서 멈춘다.
+        try:
+            _rd_fl = self.realtime_data
+            if (
+                _rd_fl is not None and getattr(_rd_fl, "_running", False)
+                and is_trading_day(now) and _rd_fl.current_bar is not None
+            ):
+                from utils.time_utils import is_expiry_day as _is_exp
+                _close_t = datetime.time(15, 21) if _is_exp(now) else datetime.time(15, 36)
+                if now.time() >= _close_t:
+                    _rd_fl.flush_stale_bar(now)
+        except Exception as _fl_e:
+            logger.warning("[CybosRT-FLUSH] 마감 봉 플러시 실패 (무해): %s", _fl_e)
+
         # [A] 08:45 얼리버드 warmup — scaler age > EARLY_WARMUP_MIN_AGE_HOURS 시 선행 갱신
         # 커버: 전날 P8 실패 / 휴장일 / 중간 멈춤 / 주말 등 원인 무관 모든 노후화 케이스
         # → 08:55 Canary 체크 시점엔 이미 완료 → P2 90초 대기 사실상 0초
