@@ -77,8 +77,16 @@ class ExitReason(object):
     TP2   = "TP2"
     SL    = "SL"
     TRAIL = "TRAIL"   # 트레일 스톱 청산 (TP1 스킵 변형 전용)
-    FORCE = "FORCE"   # 15:10 강제 청산
+    FORCE = "FORCE"   # 도전자별 강제 청산 시각 도달 (BaseChallenger.FORCE_EXIT_TIME)
     TIME  = "TIME"    # 시간 청산 (EOD 전)
+    # ── [MW0601 553차 Phase 2] 미청산 누수 차단 ──────────────────────────────
+    # 🔴 파이프라인은 15:10 이후 봉을 처리하지 않는다(main.py `_on_candle_closed` 의
+    #   force-exit 분기가 return). 마지막 처리 봉은 15:08 이라 엔진의 15:10 안전망은
+    #   **한 번도 발화한 적이 없다.** 그래서 마감 훅에서 남은 포지션을 여기서 닫는다.
+    EOD_FORCE = "EOD_FORCE"        # 일 마감 시 그날 마지막 종가로 강제 청산
+    # 프로세스가 죽어 인메모리 상태를 잃은 뒤 **다음 기동에서** 발견된 미청산 행.
+    # 청산가를 그날 마지막 종가로 **재구성**한 것이므로 관측값이 아니다 — 이름으로 남긴다.
+    EOD_FORCE_RECON = "EOD_FORCE_RECON"
 
 
 class BaseChallenger(object):
@@ -98,8 +106,18 @@ class BaseChallenger(object):
     ATR_TP2_MULT = 1.5
     ATR_SL_MULT  = 1.5
 
-    # 수수료: 편도 0.0015% (설계안 기준)
-    COMMISSION_RATE = 0.000015
+    # ── [MW0601 553차 Phase 2] 도전자별 강제 청산 시각 ──────────────────────
+    # 기본은 종전과 같은 15:10(절대원칙 §1). GP 규칙 도전자는 "15:05" 로 덮어쓴다.
+    # ⚠ 실제로는 파이프라인이 15:10 이후 봉을 안 주므로 15:10 은 발화하지 않는다 —
+    #   그 경우 마감 훅의 `EOD_FORCE` 가 닫는다.
+    FORCE_EXIT_TIME = "15:10"
+
+    # ── [MW0601 553차 Phase 2] 등급 개념이 없는 도전자 ──────────────────────
+    # 🔴 엔진 진입 게이트가 `grade in ("A","B")` 로 고정돼 있어, 등급이 없는 규칙
+    #   도전자(GP 등)는 통과하려고 `grade="A"` 를 지어내게 된다 — **등급 위장**이며
+    #   계측 4원칙 ④ 위반이다. `GRADE_NA = True` 로 선언하면 엔진이 등급 조건을
+    #   건너뛰고, 신호는 등급을 "-" 로 정직하게 기록한다.
+    GRADE_NA = False
 
     def __init__(self):
         self.active = True
@@ -158,14 +176,18 @@ class BaseChallenger(object):
 
     def calc_pnl(self, trade, exit_price):
         # type: (ChallengerTrade, float) -> float
+        """포인트 순손익 — 수수료 + 슬리피지 차감.
+
+        🔴 [553차 Phase 2] 자체 공식을 버리고 `challenger_cost` 한 벌로 모았다.
+          종전 이 메서드와 엔진의 `_calc_pnl()` 이 **같은 공식을 두 벌** 들고 있었고
+          둘 다 편도 요율을 키움 잔재 `1.5e-05` 로 하드코딩(실제의 1/6.54) + 슬리피지
+          누락이었다. 값은 채널 스펙에서 파생한다(핀값 금지, 493차).
+
+        ⚠ 반환 단위는 pt 다. 원화는 **미니선물 50,000원/pt** 이며 250,000 이 아니다
+          (종전 이 독스트링이 250,000 이라 적고 있었다 — 5배 오독의 씨앗).
         """
-        포인트 손익 계산 (수수료 포함).
-        KOSPI200 선물 1포인트 = 250,000원 기준이나 여기서는 pt 단위로 반환.
-        """
-        raw_pnl = (exit_price - trade.entry_price) * trade.direction
-        # 편도 수수료 × 2 (진입+청산)
-        commission = (trade.entry_price + exit_price) * self.COMMISSION_RATE * 2
-        return round(raw_pnl - commission, 4)
+        from challenger.challenger_cost import calc_pnl_pt
+        return calc_pnl_pt(trade.direction, trade.entry_price, exit_price)
 
     def _grade_from_confidence(self, confidence):
         # type: (float) -> str

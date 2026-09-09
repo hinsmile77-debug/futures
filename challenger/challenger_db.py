@@ -111,6 +111,15 @@ _MIGRATIONS = [
     "ALTER TABLE challenger_signals ADD COLUMN regime TEXT DEFAULT '혼합'",
     "ALTER TABLE challenger_trades  ADD COLUMN regime TEXT DEFAULT '혼합'",
     "ALTER TABLE champion_history   ADD COLUMN regime TEXT DEFAULT 'GLOBAL'",
+    # ── [MW0601 553차 Phase 2] 비용 세대 표기 ────────────────────────────────
+    # 🔴 `pnl_pt` 의 의미가 2026-09-10 에 **불연속**이다. 그전 행은 키움 잔재 요율
+    #   1.5e-05 · 슬리피지 0 으로 계산됐고(왕복 0.0315pt @1050), 이후 행은 감지 채널
+    #   실측 요율 + 슬리피지 1틱/편도다(CYBOS 왕복 **0.246018pt** — **7.8배**).
+    #   앞뒤를 직접 비교하지 말 것. 세대는 행마다 아래 3열이 명시한다(계측 4원칙 ④).
+    #   NULL = 구세대(=키움 잔재)이며 「0」이 아니다.
+    "ALTER TABLE challenger_trades ADD COLUMN commission_rate_used REAL",
+    "ALTER TABLE challenger_trades ADD COLUMN slip_ticks_per_side REAL",
+    "ALTER TABLE challenger_trades ADD COLUMN broker_channel TEXT",
 ]
 
 
@@ -178,14 +187,49 @@ class ChallengerDB(object):
             ))
             return cur.lastrowid
 
-    def close_trade(self, trade_id, exit_ts, exit_price, pnl_pt, exit_reason):
+    def close_trade(self, trade_id, exit_ts, exit_price, pnl_pt, exit_reason,
+                    cost_ctx=None):
+        """가상거래 청산. `cost_ctx` 를 주면 **어떤 비용 세대로 계산했는지 같은 행에** 쓴다.
+
+        계측 4원칙 ④ — DB 컬럼에 폴백/가정값을 쓸 때는 그 사실을 같은 행에 남긴다.
+        `cost_ctx=None` 이면 3열이 NULL 로 남고, 그건 **구세대(키움 잔재)** 를 뜻한다.
+        """
+        if cost_ctx:
+            sql = """
+            UPDATE challenger_trades
+            SET exit_ts=?, exit_price=?, pnl_pt=?, exit_reason=?,
+                commission_rate_used=?, slip_ticks_per_side=?, broker_channel=?
+            WHERE id=?
+            """
+            args = (exit_ts, exit_price, pnl_pt, exit_reason,
+                    cost_ctx.get("one_way_rate"), cost_ctx.get("slip_ticks_per_side"),
+                    cost_ctx.get("broker_channel"), trade_id)
+        else:
+            sql = """
+            UPDATE challenger_trades
+            SET exit_ts=?, exit_price=?, pnl_pt=?, exit_reason=?
+            WHERE id=?
+            """
+            args = (exit_ts, exit_price, pnl_pt, exit_reason, trade_id)
+        with self._conn() as conn:
+            conn.execute(sql, args)
+
+    def get_all_open_trades(self):
+        # type: () -> List[sqlite3.Row]
+        """도전자 무관 **모든** 미청산 가상거래.
+
+        재기동 승계·EOD 강제마감이 쓴다. `_open_trades` 는 인메모리라 프로세스가
+        죽으면 사라지고, 그러면 DB 행이 `exit_ts=NULL` 로 영구히 굳는다
+        (553차 실측: 28건 중 3건 = 10.7%). 그 행들은 집계에서 **조용히 사라진다** —
+        `get_today_closed_trades()` 가 청산분만 세기 때문이다(계측 4원칙 ②).
+        """
         sql = """
-        UPDATE challenger_trades
-        SET exit_ts=?, exit_price=?, pnl_pt=?, exit_reason=?
-        WHERE id=?
+        SELECT * FROM challenger_trades
+        WHERE exit_ts IS NULL
+        ORDER BY entry_ts
         """
         with self._conn() as conn:
-            conn.execute(sql, (exit_ts, exit_price, pnl_pt, exit_reason, trade_id))
+            return conn.execute(sql).fetchall()
 
     def get_open_trades(self, challenger_id):
         # type: (str) -> List[sqlite3.Row]

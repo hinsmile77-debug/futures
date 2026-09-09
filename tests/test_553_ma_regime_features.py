@@ -316,15 +316,27 @@ def test_wiring_date_is_recorded():
     assert _SHORT["feature_wired_date"] == "2026-09-10"
 
 
-def test_ma_basis_is_explicitly_undecided():
-    """🔴 사양이 안 정해졌다는 사실 자체를 기록해 둔다.
+def test_ma_basis_is_decided_as_cont():
+    """🔵 [2026-09-10 사용자 결정] `"cont"`(연속) 확정 — 이후 변경 금지.
 
-    ⚠ 사용자가 고르면 이 테스트가 깨진다 — **그게 의도다.** 깨지면 여기를 고르고
-    `dev_memory/DECISION_LOG.md` 에 사유를 남긴 뒤 Phase 3 로 간다.
+    Phase 3 도전자가 이 값을 읽어 `ma_regime_down_cont` 를 소비한다. 관측 60거래일
+    중에 바꾸면 규칙 자체가 바뀌는 것이라 사전등록이 무효가 된다(313차 ④ · 458차 D6).
+
+    ⚠ 미확인으로 남는 것: 211거래일 백테스트 t=2.02 가 어느 쪽 기준이었는지 —
+      최종 스크립트가 repo 에 없다. 전향 표본이 소급과 크게 갈리면 여기를 먼저 의심할 것.
     """
-    assert _SHORT["ma_basis"] is None, (
-        "ma_basis 가 정해졌다면 이 테스트를 갱신하고 DECISION_LOG 에 사유를 남길 것.")
+    assert _SHORT["ma_basis"] == "cont", (
+        "ma_basis 는 2026-09-10 에 cont 로 확정됐다. 바꾸려면 DECISION_LOG 기록 + "
+        "검증 시계 리셋이 필요하다.")
     assert _SHORT["ma_basis_options"] == ["sess", "cont"]
+
+
+def test_decided_basis_has_a_live_feature_key():
+    """확정된 basis 가 실제로 존재하는 키를 가리키는가 — 오타 하나로 Phase 3 가 죽는다."""
+    out = compute_ma_regime_features(_flat(MA_REGIME_SLOW), _flat(MA_REGIME_SLOW))
+    basis = _SHORT["ma_basis"]
+    assert "ma_regime_down_%s" % basis in out
+    assert "ma_%s_ready" % basis in out
     # 🔴 근거 키는 `ma_regime_agree` 가 아니다 — 구조적으로 항상 1.0 이라 못 가른다.
     assert _SHORT["ma_basis_evidence_key"] == "ma_cont_only"
 

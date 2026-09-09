@@ -30,23 +30,21 @@
       🔴 초판 `ma_regime_agree`(일치율)는 **판별력 0**이었다 — 9거래일 2,770분 불일치 0건,
       구조적으로 항상 1.0. `ma_cont_only`(가용성 축)로 교체했다.
 
-- [ ] **553-1D** 🔴 **사용자 결정 필요 — `gp_rule_short_watch["ma_basis"]`.**
-      `"sess"`(세션 리셋) vs `"cont"`(연속, 사이보스 차트와 동일).
-      **실질 차이**: sess 를 고르면 MA60 워밍업이 10:00 이라 숏 진입창 09:20~10:00,
-      **하루 39~43분(진입창의 약 12%)이 구조적으로 사라진다.** 숏은 하루 최대 1회라
-      표본에 직접 영향.
-      · `"cont"` 근거 — 규칙의 출처가 사이보스 차트이고 HTS MA 는 연속이다.
-      · `"sess"` 근거 — 211거래일 백테스트가 세션 groupby 였을 가능성
-        (`analysis/rules_backtest.py:81`). 단 최종 스크립트가 repo 에 없어 확정 불가.
-      ⚠ **정하기 전에 Phase 3 를 시작하지 말 것** — 잘못 고르면 60거래일이 날아간다.
-      정하면 `test_ma_basis_is_explicitly_undecided` 가 깨진다(의도) → 갱신 + DECISION_LOG 기록.
-- [ ] **553-2** Phase 2 — challenger 엔진 결함 5건. 🔴 **1번이 최우선**:
-      ⓐ EOD 강제마감(15:10 안전망 도달 불가 + 인메모리 `_open_trades`) — 현재 28건 중 3건
-         `exit_ts=NULL` 영구 미청산. 재기동 승계도 함께(552-10 계열).
-      ⓑ 수수료를 `BROKER_CHANNEL_SPECS` 파생으로(현행 키움 잔재 `1.5e-05`)
-      ⓒ 슬리피지 축 신설  ⓓ 도전자별 `FORCE_EXIT_TIME`  ⓔ 등급 위장 방지(`signal_meta`)
-      ⚠ ⓑ 교체 **전에** 산출된 가상손익은 무효다 — 교체 시 기존 행 세대 표기를 남길 것.
+- [x] **553-1D** 🔵 **`ma_basis = "cont"` 확정** [2026-09-10 사용자 결정].
+      진입창 12%(하루 39~43분) 확보 + 규칙 출처(사이보스 차트)와 일치.
+      ⚠ 211거래일 백테스트가 어느 기준이었는지는 미확인 — **전향 표본이 소급과 크게
+      갈리면 이 항목을 먼저 의심할 것**(최종 스크립트가 repo 에 없다).
+
+- [x] **553-2** Phase 2 — challenger 엔진 결함 5건 수정 + 비용 세대 정규화.
+      미청산 **3건 → 0건**(재구성 청산은 `EOD_FORCE_RECON` 으로 관측값과 구분).
+      왕복비용 0.0315 → 0.246018pt(7.8배). 테스트 21건.
+      백업: `challenger.db.bak_20260910_pre_553_phase2` / `..._pre_cost_normalize`.
+
 - [ ] **553-3** Phase 3 — 도전자 2종 `GP_LONG_GB90` / `GP_SHORT_SQZ60`.
+      선행조건 해소됨: `ma_basis="cont"` 확정(553-1D) · 엔진 결함 5건 수정(553-2).
+      숏은 `ma_regime_down_cont` 를 소비한다(`ma_cont_ready` 를 **먼저** 볼 것 — 미측정 분에
+      진입하면 국면필터 없이 진입한 것이 된다).
+      `GRADE_NA=True` · `FORCE_EXIT_TIME="15:05"` 로 선언한다(Phase 2가 배선했다).
       REGIME_POOLS 에 **등록하지 않는다**(순위·승격 경로 차단, 절대원칙 §6).
       배선 커밋 다음 거래일을 두 채널 `data_start` 에 기입 + DECISION_LOG 기록.
       ⚠ `tests/test_553_gp_rule_shadow_preregistration.py::test_data_start_is_none_until_wiring`
