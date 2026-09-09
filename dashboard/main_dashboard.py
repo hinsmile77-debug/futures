@@ -40,7 +40,8 @@ from PyQt5.QtGui import (
     QTextCursor, QTextBlockFormat,
 )
 
-from config.constants import FUTURES_PT_VALUE, BROKER_CHANNEL_SPECS
+from config.constants import (FUTURES_PT_VALUE, BROKER_CHANNEL_SPECS,
+                             MINI_FUTURES_PT_VALUE)
 from config.settings import (
     FUTURES_COMMISSION_RATE as _LIVE_COMM_RATE,
     FUTURES_COMMISSION_RATE_LEGACY_KIWOOM as _LEGACY_COMM_RATE,
@@ -6886,8 +6887,13 @@ class PnlHistoryPanel(QWidget):
     #   시점에만 알 수 있다). 대신 `_classify_exit_stage()`의 MANUAL/RECOVERY
     #   분기가 `exit_reason` 문자열만 보므로 그 규칙을 소급 적용한다 —
     #   기록된 33건과 대조해 **불일치 0건** 확인.
-    _ORIGIN_KEYS = ("auto", "manual", "unknown")
-    _ORIGIN_LABEL = {"auto": "자동", "manual": "수동·외부", "unknown": "미측정"}
+    # [MW0601 553차 Phase 4] "gp" 추가 — **가상**이며 앞 셋과 성격이 다르다.
+    #   auto/manual/unknown 은 같은 실거래를 나누는 축이고, gp 는 실거래가 아닌
+    #   별도 집합이다. 그래서 브로커 net 대사에서 **분리 합성**한다
+    #   (`_effective_day_krw()` 참조 — 이 패널의 단일 관문).
+    _ORIGIN_KEYS = ("auto", "manual", "unknown", "gp")
+    _ORIGIN_LABEL = {"auto": "자동", "manual": "수동·외부", "unknown": "미측정",
+                     "gp": "GP(가상)"}
     _ORIGIN_TIP = {
         "auto": "미륵이가 스스로 넣고 뺀 거래.\n"
                 "진입 SYSTEM_AUTO + 청산이 TP·스톱·시간 등 시스템 트리거.",
@@ -6900,8 +6906,18 @@ class PnlHistoryPanel(QWidget):
                   "포지션에 한 레그라도 이 흔적이 있으면 그 포지션 전체가 여기 들어간다.",
         "unknown": "entry_source 미기록 구간(311차 이전, ~2026-07-10).\n"
                    "**미측정이지 자동이 아니다** — 자동에 붙이면 시스템 성과가 부푼다.",
+        "gp": "🟣 GOLDEN POWER 규칙 섀도 — **가상 거래다. 실적이 아니다.**\n"
+              "원천은 challenger.db(가상 체결)이며 trades 테이블과 무관하다.\n"
+              "· 주문이 나간 적 없다 — 브로커 예탁금 차액에 들어 있지 않다\n"
+              "· 1계약 고정 · 미니선물 50,000원/pt · 비용은 감지 채널 요율 + 슬리피지 1틱\n\n"
+              "🔴 체크하면 그 날 손익에 가상분이 **더해진다**. 실거래분은 브로커 실측을\n"
+              "  그대로 쓰고 GP 만 따로 더하는 분리 합성이라 실측이 오염되지는 않지만,\n"
+              "  **전환기준 ① 판정에는 절대 쓰지 말 것.**",
     }
     # 진입 출처 중 "사람/외부" 쪽
+    #: [553차 Phase 4] GP 가상거래 승수 — **미니선물**. 정규선물 250,000 이 아니다.
+    #: 원문서가 250,000 으로 환산해 원화를 5배 과대계상했던 바로 그 지점이다.
+    _GP_ORIGIN = "gp"
     _MANUAL_SOURCES = ("OPERATOR_MANUAL", "GHOST_PENDING_MISS",
                        "BROKER_SYNC_RECOVERY", "OPERATOR_RESTORE")
 
@@ -6932,6 +6948,7 @@ class PnlHistoryPanel(QWidget):
         # ⚠ `__init__`에서 명시 초기화한다 — `getattr(self, "_x", 기본값)`으로 읽으면
         #   refresh() 전 호출이 조용히 "전량 선택"으로 판정된다(계측 4원칙 ④).
         self._day_total_legs: dict = {}
+        self._gp_wired: bool = False       # [553차] 미배선 ≠ 0건 (계측 4원칙 ②)
         # 필터를 함께 움직일 짝 패널(실측 ↔ 반사실). link_filter()로 연결한다.
         self._filter_peers: list = []
         self._build()
@@ -7067,13 +7084,27 @@ class PnlHistoryPanel(QWidget):
         self._cb_origin = {}
         _saved_org = self._load_origin_prefs()
         for _k in self._ORIGIN_KEYS:
+            # [553차] 반사실 탭은 **실거래의 요율 축**을 묻는 탭이라 가상거래를 섞지
+            # 않는다. 체크박스는 만들되(코드 경로 단순화) 숨기고 항상 해제 상태로 둔다.
             _cb = QCheckBox(self._ORIGIN_LABEL[_k])
-            _cb.setChecked(_saved_org.get(_k, True))
+            if _k == self._GP_ORIGIN:
+                # 🔴 기본 해제 — 켜지 않으면 이 패널은 종전과 **완전히 같은 값**을 낸다.
+                _cb.setChecked(False if self._is_cf else bool(_saved_org.get(_k, False)))
+                _cb.setVisible(not self._is_cf)
+            else:
+                _cb.setChecked(_saved_org.get(_k, True))
             _cb.setStyleSheet(_cb_style)
             _cb.setToolTip(self._ORIGIN_TIP[_k])
             _cb.stateChanged.connect(self._on_source_changed)
             self._cb_origin[_k] = _cb
             _ol.addWidget(_cb)
+        # [553차] 가상 포함 경고 배너 — 반사실 탭 관례와 같은 방식.
+        self._gp_banner = mk_label("", C['purple'], 9)
+        self._gp_banner.setWordWrap(True)
+        self._gp_banner.setStyleSheet(
+            f"color:{C['purple']};background:{C['bg3']};"
+            f"border:1px solid {C['purple']};border-radius:3px;padding:{S.p(3)}px {S.p(6)}px;")
+        self._gp_banner.setVisible(False)
         _ol.addStretch(1)
         self._approx_note = mk_label("", C['orange'], 9)
         self._approx_note.setToolTip(
@@ -7082,6 +7113,7 @@ class PnlHistoryPanel(QWidget):
             "내려간다.\n\n값 옆 ≈ 가 그 날이다. 필터를 전량 선택하면 다시 브로커 실측이 된다."
         )
         _ol.addWidget(self._approx_note)
+        _ol.addWidget(self._gp_banner)
         lay.addWidget(_of)
 
         lay.addWidget(inner, 1)
@@ -7148,7 +7180,41 @@ class PnlHistoryPanel(QWidget):
 
     # ── 갱신 진입점 ────────────────────────────────────────────
 
-    def refresh(self, rows):
+    def _gp_rows_from(self, gp_positions):
+        """[553차 Phase 4] challenger.db 가상거래 → 이 패널의 행 형식.
+
+        🔴 `quantity=1` 고정이다(사전등록 `gp_rule_cost["contracts"]`). 승수는
+          **미니선물 50,000원/pt** 이며 정규선물 250,000 이 아니다 — 원문서가 5배
+          과대계상했던 바로 그 지점이다.
+        """
+        out = []
+        for g in (gp_positions or []):
+            try:
+                pt = float(g["pnl_pt"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            krw = pt * MINI_FUTURES_PT_VALUE
+            ts = g.get("exit_ts") or g.get("entry_ts") or ""
+            out.append({
+                "entry_ts": ts,
+                "pnl_pts": pt, "pnl_krw": krw,
+                "forward_pnl_pts": pt, "forward_pnl_krw": krw,
+                "quantity": 1,
+                "reverse_entry_enabled": 0,
+                # 🔴 GP net 은 이미 현행 비용 모델로 계산돼 있다. 요율 재환산 대상이
+                #   아니므로 gross/commission 을 지어내지 않고 `is_gp` 로 우회시킨다.
+                "gross_pnl_krw": krw, "commission_krw": 0.0,
+                "commission_rate_used": g.get("commission_rate_used"),
+                "entry_source": "GP_SHADOW",
+                "exit_reason": g.get("exit_reason") or "",
+                "pos_key": "gp:%s" % (g.get("entry_ts") or ts),
+                "origin": "gp",
+                "is_gp": True,
+                "challenger_id": g.get("challenger_id") or "",
+            })
+        return out
+
+    def refresh(self, rows, gp_positions=None, gp_wired=False):
         """trades.db 행 목록으로 전체 갱신. rows: sqlite3.Row list."""
         try:
             # ── [MW0601 493차 / F-4] 브로커 **net** 축으로 교체 ──────────────
@@ -7214,10 +7280,19 @@ class PnlHistoryPanel(QWidget):
             except Exception:
                 pass
         self._assign_origins()
+        # [553차 Phase 4] GP 가상거래를 뒤에 붙인다. `_assign_origins()` **뒤**여야 한다 —
+        # 그 함수는 실거래의 entry_source/exit_reason 으로 출처를 판정하며 GP 와 무관하다.
+        self._gp_wired = bool(gp_wired)
+        self._rows.extend(self._gp_rows_from(gp_positions))
         # 브로커 일단위 값을 쓸 수 있는지 판정할 기준 — 날짜별 **전체** 레그 수.
         # 필터로 일부만 남으면 그 날은 브로커 net을 쓸 수 없다(쪼갤 수 없는 값이다).
+        # 🔴 [553차] GP 는 세지 않는다. 브로커 net 은 **실거래**의 예탁금 차액이므로
+        #   완전성 판정의 분모에 가상거래가 끼면 모든 날이 「부분」이 되어 실측 net 을
+        #   통째로 못 쓰게 된다(전환기준 ① 판정 원천이 죽는다).
         self._day_total_legs = {}
         for r in self._rows:
+            if r.get("is_gp"):
+                continue
             d = r["entry_ts"][:10]
             self._day_total_legs[d] = self._day_total_legs.get(d, 0) + 1
         self._build_daily()
@@ -7325,13 +7400,24 @@ class PnlHistoryPanel(QWidget):
         샤프가 전부 여기를 지나므로, 반사실 모드 분기도 여기 한 곳에만 둔다.
         다른 곳에서 `_broker_pnl`을 직접 읽으면 그 경로만 모드를 무시한다.
         """
+        # ── [553차 Phase 4] GP 분리 합성 ────────────────────────────────
+        # 🔴 GP 는 **가상**이라 브로커 예탁금 차액에 들어 있지 않다. 실거래분과 같은
+        #   경로로 흘리면 두 방향으로 다 깨진다:
+        #     · 분모에 끼면 → 모든 날이 「부분」이 되어 브로커 실측 net 을 못 쓴다
+        #     · 브로커 net 에 섞이면 → 실측값이 가상 포함 집합의 손익으로 표시된다
+        #   그래서 **실거래분(브로커/엔진) + GP분(단순 합)** 으로 나눠 더한다.
+        real_rows = [r for r in day_rows if not r.get("is_gp")]
+        gp_krw = sum(r["pnl_krw"] for r in day_rows if r.get("is_gp"))
+
         if self._is_cf:
-            return self._cf_day_krw(date_str, day_rows)
-        if self._day_is_whole(date_str, day_rows):
+            # 반사실 탭은 **실거래의 요율 축**을 묻는 탭이다. 가상거래는 그 질문의
+            # 대상이 아니므로 섞지 않는다(GP 체크박스도 이 탭에는 없다).
+            return self._cf_day_krw(date_str, real_rows)
+        if self._day_is_whole(date_str, real_rows):
             broker_krw = self._broker_pnl.get(date_str)
             if broker_krw is not None:
-                return broker_krw
-        return sum(self._engine_net(r) for r in day_rows)
+                return broker_krw + gp_krw
+        return sum(self._engine_net(r) for r in real_rows) + gp_krw
 
     def _engine_net(self, r):
         """거래행의 엔진 net — **현행 요율로 정규화**해서 돌려준다.
@@ -7344,6 +7430,10 @@ class PnlHistoryPanel(QWidget):
         `commission_rate_used`로 나누고 현행 요율을 곱해 세대를 맞춘다. 이미 현행
         요율인 행에는 항등이고, 세대 미기록(NULL) 행은 키움 잔재로 가정한다.
         """
+        # [553차] GP 가상거래는 이미 현행 비용 모델(감지 채널 요율 + 슬리피지)로
+        # 계산된 net 이다. 세대 정규화 대상이 아니므로 그대로 돌려준다.
+        if r.get("is_gp"):
+            return r["pnl_krw"]
         rate = r.get("commission_rate_used") or _LEGACY_COMM_RATE
         return r["gross_pnl_krw"] - r["commission_krw"] * (_LIVE_COMM_RATE / rate)
 
@@ -7364,13 +7454,21 @@ class PnlHistoryPanel(QWidget):
         ⚠ 이 결함은 신규가 아니라 잠복이었다 — 순방향/역방향 필터도 같은 구조인데
           `reverse_entry_enabled`가 400행 전부 0이라 드러난 적이 없다.
         """
+        # ⚠ [553차] 인자로 오는 `day_rows` 는 **실거래만**이어야 한다
+        #   (`_effective_day_krw` 가 GP 를 걸러 넘긴다). GP 가 섞이면 분자가 부풀어
+        #   「전부 남아 있다」로 오판하고, 그러면 브로커 net 이 가상 포함 집합에 붙는다.
         total = self._day_total_legs.get(date_str)
         return total is None or len(day_rows) >= total
 
     def _day_is_approx(self, date_str, day_rows):
         """브로커 실측이 있는데 필터 때문에 못 쓴 날인가 — 표시용."""
-        return (not self._day_is_whole(date_str, day_rows)
+        real_rows = [r for r in day_rows if not r.get("is_gp")]
+        return (not self._day_is_whole(date_str, real_rows)
                 and self._broker_pnl.get(date_str) is not None)
+
+    def _day_has_gp(self, day_rows):
+        """[553차] 그 날 표시값에 **가상분이 섞였는가** — 셀 마커용(계측 4원칙 ④)."""
+        return any(r.get("is_gp") for r in day_rows)
 
     def _group_is_approx(self, grp):
         day_rows = self._daily_bucket(grp)
@@ -7547,7 +7645,9 @@ class PnlHistoryPanel(QWidget):
                 return {}
             with open(_f, "r", encoding="utf-8") as _fp:
                 _p = json.load(_fp)
-            return {k: bool(_p.get("pnl_cb_origin_%s" % k, True))
+            # 🔴 gp 기본값은 **False** — 켜지 않으면 종전과 완전히 같은 화면이다.
+            return {k: bool(_p.get("pnl_cb_origin_%s" % k,
+                                   k != self._GP_ORIGIN))
                     for k in self._ORIGIN_KEYS}
         except Exception:
             return {}
@@ -7570,6 +7670,32 @@ class PnlHistoryPanel(QWidget):
             self._build_monthly()
             self._build_summary()
         self._refresh_approx_note()
+        self._refresh_gp_banner()
+
+    def _refresh_gp_banner(self):
+        """[553차 Phase 4] 가상분이 표에 섞였음을 **상시** 띄운다.
+
+        🔴 표 모양이 실측과 똑같아서 배너가 없으면 실적으로 읽힌다 —
+          반사실 탭이 같은 이유로 배너를 다는 것과 동일한 규약(계측 4원칙 ④).
+        """
+        try:
+            on = self._GP_ORIGIN in self._active_origins()
+            if not on or self._is_cf:
+                self._gp_banner.setVisible(False)
+                return
+            n = sum(1 for r in self._rows if r.get("is_gp"))
+            if n:
+                txt = ("🟣 가상 포함 — GP 섀도 %d건이 합산돼 있다. 실적이 아니며 "
+                       "**전환기준 ① 판정에 쓰지 말 것**" % n)
+            elif self._gp_wired:
+                txt = "🟣 GP 섀도 배선됨 · 청산 거래 0건 (관측 중)"
+            else:
+                # 🔴 「미배선」과 「0건」은 다르다(계측 4원칙 ②).
+                txt = "🟣 GP 섀도 미배선 — 아직 신호를 낸 적이 없다(0건이 아니다)"
+            self._gp_banner.setText(txt)
+            self._gp_banner.setVisible(True)
+        except Exception:
+            pass
 
     def _refresh_approx_note(self):
         """브로커 실측을 못 쓴 날이 몇 개인지 화면에 남긴다(계측 4원칙 ④)."""
@@ -7633,7 +7759,9 @@ class PnlHistoryPanel(QWidget):
             cum       = cum_map[date_str]
             disp_krw  = self._effective_day_krw(date_str, grp)
             krw_text  = (self._fmt_single(disp_krw, suffix="원")
-                         + ("≈" if self._day_is_approx(date_str, grp) else ""))
+                         + ("≈" if self._day_is_approx(date_str, grp) else "")
+                         # [553차] 가상분이 섞인 날은 셀에서 바로 보이게 한다.
+                         + ("🟣" if self._day_has_gp(grp) else ""))
             wr   = f"{wins/n*100:.0f}%" if n else "—"
             bg   = self._row_bg(disp_krw)
             pc   = self._pcol(disp_krw)
@@ -8094,13 +8222,16 @@ class LogPanel(QWidget):
 
         lay.addWidget(self.tabs)
 
-    def refresh_pnl_history(self, rows):
+    def refresh_pnl_history(self, rows, gp_positions=None, gp_wired=False):
         """손익 추이 탭 전체 갱신 (trades.db rows).
 
         실측·반사실 두 패널을 **같은 rows로** 갱신한다 — 원천이 갈리면 두 탭의
         거래 집합이 달라져 비교 자체가 무의미해진다.
+
+        [553차 Phase 4] `gp_positions` 는 challenger.db 의 **가상** 거래다.
+        반사실 탭에는 넘기지 않는다 — 그 탭은 실거래의 요율 축을 묻는 곳이다.
         """
-        self.pnl_history.refresh(rows)
+        self.pnl_history.refresh(rows, gp_positions=gp_positions, gp_wired=gp_wired)
         self.pnl_history_cf.refresh(rows)
 
     def update_model_cards(self, accuracy: float, sgd_weight: float, is_active: bool):
@@ -12791,9 +12922,10 @@ class DashboardAdapter:
         """[260704 감사 P0] 창4 최근20건 순EV 타일 갱신"""
         self._win.log_panel.update_recent_ev(cnt, avg_net_pnl_krw, win_rate)
 
-    def update_pnl_history(self, rows):
+    def update_pnl_history(self, rows, gp_positions=None, gp_wired=False):
         """📊 손익 추이 탭 갱신 (trades.db rows)."""
-        self._win.log_panel.refresh_pnl_history(rows)
+        self._win.log_panel.refresh_pnl_history(
+            rows, gp_positions=gp_positions, gp_wired=gp_wired)
 
     def notify_pipeline_ran(self):
         """분봉 파이프라인 완료 시 상태 바 + 헤더 생존 바 동시 리셋.

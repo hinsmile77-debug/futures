@@ -14191,7 +14191,14 @@ class TradingSystem:
         logger.debug("[LiveDBG] _refresh_pnl_history 시작")
         try:
             rows = fetch_pnl_history(limit_days=90)
-            self.dashboard.update_pnl_history(rows)
+            # [MW0601 553차 Phase 4] GP 규칙 섀도(가상)를 별도 축으로 함께 넘긴다.
+            # 🔴 `trades` 에 섞지 않는다 — 브로커 대사·전환기준 ① 오염 방지.
+            #   조회 실패는 빈 목록이며 「0건」이 아니라 미배선/미측정일 수 있어
+            #   `gp_wired` 로 그 둘을 가른다(계측 4원칙 ②).
+            from utils.db_utils import fetch_gp_shadow_positions, gp_shadow_is_wired
+            _gp_rows = fetch_gp_shadow_positions(limit_days=90)
+            self.dashboard.update_pnl_history(
+                rows, gp_positions=_gp_rows, gp_wired=gp_shadow_is_wired())
         except Exception as e:
             apply_error_policy(
                 system=self,

@@ -3758,6 +3758,87 @@ def save_regime_at(ts: str, regime: str) -> None:
     execute(RAW_DATA_DB, "INSERT OR REPLACE INTO regime_history (ts, regime) VALUES (?, ?)", (ts, regime))
 
 
+def fetch_gp_shadow_positions(limit_days: int = 90) -> List[dict]:
+    """[MW0601 553차 Phase 4] GP 규칙 섀도의 **가상** 청산 거래 — 손익 추이 패널용.
+
+    🔴 원천은 `challenger.db:challenger_trades` 이며 **`trades` 가 아니다.**
+      GP 는 실주문이 없는 가상거래다. 실거래 테이블에 섞으면 브로커 대사·전환기준 ①·
+      수수료 재환산·승패 사후검증이 전부 오염된다.
+
+    ⚠ 반환 행은 **실적이 아니다.** 소비자는 브로커 net 대사 경로와 **분리 합성**해야
+      한다(같은 날 브로커 예탁금 차액에는 이 거래가 들어 있지 않다).
+
+    ⚠ `pnl_pt` 는 `challenger_cost` 현행 모델(감지 채널 요율 + 슬리피지 1틱/편도)로
+      계산된 **순손익**이다. 원화는 **미니선물 50,000원/pt** 이며 250,000 이 아니다.
+
+    Returns:
+        dict 리스트. 조회 실패·테이블 부재는 **빈 리스트**이며, 그것은 「GP 거래 0건」이
+        아니라 **미배선/미측정**일 수 있다 — 호출부가 그 둘을 구분해야 한다(계측 4원칙 ②).
+    """
+    import datetime as _dt
+    try:
+        from config.settings import CHALLENGER_DB, VALIDATION_CAMPAIGN
+        ids = VALIDATION_CAMPAIGN["gp_rule_challenger_ids"]
+        wanted = (ids["long"], ids["short"])
+    except Exception as _e:
+        logger.debug("[GP패널] 사전등록 조회 실패: %s", _e)
+        return []
+    cutoff = (_dt.date.today() - _dt.timedelta(days=int(limit_days))).isoformat()
+    try:
+        rows = fetchall(
+            CHALLENGER_DB,
+            """SELECT challenger_id, entry_ts, exit_ts, direction,
+                      entry_price, exit_price, pnl_pt, exit_reason,
+                      commission_rate_used, slip_ticks_per_side, broker_channel
+               FROM challenger_trades
+               WHERE challenger_id IN (?,?)
+                 AND exit_ts IS NOT NULL AND pnl_pt IS NOT NULL
+                 AND exit_ts >= ?
+               ORDER BY exit_ts ASC""",
+            (wanted[0], wanted[1], cutoff + " 00:00:00"),
+        )
+    except Exception as _e:
+        logger.debug("[GP패널] challenger.db 조회 스킵: %s", _e)
+        return []
+
+    out = []
+    for r in rows:
+        try:
+            out.append({
+                "challenger_id": r["challenger_id"],
+                "entry_ts": r["entry_ts"],
+                "exit_ts": r["exit_ts"],
+                "direction": int(r["direction"] or 0),
+                "entry_price": float(r["entry_price"] or 0.0),
+                "exit_price": float(r["exit_price"] or 0.0),
+                "pnl_pt": float(r["pnl_pt"]),
+                "exit_reason": r["exit_reason"] or "",
+                "commission_rate_used": r["commission_rate_used"],
+                "broker_channel": r["broker_channel"],
+            })
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def gp_shadow_is_wired() -> bool:
+    """GP 섀도가 **배선돼 있는가**(신호를 낸 적이 있는가).
+
+    🔴 「미배선」과 「거래 0건」을 가르는 유일한 근거다. 둘을 같은 빈 목록으로 보이면
+      FP-CRITICAL 죽은 게이트와 같은 착시가 생긴다(계측 4원칙 ②).
+    """
+    try:
+        from config.settings import CHALLENGER_DB, VALIDATION_CAMPAIGN
+        ids = VALIDATION_CAMPAIGN["gp_rule_challenger_ids"]
+        return bool(fetchall(
+            CHALLENGER_DB,
+            "SELECT 1 FROM challenger_signals WHERE challenger_id IN (?,?) LIMIT 1",
+            (ids["long"], ids["short"]),
+        ))
+    except Exception:
+        return False
+
+
 def fetch_prior_regular_closes(before_ts: str, limit: int) -> List[float]:
     """[MW0601 553차] `before_ts` **이전**의 정규장 종가를 오래된 → 최신 순으로 반환.
 
