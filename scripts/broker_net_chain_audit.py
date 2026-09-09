@@ -201,11 +201,37 @@ def _fmt_krw(v):
     return "{:+,.0f}".format(v)
 
 
+def _make_stdout_utf8_safe():
+    """🔴 [MW0602 553차 / 1-5] 기본 Windows 콘솔(cp949)에서 **첫 줄부터 죽던** 것을 막는다.
+
+    이 진단의 출력은 `—`(em-dash) · `✅` · `🔴` 같은 비-cp949 문자를 쓴다.
+    그래서 `PYTHONIOENCODING=utf-8` 없이 실행하면 헤더 `print()` 에서
+    `UnicodeEncodeError: 'cp949' codec can't encode character '\\u2014'` 로
+    **아무것도 못 보고 끝난다**. 547차가 고친 금액 포매터 크래시와 같은 계열인데,
+    그쪽은 「발견이 있을 때만」 죽었고 이쪽은 **항상** 죽는다.
+
+    ⚠ 모듈 임포트 시점이 아니라 `main()` 안에서만 만진다 — 임포트 때 `sys.stdout`
+      을 갈아끼우면 pytest 의 캡처 스트림을 깨뜨린다(이 저장소 28개 테스트 파일이
+      그렇게 해서 전체 스위트 실행이 통째로 불가능하다, `O-77`).
+    ⚠ `errors="replace"` 로 둔다 — 인코딩 때문에 진단이 죽는 일이 다시 없도록.
+    """
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")   # py3.7+
+    except Exception:
+        try:
+            sys.stdout = io.TextIOWrapper(
+                sys.stdout.buffer, encoding="utf-8", errors="replace")
+        except Exception:
+            pass          # 최후에도 실패하면 그냥 진행 — 진단을 막지는 않는다
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--since", default="", help="YYYY-MM-DD 이후만")
     ap.add_argument("--json", action="store_true", help="기계 판독용 JSON")
     args = ap.parse_args()
+
+    _make_stdout_utf8_safe()
 
     db = _db_rows()
     traded = _traded_dates()

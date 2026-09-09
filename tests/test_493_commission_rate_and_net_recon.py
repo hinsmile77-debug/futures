@@ -117,6 +117,49 @@ def _code_lines(path):
     return [ln.split("#", 1)[0] for ln in src.splitlines()]
 
 
+# ── [MW0602 553차 / 1-6] 핀 예외 — **사전등록이 명시한 채널만** ────────────────
+#
+# 541차 이식(`e021362`)이 `eval_gp_cross_channels` 를 이 파일에 넣으면서 규칙이
+# 정면충돌했다:
+#   · 이 테스트          — 이 **파일 전체**에서 라이브 요율 산술 금지
+#   · `test_541_gp_cross_verdict::test_evaluator_uses_live_rate_not_pinned`
+#                        — 이 **함수**는 라이브 요율을 **써야** 한다
+# 둘 다 사전등록이라 한쪽을 그냥 어길 수 없다. 채널 스펙이 직접 근거다:
+#   `VALIDATION_CAMPAIGN["gp_cross_*_watch"]["cost_source"] = "BROKER_CHANNEL_SPECS"`
+# (핀값은 왕복비용을 낙관한다 — MW0601 6.5배 / **이 PC(CREON) 1.27배**).
+#
+# 🔴 예외를 **하드코딩하지 않는다.** 아래 `test_pin_exemption_is_still_authorized`
+#    가 매번 사전등록을 되읽어, `cost_source` 가 바뀌거나 사라지면 예외도 죽는다.
+#    면제의 근거와 면제를 한 곳에 묶어 두지 않으면 근거만 조용히 사라진다.
+_PIN_EXEMPT_FUNCS = {
+    ("scripts/generate_validation_campaign_report.py", "eval_gp_cross_channels"):
+        ("gp_cross_highvol_watch", "gp_cross_any_watch"),
+}
+
+
+def _enclosing_top_level_func(path):
+    """{줄번호: 최상위 함수명} — 중첩 함수는 바깥 함수 이름으로 접는다."""
+    import ast
+    src = io.open(path, encoding="utf-8").read()
+    out = {}
+    try:
+        # ⚠ filename 을 넘긴다 — 안 넘기면 대상 파일의 잘못된 escape 경고가
+        #   `<unknown>:2` 로 떠서 **어느 파일인지 알 수 없다**(계측 4원칙 ③).
+        #   실제로 이 검사가 `scripts/tp1_protect_offset_shadow.py:100` 의
+        #   `py310_64\python.exe`(비-raw 독스트링)를 그렇게 드러냈다.
+        tree = ast.parse(src, filename=path)
+    except SyntaxError:                       # 파싱 실패 시 예외를 주지 않는다
+        return out
+    for node in tree.body:                    # 최상위만 순회 = 중첩은 자동으로 접힘
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        end = max((getattr(n, "lineno", node.lineno) for n in ast.walk(node)),
+                  default=node.lineno)
+        for ln in range(node.lineno, end + 1):
+            out[ln] = node.name
+    return out
+
+
 def test_cost_formulas_do_not_use_live_rate():
     """[핀 누수 방지] 비용차감 채널의 **계산식**이 라이브 요율을 쓰면 안 된다.
 
@@ -125,18 +168,50 @@ def test_cost_formulas_do_not_use_live_rate():
 
     ⚠ import·배너 표시는 막지 않는다. 리포트는 오히려 라이브 요율을 읽어
       "실제 대비 몇 배 과소인지"를 매주 찍어야 한다(핀을 조용히 두지 않기 위함).
+    ⚠ `_PIN_EXEMPT_FUNCS` 의 함수는 건너뛴다 — 사전등록이 `cost_source=
+      BROKER_CHANNEL_SPECS` 로 **라이브 요율을 명시한** 채널의 평가자다.
+      그 명시가 살아 있는지는 아래 별도 검사가 매번 되묻는다.
     """
-    offenders = []
+    offenders, exempted = [], []
     for rel in _COST_CONSUMERS:
         path = os.path.join(BASE, rel)
         if not os.path.exists(path):
             continue
+        fn_of = _enclosing_top_level_func(path)
         for i, ln in enumerate(_code_lines(path), 1):
-            if _ARITHMETIC_USE.search(ln):
-                offenders.append("%s:%d" % (rel, i))
+            if not _ARITHMETIC_USE.search(ln):
+                continue
+            if (rel, fn_of.get(i)) in _PIN_EXEMPT_FUNCS:
+                exempted.append("%s:%d(%s)" % (rel, i, fn_of.get(i)))
+                continue
+            offenders.append("%s:%d" % (rel, i))
     assert not offenders, (
         "비용 계산식이 라이브 요율을 쓴다 — COST_MODEL_COMMISSION_RATE로 바꿀 것: %s"
         % offenders)
+    # 계측 4원칙 ③ — 무엇이 빠졌는지 세어 둔다(면제가 조용히 늘어나면 보이게).
+    assert len(exempted) <= 2, (
+        "핀 면제가 예상보다 많다(%d건) — 새 면제가 들어왔는지 확인할 것: %s"
+        % (len(exempted), exempted))
+
+
+def test_pin_exemption_is_still_authorized():
+    """🔴 핀 면제의 **근거**가 아직 살아 있는가.
+
+    면제는 「그 채널의 사전등록이 라이브 요율을 명시했다」는 사실 하나에 기대고
+    있다. 그 명시가 사라지면 면제도 사라져야 한다 — 그렇지 않으면 근거 없는
+    구멍만 남는다(FP-CRITICAL 죽은 게이트와 같은 형태).
+    """
+    from config.settings import VALIDATION_CAMPAIGN
+    for (rel, fn), channels in _PIN_EXEMPT_FUNCS.items():
+        for ch_name in channels:
+            ch = VALIDATION_CAMPAIGN.get(ch_name)
+            assert ch is not None, (
+                "%s 면제의 근거 채널 %r 이 사라졌다 — 면제도 제거할 것"
+                % (fn, ch_name))
+            assert ch.get("cost_source") == "BROKER_CHANNEL_SPECS", (
+                "%s 채널이 더는 라이브 요율을 명시하지 않는다(cost_source=%r) — "
+                "%s 의 핀 면제를 제거하고 핀값으로 되돌릴 것"
+                % (ch_name, ch.get("cost_source"), fn))
 
 
 def test_cost_formulas_actually_use_pinned_rate():
