@@ -120,6 +120,13 @@ def compute_gp_cross_features(closes, atr, period=20, cross=0.5, eps=0.05):
     out = {
         "gp_buy_%d" % period: 0.0,
         "gp_sell_%d" % period: 0.0,
+        # [MW0601 552차] 방향축·변동성축. `gp_range` 는 n봉 종가 레인지 그 자체이며
+        # 211거래일 전수검증에서 **중첩·다중검정 보정 후 유일하게 생존한 축**이다
+        # (비중첩 t=-3.55, gp_range<=0.5 구간의 +20분 초과수익 -0.138pt).
+        # 방향 신호가 아니라 「지금은 하지 마라」는 레짐 게이트로 읽어야 한다.
+        # `gp_dir` 은 RSI 와 강한 단조관계라 신규 정보량이 낮다(구현명세 §3.2).
+        "gp_range_%d" % period: 0.0,
+        "gp_dir_%d" % period: 0.0,
         "gp_cross_up_%d" % period: 0.0,
         "gp_cross_dn_%d" % period: 0.0,
         "gp_cross_tight_%d" % period: 0.0,
@@ -144,6 +151,8 @@ def compute_gp_cross_features(closes, atr, period=20, cross=0.5, eps=0.05):
         return out
     out["gp_buy_%d" % period] = float(gb)
     out["gp_sell_%d" % period] = float(gs)
+    out["gp_range_%d" % period] = float(gb + gs)      # [552차] 변동성축
+    out["gp_dir_%d" % period] = float(gb - gs)        # [552차] 방향축
 
     # 교차는 전봉 GP 가 있어야 판정된다 → period+1 봉 필요
     if n >= period + 1:
@@ -685,6 +694,8 @@ class FeatureBuilder:
             features.update({
                 "gp_buy_%d" % GP_CROSS_PERIOD: 0.0,
                 "gp_sell_%d" % GP_CROSS_PERIOD: 0.0,
+                "gp_range_%d" % GP_CROSS_PERIOD: 0.0,
+                "gp_dir_%d" % GP_CROSS_PERIOD: 0.0,
                 "gp_cross_up_%d" % GP_CROSS_PERIOD: 0.0,
                 "gp_cross_dn_%d" % GP_CROSS_PERIOD: 0.0,
                 "gp_cross_tight_%d" % GP_CROSS_PERIOD: 0.0,

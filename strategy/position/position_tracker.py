@@ -97,6 +97,15 @@ class PositionTracker:
         self.signal_direction: str = ""
         self.reverse_entry_enabled: bool = False
         self.entry_horizon: Optional[str] = None
+        # [MW0601 552-11] 진입 출처 — **포지션의 속성**이지 프로세스의 속성이 아니다.
+        # 🔴 종전에는 `main.py:_entry_source` (프로세스 인스턴스 상태)에만 있어서
+        #    재시작이 지웠다. `trades` 행은 **청산 시점**에 쓰이므로, 진입과 청산
+        #    사이에 세션이 바뀌면 `__init__` 기본값 `"SYSTEM_AUTO"` 가 기록된다.
+        #    2026-08-28 실측: 15:20:36 외부진입(`[체결동기화] 외부진입`) → 15:29:55
+        #    재시작 → 15:30 청산 3레그가 `SYSTEM_AUTO` 로 기록(+656,935원).
+        #    545/546차 「판정 손익을 시스템 자동매매 한정으로」 축이 그만큼 오염된다.
+        # None = 미측정. `""` 나 `"SYSTEM_AUTO"` 로 채우지 않는다(계측 4원칙 ②).
+        self.entry_source: Optional[str] = None
         self.entry_hurst_bucket: Optional[str] = None
         self.entry_extra_stop_mult: float = 1.0  # [349차] 급변장 사전 가드 스톱확대 배수
         # [MW0601 480차 / F-5①] TP1 배수 폴백을 포지션당 1회만 경고하기 위한 표식.
@@ -1614,6 +1623,7 @@ class PositionTracker:
         self.signal_direction = ""
         self.reverse_entry_enabled = False
         self.entry_horizon = None
+        self.entry_source = None          # [552-11] 포지션 경계에서 리셋
         self.entry_extra_stop_mult = 1.0
         self.stop_price = 0.0
         self.stop_updated_at = None
@@ -1813,6 +1823,7 @@ class PositionTracker:
                 "signal_direction": self.signal_direction,
                 "reverse_entry_enabled": self.reverse_entry_enabled,
                 "entry_horizon": self.entry_horizon,
+                "entry_source": self.entry_source,   # [552-11] 재시작 생존용
                 "entry_hurst_bucket": self.entry_hurst_bucket,
                 "entry_extra_stop_mult": self.entry_extra_stop_mult,
                 "stop_price":   self.stop_price,
@@ -1900,6 +1911,9 @@ class PositionTracker:
             self.signal_direction = state.get("signal_direction", self.status)
             self.reverse_entry_enabled = bool(state.get("reverse_entry_enabled", False))
             self.entry_horizon = state.get("entry_horizon")
+            # [552-11] 구버전 상태파일엔 이 키가 없다 — None 이면 **미측정**이며
+            # "SYSTEM_AUTO" 가 아니다. 호출부가 그 차이를 살려 처리한다.
+            self.entry_source = state.get("entry_source")
             self.entry_hurst_bucket = state.get("entry_hurst_bucket")
             self.entry_extra_stop_mult = float(state.get("entry_extra_stop_mult", 1.0) or 1.0)
             self.stop_price   = float(state.get("stop_price", 0))

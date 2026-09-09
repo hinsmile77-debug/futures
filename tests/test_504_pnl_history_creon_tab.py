@@ -441,6 +441,28 @@ def test_engine_fallback_normalizes_rate_generation():
     assert got < r["pnl_krw"], "정규화 후 net이 기록값보다 낙관적이면 안 된다"
 
 
+def _force_unfiltered(panel):
+    """[552-9] 필터를 **테스트가 직접** 무필터로 세운다.
+
+    🔴 세우지 않으면 이 테스트는 `data/ui_prefs.json` — **운영자가 대시보드에서
+    마지막으로 클릭한 상태**를 읽는다. `_load_origin_prefs()`의 코드 기본값은
+    전부 True 지만 저장된 prefs 가 있으면 그쪽이 이긴다.
+
+    실제로 그렇게 깨졌다(2026-09-10 실측): prefs 가
+    `pnl_cb_origin_manual=False` · `unknown=False` 라 `_active_rows()` 가
+    557행 중 247행만 돌려줬고, 부분 선택된 날은 `_day_is_whole()` 이 브로커
+    일단위 값을 **정상적으로 거부**해 엔진 net 으로 내려갔다. 즉 실패한 것은
+    코드가 아니라 **이 테스트의 전제**였다.
+
+    같은 파일의 `test_prefs_are_not_written_in_test_mode` 가 prefs **쓰기**를
+    막고 있었는데 **읽기**는 아무도 막지 않았다 — 그 짝을 여기서 맞춘다.
+    """
+    panel._cb_forward.setChecked(True)
+    panel._cb_reverse.setChecked(True)
+    for k in panel._ORIGIN_KEYS:
+        panel._cb_origin[k].setChecked(True)
+
+
 def test_unfiltered_view_keeps_broker_measurement():
     """무필터 화면은 종전대로 **브로커 실측**이어야 한다 — 판정 원천이 안 바뀐다."""
     from utils.db_utils import fetch_pnl_history
@@ -449,11 +471,44 @@ def test_unfiltered_view_keeps_broker_measurement():
         return
     live, _ = _panels()
     live.refresh(rows)
+    _force_unfiltered(live)
+    assert len(live._active_rows()) == len(live._rows), "무필터 전제가 성립하지 않는다"
     day_rows = live._daily_bucket(live._active_rows())
     for d, rs in day_rows.items():
         if live._broker_pnl.get(d) is not None:
             assert live._effective_day_krw(d, rs) == live._broker_pnl[d], d
             assert not live._day_is_approx(d, rs)
+
+
+def test_partial_filter_refuses_broker_day_value():
+    """[552-9] 부분 선택된 날은 브로커 일단위 값을 **쓰지 않는다** — 위 테스트의 짝.
+
+    브로커 net 은 예탁금 차액이라 그 날 전체의 합이고 거래별로 쪼갤 수 없다.
+    필터로 일부만 남았는데 그 값을 쓰면 표는 필터된 것처럼 보이는데 **돈만
+    전체값**이 된다(2026-08-27 실측: 행 0개인데 +299,565원).
+
+    위 테스트가 prefs 때문에 깨졌을 때 이 동작이 **정상 작동한 결과**였다.
+    그 사실을 못으로 박아 둔다 — 안 그러면 다음 세션이 "브로커 값이 안 나온다"를
+    회귀로 오인해 `_day_is_whole` 가드를 걷어낸다.
+    """
+    live, _ = _panels()
+    # 서로 다른 포지션이어야 한다 — `_mkrow` 는 pos_key 를 entry_ts 로 잡는다.
+    r1 = _mkrow("SYSTEM_AUTO", "TP1 부분청산 33%", ets="2026-08-03 10:00:00",
+                gross=100000.0, comm=1000.0)
+    r2 = _mkrow("SYSTEM_AUTO", "TP2(전량)", ets="2026-08-03 11:00:00",
+                gross=50000.0, comm=1000.0)
+    live._rows = [r1, r2]
+    live._assign_origins()
+    live._day_total_legs = {r1["entry_ts"][:10]: 2}
+    d = r1["entry_ts"][:10]
+    live._broker_pnl = {d: 999999.0}
+
+    assert live._effective_day_krw(d, [r1, r2]) == 999999.0, "전체가 남으면 브로커 값"
+    assert not live._day_is_approx(d, [r1, r2])
+
+    assert live._effective_day_krw(d, [r1]) != 999999.0, (
+        "부분 선택인데 브로커 일단위 값이 그대로 나왔다 — 필터가 돈에 안 먹는다")
+    assert live._day_is_approx(d, [r1]), "내려갔다는 사실이 표시되지 않는다(원칙 ④)"
 
 
 # ── ⑨ prefs 오염 방지 ──────────────────────────────────────────

@@ -231,19 +231,45 @@ def test_invariant_entry_source_is_label_only(main_src):
     조건문·수량·게이트가 이 값을 읽기 시작하면 라벨이 매매 판단으로 승격된 것이다
     — 그 순간 F-3 은 「라벨 수정」이 아니라 매매 정책 변경이 된다.
     """
+    # [MW0601 552-11] `_entry_source` 는 프로퍼티가 됐다 — 재시작이 라벨을 지우는
+    # 것을 막기 위해 setter 가 `PositionTracker.entry_source` 로 미러링한다.
+    # **불변식 자체는 그대로다**: 이 값은 라벨이며 매매 판단으로 승격되지 않는다.
+    # 그래서 「읽기 줄 수」가 아니라 「읽은 값으로 무엇을 하는가」를 본다.
+    _PLUMBING = (
+        "_entry_source_val = ",          # 클래스 기본값 / setter 저장
+        "return self._entry_source_val", # getter
+        "def _entry_source(self",        # property / setter 정의
+        "@_entry_source.setter",
+        "@property",
+        "self.position.entry_source = value",   # setter 미러링
+        "_restored_src = self.position.entry_source",
+        "_restored_src or",
+    )
     reads = [
         ln.strip()
         for ln in main_src.splitlines()
         if "_entry_source" in ln
         and not re.search(r"self\._entry_source\s*=", ln)
         and not ln.strip().startswith("#")
+        and not any(k in ln for k in _PLUMBING)
     ]
-    # 남는 것은 __init__ 타입선언 1줄 + trades INSERT 의 getattr 1줄뿐이어야 한다.
-    assert len(reads) == 2, "예상치 못한 _entry_source 읽기: %r" % (reads,)
-    assert any("str" in r and "SYSTEM_AUTO" in r for r in reads), reads
-    assert any("getattr(self" in r for r in reads), reads
-    for r in reads:
-        assert not r.startswith("if "), "라벨이 분기 조건으로 쓰인다: %r" % r
+    # 배관을 걷어내면 **실소비는 trades INSERT 한 줄**뿐이어야 한다.
+    assert len(reads) == 1, "예상치 못한 _entry_source 읽기: %r" % (reads,)
+    assert "_entry_src_this_leg" in reads[0], reads
+    # 라벨이 분기·비교·게이트로 승격되지 않았는가 (F-3 의 핵심 불변식)
+    for ln in main_src.splitlines():
+        st = ln.strip()
+        if "_entry_source" not in st or st.startswith("#"):
+            continue
+        if any(k in st for k in _PLUMBING):
+            continue
+        assert not st.startswith(("if ", "elif ", "while ")), (
+            "라벨이 분기 조건으로 쓰인다: %r" % st)
+        assert " == " not in st and " != " not in st and " in (" not in st, (
+            "라벨이 비교에 쓰인다 — 매매 판단으로 승격된 것이다: %r" % st)
+    # 552-11 배선이 살아 있는가 (이게 빠지면 재시작이 다시 라벨을 지운다)
+    assert "self.position.entry_source = value" in main_src
+    assert "_restored_src = self.position.entry_source" in main_src
 
 
 def test_invariant_no_order_or_exit_logic_touched(main_src):

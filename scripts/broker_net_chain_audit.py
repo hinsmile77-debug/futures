@@ -186,6 +186,29 @@ def _guard_present():
     return "base_dep" in src and "롤오버" in src
 
 
+def _live_guard_present():
+    """[MW0601 552-10] **라이브 저장 경로**의 가드가 재시작을 견디는가.
+
+    🔴 이 점검이 없어서 2026-09-07 오염을 놓쳤다.
+    종전에는 `_scan_lines`(소급 적재 파서)만 보고 「✅ 롤오버 가드 있음」을 찍었는데,
+    그날 오염을 만든 것은 파서가 아니라 **라이브 경로**였다. 파서 가드는 정상
+    동작했고, 뚫린 것은 라이브 기준점 `_broker_dep_base_today` 가 **프로세스
+    인스턴스 상태**라 21:58 재기동이 지운 것이었다. 감사 도구가 ✅ 를 찍는 동안
+    판정 원천이 오염돼 있었다 — 「대사는 모든 축을 걸어라」(계측 4원칙 ⑤).
+
+    Returns:
+        (bool|None, bool|None) — (501차 불변식 가드, 552-10 재시작 승계)
+    """
+    p = os.path.join(ROOT, "main.py")
+    if not os.path.exists(p):
+        return None, None
+    src = open(p, encoding="utf-8", errors="ignore").read()
+    base = "_broker_dep_base_today" in src and "SKIP_ROLLOVER" in src
+    restart = ("fetch_broker_dep_base" in src and "BASE_FROM_DB" in src
+               and "SKIP_NO_BASE" in src)
+    return base, restart
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--since", default="", help="YYYY-MM-DD 이후만")
@@ -307,16 +330,29 @@ def main():
                   % (len(miss), " ".join(sorted(miss)[-8:])))
 
     print("")
-    print("── 부가. D1 가드 배선 여부 ──")
+    print("── 부가. D1 가드 배선 여부 (소급 파서 + **라이브 경로**) ──")
     if guard is None:
         print("  ? commission_rate_recon.py 없음")
     elif guard:
-        print("  ✅ `_scan_lines` 에 롤오버 가드 있음")
+        print("  ✅ 소급 파서 `_scan_lines` 에 롤오버 가드 있음")
     else:
         print("  🔴 `_scan_lines` 에 롤오버 가드 **없음** — 정정해도 다음 적재에서 재오염된다.")
         print("     먼저 파서를 고칠 것(MW0602 501차 후속 참조).")
 
-    return 1 if (contaminated or chain_breaks or skip_days or guard is False) else 0
+    live_base, live_restart = _live_guard_present()
+    if live_base is None:
+        print("  ? main.py 없음")
+    else:
+        print("  %s 라이브 `main.py` 불변식 가드(501차 D2)"
+              % ("✅" if live_base else "🔴"))
+        print("  %s 라이브 **재시작 승계**(552-10 — DB 기준점 + 마감후 무기준 스킵)"
+              % ("✅" if live_restart else "🔴"))
+        if not live_restart:
+            print("     ⚠ 기준점이 프로세스 상태로만 있으면 저녁 재기동이 그것을 지우고")
+            print("       롤오버 판독을 「그날 첫 판독」으로 채택한다 — 2026-09-07 사고 경로.")
+
+    return 1 if (contaminated or chain_breaks or skip_days or guard is False
+                 or live_base is False or live_restart is False) else 0
 
 
 if __name__ == "__main__":
