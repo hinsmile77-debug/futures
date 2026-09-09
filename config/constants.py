@@ -281,6 +281,16 @@ DYNAMIC_FEATURES_POOL = [
     # (features/technical/microprice.py)와 수학적으로 사실상 동일 — 최대 호가 단계 수(5 vs
     # 10)만 다를 뿐이고 실시간 호가 피드 자체가 5단계까지만 옴(collection/cybos/
     # realtime_data.py:_handle_hoga). 신규 구현 실익 없음으로 판단(321차 검토).
+    #
+    # 🔴 [552차 후속] **이 판단이 한 번 잊혔다 — 같은 양이 다시 신규 축으로 올라왔다.**
+    # 552차 초판 계획서 Phase 3 이 `book_net_ratio = (bid_tot-ask_tot)/(bid_tot+ask_tot)`
+    # 를 신규 파생으로 등록했는데, 이는 위 `microprice_depth_bias` 와 **정의가 같고
+    # 가중만 다르다**(균등 1,1,1,1,1 vs 조화 1,1/2,1/3,1/4,1/5 — 같은 5단).
+    # 원인은 계획서가 「오더북 파생은 전부 1단 기반」이라 잘못 적은 것이다(실제로는
+    # mlofi_*·microprice_* 가 5단 기반). 중복을 실측으로 판정하는 정제 단계를
+    # `scripts/book_depth_duplication_check.py`(Phase 3-0)로 신설했고, 이 주석이
+    # 지워지지 않는지는 `tests/test_552b_book_depth_duplication.py` 가 고정한다.
+    # ⇒ **호가 잔량 불균형 계열 축을 새로 만들기 전에 반드시 이 문단을 읽을 것.**
     # v6.5 추가
     "multi_timeframe_5m",  # 324차: features/technical/multi_timeframe.py 배선 완료
                            # (feature_builder.py:multi_timeframe — push_1m_candle()의

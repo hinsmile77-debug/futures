@@ -105,6 +105,19 @@ class CybosRealtimeData:
         }
         self._tick_event_count = 0
         self._hoga_event_count = 0
+        # ── [MW0601 552차] 호가 5단 총잔량 (소비 0, 적재 전용) ──────────────────
+        # `_handle_hoga` 는 이미 5단 전부를 파싱해 두고 1단만 봉에 실었다. 나머지
+        # 4단은 debug 로그로만 흘러가 버려졌다. 호가창 깊이는 JPG 차트의
+        # 「(호가)총 순매수 잔량_비율」의 원천이며 DB 에 없어 검증이 불가능했다.
+        # 452차 앵커 4열과 같은 규약: **미계측은 NULL**, DEFAULT 를 두지 않는다.
+        #
+        # 🔴 **[552차 후속] 직전값 캐시(`_last_*_qty_tot`)를 쓰지 않는다.**
+        # bid1/ask1 은 "직전 유효값 유지"가 맞지만 깊이는 아니다. 한쪽이 빈
+        # 스냅샷에서 반대쪽 직전값을 같이 실으면 ① 세션 첫 스냅샷에서 0 이 실려
+        # **"잔량 0"과 "미수신"이 다시 같아지고** ② 평균 누적에 stale 값이 섞인다.
+        # 그래서 **양변이 모두 유효한 스냅샷만** 세고, 그 스냅샷의 값만 싣는다.
+        # 한쪽만 온 스냅샷은 세지 않고 카운터로 남긴다(계측 4원칙 ③ 탈락 가시화).
+        self._book_oneside_count = 0
         # ── [MW0601 452차 / QDQ Phase 0] 앵커 계측 상태 (소비 0, 적재 전용) ──────
         # 서버가 주는 정답지 `22_누적체결매도`/`23_누적체결매수`의 봉내 증분을 뽑는다.
         # 공식 캡처본에서 `13_누적거래량(1,525) = 22(342) + 23(1,183)` 항등식이 정확히
@@ -516,6 +529,22 @@ class CybosRealtimeData:
         if ask_q > 0:
             self._last_ask_qty = ask_q
 
+        # [552차] 5단 합계. 유효호가만 더한다(미수신 레벨은 0 이라 합에 무해).
+        # 양변이 다 유효할 때만 「스냅샷 1회」로 인정한다 — 한쪽이 비면 순잔량비율
+        # 자체가 정의되지 않으므로 세지 않는 것이 정직하다(0 으로 채우지 않는다).
+        _bid_tot = sum(q for q in bid_qtys if q > 0)
+        _ask_tot = sum(q for q in ask_qtys if q > 0)
+        _book_ok = (_bid_tot > 0 and _ask_tot > 0)
+        if not _book_ok and (_bid_tot > 0 or _ask_tot > 0):
+            self._book_oneside_count += 1
+            if self._book_oneside_count == 1:
+                sys_log.warning(
+                    "[BOOK][ONESIDE] code=%s 한쪽 호가만 수신 — 깊이 스냅샷에서 제외 "
+                    "(bid_tot=%d ask_tot=%d). 이 봉의 book_snaps 가 그만큼 작아진다. "
+                    "세션 누계는 이후 debug 로그로만 남긴다.",
+                    self._rt_code, _bid_tot, _ask_tot,
+                )
+
         self._last_hoga_snapshot = {
             "bid_prices": bid_prices,
             "ask_prices": ask_prices,
@@ -536,8 +565,8 @@ class CybosRealtimeData:
             for i in range(5)
         )
         hoga_log.debug(
-            "[HOGA] code=%s active_levels=%d/5 %s",
-            self._rt_code, active, level_parts,
+            "[HOGA] code=%s active_levels=%d/5 oneside_skipped=%d %s",
+            self._rt_code, active, self._book_oneside_count, level_parts,
         )
 
         if self._current_bar is not None:
@@ -545,6 +574,17 @@ class CybosRealtimeData:
             self._current_bar["ask1"] = self._last_ask1
             self._current_bar["bid_qty"] = self._last_bid_qty
             self._current_bar["ask_qty"] = self._last_ask_qty
+            # [552차] 봉내 호가 깊이 — 마지막 스냅샷 + 평균용 누적. 스냅샷을 한 번도
+            # 못 받은 봉은 book_snaps=0 이고 나머지는 None 으로 남아 NULL 이 된다.
+            if _book_ok:
+                self._current_bar["book_bid_tot"] = _bid_tot
+                self._current_bar["book_ask_tot"] = _ask_tot
+                self._current_bar["_book_bid_sum"] = (
+                    self._current_bar.get("_book_bid_sum") or 0) + _bid_tot
+                self._current_bar["_book_ask_sum"] = (
+                    self._current_bar.get("_book_ask_sum") or 0) + _ask_tot
+                self._current_bar["book_snaps"] = (
+                    self._current_bar.get("book_snaps") or 0) + 1
             self._current_bar["hoga_levels"] = dict(self._last_hoga_snapshot)
 
         if self._on_hoga is not None:
@@ -625,6 +665,13 @@ class CybosRealtimeData:
                 # 0=받았고 전부 연속매매, 10/11/20/30=단일가 체결 포함(마지막 비영 값).
                 "auction_code": None,
                 "auction_ticks": None,
+                # [MW0601 552차] 호가 5단 총잔량. None = 이 봉에서 호가 스냅샷을
+                # 한 번도 못 받았다(NULL). 0 으로 초기화하지 않는다 — 452차 규약.
+                "book_bid_tot": None,
+                "book_ask_tot": None,
+                "book_snaps": 0,
+                "_book_bid_sum": 0,
+                "_book_ask_sum": 0,
             }
             self._current_min = bar_min
         else:

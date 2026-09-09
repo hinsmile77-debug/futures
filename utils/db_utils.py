@@ -1789,6 +1789,15 @@ def init_raw_data_db():
             -- 측정값이 아니라 **기록자가 항상 아는 플래그**라 0을 쓰는 것이 위 NULL
             -- 원칙과 충돌하지 않는다.
             bar_recovered INTEGER,
+            -- ── [MW0601 552차] 호가 5단 총잔량 (소비 0, 적재 전용) ──
+            -- 🔴 DEFAULT 없음. 452차 앵커 4열과 동일 규약 — 미계측은 NULL 이다.
+            -- book_snaps=0 이면 그 봉은 호가 스냅샷을 한 번도 못 받았다는 뜻이고
+            -- book_* 4열은 전부 NULL 이다. 0 과 구분되어야 한다.
+            book_bid_tot  INTEGER,   -- 봉 마지막 스냅샷 5단 매수잔량 합
+            book_ask_tot  INTEGER,   -- 〃 매도잔량 합
+            book_bid_avg  REAL,      -- 봉내 스냅샷 평균 매수잔량 합
+            book_ask_avg  REAL,      -- 〃 매도
+            book_snaps    INTEGER,   -- 봉내 호가 스냅샷 수 (0=미수신)
             created_at TEXT DEFAULT (datetime('now', 'localtime'))
         )
     """)
@@ -1797,7 +1806,11 @@ def init_raw_data_db():
     for _col, _type in [("buy_vol", "INTEGER DEFAULT 0"), ("sell_vol", "INTEGER DEFAULT 0"),
                         ("anchor_buy", "INTEGER"), ("anchor_sell", "INTEGER"),
                         ("buy_vol_flag", "INTEGER"), ("sell_vol_flag", "INTEGER"),
-                        ("bar_recovered", "INTEGER")]:
+                        ("bar_recovered", "INTEGER"),
+                        # [552차] 기존 96,903행은 NULL 이 된다(정상).
+                        ("book_bid_tot", "INTEGER"), ("book_ask_tot", "INTEGER"),
+                        ("book_bid_avg", "REAL"), ("book_ask_avg", "REAL"),
+                        ("book_snaps", "INTEGER")]:
         try:
             execute(RAW_DATA_DB, "ALTER TABLE raw_candles ADD COLUMN {} {}".format(_col, _type))
         except Exception:
@@ -1875,10 +1888,24 @@ def init_raw_data_db():
             tick_count    INTEGER,
             auction_code  INTEGER,
             auction_ticks INTEGER,
+            -- [MW0601 552차] 호가 5단 총잔량 — raw_candles 와 동일 규약(미측정=NULL)
+            book_bid_tot  INTEGER,
+            book_ask_tot  INTEGER,
+            book_bid_avg  REAL,
+            book_ask_avg  REAL,
+            book_snaps    INTEGER,
             source        TEXT NOT NULL,
             created_at    TEXT DEFAULT (datetime('now', 'localtime'))
         )
     """)
+    # [552차] 기존 session_bars 행에도 같은 5열을 붙인다(기존분은 NULL).
+    for _col, _type in [("book_bid_tot", "INTEGER"), ("book_ask_tot", "INTEGER"),
+                        ("book_bid_avg", "REAL"), ("book_ask_avg", "REAL"),
+                        ("book_snaps", "INTEGER")]:
+        try:
+            execute(RAW_DATA_DB, "ALTER TABLE session_bars ADD COLUMN {} {}".format(_col, _type))
+        except Exception:
+            pass
     try:
         execute(RAW_DATA_DB,
                 "CREATE INDEX IF NOT EXISTS idx_session_bars_session "
@@ -1979,6 +2006,38 @@ def save_triple_barrier_labels(horizon: str, labels: list, stop_mult: float, pro
             )
 
 
+def _book_depth_cols(candle: dict):
+    """[MW0601 552차] 호가 깊이 5열을 봉 dict 에서 뽑는다.
+
+    스냅샷을 한 번도 못 받은 봉(`book_snaps` 0/None)은 **5열 전부 None** 이다.
+    평균을 0 으로 채우면 "잔량이 0이었다"와 "호가를 못 받았다"가 같아 보인다 —
+    452차 앵커 4열·451차 program_* 유령 피처와 같은 함정이라 반복하지 않는다.
+
+    🔴 **[552차 후속] 평균은 두 원천 중 있는 쪽을 쓴다 — 왕복 비대칭 방지.**
+    라이브 봉은 사설 누적키(`_book_bid_sum`)를 들고 오지만, `raw_candles` 행에서
+    되살린 복구봉(`main.py:_bar_from_raw_candle_row`)은 `row.keys()` 자동 승계라
+    **공개 컬럼 `book_bid_avg` 만** 들고 온다. 사설키만 보면 그 복구봉이
+    `book_snaps=N` 인데 `book_bid_avg=NULL` 인 모순 행으로 재저장된다 —
+    452차가 `INSERT OR REPLACE` 로 55봉을 열등한 값으로 덮어쓴 것과 같은 자리다.
+    (현재 453차 D1 이 복구 재실행을 없애 휴면 경로이지만, 되살아나도 안전해야 한다.)
+    """
+    _n = candle.get("book_snaps") or 0
+    if _n <= 0:
+        return (None, None, None, None, 0)
+    _bs = candle.get("_book_bid_sum")
+    _as = candle.get("_book_ask_sum")
+    # 사설 누적키 우선(라이브) → 없으면 이미 계산돼 저장된 평균 컬럼(복구봉)
+    _bavg = (float(_bs) / _n) if _bs is not None else candle.get("book_bid_avg")
+    _aavg = (float(_as) / _n) if _as is not None else candle.get("book_ask_avg")
+    return (
+        candle.get("book_bid_tot"),
+        candle.get("book_ask_tot"),
+        None if _bavg is None else float(_bavg),
+        None if _aavg is None else float(_aavg),
+        int(_n),
+    )
+
+
 def save_candle(candle: dict) -> None:
     """분봉 확정 시 raw_candles에 저장."""
     ts_raw = candle.get("ts")
@@ -1987,8 +2046,9 @@ def save_candle(candle: dict) -> None:
         RAW_DATA_DB,
         """INSERT OR REPLACE INTO raw_candles
            (ts, open, high, low, close, volume, bid1, ask1, oi, buy_vol, sell_vol,
-            anchor_buy, anchor_sell, buy_vol_flag, sell_vol_flag, bar_recovered)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            anchor_buy, anchor_sell, buy_vol_flag, sell_vol_flag, bar_recovered,
+            book_bid_tot, book_ask_tot, book_bid_avg, book_ask_avg, book_snaps)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             ts,
             candle.get("open",     0.0),
@@ -2012,7 +2072,7 @@ def save_candle(candle: dict) -> None:
             candle.get("sell_vol_flag"),
             # [452차 Phase 1] 내력 플래그 — 기록자가 항상 아는 값이라 0/1로 확정한다.
             1 if candle.get("bar_recovered") else 0,
-        ),
+        ) + _book_depth_cols(candle),   # [552차] 호가 깊이 5열
     )
 
 
@@ -2058,8 +2118,9 @@ def save_candle_and_features(candle: dict, ts: str, features: dict) -> None:
             conn.execute(
                 """INSERT OR REPLACE INTO raw_candles
                    (ts, open, high, low, close, volume, bid1, ask1, oi, buy_vol, sell_vol,
-                    anchor_buy, anchor_sell, buy_vol_flag, sell_vol_flag, bar_recovered)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    anchor_buy, anchor_sell, buy_vol_flag, sell_vol_flag, bar_recovered,
+                    book_bid_tot, book_ask_tot, book_bid_avg, book_ask_avg, book_snaps)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     candle_ts,
                     candle.get("open",     0.0),
@@ -2078,7 +2139,7 @@ def save_candle_and_features(candle: dict, ts: str, features: dict) -> None:
                     candle.get("buy_vol_flag"),
                     candle.get("sell_vol_flag"),
                     1 if candle.get("bar_recovered") else 0,
-                ),
+                ) + _book_depth_cols(candle),   # [552차] 호가 깊이 5열
             )
             conn.execute(
                 "INSERT OR REPLACE INTO raw_features (ts, features) VALUES (?, ?)",
@@ -2106,8 +2167,11 @@ def save_session_bar(candle: dict, session: str, source: str = "rt") -> None:
                 """INSERT OR REPLACE INTO session_bars
                    (ts, session, open, high, low, close, volume, buy_vol, sell_vol,
                     anchor_buy, anchor_sell, bid1, ask1, bid_qty, ask_qty, oi,
-                    tick_count, auction_code, auction_ticks, source)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    tick_count, auction_code, auction_ticks,
+                    book_bid_tot, book_ask_tot, book_bid_avg, book_ask_avg, book_snaps,
+                    source)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                           ?, ?, ?, ?, ?, ?)""",
                 (
                     candle_ts_str(candle),
                     session,
@@ -2128,6 +2192,7 @@ def save_session_bar(candle: dict, session: str, source: str = "rt") -> None:
                     candle.get("tick_count"),
                     candle.get("auction_code"),
                     candle.get("auction_ticks"),
+                ) + _book_depth_cols(candle) + (   # [552차] 호가 깊이 5열
                     source,
                 ),
             )
@@ -3138,6 +3203,43 @@ def upsert_broker_net(date: str, deposit_cash: float,
                      float(next_day_deposit_cash), net))
     # [500차 F-5] 성공도 상태다 — 락 밖에서 찍는다(로깅이 DB 락을 잡고 있지 않게).
     log_broker_net_state("OK", date, deposit_cash, next_day_deposit_cash)
+
+
+def fetch_broker_dep_base(date: str) -> Optional[float]:
+    """[MW0601 552-10] 그 날 **이미 기록된** 예탁현금(당일 시가) — 롤오버 판별 기준점.
+
+    🔴 **왜 DB 에서 가져오는가 — 기준점이 프로세스 상태면 재시작이 지운다.**
+    라이브 롤오버 가드(`main.py:_broker_dep_base_today`, 501차)는 「예탁현금은 당일
+    시가 고정」 불변식으로 판별하는데, 그 기준점을 **프로세스 인스턴스 상태**로만
+    들고 있었다. 2026-09-07 실측:
+
+        15:40:07  [DailyClose] → net 축 실측 기입 완료(-1,432,630)
+        21:58:29  [System] DB 초기화 완료          ← **새 프로세스**
+        21:58:45  첫 판독 = 롤오버값 34,984,962 → 그것이 base 가 됨
+                  → _rolled=False → upsert_broker_net() 이 -386,630 으로 덮어씀
+
+    즉 501차 가드는 **뚫린 게 아니라 기준점을 잃었다.** 저녁에 세션이 새로 뜨면
+    그 프로세스에겐 롤오버 판독이 「그날 첫 판독」이라 불변식이 성립해 버린다.
+    `entry_source` 가 재시작으로 `SYSTEM_AUTO` 로 되돌아가는 것과 **같은 계열**이다
+    (552-11). 상태를 프로세스 밖에 두는 것이 해법이다.
+
+    Returns:
+        그 날 기록된 `deposit_cash_krw`(> 0). 행이 없거나 값이 없으면 **None**.
+        None 은 「아직 모름」이며 0 이 아니다(계측 4원칙 ②).
+    """
+    try:
+        row = fetchone(
+            TRADES_DB,
+            "SELECT deposit_cash_krw FROM daily_broker_pnl WHERE date = ?", (date,))
+    except Exception:
+        return None
+    if row is None or row["deposit_cash_krw"] is None:
+        return None
+    try:
+        val = float(row["deposit_cash_krw"])
+    except Exception:
+        return None
+    return val if val > 0 else None
 
 
 def fetch_broker_net(date: str) -> Optional[dict]:

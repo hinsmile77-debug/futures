@@ -321,16 +321,33 @@ def cmd_verify(args):
 
 
 def cmd_backfill(args):
-    """과거 로그 → daily_broker_pnl 브로커 net 축 소급 적재."""
+    """과거 로그 → daily_broker_pnl 브로커 net 축 소급 적재.
+
+    🔴 **[MW0601 552-10] `--date` 로 하루만 고칠 수 있다.**
+    `--force` 는 전 구간을 다시 쓰므로, 오염 1일을 고치려고 부르면 **무관한 날까지
+    재기입**된다(그 자체가 시계열 불연속이다 — 461차 `mdd_pct` 교훈).
+    오염 날짜를 특정했으면 `--backfill --force --date 2026-09-07` 로 좁혀라.
+    """
     from utils.db_utils import (init_daily_broker_pnl_db, upsert_broker_net,
                                 fetch_broker_net)
     init_daily_broker_pnl_db()
+    only = getattr(args, "date", None)
     n_new = n_skip = 0
     for date, gross, dep, nxt in _iter_broker_days():
+        if only and date != only:
+            continue
         if fetch_broker_net(date) is not None and not args.force:
             n_skip += 1
             continue
+        _before = fetch_broker_net(date)
         upsert_broker_net(date, dep, nxt)
+        if _before is not None:
+            _after = fetch_broker_net(date)
+            if _after and _after["net_krw"] != _before["net_krw"]:
+                # 덮어쓰기는 **시계열 불연속**이다 — 조용히 지나가지 않는다.
+                print("  ⚠ 덮어씀 %s: net %+.0f → %+.0f (차 %+.0f)"
+                      % (date, _before["net_krw"], _after["net_krw"],
+                         _after["net_krw"] - _before["net_krw"]))
         got = fetch_broker_net(date)
         if got is None:
             # is_krx_trading_date 가드에 걸린 날(비거래일) — 정상 스킵
@@ -444,6 +461,7 @@ def main():
                     help="[명시] 과거 trades 수수료/net 소급 정정")
     ap.add_argument("--yes", action="store_true", help="--rewrite-trades 실제 반영")
     ap.add_argument("--force", action="store_true", help="--backfill 시 기존 값도 덮어씀")
+    ap.add_argument("--date", help="--backfill 대상을 이 날짜(YYYY-MM-DD) 하나로 좁힌다")
     ap.add_argument("--price", type=float, default=1040.0, help="--impact 기준가")
     ap.add_argument("--atr", type=float, default=3.371, help="--impact ATR 중앙값(pt)")
     args = ap.parse_args()

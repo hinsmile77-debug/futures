@@ -62,7 +62,7 @@ from utils.db_utils import (
     upsert_daily_broker_pnl,
     # [MW0601 493차 / F-2] 브로커 net 축 — 수수료 사각지대를 닫는 계측.
     # 대사 함수 reconcile_daily_net()은 daily_close() 안에서 지연 import 한다.
-    upsert_broker_net,
+    upsert_broker_net, fetch_broker_dep_base,
     save_shap_scores,
     save_regime_at, purge_old_regime_history,
     save_program_trade_raw,
@@ -448,6 +448,40 @@ def _bar_from_raw_candle_row(row):
 
 class TradingSystem:
     """미륵이 메인 트레이딩 시스템"""
+
+    # ── [MW0601 552-11] 진입 출처는 **포지션**을 따라다녀야 한다 ────────────────
+    # 🔴 `trades.entry_source` 는 **청산 시점**에 쓰인다. 그런데 종전 `_entry_source`
+    #    는 프로세스 인스턴스 상태였고, 진입과 청산 사이에 세션이 바뀌면
+    #    `__init__` 기본값 `"SYSTEM_AUTO"` 가 그대로 기록됐다.
+    #    2026-08-28 실측: 15:20:36 외부진입(`[체결동기화] 외부진입`, 주문번호 3639 —
+    #    엔진 `[주문요청]` 없음 = 수동 주문) → **15:29:55 세션 재시작** → 15:30 청산
+    #    3레그가 `SYSTEM_AUTO` 로 기록됐다(net **+656,935원**). 하필 낙관 방향이고,
+    #    545/546차 「판정 손익을 시스템 자동매매 한정으로」 축이 그만큼 오염된다.
+    #    (전수 검출기: `entry_source='SYSTEM_AUTO'` 인데 진입시각 ≥ 15:10 = 자동진입
+    #     불가 구간 → 그 3레그가 유일하게 걸린다.)
+    #
+    # ⚠ 518차 F-3 은 **반대 방향**만 고쳤다 — 비-AUTO 라벨이 고착돼 정상 자동진입이
+    #    `BROKER_SYNC_RECOVERY` 로 기록되던 건. 이 방향(재시작이 라벨을 지움)은 남아 있었다.
+    #
+    # 해법: 값을 **포지션 상태 파일**에 실어 재시작을 넘긴다. 할당 7곳을 전부 고치지
+    # 않고 setter 하나로 `PositionTracker.entry_source` 에 미러링한다 — 한 곳이라도
+    # 빠뜨리면 그 경로만 조용히 옛 동작으로 남기 때문이다.
+    # 회귀 가드: `tests/test_552d_entry_source_restart.py`.
+    _entry_source_val = "SYSTEM_AUTO"      # 클래스 기본값 — 읽기가 항상 성립한다
+
+    @property
+    def _entry_source(self):
+        return self._entry_source_val
+
+    @_entry_source.setter
+    def _entry_source(self, value):
+        self._entry_source_val = value
+        try:
+            # `__init__` 초기 구간에는 아직 `self.position` 이 없다(생성 순서).
+            # 그 구간의 할당은 미러링 대상이 아니다 — 포지션이 없으니 실을 곳도 없다.
+            self.position.entry_source = value
+        except AttributeError:
+            pass
 
     def __init__(self):
         logger.info("[System] 미륵이 초기화")
@@ -1026,7 +1060,18 @@ class TradingSystem:
         self._entry_kelly_advised_skip: int = 0
         # [311차 후속] 진입 출처 태그 — trades.entry_source에 그대로 기록되어
         # 유령/정상 레코드를 사후 구분한다(306차 pending_miss 유령 포지션 사후분석 대응).
-        self._entry_source:       str  = "SYSTEM_AUTO"
+        # ── [MW0601 552-11] 복원된 포지션이 있으면 **그 출처를 승계**한다 ──────────
+        # `self.position.load_state()` 는 위(재시작 복원 블록)에서 이미 끝나 있다.
+        # 여기서 무조건 "SYSTEM_AUTO" 를 넣으면 방금 복원한 출처를 덮어써 버린다 —
+        # 그것이 2026-08-28 오귀속의 마지막 한 걸음이었다.
+        _restored_src = self.position.entry_source
+        self._entry_source = _restored_src or "SYSTEM_AUTO"
+        if _restored_src:
+            _msg = ("[EntrySource] 복원 포지션의 진입 출처 승계: %s "
+                    "(재시작 전 진입 — 이 값이 trades.entry_source 에 기록된다)"
+                    % _restored_src)
+            logger.warning(_msg)
+            log_manager.system(_msg, "WARNING")
         # ── 🔴 [MW0601 546차 / 사용자 지시] ProfitGuard 판정용 **시스템 한정**
         #      당일 실현 net 누적기 ─────────────────────────────────────────
         # 「판정에서 외부매매 손익 분리하고 시스템 자동 매매에만 적용」.
@@ -3156,7 +3201,8 @@ class TradingSystem:
         # [MW0601 546차] 이 레그의 진입 출처 — DB INSERT 와 ProfitGuard 누적이
         # **같은 값**을 쓰도록 한 번만 읽어 지역변수로 고정한다. 둘이 갈리면
         # "배지가 말하는 손익"과 "DB 가 말하는 손익"이 어긋난다.
-        _entry_src_this_leg = getattr(self, "_entry_source", "SYSTEM_AUTO")
+        # [552-11] 프로퍼티라 항상 성립한다 — getattr 폴백을 두지 않는다(계측 4원칙 ④).
+        _entry_src_this_leg = self._entry_source
         execute(
             TRADES_DB,
             """INSERT INTO trades
@@ -16671,6 +16717,24 @@ def _ts_force_balance_flat_ui(self, reason: str) -> None:
     _ts_push_balance_to_dashboard(self, forced)
 
 
+def _broker_net_session_end():
+    """[MW0601 552-10] `BROKER_NET_SESSION_END` 를 `datetime.time` 으로.
+
+    이 시각 이후의 **첫** 예탁현금 판독은 시가인지 장후 정산 롤오버인지 판별할
+    기준점이 없다 — 그 판독으로는 그날 net 을 쓰지 않는다(계측 4원칙 ②).
+    파싱 실패 시 15:35 로 폴백하되 그 사실을 남긴다(원칙 ④).
+    """
+    import datetime as _d
+    from config.settings import BROKER_NET_SESSION_END as _v
+    try:
+        _h, _m = str(_v).split(":")
+        return _d.time(int(_h), int(_m))
+    except Exception:
+        logger.warning(
+            "[BrokerNet] BROKER_NET_SESSION_END 파싱 실패(%r) — 15:35 폴백", _v)
+        return _d.time(15, 35)
+
+
 def _ts_push_balance_to_dashboard(self, result: dict, *, quiet: bool = False) -> None:
     if not result:
         _ts_system_info_throttled(self, "balance_ui_skipped_empty", "[BalanceUI] skipped: empty result", min_interval_sec=120.0)
@@ -16971,12 +17035,41 @@ def _ts_push_balance_to_dashboard(self, result: dict, *, quiet: bool = False) ->
                 # 판독과 달라지면 롤오버다. `_broker_dep_base_today`는 __init__/
                 # daily_close에서 None으로 초기화한다(None = 아직 모름, 계측
                 # 4원칙 ②·④ — getattr 폴백 금지).
+                # ── [MW0601 552-10] 기준점을 **프로세스 밖**에서 승계한다 ────────
+                # 🔴 501차 가드는 뚫린 게 아니라 **기준점을 잃었다.**
+                #   `_broker_dep_base_today` 는 인스턴스 상태라 재시작이 지운다.
+                #   2026-09-07 실측: 15:40 실측 기입(-1,432,630) → **21:58:29 새
+                #   프로세스** → 21:58:45 첫 판독이 롤오버값(34,984,962)이라 그것이
+                #   base 가 됐고 `_rolled=False` 로 -386,630(=-수수료)이 덮어썼다.
+                #   저녁 세션에겐 롤오버 판독이 「그날 첫 판독」이라 불변식이 성립한다.
+                #   → 그날 이미 기록된 `deposit_cash_krw`(당일 시가)를 승계한다.
+                _base_unknown = False
                 if _dep_cash and self._broker_dep_base_today is None:
-                    self._broker_dep_base_today = _dep_cash
+                    _db_base = fetch_broker_dep_base(_today_str)
+                    if _db_base:
+                        self._broker_dep_base_today = _db_base
+                        logger.info(
+                            "[BrokerNet] state=BASE_FROM_DB date=%s base=%s "
+                            "(재시작 승계 — 이번 판독 dep=%s)",
+                            _today_str, "{:,.0f}".format(_db_base),
+                            "{:,.0f}".format(_dep_cash))
+                    elif _dt.datetime.now().time() >= _broker_net_session_end():
+                        # 기준점도 없고 장 마감 이후다 — 이 판독이 시가인지 롤오버인지
+                        # **알 수 없다**. 모르면 쓰지 않는다(계측 4원칙 ② — 미측정을
+                        # 그럴듯한 값으로 채우지 않는다). base 도 세우지 않는다.
+                        _base_unknown = True
+                    else:
+                        self._broker_dep_base_today = _dep_cash
                 _rolled = bool(
                     _dep_cash and self._broker_dep_base_today is not None
                     and abs(_dep_cash - self._broker_dep_base_today) > 1.0)
-                if _rolled:
+                if _base_unknown:
+                    logger.warning(
+                        "[BrokerNet] state=SKIP_NO_BASE date=%s dep=%s next=%s "
+                        "— 장 마감 후 첫 판독이라 시가/롤오버 판별 불가, 저장 안 함",
+                        _today_str, "{:,.0f}".format(_dep_cash),
+                        "{:,.0f}".format(_next_dep))
+                elif _rolled:
                     # 무음 스킵 금지(500차 F-5) — 결손 사실과 원값을 남긴다.
                     logger.info(
                         "[BrokerNet] state=SKIP_ROLLOVER date=%s dep=%s base=%s "
