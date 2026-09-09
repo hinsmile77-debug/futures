@@ -2,6 +2,29 @@
 
 > 검증 필요 항목, 예정된 작업, 알려진 잠재 이슈.
 
+### 555차 — 552차 후속 체리픽 후속 (MW0602, 2026-09-10)
+
+근거: `dev_memory/DECISION_LOG.md` 2026-09-10(555차).
+
+- 🔴 **O-1 (다음 기동)** — `raw_candles` 에 `book_*` 5열이 생기는지
+  (`init_all_dbs()` 마이그레이션). 격리 DB 로는 검증했으나 라이브는 미적용이다.
+- 🔴 **O-2 (다음 장 마감 후 재기동 시)** — `[BrokerNet] state=BASE_FROM_DB` 또는
+  `state=SKIP_NO_BASE` 가 찍히는지. **`state=OK` 로 −수수료 크기의 net 이 다시
+  쓰이면 552-10 배선이 죽은 것이다**(09-07 22:02 형태).
+- **O-3 (다음 거래일 장후)** — `python scripts/book_depth_duplication_check.py`
+  가 「마이그레이션 미적용」에서 실제 판정으로 바뀌는지. Phase 3-0(중복 축약)은
+  `book_net_ratio` 가 라이브 `microprice_depth_bias` 와 정의가 같은지를 본다 —
+  321·326차가 `lob_imbalance` 를 같은 이유로 기각한 전례가 있다.
+- **O-4 (주 1회)** — `scripts/entry_source_attribution_watch.py`. 현재 0건.
+  ⚠ **하한이다** — 15:10 이전 진입 + 재기동 조합은 정상 자동진입과 구분되지 않아
+  여기 안 걸린다(계측 4원칙 ③).
+- **T-1 (안건)** — **498차 이관 여부.** `upsert_broker_net` 의
+  `source`/`snapshot_ts`/`only_if_missing` 인자가 그 커밋 소속이라 이 브랜치엔 없다.
+  이관하면 `tests/test_552c` 의 `source="live"` 를 되살릴 것(현재 주석으로 표시).
+- **T-2 (기존 이슈 · 이번 변경 무관)** — 감사도구가 보고하는
+  `is_krx_trading_date()` 음성 영구 캐시로 인한 소급 적재 흔적(08-28~09-09).
+  로그상 흔적이며 코드가 고쳐졌다면 다음 거래일부터 사라진다 — **라이브 확인 필요.**
+
 ### 551차 — 550차 체리픽(풀타임 수집 정정) 후속 (MW0602, 2026-09-09)
 
 근거: `dev_memory/DECISION_LOG.md` 2026-09-09(551차) ·
