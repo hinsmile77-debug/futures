@@ -8,6 +8,46 @@
 
 ---
 
+### 553차 — GP 규칙 병행운용(섀도) (MW0601, 2026-09-10) — **매매 정책 무변경**
+
+> 근거: `DECISION_LOG.md` 2026-09-10(553차).
+> 검토서: `docs/미륵이고도화3/Golden power/GP병행운용_구현가능성_검토_MW0601-20260910.md`
+> 규칙 원문서: `docs/미륵이고도화3/Golden power/검증완료_진입청산규칙_정리.md`
+> 🔴 사전등록 합격선은 `config/settings.py:VALIDATION_CAMPAIGN["gp_rule_*"]` 에 **동결**돼 있다.
+>   관측 60거래일 중 값을 바꾸면 사후 최적화다(313차 ④ · 458차 D6).
+>   `tests/test_553_gp_rule_shadow_preregistration.py` 가 깨지면 그건 버그가 아니라
+>   **"바꾸려는 게 맞는지 DECISION_LOG 에 남기고 검증 시계를 리셋하라"** 는 신호다.
+
+- [x] **553-0** Phase 0 — 사전등록 5키(`gp_rule_cost`/`_long_watch`/`_short_watch`/
+      `_multiplicity`/`_challenger_ids`) + 회귀 가드 61건. 왕복비용 **CYBOS·CREON 분리**.
+- [x] **553-C** Ctrl+Shift+X 차트 GP 진입·청산 마커(속 빈 윤곽선·점선·보라/자홍).
+      상태줄 「미배선/0건/n건」 분리. 픽셀 렌더링 검사 13건.
+      ⚠ Phase 3 전까지는 **상시 「GP 미배선」**이 정상이다 — 결함이 아니다.
+
+- [ ] **553-1** Phase 1 — `ma20`·`ma60`·`ma_ready` 배선(`compute_gp_cross_features` 와 같은
+      순수함수 형태, `_close_history`(maxlen 90) 재사용, **numpy 미사용** — 537차 BLAS 즉사 회피).
+      배선 후 `gp_rule_short_watch.feature_wired_date` 를 채운다.
+      ⚠ 재기동 직후 버퍼가 비어 `ma_ready=False` 인 구간이 실제로 생긴다 — 그 분은 **미측정**
+      이지 「신호 없음」이 아니다. 세어서 리포트 분모와 함께 남길 것(계측 4원칙 ②).
+- [ ] **553-2** Phase 2 — challenger 엔진 결함 5건. 🔴 **1번이 최우선**:
+      ⓐ EOD 강제마감(15:10 안전망 도달 불가 + 인메모리 `_open_trades`) — 현재 28건 중 3건
+         `exit_ts=NULL` 영구 미청산. 재기동 승계도 함께(552-10 계열).
+      ⓑ 수수료를 `BROKER_CHANNEL_SPECS` 파생으로(현행 키움 잔재 `1.5e-05`)
+      ⓒ 슬리피지 축 신설  ⓓ 도전자별 `FORCE_EXIT_TIME`  ⓔ 등급 위장 방지(`signal_meta`)
+      ⚠ ⓑ 교체 **전에** 산출된 가상손익은 무효다 — 교체 시 기존 행 세대 표기를 남길 것.
+- [ ] **553-3** Phase 3 — 도전자 2종 `GP_LONG_GB90` / `GP_SHORT_SQZ60`.
+      REGIME_POOLS 에 **등록하지 않는다**(순위·승격 경로 차단, 절대원칙 §6).
+      배선 커밋 다음 거래일을 두 채널 `data_start` 에 기입 + DECISION_LOG 기록.
+      ⚠ `tests/test_553_gp_rule_shadow_preregistration.py::test_data_start_is_none_until_wiring`
+        가 이때 깨진다 — **의도된 것**이다. 해당 파라미터를 제거하고 개시일을 남길 것.
+- [ ] **553-4** Phase 4 — 수익 판넬 「GP」 구분.
+      🔴 **급소**: `_day_total_legs` 에서 GP 를 제외하고 `_effective_day_krw` 를
+      「실거래분(브로커/엔진 net) + GP분(Σpt×50,000)」으로 **분리 합성**한다.
+      그냥 `_rows` 에 섞으면 GP 해제 시 브로커 실측 net 을 통째로 못 쓰게 되고(전환기준 ①
+      판정 원천이 죽는다), 체크 시 브로커 net 이 가상 포함 집합의 손익으로 표시된다.
+      GP 체크박스 **기본 OFF** + 체크 시 「가상 포함 — 전환기준 판정 불가」 배너(반사실 탭 관례).
+- [ ] **553-5** Phase 5 — 무개입 관찰 **60거래일**. 규칙 파라미터 변경 금지.
+
 ### 552차 후속 — 호가깊이 적재 검증·결함수정 (MW0601, 2026-09-09) — **매매 정책 무변경**
 
 > 근거: `DECISION_LOG.md` 2026-09-09(552차 후속).

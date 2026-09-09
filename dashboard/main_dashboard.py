@@ -8519,6 +8519,13 @@ class MinuteChartCanvas(QWidget):
         self._completed_trades = []
         self._active_trade = None
         self._exit_markers = []
+        # ── [MW0601 553차 / Phase 0] GP 규칙 섀도 레이어 ──────────────────────
+        # 🔴 **가상이다.** 실거래(`_completed_trades`)와 반드시 눈으로 구분돼야 한다 —
+        #   점선 · 속 빈 도형 · 보라색으로 그리고 실측 마커보다 **아래에** 깐다.
+        #   같은 모양으로 그리면 "조용히 그럴듯한 값"이 화면으로 옮겨온다(계측 4원칙 ④).
+        # `_gp_wired` 는 「미배선」과 「0건」을 가른다(계측 4원칙 ② — 미측정 ≠ 0).
+        self._gp_trades = []
+        self._gp_wired = False
         self._visible_count = 0
         self._min_visible_count = 20
         self._view_offset = 0
@@ -8543,7 +8550,8 @@ class MinuteChartCanvas(QWidget):
         self.setMouseTracking(True)
         self.setStyleSheet(f"background:{C['bg']};border:1px solid {C['border']};border-radius:6px;")
 
-    def reset_session(self, candles, completed_trades, exit_markers=None):
+    def reset_session(self, candles, completed_trades, exit_markers=None,
+                      gp_trades=None, gp_wired=False):
         normalized = []
         for candle in candles:
             row = self._normalize_candle(candle)
@@ -8554,6 +8562,8 @@ class MinuteChartCanvas(QWidget):
         self._live_candle = None
         self._active_trade = None
         self._exit_markers = list(exit_markers) if exit_markers else []
+        self._gp_trades = [dict(t) for t in (gp_trades or [])]
+        self._gp_wired = bool(gp_wired)
         total = len(self._closed_candles)
         self._visible_count = max(total, self._min_visible_count)
         self._view_offset = 0
@@ -8773,6 +8783,9 @@ class MinuteChartCanvas(QWidget):
             prices.append(float(self._active_trade.get("entry_price") or 0.0))
         for marker in self._exit_markers:
             prices.append(float(marker.get("price") or 0.0))
+        for trade in self._gp_trades:
+            prices.append(float(trade.get("entry_price") or 0.0))
+            prices.append(float(trade.get("exit_price") or 0.0))
         prices = [p for p in prices if p > 0]
         lo = min(prices)
         hi = max(prices)
@@ -8790,6 +8803,8 @@ class MinuteChartCanvas(QWidget):
         _t_candles = _t2.monotonic(); self._draw_candles(painter, plot, candles, lo, hi, padded_count)
         _t_dir    = _t2.monotonic();  self._draw_direction_bar(painter, plot, candles, padded_count)
         _t_regime = _t2.monotonic();  self._draw_regime_bar(painter, plot, candles, padded_count)
+        # GP 섀도는 실측 마커보다 **먼저**(=아래에) 그린다 — 겹치면 실측이 이긴다.
+        self._draw_gp_layer(painter, plot, candles, index_map, lo, hi, padded_count)
         _t_markers = _t2.monotonic(); self._draw_markers(painter, plot, candles, index_map, lo, hi, padded_count)
         _t_axes = _t2.monotonic();   self._draw_axes(painter, plot, candles, lo, hi, padded_count)
         _t_cross = _t2.monotonic();  self._draw_crosshair_and_tooltip(painter, plot, candles, lo, hi)
@@ -9092,6 +9107,102 @@ class MinuteChartCanvas(QWidget):
                 pen.setStyle(Qt.DashLine)
                 painter.setPen(pen)
                 painter.drawLine(int(x1), int(y), int(x2), int(y))
+
+    # ── [MW0601 553차 / Phase 0] GP 규칙 섀도 레이어 ──────────────────────────
+    #
+    # 🔴 **가상 거래다. 실적이 아니다.** 그래서 실측 마커와 **시각 언어를 분리**한다:
+    #     실측 = 채워진 도형 · 글로우 · 초록/빨강      (돈이 실제로 오간 것)
+    #     GP   = 속 빈 윤곽선 · 점선 · 보라/자홍       (가상)
+    # 같은 모양으로 그리면 화면이 「조용히 그럴듯한 값」이 된다(계측 4원칙 ④).
+    # 겹칠 때 실측이 위로 오도록 이 메서드를 `_draw_markers` **앞**에서 호출한다.
+    GP_LONG_COLOR = "#A78BFA"    # 보라 — GP 롱(GB 단순돌파 · 90분)
+    GP_SHORT_COLOR = "#F0ABFC"   # 자홍 — GP 숏(압축돌파 · 60분)
+
+    def _draw_gp_layer(self, painter: QPainter, plot: QRectF, candles, index_map,
+                       lo: float, hi: float, padded_count: int):
+        if not self._gp_trades or not candles:
+            return
+        count = max(padded_count, 1)
+        step = plot.width() / count
+        last_idx = len(candles) - 1
+
+        for trade in self._gp_trades:
+            entry_dt = self._coerce_dt(trade.get("entry_ts"))
+            if not entry_dt:
+                continue
+            start_idx = self._resolve_index(index_map, candles, entry_dt)
+            if start_idx is None:
+                continue
+            entry_price = float(trade.get("entry_price") or 0.0)
+            if entry_price <= 0:
+                continue
+
+            is_long = str(trade.get("direction") or "").upper() == "LONG"
+            color = QColor(self.GP_LONG_COLOR if is_long else self.GP_SHORT_COLOR)
+
+            # 청산 미기록 = **보유 중**이며 「손익 0」이 아니다(계측 4원칙 ②).
+            exit_dt = self._coerce_dt(trade.get("exit_ts"))
+            end_idx = self._resolve_index(index_map, candles, exit_dt) if exit_dt else None
+            open_leg = end_idx is None
+            if open_leg:
+                end_idx = last_idx
+
+            y = self._price_to_y(entry_price, plot, lo, hi)
+            x1 = plot.left() + step * (start_idx + 0.5)
+            x2 = plot.left() + step * (end_idx + 0.5)
+
+            pen = QPen(color)
+            pen.setWidth(1)
+            pen.setStyle(Qt.DotLine)
+            painter.setPen(pen)
+            painter.drawLine(int(x1), int(y), int(x2), int(y))
+
+            self._draw_gp_entry_marker(painter, x1, y, color, up=is_long)
+
+            if not open_leg:
+                exit_price = float(trade.get("exit_price") or 0.0)
+                if exit_price > 0:
+                    y2 = self._price_to_y(exit_price, plot, lo, hi)
+                    self._draw_gp_exit_marker(
+                        painter, x2, y2, color,
+                        trade.get("pnl_pt"), str(trade.get("exit_reason") or ""))
+
+    def _draw_gp_entry_marker(self, painter: QPainter, x: float, y: float,
+                              color: QColor, up: bool):
+        """속 빈 삼각형 + G 글리프. 실측 진입(채워진 삼각형 + 글로우)과 대비된다."""
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(color, 1.4, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        if up:
+            poly = QPolygonF([QPointF(x, y - 6.0),
+                              QPointF(x - 5.0, y + 2.0),
+                              QPointF(x + 5.0, y + 2.0)])
+            gy = y - S.p(15)
+        else:
+            poly = QPolygonF([QPointF(x, y + 6.0),
+                              QPointF(x - 5.0, y - 2.0),
+                              QPointF(x + 5.0, y - 2.0)])
+            gy = y + S.p(6)
+        painter.drawPolygon(poly)
+        painter.setPen(color)
+        painter.drawText(QRectF(x - S.p(9), gy, S.p(18), S.p(12)),
+                         Qt.AlignCenter, "GP")
+
+    def _draw_gp_exit_marker(self, painter: QPainter, x: float, y: float,
+                             color: QColor, pnl_pt, reason: str):
+        """속 빈 사각형 + pt. 손익 부호는 색이 아니라 **부호 문자**로 읽힌다 —
+        색을 실측 초록/빨강과 맞추면 가상·실측 구분이 무너진다."""
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(color, 1.4))
+        painter.drawRect(QRectF(x - 4.5, y - 4.5, 9.0, 9.0))
+        if pnl_pt is None:
+            return
+        try:
+            val = float(pnl_pt)
+        except (TypeError, ValueError):
+            return
+        painter.setPen(color)
+        painter.drawText(QRectF(x - S.p(26), y + S.p(6), S.p(52), S.p(12)),
+                         Qt.AlignCenter, "%+.2fpt" % val)
 
     def _draw_markers(self, painter: QPainter, plot: QRectF, candles, index_map, lo: float, hi: float, padded_count: int):
         count = max(padded_count, 1)
@@ -9536,7 +9647,9 @@ class MinuteChartDialog(QDialog):
     # threading.Thread에서 QTimer.singleShot 람다는 Python 3.7 32-bit에서
     # 타이머가 이벤트 루프 없는 스레드에 귀속되어 발동하지 않는다.
     # pyqtSignal은 cross-thread 시 Qt::QueuedConnection으로 자동 처리된다.
-    _sig_reload_done = pyqtSignal(list, list, list)  # candles, completed_trades, exit_markers
+    # [553차] GP 섀도 2종 추가 — gp_trades(list) · gp_wired(bool).
+    # `gp_wired` 가 없으면 「미배선」과 「오늘 0건」을 구분할 수 없다(계측 4원칙 ②).
+    _sig_reload_done = pyqtSignal(list, list, list, list, bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -9550,9 +9663,7 @@ class MinuteChartDialog(QDialog):
             f"{self.SHORTCUT_TEXT}  |  휠 줌  |  진입 ▲/▼  |  익절 G  |  손절 X  |  부분청산 P"
         )
         self._status.setStyleSheet(f"color:{C['text2']};font-size:{S.f(10)}px;")
-        self._status.setText(
-            f"{self.SHORTCUT_TEXT}  |  휠 줌  |  드래그 이동  |  더블클릭 전체보기  |  크로스헤어"
-        )
+        self._set_status()   # [553차] GP 섀도 상태 포함 — 로딩 전에는 「GP 미배선」
 
         root = QVBoxLayout(self)
         root.setContentsMargins(S.p(12), S.p(12), S.p(12), S.p(12))
@@ -9600,6 +9711,82 @@ class MinuteChartDialog(QDialog):
             return False
         return any(kw in _r for kw in ("부분청산", "partial", "부분 익절"))
 
+    # ── [MW0601 553차 / Phase 0] GP 규칙 섀도 거래 로딩 ──────────────────────
+    #
+    # 원천은 `challenger.db:challenger_trades` 다 — **`trades` 가 아니다.**
+    # GP 는 실주문이 없는 가상거래이므로 실거래 테이블에 섞으면 브로커 대사·
+    # 전환기준 ①·수수료 재환산이 전부 오염된다(검토문서 §5-4).
+    #
+    # 반환: (gp_trades, wired)
+    #   wired=False 는 **미배선**이다 — Phase 3 도전자가 아직 등록되지 않았다는 뜻이며
+    #   "오늘 신호가 없었다"와 다르다. 화면이 그 둘을 같은 「0건」으로 보여주면
+    #   FP-CRITICAL 죽은 게이트와 같은 착시가 생긴다(계측 4원칙 ②).
+    @staticmethod
+    def _load_gp_trades(session_date: str):
+        try:
+            from config.settings import CHALLENGER_DB, VALIDATION_CAMPAIGN
+            ids = VALIDATION_CAMPAIGN["gp_rule_challenger_ids"]
+            wanted = (ids["long"], ids["short"])
+        except Exception as _e:
+            logger.debug("[ChartDBG] GP 사전등록 조회 실패: %s", _e)
+            return [], False
+
+        try:
+            wired = bool(fetchall(
+                CHALLENGER_DB,
+                "SELECT 1 FROM challenger_signals WHERE challenger_id IN (?,?) LIMIT 1",
+                wanted,
+            ))
+            rows = fetchall(
+                CHALLENGER_DB,
+                """SELECT challenger_id, entry_ts, exit_ts, direction,
+                          entry_price, exit_price, pnl_pt, exit_reason
+                   FROM challenger_trades
+                   WHERE challenger_id IN (?,?) AND entry_ts LIKE ?
+                   ORDER BY entry_ts ASC""",
+                (wanted[0], wanted[1], "%s%%" % session_date),
+            )
+        except Exception as _e:
+            # 테이블·DB 부재는 정상 상태다(Phase 3 이전). 차트를 죽이지 않는다.
+            logger.debug("[ChartDBG] GP 섀도 조회 스킵: %s", _e)
+            return [], False
+
+        out = []
+        for r in rows:
+            try:
+                out.append({
+                    "challenger_id": r["challenger_id"],
+                    "entry_ts": r["entry_ts"],
+                    "exit_ts": r["exit_ts"],
+                    "direction": "LONG" if int(r["direction"] or 0) > 0 else "SHORT",
+                    "entry_price": float(r["entry_price"] or 0.0),
+                    "exit_price": float(r["exit_price"] or 0.0) if r["exit_price"] else 0.0,
+                    "pnl_pt": (float(r["pnl_pt"]) if r["pnl_pt"] is not None else None),
+                    "exit_reason": r["exit_reason"] or "",
+                })
+            except (TypeError, ValueError):
+                continue
+        return out, wired
+
+    def _gp_status_text(self, gp_trades, gp_wired):
+        """「미배선」·「0건」·「n건」을 문구로 가른다 — 셋이 같아 보이면 안 된다."""
+        if not gp_wired:
+            return "GP 미배선"
+        if not gp_trades:
+            return "GP 0건"
+        _open = sum(1 for t in gp_trades if not t.get("exit_ts"))
+        _txt = "GP %d건" % len(gp_trades)
+        if _open:
+            _txt += " (보유 %d)" % _open
+        return _txt
+
+    def _set_status(self, gp_trades=None, gp_wired=False):
+        self._status.setText(
+            "%s  |  휠 줌  |  드래그 이동  |  더블클릭 전체보기  |  크로스헤어"
+            "  |  GP 섀도 △▽ 점선 = **가상**  |  %s"
+            % (self.SHORTCUT_TEXT, self._gp_status_text(gp_trades or [], gp_wired))
+        )
+
     def reload_today(self):
         self._session_date = datetime.now().date().isoformat()
         candle_rows = fetchall(
@@ -9643,7 +9830,10 @@ class MinuteChartDialog(QDialog):
                     "pnl_pts": float(row["pnl_pts"] or 0.0),
                     "outcome": self._chart._infer_exit_outcome(True, row["pnl_pts"], row["exit_reason"]),
                 })
-        self._chart.reset_session(candles, completed_trades, exit_markers=exit_markers)
+        gp_trades, gp_wired = self._load_gp_trades(self._session_date)
+        self._chart.reset_session(candles, completed_trades, exit_markers=exit_markers,
+                                  gp_trades=gp_trades, gp_wired=gp_wired)
+        self._set_status(gp_trades, gp_wired)
         # 재시작 복원: 오늘 레짐·방향예측 히스토리를 _regime_map / _dir_map에 채움
         try:
             regime_map = fetch_regime_today(self._session_date)
@@ -9732,13 +9922,18 @@ class MinuteChartDialog(QDialog):
                 )
             # 메인 스레드로 결과 전달 — pyqtSignal(QueuedConnection) 사용
             # QTimer.singleShot(lambda)는 threading.Thread에서 발동하지 않음 (Python 3.7 32-bit)
-            self._sig_reload_done.emit(candles, completed_trades, exit_markers)
+            gp_trades, gp_wired = self._load_gp_trades(self._session_date)
+            self._sig_reload_done.emit(candles, completed_trades, exit_markers,
+                                       gp_trades, gp_wired)
         except Exception as _e:
             logger.warning("[ChartDBG] _reload_today_bg 예외: %s", _e)
 
-    def _apply_reload_result(self, candles, completed_trades, exit_markers):
+    def _apply_reload_result(self, candles, completed_trades, exit_markers,
+                             gp_trades=None, gp_wired=False):
         """메인 스레드에서 reset_session + regime_map 복원 + active position 재동기화를 원자적으로 처리."""
-        self._chart.reset_session(candles, completed_trades, exit_markers=exit_markers)
+        self._chart.reset_session(candles, completed_trades, exit_markers=exit_markers,
+                                  gp_trades=gp_trades or [], gp_wired=gp_wired)
+        self._set_status(gp_trades, gp_wired)
         try:
             regime_map = fetch_regime_today(self._session_date)
             if regime_map:
