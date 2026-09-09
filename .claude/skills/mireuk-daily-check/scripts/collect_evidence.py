@@ -623,6 +623,39 @@ DEFAULT_CONFIG = {
                        "**정상 종료까지 세어 100% 고착이 보장**된다(F-9 가 못박은 것). "
                        "일자 귀속은 각 줄의 `session=<ISO>` 로 한다",
             },
+            # ── [MW0602 548차 후속 / 0909 G-2] 극단 z-score → AutoMask 격리 대조 ──
+            # 0909 장중이 `O-75` 를 15분 만에 판정할 수 있었던 것은 마스킹 여부가 이미
+            # 로그에 있었기 때문이다. 그 대조를 매일 자동으로 돌려 **"튀었는데 격리
+            # 안 됨"** 만 사람에게 남긴다.
+            #
+            # 🔴 분자·분모를 서로 다른 원천에서 가져온다 — 의도된 것이다.
+            #   · 분모(그날 몇 개나 튀었나) = `scaler_monitor.db` **DB**.
+            #     로그의 `N개 피처 감지` 는 600초 스로틀이라 그날 최댓값을 놓친다.
+            #     놓치는 방향이 항상 "N 이 작다" 쪽이고, N<3 은 아래에서 benign 으로
+            #     빠지므로 **로그로 세면 진짜 미격리가 조용히 정상으로 분류된다.**
+            #   · 분자(격리했나) = **로그** `[AutoMasked]`. DB 에 이 축이 없다.
+            "극단z_격리대조": {
+                "kind": "automask_coverage",
+                "files": ["_SIGNAL", "_SYSTEM", "_WARN"],
+                "benign": ["무발생", "격리", "비격리(N<3)"],
+                "measured_since": "2026-06-01",   # scaler_events 최초 적재일
+                "why": "극단 z-score 가 뜬 날 AutoMask 격리가 실제로 돌았는가"
+                       "(0909 G-2). 하루 한 값: `무발생`/`격리`/`비격리(N<3)` 은 "
+                       "기대값이고 **`비격리(N≥3·확인대상)` 만 사람이 본다**. "
+                       "🔴 이것은 결함 확정이 아니라 **확인 대상**이다 — 극단 피처가 "
+                       "전부 CORE(`_CORE_MASK_EXEMPT`)면 AutoMask 는 **일부러** 돌지 "
+                       "않는다(강한 방향 신호를 지우지 않기 위해서다). 즉 정당한 "
+                       "미격리가 이 값에 섞인다. 채널의 몫은 범위를 좁히는 것까지다. "
+                       "⚠ N 은 호라이즌별 `extreme_count` 의 당일 최댓값이고, AutoMask "
+                       "실제 조건은 **전 호라이즌 union ≥ 3** 이라 N 은 union 의 하한이다 "
+                       "— `비격리(N<3)` 은 '격리 불요'가 아니라 **'격리 불요 추정'** 이다. "
+                       "⚠ 분모는 DB(`scaler_events`), 분자는 로그(`[AutoMasked]`) — "
+                       "로그의 `N개 피처 감지` 는 600초 스로틀이라 분모로 쓰면 안 된다. "
+                       "⚠ DB 접근 실패는 `무발생` 이 아니라 **미측정**으로 빠진다"
+                       "(계측 4원칙 ②). "
+                       "🔴 `[AutoMasked]` 문구나 `scaler_events` 스키마가 바뀌면 조용히 "
+                       "죽는다 → 26주 WFA 「고착 지표 감시목록」(468차 G-2)",
+            },
         },
     },
     # ── [MW0602 526차 후속 / G-1] 미판정 관측의 나이 ───────────────────────────
@@ -676,6 +709,92 @@ DEFAULT_CONFIG = {
                        "🔴 [491차 F-5] `margin` 출현은 **증거금이 구속한 것** — ⑧ 해제 "
                        "논의의 직접 입력이다. 그 이전 행의 품질 게이트 이름 일부는 "
                        "오귀속이며 **소급 재라벨하지 않았다**(계측 4원칙 ②)",
+            },
+            # ── [MW0602 548차 후속 / 0909 G-1] 개장 첫 5분 극단 z-score 피처 ──
+            # 0909 장전 1-2: 개장 첫 분(09:00:57)에 6개 호라이즌 전부가 동시에
+            # `institution_futures_net`·`prev_day_same_hour_ret`·`volume_acceleration`
+            # 3종을 |z|>4 로 잡았다. 그때 물을 수 없었던 것은 **"이게 매일 그런가"** 다.
+            #
+            # 🔴 원천을 로그로 잡으면 안 된다. `[Model] … 극단 z-score N개 피처 감지` 는
+            #   `multi_horizon_model.py:471` 에서 **호라이즌별 600초 스로틀**이 걸린다 —
+            #   0909 실측으로 `scaler_events` 는 호라이즌당 37분을 기록했는데 로그에 남은
+            #   것은 3분뿐이다. 로그로 세면 **10배 이상 과소**가 되고, 그 과소가 항상
+            #   "덜 튀었다" 쪽이라 거짓 안심이 된다(FP-CRITICAL 계열).
+            #   `scaler_monitor.db:scaler_events` 는 매분·전 호라이즌 무스로틀 기록이다.
+            #
+            # ⚠ 한 분(ts)에 호라이즌 6행이 들어온다 — 그대로 세면 **한 사건이 6표본**이
+            #   된다(계측 4원칙 ① 레그/포지션과 같은 함정). `group by ts` 로 분 단위로
+            #   접고, SQLite 의 max() bare-column 규칙으로 그 분에서 |z| 가 가장 큰
+            #   행의 `max_z_feature` 를 대표값으로 쓴다. 0801~0909 실측상 호라이즌이
+            #   서로 다른 값을 낸 분은 9,977분 중 76분(0.76%)뿐이다.
+            "개장첫5분_극단피처": {
+                "db": "data/db/scaler_monitor.db",
+                "sql": "select substr(ts,1,10) d, max_z_feature, max(abs(max_z)) "
+                       "  from scaler_events "
+                       " where date >= ? and date <= ? and extreme_count > 0 "
+                       "   and substr(ts,12,5) >= '09:00' and substr(ts,12,5) <= '09:04' "
+                       " group by ts",
+                # scaler_events 최초 적재일. 축 신설일로 잡으면 창이 비어 아무것도 못 본다.
+                "measured_since": "2026-06-01",
+                # 🔴 benign 없음 — 한 피처 100% 고착이 **바로 이 채널이 찾는 것**이다.
+                #   ("개장 시 항상 튀는 피처"가 있다면 F-Q 섀도 범위를 그 피처까지 넓힌다)
+                "why": "개장 첫 5분(09:00~09:04)에 |z|>4 로 튄 **대표 피처**의 분포 "
+                       "(0909 G-1). `변동` 이면 매일 다른 피처가 튀는 것이고, 한 이름 "
+                       "**100% 고착이면 그 피처는 개장마다 구조적으로 튄다** — 스케일러 "
+                       "기준통계가 개장 구간을 표현하지 못한다는 뜻이라 F-Q 섀도 범위 "
+                       "판단의 직접 입력이다. ⚠ benign 없음(고착이 곧 발견). "
+                       "⚠ 원천은 **DB**다 — 로그 `[Model] … 개 피처 감지` 는 600초 "
+                       "스로틀이라 0909 실측 37분→3분으로 과소집계된다. "
+                       "⚠ 분당 호라이즌 6행을 `group by ts` 로 접었다(계측 4원칙 ①). "
+                       "🔴 `scaler_events` 스키마(`max_z_feature`·`extreme_count`)가 "
+                       "바뀌면 조용히 죽는다 → 26주 WFA 「고착 지표 감시목록」(468차 G-2)",
+            },
+            # ── [MW0602 548차 후속 / 0909 G-3 = 5p R-1] 앙상블 vs 단일호라이즌 방향 ──
+            # 0909 장후 3-1(`O-76`): 그날 유일한 손실 포지션(11:44 LONG, 5m)에서
+            # 앙상블은 direction=+1 인데 그 5m 단일예측은 down_prob(0.2937) > up_prob
+            # (0.2678) 였고 실현도 하락이었다. n=1 이라 313차 가드를 통과하지 못해
+            # **판정이 아니라 표본 축적**으로 등록한 것이다.
+            #
+            # ⚠ 이 채널은 **관측 전용**이다. 방향 불일치를 등급 하락 요인으로 쓰는 안
+            #   (0909 R-1 「기대효과」 칸)은 매매 정책 변경이라 여기 들어 있지 않다.
+            #
+            # 🔴 `measured_since` 를 2026-08-12 로 잡은 이유가 판정의 핵심이다.
+            #   `meta_gate_horizon` 은 457차가 잡아낸 **영구 폴백**('1m' 370/370)이었고,
+            #   DB 실측상 '1m' 이 아닌 값이 처음 나타난 날이 2026-08-12 다. 그 이전 행으로
+            #   대조하면 **엉뚱한 호라이즌의 예측과 비교**하게 된다(계측 4원칙 ④).
+            # 🔴 그래서 NULL/빈 값을 '1m' 으로 채우지 않는다 — 그렇게 채우는 순간
+            #   폴백이 정상값으로 위장한다. `미측정(hz없음)` 으로 분리해 남긴다.
+            "앙상블_단일호라이즌_방향대조": {
+                "db": "data/db/predictions.db",
+                "sql": "select substr(e.ts,1,10) d, "
+                       "       case "
+                       "         when e.meta_gate_horizon is null "
+                       "           or e.meta_gate_horizon = ''        then '미측정(hz없음)' "
+                       "         when p.up_prob is null "
+                       "           or p.down_prob is null             then '미측정(예측없음)' "
+                       "         when e.direction = 0                 then '앙상블FLAT' "
+                       "         when p.up_prob = p.down_prob         then '동률' "
+                       "         when (e.direction > 0 and p.up_prob > p.down_prob) "
+                       "           or (e.direction < 0 and p.down_prob > p.up_prob) "
+                       "                                              then '일치' "
+                       "         else '불일치' end "
+                       "  from ensemble_decisions e "
+                       "  left join predictions p "
+                       "         on p.ts = e.ts and p.horizon = e.meta_gate_horizon "
+                       " where e.ts >= ? and e.ts <= ? || ' 23:59:59' "
+                       "   and e.entry_executed = 1",
+                "measured_since": "2026-08-12",   # meta_gate_horizon 폴백 해제 실측일
+                "benign": ["일치"],
+                "why": "**실체결 진입**에서 앙상블 방향과 그 진입이 쓴 호라이즌"
+                       "(`meta_gate_horizon`) 단일예측의 확률 우세 방향이 일치했는가 "
+                       "(0909 `O-76` / G-3 = 5p R-1). `불일치` 가 쌓이면 승률 차 검정으로 "
+                       "간다 — 사전등록 문턱 **불일치 10건 누적 또는 관측 10거래일**"
+                       "(0909 §6 등록값, 관측 전 고정). ⚠ **관측 전용** — 등급·차단·수량 "
+                       "무변경. ⚠ 표본 단위는 **진입 1건**이다(청산 레그 아님, 계측 4원칙 ①). "
+                       "⚠ 2026-08-12 이전은 `meta_gate_horizon` 이 '1m' 영구 폴백이라 "
+                       "제외했다 — 미측정이지 '일치'가 아니다(457차·463차, 계측 4원칙 ④). "
+                       "⚠ `미측정(예측없음)` 은 그 분 그 호라이즌 `predictions` 행이 없는 "
+                       "경우다. 0826~0909 실측 84건 중 18건 — **0으로 세지 말 것**",
             },
         },
     },
@@ -2469,10 +2588,76 @@ def scan_derived_indicators(root, cfg, day):
         top = hits[0] or "?"
         return "%d건:%s" % (len(hits), top)
 
+    # [MW0602 548차 후속 / 0909 G-2] 극단 z-score → AutoMask 격리 대조.
+    # 분모는 DB(무스로틀), 분자는 로그. 근거는 설정의 `why` 참조.
+    # 🔴 **분 단위**로 짝지어야 한다. "그날 `[AutoMasked]` 가 한 번이라도 찍혔나"로
+    #    보면, 스무 분이 튀었는데 한 분만 격리된 날도 `격리` 가 된다 — 정확히 이
+    #    프로젝트가 반복해서 당한 거짓 안심의 형태다. G-2 원문도 「같은 분(또는 다음
+    #    1분 내)」이라고 적었다. 로그는 `09:00:57`, DB 는 `09:00:00` 이라 **분**으로
+    #    맞추고 +1분까지 허용한다.
+    _mask_rx = re.compile(r"^(?P<d>\d{4}-\d{2}-\d{2}) (?P<h>\d{2}):(?P<mi>\d{2}):"
+                          r".*\[AutoMasked\]")
+    _zmin_cache = {}
+
+    def _kind_automask_coverage(d, paths, spec):
+        if not _zmin_cache:
+            # 하루씩 묻지 않고 창 전체를 한 번에 — DB 왕복 1회.
+            def _iso(t):
+                return "%s-%s-%s" % (t[:4], t[4:6], t[6:8])
+            got = db_rows(root, "data/db/scaler_monitor.db",
+                          "select date, substr(ts,12,2), substr(ts,15,2), "
+                          "       max(extreme_count) "
+                          "  from scaler_events "
+                          " where date >= ? and date <= ? and extreme_count > 0 "
+                          " group by date, substr(ts,12,5)",
+                          (_iso(min(days)), _iso(max(days))))
+            # 🔴 "그날 극단이 0건" 과 "그날 scaler_events 가 아예 안 돌았다" 는 다른
+            #    사실이다(계측 4원칙 ②). 위 질의는 `extreme_count > 0` 으로 걸러
+            #    후자를 구분하지 못하므로, 가동일 자체를 따로 받는다.
+            ran = db_rows(root, "data/db/scaler_monitor.db",
+                          "select distinct date from scaler_events "
+                          " where date >= ? and date <= ?",
+                          (_iso(min(days)), _iso(max(days))))
+            if got is None or ran is None:
+                # 🔴 DB 에 못 붙었다 = **미측정**. `무발생` 으로 세면 계측이 배선되기도
+                #    전에 안심을 만든다(계측 4원칙 ②).
+                _zmin_cache["__missing__"] = True
+            else:
+                _zmin_cache["__days__"] = set(
+                    str(r[0]).replace("-", "") for r in ran)
+                for _d, _hh, _mm, _mx in got:
+                    key = str(_d).replace("-", "")
+                    slot = _zmin_cache.setdefault(key, {"any": set(), "n3": set()})
+                    mod = int(_hh) * 60 + int(_mm)
+                    slot["any"].add(mod)
+                    if int(_mx or 0) >= 3:
+                        slot["n3"].add(mod)
+                _zmin_cache.setdefault("__loaded__", None)
+        if _zmin_cache.get("__missing__"):
+            return None
+        slot = _zmin_cache.get(d)
+        if slot is None:
+            # 그날 극단 z-score 행 자체가 없다.
+            # ⚠ scaler_events 가 아예 안 도는 날(휴장·미기동)과 구분해야 한다 —
+            #   전자는 `무발생`(값), 후자는 미측정(표본 아님)이다.
+            return "무발생" if d in _zmin_cache.get("__days__", ()) else None
+        masked = set()
+        for ln in _lines(paths, [f.lower() for f in (spec.get("files") or [])]):
+            m = _mask_rx.match(ln)
+            if m and m.group("d").replace("-", "") == d:
+                masked.add(int(m.group("h")) * 60 + int(m.group("mi")))
+        if not slot["n3"]:
+            # 어느 분에서도 호라이즌별 N 이 3에 못 미쳤다 — AutoMask 조건(union ≥ 3)이
+            # 성립했을 수도 있고(그러면 실제로 격리됐다) 아닐 수도 있다.
+            return "격리" if masked else "비격리(N<3)"
+        unmatched = [t for t in slot["n3"] if t not in masked and (t + 1) not in masked]
+        return "격리" if not unmatched else "비격리(N≥3·확인대상)"
+
     _KINDS = {
-        "core_degen_open":  _kind_core_degen_open,
-        "presence":         _kind_presence,
-        "crash_signature":  _kind_crash_signature,
+        "core_degen_open":   _kind_core_degen_open,
+        "presence":          _kind_presence,
+        "crash_signature":   _kind_crash_signature,
+        "automask_coverage": _kind_automask_coverage,
     }
 
     rows = []
