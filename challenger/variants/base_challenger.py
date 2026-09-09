@@ -119,9 +119,27 @@ class BaseChallenger(object):
     #   건너뛰고, 신호는 등급을 "-" 로 정직하게 기록한다.
     GRADE_NA = False
 
+    # ── [MW0601 553차 Phase 3] 일일 진입 상한 ────────────────────────────────
+    # None = 상한 없음(종전 동작). GP 숏 규칙은 「당일 최초 1회」라 1 이다.
+    # 🔴 엔진이 **DB 기준**으로 센다 — 인메모리 플래그는 재시작이 지운다
+    #   (552-10·552-11과 같은 계열).
+    MAX_PER_DAY = None
+
     def __init__(self):
         self.active = True
         self._open_trade = None   # type: Optional[ChallengerTrade]
+
+    def observe(self, features, context):
+        # type: (Dict[str, Any], Dict[str, Any]) -> None
+        """[553차 Phase 3] 매분, **청산 판정보다 먼저** 현재 봉을 보여준다.
+
+        `should_exit()` 는 가격·ts·atr 만 받으므로 피처를 보는 청산 규칙
+        (GP 숏의 「GS ≥ 1.2 도달」)이 이 훅 없이는 **직전 봉** 피처로 판정하게 된다.
+        1봉 지연은 청산 규칙을 다른 규칙으로 바꾼다.
+
+        기본은 무동작 — 기존 도전자의 동작은 바뀌지 않는다.
+        """
+        return None
 
     @abstractmethod
     def generate_signal(self, features, context):

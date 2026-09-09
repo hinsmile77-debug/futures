@@ -171,6 +171,31 @@ class ChallengerDB(object):
                 sig.confidence, sig.grade, sig.entry_price, meta_json, regime,
             ))
 
+    def insert_signals_bulk(self, sigs, regime="혼합"):
+        # type: (List[Any], str) -> None
+        """[MW0601 553차 Phase 3] 한 봉의 신호를 **커넥션 1개**로 몰아 쓴다.
+
+        종전에는 도전자마다 `insert_signal()` 이 sqlite 커넥션을 새로 열고 커밋했다.
+        도전자 1개당 약 7ms 라 8종이면 매분 ~56ms 다(임시 DB 실측). 매매 경로는 아니고
+        CB⑤(5초)와도 무관하지만, 설계 목표가 `<5ms` 인 훅에서 그 비용을 낼 이유가 없다.
+        신호 로그는 순서·원자성 요구가 없으므로 배치가 안전하다.
+        """
+        if not sigs:
+            return
+        sql = """
+        INSERT INTO challenger_signals
+            (ts, challenger_id, direction, confidence, grade, entry_price, signal_meta, regime)
+        VALUES (?,?,?,?,?,?,?,?)
+        """
+        rows = []
+        for sig in sigs:
+            meta_json = (json.dumps(sig.signal_meta, ensure_ascii=False)
+                         if sig.signal_meta else None)
+            rows.append((sig.ts, sig.challenger_id, sig.direction, sig.confidence,
+                         sig.grade, sig.entry_price, meta_json, regime))
+        with self._conn() as conn:
+            conn.executemany(sql, rows)
+
     # ── 가상 거래 ─────────────────────────────────────────────────
 
     def insert_trade(self, trade, regime="혼합"):
@@ -213,6 +238,18 @@ class ChallengerDB(object):
             args = (exit_ts, exit_price, pnl_pt, exit_reason, trade_id)
         with self._conn() as conn:
             conn.execute(sql, args)
+
+    def count_entries_on(self, challenger_id, date_str):
+        # type: (str, str) -> int
+        """[553차 Phase 3] 그 날 그 도전자의 **진입** 건수(청산 여부 무관).
+
+        일일 진입 상한(`MAX_PER_DAY`)의 권위 원천이다. 인메모리 플래그로 세면
+        재시작이 지워 같은 날 두 번 진입한다.
+        """
+        sql = ("SELECT COUNT(*) FROM challenger_trades "
+               "WHERE challenger_id=? AND substr(entry_ts,1,10)=?")
+        with self._conn() as conn:
+            return int(conn.execute(sql, (challenger_id, date_str)).fetchone()[0])
 
     def get_all_open_trades(self):
         # type: () -> List[sqlite3.Row]

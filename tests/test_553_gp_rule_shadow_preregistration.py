@@ -253,18 +253,24 @@ def test_review_doc_records_the_channel_split_cost():
 # ── 미배선 상태의 명시 ───────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("ch,name", [(_LONG, "GP-R1"), (_SHORT, "GP-R2")])
-def test_data_start_is_none_until_wiring(ch, name):
-    """Phase 3 배선 전까지 `data_start` 는 None 이어야 한다.
+def test_data_start_is_fixed_at_wiring_day(ch, name):
+    """🔵 [2026-09-10 Phase 3] 관측 개시일 확정 — 이후 변경 금지.
 
-    ⚠ 이 테스트는 **배선하면 깨진다** — 그게 의도다. 깨지면 이 파일에서 해당
-    파라미터를 제거하고 `dev_memory/DECISION_LOG.md` 에 실제 개시일을 남길 것.
-    날짜를 채우는 것은 기준 변경이 아니다(`data_start_rule` 이 정한 규칙의 적용이다).
+    이 값이 60거래일 관측 시계의 원점이다. 뒤로 밀면 표본이 줄고, 앞으로 당기면
+    배선 전 구간이 섞인다. 둘 다 사전등록 무효다(§9-4).
     """
-    if ch["data_start"] is None:
-        assert ch["data_start_rule"], "%s: data_start 가 비었는데 채우는 규칙도 없다" % name
-    else:
-        assert len(ch["data_start"]) == 10 and ch["data_start"][4] == "-", (
-            "%s: data_start 형식이 YYYY-MM-DD 가 아니다" % name)
+    assert ch["data_start"] == "2026-09-10", (
+        "%s: 관측 개시일이 바뀌었다. 바꾸려면 DECISION_LOG 기록 + 검증 시계 리셋." % name)
+    assert ch["data_start_rule"], "%s: 개시일 규칙이 사라졌다" % name
+
+
+@pytest.mark.parametrize("ch,name", [(_LONG, "GP-R1"), (_SHORT, "GP-R2")])
+def test_wiring_precedes_or_equals_data_start(ch, name):
+    """피처 배선일이 개시일보다 늦으면 그 구간은 미측정이다(계측 4원칙 ②)."""
+    wired = ch.get("feature_wired_date")
+    assert wired, "%s: feature_wired_date 가 비었다" % name
+    assert wired <= ch["data_start"], (
+        "%s: 배선(%s)이 개시일(%s)보다 늦다" % (name, wired, ch["data_start"]))
 
 
 if __name__ == "__main__":

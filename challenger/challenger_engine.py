@@ -43,6 +43,8 @@ class ChallengerEngine(object):
         #   미설정을 None 으로 두면 폴백 시점에 로그를 남길 수 있다(계측 4원칙 ④).
         self._last_close = None   # type: Optional[float]
         self._last_ts    = None   # type: Optional[str]
+        # [553차 Phase 3] (challenger_id, 날짜) → 그 날 진입 수. 첫 조회는 DB 가 채운다.
+        self._entry_count = {}    # type: Dict[Any, int]
         self._register_default_challengers()
         if recover:
             self._recover_open_trades()
@@ -55,10 +57,17 @@ class ChallengerEngine(object):
             from challenger.variants.exhaustion_regime import ExhaustionRegimeChallenger
             from challenger.variants.absorption       import AbsorptionChallenger
             from challenger.variants.champion_tp1_skip_trail import ChampionTp1SkipTrailChallenger
+            # [MW0601 553차 Phase 3] GOLDEN POWER 규칙 섀도 2종.
+            # 🔴 `REGIME_POOLS` 에는 **등록하지 않는다** — 레짐 순위·자동 승격 경로에
+            #   들어가지 않게 하기 위해서다(절대원칙 §6, 알파 자동 통합 금지).
+            from challenger.variants.gp_rule import (
+                GpLongGb90Challenger, GpShortSqz60Challenger,
+            )
 
             for cls in (CvdExhaustionChallenger, OfiReversalChallenger,
                         VwapReversalChallenger, ExhaustionRegimeChallenger,
-                        AbsorptionChallenger, ChampionTp1SkipTrailChallenger):
+                        AbsorptionChallenger, ChampionTp1SkipTrailChallenger,
+                        GpLongGb90Challenger, GpShortSqz60Challenger):
                 inst = cls()
                 self.registry.register(inst)
                 self._open_trades[inst.challenger_id] = None
@@ -258,11 +267,23 @@ class ChallengerEngine(object):
             self._last_close = close_price
             self._last_ts    = ts
 
+        pending_signals = []          # [553차 Phase 3] 봉당 1커넥션으로 몰아 쓴다
         for challenger in self.registry.active_challengers():
             cid = challenger.challenger_id
             # [553차] 강제청산 시각은 **도전자별**이다(GP 규칙은 15:05).
             # Base 가 항상 정의하므로 getattr 폴백을 쓰지 않는다(계측 4원칙 ④).
             is_force = self._is_force_exit_time(ts, challenger.FORCE_EXIT_TIME)
+
+            # 0. [553차 Phase 3] 현재 봉을 도전자에게 먼저 보여준다.
+            # 🔴 **청산 판정보다 앞이어야 한다.** `should_exit()` 는 가격·ts·atr 만 받으므로
+            #   피처를 보는 규칙(GP 숏의 「GS ≥ 1.2 도달 청산」)이 여기 없으면 **직전 봉**
+            #   피처로 판정하게 된다 — 1봉 지연은 청산 규칙을 다른 규칙으로 바꾼다.
+            try:
+                challenger.observe(features, context)
+            except Exception:
+                logger.error("[Engine] %s observe:\n%s",
+                             cid, traceback.format_exc())
+                continue
 
             # 1. 열린 가상 포지션 청산 체크
             open_trade = self._open_trades.get(cid)
@@ -282,21 +303,53 @@ class ChallengerEngine(object):
                              cid, traceback.format_exc())
                 continue
 
-            try:
-                self.db.insert_signal(signal, regime=regime)
-            except Exception:
-                logger.error("[Engine] insert_signal 실패: %s", cid)
+            pending_signals.append(signal)
 
             # 3. 신규 가상 진입
             # [553차] 등급 개념이 없는 도전자(GP 규칙 등)는 등급 조건을 건너뛴다.
             # 종전에는 통과하려고 grade="A" 를 지어내야 했다 — **등급 위장**이며
             # 계측 4원칙 ④ 위반이다. 선언으로 대신한다.
             grade_ok = challenger.GRADE_NA or signal.grade in ("A", "B")
+            # [553차 Phase 3] 일일 진입 상한(GP 숏 = 당일 1회).
+            # 🔴 **인메모리 플래그로 세지 않는다.** 재시작하면 그 플래그가 지워져 같은 날
+            #   두 번 진입한다 — 552-10·552-11과 같은 계열이다. DB 가 권위다.
+            cap_ok = self._day_cap_ok(challenger, ts)
             if (open_trade is None
                     and signal.direction != 0
                     and grade_ok
+                    and cap_ok
                     and not is_force):
                 self._open_virtual_trade(challenger, signal, close_price, ts, atr, regime)
+
+        try:
+            self.db.insert_signals_bulk(pending_signals, regime=regime)
+        except Exception:
+            logger.error("[Engine] insert_signals_bulk 실패 (%d건)", len(pending_signals))
+
+    def _day_cap_ok(self, challenger, ts):
+        # type: (Any, str) -> bool
+        """도전자의 일일 진입 상한을 DB 기준으로 판정한다.
+
+        `MAX_PER_DAY is None` 이면 상한 없음(종전 동작). 매분 DB 를 때리지 않도록
+        (cid, 날짜) 로 캐시하되, **프로세스 기동 후 첫 조회는 반드시 DB** 를 본다 —
+        그래야 재시작이 상한을 지우지 않는다.
+        """
+        cap = challenger.MAX_PER_DAY
+        if cap is None:
+            return True
+        day = (ts or "")[:10]
+        if not day:
+            return False              # 날짜를 모르면 세지 못한다 — 진입하지 않는다
+        cid = challenger.challenger_id
+        key = (cid, day)
+        if key not in self._entry_count:
+            try:
+                self._entry_count[key] = self.db.count_entries_on(cid, day)
+            except Exception:
+                logger.error("[Engine] %s 일일 진입수 조회 실패 — 진입 보류", cid,
+                             exc_info=True)
+                return False          # 모르면 진입하지 않는다(보수적)
+        return self._entry_count[key] < cap
 
     def _open_virtual_trade(self, challenger, signal, entry_price, ts, atr, regime):
         trade = ChallengerTrade(
@@ -312,6 +365,9 @@ class ChallengerEngine(object):
             row_id = self.db.insert_trade(trade, regime=regime)
             trade.trade_id = row_id
             self._open_trades[challenger.challenger_id] = trade
+            key = (challenger.challenger_id, (ts or "")[:10])
+            if key in self._entry_count:
+                self._entry_count[key] += 1
         except Exception:
             logger.error("[Engine] insert_trade 실패: %s", challenger.challenger_id)
 

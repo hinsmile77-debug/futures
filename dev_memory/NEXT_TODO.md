@@ -40,15 +40,19 @@
       왕복비용 0.0315 → 0.246018pt(7.8배). 테스트 21건.
       백업: `challenger.db.bak_20260910_pre_553_phase2` / `..._pre_cost_normalize`.
 
-- [ ] **553-3** Phase 3 — 도전자 2종 `GP_LONG_GB90` / `GP_SHORT_SQZ60`.
-      선행조건 해소됨: `ma_basis="cont"` 확정(553-1D) · 엔진 결함 5건 수정(553-2).
-      숏은 `ma_regime_down_cont` 를 소비한다(`ma_cont_ready` 를 **먼저** 볼 것 — 미측정 분에
-      진입하면 국면필터 없이 진입한 것이 된다).
-      `GRADE_NA=True` · `FORCE_EXIT_TIME="15:05"` 로 선언한다(Phase 2가 배선했다).
-      REGIME_POOLS 에 **등록하지 않는다**(순위·승격 경로 차단, 절대원칙 §6).
-      배선 커밋 다음 거래일을 두 채널 `data_start` 에 기입 + DECISION_LOG 기록.
-      ⚠ `tests/test_553_gp_rule_shadow_preregistration.py::test_data_start_is_none_until_wiring`
-        가 이때 깨진다 — **의도된 것**이다. 해당 파라미터를 제거하고 개시일을 남길 것.
+- [x] **553-3** Phase 3 — 도전자 2종 `GP_LONG_GB90` / `GP_SHORT_SQZ60` 배선 완료.
+      엔진에 `observe()` 훅(청산이 현재 봉 피처를 보게) + `MAX_PER_DAY`(DB 기준 당일 1회) 추가.
+      리플레이 2거래일에서 사전등록과 수치 일치 확인. 테스트 30건.
+      부수: `insert_signals_bulk()` 로 `run_shadow` **40.7ms → 7.09ms**(GP 추가비용 0.94ms).
+
+- [ ] 🔵 **553-OBS** 관측 개시 **2026-09-10** — 60거래일. **규칙 파라미터 변경 금지.**
+      - [ ] **1일차 완전성 확인(당일 장후 필수)**: `challenger_signals` 의 2026-09-10 GP 분봉
+            수가 정상(≈369)인가. 부분이면 **그 날을 버리고 다음 거래일을 개시일로** 재설정하고
+            `data_start` + `test_data_start_is_fixed_at_wiring_day` 를 함께 갱신할 것.
+      - [ ] 첫 주: 진입 빈도가 소급(롱 2.78건/일 · 숏 0.71건/일)과 자릿수가 맞는가.
+            크게 갈리면 `ma_basis="cont"` 선택(553-1D)을 **가장 먼저** 의심할 것.
+      - [ ] `signal_meta.unmeasured` 분이 워밍업(일 20분)을 크게 넘지 않는가 —
+            넘으면 재기동이 잦다는 뜻이고, 그 분들은 표본에서 빠진 것이다(계측 4원칙 ②).
 - [ ] **553-4** Phase 4 — 수익 판넬 「GP」 구분.
       🔴 **급소**: `_day_total_legs` 에서 GP 를 제외하고 `_effective_day_krw` 를
       「실거래분(브로커/엔진 net) + GP분(Σpt×50,000)」으로 **분리 합성**한다.

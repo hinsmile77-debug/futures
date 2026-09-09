@@ -4992,9 +4992,13 @@ VALIDATION_CAMPAIGN = {
         "entry_source": "GP_SHADOW",     # 실체결 아님. trades 테이블에 넣지 않는다
         "rule_doc": "docs/미륵이고도화3/Golden power/검증완료_진입청산규칙_정리.md",
         "feature_wired_date": "2026-09-07",   # GB/GS·교차 플래그(540차). MA는 Phase 1
-        # 🔴 배선 커밋 다음 거래일로 확정한다. Phase 3 완료 시 이 값을 채우고
-        #   `dev_memory/DECISION_LOG.md` 에 같은 날짜를 남긴다. **채우는 것은 기준 변경이 아니다.**
-        "data_start": None,
+        # 🔵 [2026-09-10 Phase 3 배선 완료] 개시일 확정.
+        #   배선 커밋 시각 07:5x — 그 시점 오늘 `session_bars` 0건 · SYSTEM 로그 없음으로
+        #   **앱 미기동**을 확인했다(프리장 08:45 이전). 따라서 오늘이 1일차다.
+        # ⚠ 만약 어떤 이유로 오늘 세션이 부분 관측이면 **그 날을 버리고 다음 거래일부터**
+        #   센다 — 부분 1일차는 관측을 오염시킨다. 판정 전 `challenger_signals` 의 당일
+        #   분봉 수(정상 ≈ 369)로 확인할 것.
+        "data_start": "2026-09-10",
         "data_start_rule": "GP 섀도 배선 커밋 후 첫 REGULAR 세션",
         "observation_days": 60,          # 원문서 §운용권고 1
         # 🔴 규칙 정의 — 고정. 관측 중 변경 금지
@@ -5072,7 +5076,7 @@ VALIDATION_CAMPAIGN = {
         "ma_cont_only_minutes_observed": [39, 43],
         # ⚠ 세션 리셋을 고르면 MA60 워밍업이 09:00+60봉 = **10:00** 이라
         #   진입창 09:20~10:00 40분간 숏이 구조적으로 불가능해진다. 표본에 직접 영향.
-        "data_start": None,
+        "data_start": "2026-09-10",       # 🔵 롱 채널과 같은 근거 — 위 참조
         "data_start_rule": "GP 섀도 배선 커밋 후 첫 REGULAR 세션",
         "observation_days": 60,
         # 🔴 규칙 정의 — 고정. 관측 중 변경 금지
