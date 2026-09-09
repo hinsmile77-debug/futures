@@ -64,6 +64,8 @@ def test_classify_session_expiry_day():
 
 def test_classify_session_auction_code_overrides_time():
     assert tu.classify_session(_d(11, 0), tu.AUCTION_CODE_INTRADAY) == tu.SESSION_EXCHANGE_CB
+    assert tu.classify_session(_d(11, 0), tu.AUCTION_CODE_INTRADAY_EXT) == tu.SESSION_EXCHANGE_CB
+    assert tu.classify_session(_d(11, 0), tu.AUCTION_CODE_CONTINUOUS) == tu.SESSION_REGULAR
     assert tu.classify_session(_d(15, 45), tu.AUCTION_CODE_CLOSE) == tu.SESSION_CLOSE_FILL
     # 시가단일가는 08:45 봉 안에 흡수 — PRE_MARKET 유지
     assert tu.classify_session(_d(8, 45), tu.AUCTION_CODE_OPEN) == tu.SESSION_PRE_MARKET
@@ -125,6 +127,45 @@ def test_auction_code_accumulates_in_bar():
     assert closed and closed[-1]["auction_code"] == 10 and closed[-1]["auction_ticks"] == 2
     assert rt.current_bar["auction_code"] == 0
     assert rt.current_bar["auction_ticks"] == 0
+
+
+def test_auction_code_40_is_continuous_not_auction():
+    """[550차] 헤더 28 = 40(장중) 은 단일가가 아니다 — 0 으로 정규화, ticks 누적 안 함."""
+    closed = []
+    rt = _rt(closed)
+    rt._last_cum_volume = 100
+    rt._last_price = 1000.0
+    a, b, _c, _d = _now_times()
+    rt._handle_tick(_StubTick(1000.0, 101, a, auction=40))
+    rt._handle_tick(_StubTick(1000.5, 102, b, auction=40))
+    assert rt.current_bar["auction_code"] == 0        # 받았다(0) ≠ 미수신(None)
+    assert rt.current_bar["auction_ticks"] == 0
+    assert rt._auction_seen_today is False
+
+
+def test_flush_stale_bar_closes_only_past_minute():
+    """[550차] 다음 분 틱이 없어도 시간 기준으로 마지막 봉을 마감한다."""
+    closed = []
+    rt = _rt(closed)
+    rt._last_cum_volume = 100
+    rt._last_price = 1000.0
+    a, _b, _c, _d = _now_times()
+    rt._handle_tick(_StubTick(1000.0, 101, a, auction=40))
+    t0 = datetime.datetime.now().replace(second=0, microsecond=0)
+    assert rt.flush_stale_bar(t0) is False            # 같은 분 — 아직 진행 중
+    assert closed == []
+    assert rt.flush_stale_bar(t0 + datetime.timedelta(minutes=2)) is True
+    assert len(closed) == 1 and rt.current_bar is None
+    assert rt.flush_stale_bar(t0 + datetime.timedelta(minutes=3)) is False  # 멱등
+
+
+def test_scheduler_flush_is_after_close_only():
+    """[550차] main 의 플러시 호출은 정규장 마감 +1분 이후 창에서만 — 장중 호출 금지."""
+    src = open(os.path.join(_ROOT, "main.py"), encoding="utf-8").read()
+    i = src.index("_rd_fl.flush_stale_bar(now)")
+    block = src[i - 900:i]
+    assert "datetime.time(15, 36)" in block and "datetime.time(15, 21)" in block
+    assert "now.time() >= _close_t" in block
 
 
 def test_auction_code_missing_header_stays_none():

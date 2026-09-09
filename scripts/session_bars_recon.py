@@ -14,6 +14,8 @@
   · CLOSE_AUCTION 0~10 · CLOSE_FILL 1                                ← Phase 2 배선 뒤에만
   · raw_candles 교집합에서 OHLCV 불일치 0
   · auction_code 전부 NULL 이면 헤더 28 미수신 — `[CybosRT-AUCTION]` WARNING 확인
+  · [550차] 헤더 28 = 40 은 「장중(연속매매)」— 단일가가 아니다. 파서가 0 으로 정규화하며
+    이 스크립트도 40 을 단일가로 세지 않는다(정정 전 3일치는 UPDATE 로 0 처리 완료).
 """
 from __future__ import annotations
 
@@ -61,7 +63,7 @@ def main() -> int:
 
         auc = con.execute(
             "SELECT ts, session, open, close, volume, auction_code, auction_ticks FROM session_bars "
-            "WHERE substr(ts,1,10)=? AND COALESCE(auction_code,0)<>0 ORDER BY ts", (day,)).fetchall()
+            "WHERE substr(ts,1,10)=? AND COALESCE(auction_code,0) NOT IN (0, 40) ORDER BY ts", (day,)).fetchall()
         print("\n단일가 체결 포함 봉(auction_code≠0): %d" % len(auc))
         for r in auc[:12]:
             print("   ", r)

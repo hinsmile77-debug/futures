@@ -16,6 +16,8 @@ MAX_CANDLES = 500
 
 FUTURE_CUR_ONLY_PROGID = "Dscbo1.FutureCurOnly"
 FUTURE_JP_BID_PROGID = "CpSysDib.FutureJpBid"
+# [550차] FutureCurOnly 헤더 28 「장중(연속매매)」 — 단일가가 아니다 (utils.time_utils 와 동기)
+AUCTION_CODE_CONTINUOUS = 40
 
 # ── [MW0601 452차 / QDQ Phase 0] 체결구분 디코딩 ──────────────────────────────
 # `Dscbo1.FutureCurOnly` `24_체결구분`은 문자 '1'(매수)/'2'(매도)의 **코드값 49/50을
@@ -208,6 +210,29 @@ class CybosRealtimeData:
         self._running = True
         logger.info("[CybosRT] start code=%s", self._rt_code)
 
+    def flush_stale_bar(self, now: Optional[datetime] = None) -> bool:
+        """[550차] 틱이 더 오지 않아 영원히 「진행 중」인 봉을 시간 기준으로 마감한다.
+
+        봉 마감은 다음 분 첫 틱으로만 일어난다(`_update_bar` 롤오버). 15:35 마감
+        단일가부터는 체결틱이 없어 **15:34 봉이 매일 유실**됐다(09-07~09-09 실측 —
+        `[CybosRT-ROLLOVER] from=15:34` 가 3일 모두 없음). 만기일 15:19 봉도 같다.
+
+        호출자가 시각 창을 책임진다 — 장중에 부르면 부분 봉이 파이프라인에 들어가고
+        ExchangeCB 의 「분봉 미수신」 감지도 깨진다. `main._scheduler_tick` 은
+        **정규장 마감 +1분 이후**에만 부른다. 봉의 분이 아직 현재 분이면 아무것도 안 한다.
+        """
+        if self._current_bar is None or self._current_min is None:
+            return False
+        now = now or datetime.now()
+        if self._current_min >= now.hour * 60 + now.minute:
+            return False
+        sys_log.info(
+            "[CybosRT-FLUSH] code=%s ts=%s 시간 기준 강제 마감 (다음 분 틱 없음)",
+            self._rt_code, self._current_bar["ts"].strftime("%H:%M"),
+        )
+        self._close_current_bar()
+        return True
+
     def stop(self) -> None:
         if not self._running:
             return
@@ -310,7 +335,12 @@ class CybosRealtimeData:
         try:
             _ac_raw = obj.GetHeaderValue(28)
             if _ac_raw is not None and _safe_str(_ac_raw) != "":
-                auction_code = _safe_int(_ac_raw)
+                _ac = _safe_int(_ac_raw)
+                # [550차 정정] 원천 코드표: 10 시가단일가 / 11 연장 / 20 장중단일가 /
+                # 21 연장 / 30 종가단일가 / **40 장중(연속매매)**. 533차 초판은 40을
+                # 몰라 비영 전부를 단일가로 세어 3거래일 모든 봉이 auction_code=40 이
+                # 됐다. 40은 0(연속매매)과 같이 취급한다 — "받았다"는 사실은 0 으로 남긴다.
+                auction_code = 0 if _ac == AUCTION_CODE_CONTINUOUS else _ac
                 if auction_code and not self._auction_seen_today:
                     self._auction_seen_today = True
                 if auction_code:

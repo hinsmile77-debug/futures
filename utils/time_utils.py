@@ -72,7 +72,9 @@ def is_trading_session(dt: Optional[datetime.datetime] = None) -> bool:
 AUCTION_CODE_OPEN = 10          # 시가단일가
 AUCTION_CODE_OPEN_EXT = 11      # 시가단일가연장
 AUCTION_CODE_INTRADAY = 20      # 장중단일가 (거래소 CB 뒤 10분 단일가 등)
+AUCTION_CODE_INTRADAY_EXT = 21  # 장중단일가연장
 AUCTION_CODE_CLOSE = 30         # 종가단일가
+AUCTION_CODE_CONTINUOUS = 40    # [550차] 장중(연속매매) — 단일가 아님. 파서가 0으로 정규화한다
 
 SESSION_PRE_AUCTION = "PRE_AUCTION"          # 08:30~08:44 개장 단일가 (예상가만, 체결 없음)
 SESSION_PRE_MARKET = "PRE_MARKET"            # 08:45~08:59 (08:45 봉에 개장 체결 포함)
@@ -99,7 +101,7 @@ def classify_session(dt: datetime.datetime, auction_code: Optional[int] = None) 
     """
     if not is_trading_day(dt):
         return SESSION_OFF
-    if auction_code == AUCTION_CODE_INTRADAY:
+    if auction_code in (AUCTION_CODE_INTRADAY, AUCTION_CODE_INTRADAY_EXT):
         return SESSION_EXCHANGE_CB
     if auction_code == AUCTION_CODE_CLOSE:
         return SESSION_CLOSE_FILL
