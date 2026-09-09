@@ -39,6 +39,7 @@ from config.settings import (
     #   본문에서 썼다 — `build()` 가 매 분 NameError 를 던졌고 except 블록도
     #   같은 이름을 써서 예외가 밖으로 새어 나갔다(tests/test_502 u1e 가 잡는다).
     GP_CROSS_PERIOD, GP_CROSS_LEVEL, GP_CROSS_TIGHT_EPS,
+    MA_REGIME_FAST, MA_REGIME_SLOW,
 )
 
 logger = logging.getLogger("SIGNAL")
@@ -54,6 +55,80 @@ try:
 except Exception:
     _CVD_DEBIAS_MODE = "shadow"
 _CVD_DEBIAS_LIVE = str(_CVD_DEBIAS_MODE).lower() == "live"
+
+
+def compute_ma_regime_features(closes_sess, closes_cont, fast=20, slow=60):
+    """[MW0601 553차] GP 숏 국면필터 「MA20 < MA60」 — 순수 함수. **기록 전용.**
+
+    🔴 **두 변형을 다 낸다 — 사양이 아직 안 정해졌기 때문이다.**
+      · `*_sess` : 세션 리셋(09:00 초기화). 백테스트 스크립트의 습관
+                   (`analysis/rules_backtest.py` 가 전부 세션 groupby 안에서 계산).
+      · `*_cont` : 연속(전일 종가 승계). 규칙의 출처인 사이보스 차트의 MA 가 이쪽이다.
+      211거래일 최종 스크립트가 repo 에 없어 어느 쪽인지 확정할 수 없다.
+
+    🔴 **둘의 차이는 「값」이 아니라 「가용성」이다 — 실측으로 확인했다(9거래일 리플레이).**
+      둘 다 준비된 뒤에는 두 버퍼의 마지막 `slow` 봉이 **같은 봉**이라 값이 같을 수밖에
+      없다. 실제로 동시측정 2,770분 전수에서 판정 불일치 **0건**이었다.
+      ⇒ `ma_regime_agree` 는 판단 근거가 **아니다.** 구조적으로 1.0 이어야 하는
+        **불변식**이며, 0 이 나오면 버퍼 정렬이 깨졌다는 뜻이다(그때만 의미가 있다).
+      ⇒ 진짜 차이는 `ma_cont_only` 다 — 세션 리셋은 09:00+`slow`봉(=10:00)이 돼야
+        준비되는데 숏 진입창은 09:20 부터다. 실측 **하루 39~43분**(진입창의 약 12%)이
+        「cont 는 답을 주는데 sess 는 못 주는」 구간이고, **그게 선택의 전부**다.
+
+    Args:
+        closes_sess: 당일 세션 종가 버퍼(오래된 → 최신, 현재 봉 포함).
+        closes_cont: 전일 승계분을 포함한 연속 종가 버퍼(같은 정렬).
+        fast, slow: 이동평균 기간.
+
+    Returns:
+        11키. 워밍업 구간은 값 0.0 + `*_ready=False` — 「하락 아님」이 아니라
+        **미측정**이다(계측 4원칙 ②). `ma_regime_agree` 는 둘 다 ready 일 때만
+        의미가 있으며 그 외에는 0.0 + `ma_agree_measured=False` 로 나간다.
+    """
+    out = {
+        "ma%d_sess" % fast: 0.0,
+        "ma%d_sess" % slow: 0.0,
+        "ma_sess_ready": False,
+        "ma_regime_down_sess": 0.0,
+        "ma%d_cont" % fast: 0.0,
+        "ma%d_cont" % slow: 0.0,
+        "ma_cont_ready": False,
+        "ma_regime_down_cont": 0.0,
+        # 구조적 불변식(1.0 이어야 정상) — 판단 근거가 아니다. 위 주석 참조.
+        "ma_regime_agree": 0.0,
+        "ma_agree_measured": False,
+        # 🔴 **실제 선택 축.** cont 는 답을 주는데 sess 는 못 주는 분인가.
+        #   세션 리셋을 고르면 이 분들이 숏 진입창에서 통째로 사라진다(하루 39~43분).
+        "ma_cont_only": 0.0,
+    }
+
+    def _fill(buf, suffix):
+        """buf 가 slow 봉을 채웠으면 (ma_fast, ma_slow, down) 을 채우고 True."""
+        n = len(buf) if buf else 0
+        if n < slow:
+            return False
+        # numpy 를 쓰지 않는다 — 537차(맨손 실행 시 BLAS delay-load 실패로 프로세스
+        # 즉사)와 같은 계열을 이 경로에 들이지 않기 위해서다. 60개 평균은 순수
+        # 파이썬으로 충분히 싸다.
+        mf = sum(buf[-fast:]) / float(fast)
+        ms = sum(buf[-slow:]) / float(slow)
+        out["ma%d_%s" % (fast, suffix)] = float(mf)
+        out["ma%d_%s" % (slow, suffix)] = float(ms)
+        out["ma_%s_ready" % suffix] = True
+        out["ma_regime_down_%s" % suffix] = 1.0 if mf < ms else 0.0
+        return True
+
+    ok_sess = _fill(list(closes_sess or ()), "sess")
+    ok_cont = _fill(list(closes_cont or ()), "cont")
+
+    if ok_sess and ok_cont:
+        out["ma_regime_agree"] = (
+            1.0 if out["ma_regime_down_sess"] == out["ma_regime_down_cont"] else 0.0
+        )
+        out["ma_agree_measured"] = True
+    if ok_cont and not ok_sess:
+        out["ma_cont_only"] = 1.0
+    return out
 
 
 def compute_gp_cross_features(closes, atr, period=20, cross=0.5, eps=0.05):
@@ -177,6 +252,15 @@ class FeatureBuilder:
         self._core_fail_notified: Dict[str, bool] = {"cvd": False, "vwap": False, "ofi": False}
         self._on_core_fail: Optional[Any] = None  # 외부 CB 경보 콜백 (main.py에서 주입)
         self._close_history: deque = deque(maxlen=HURST_WINDOW_N)  # Hurst 계산용 종가 버퍼
+        # [553차] GP 숏 국면필터용 **연속** 종가 버퍼 — `reset_daily()` 에서 지우지 않는다.
+        # 🔴 `_close_history` 와 의도적으로 다르다: 저건 317차에 「전일 종가가 창에 섞여
+        #   Hurst 가 왜곡된다」는 이유로 일부러 세션 리셋됐고, 이건 사이보스 차트 MA 처럼
+        #   **날짜를 넘어 이어져야** 한다. 둘을 한 버퍼로 합치면 둘 중 하나가 틀린다.
+        # ⚠ 미륵이는 매일 아침 프로세스를 새로 띄우므로 인메모리만으로는 영원히 안 찬다 —
+        #   세션 첫 봉에서 DB 로 1회 프라이밍한다(`_prime_ma_cont_buffer`).
+        self._close_history_cont: deque = deque(maxlen=MA_REGIME_SLOW + 2)
+        self._ma_cont_primed_for: str = ""      # 프라이밍을 마친 거래일(YYYY-MM-DD)
+        self._ma_cont_prime_warned: bool = False
         # CVD 모노톤 비율 계산용 — 20구간(21개 포인트) 이력
         self._cvd_history: deque = deque(maxlen=21)
         # 방향성 고도화 피처용
@@ -550,6 +634,10 @@ class FeatureBuilder:
         #   ③ n>=HURST_WINDOW_N: 검증된 정상 운영값(HURST_MAX_LAG) 고정
         if close > 0:
             self._close_history.append(close)
+            # [553차] 연속 MA 버퍼 — 프라이밍을 **append 보다 먼저** 해야 현재 봉이
+            # 두 번 들어가지 않는다(프라이밍은 현재 봉 ts 「미만」만 읽는다).
+            self._prime_ma_cont_buffer(bar)
+            self._close_history_cont.append(close)
         _n_buf = len(self._close_history)
         try:
             if _n_buf < HURST_WARMUP_COLDSTART_MIN:
@@ -651,6 +739,30 @@ class FeatureBuilder:
                 "gp_cross_tight_%d" % GP_CROSS_PERIOD: 0.0,
                 "gp_ready_%d" % GP_CROSS_PERIOD: False,
                 "atr_bp": 0.0, "atr_bp_measured": False,
+            })
+
+        # [MW0601 553차] GP 숏 국면필터용 이동평균 — 기록 전용(소비자 없음).
+        # 사전등록 채널 `gp_rule_short_watch` 가 소비한다(MA20<MA60 필수 필터).
+        # 세션 리셋·연속 **두 변형**을 다 낸다 — settings 주석의 미해결 사양 참조.
+        try:
+            features.update(compute_ma_regime_features(
+                list(self._close_history), list(self._close_history_cont),
+                fast=MA_REGIME_FAST, slow=MA_REGIME_SLOW,
+            ))
+        except Exception as _exc:
+            _mark_feature_error(_exc)
+            logger.warning("[FeatureBuilder] MA 국면 피처 오류 — ready=False: %s", _exc)
+            features.update({
+                "ma%d_sess" % MA_REGIME_FAST: 0.0,
+                "ma%d_sess" % MA_REGIME_SLOW: 0.0,
+                "ma_sess_ready": False,
+                "ma_regime_down_sess": 0.0,
+                "ma%d_cont" % MA_REGIME_FAST: 0.0,
+                "ma%d_cont" % MA_REGIME_SLOW: 0.0,
+                "ma_cont_ready": False,
+                "ma_regime_down_cont": 0.0,
+                "ma_regime_agree": 0.0, "ma_agree_measured": False,
+                "ma_cont_only": 0.0,
             })
 
         # 마디가(Round Number) 거리 — 방향 인자 없이 상/하 최근접 레벨 중 더 가까운 쪽만 사용
@@ -1112,6 +1224,45 @@ class FeatureBuilder:
     def get_last_hoga_snapshot(self) -> Dict[str, Any]:
         return dict(self._last_hoga_snapshot)
 
+    def _prime_ma_cont_buffer(self, bar: Dict[str, Any]) -> None:
+        """[553차] 연속 MA 버퍼를 거래일마다 **1회** DB 로 채운다.
+
+        왜 필요한가: 미륵이는 매일 아침 프로세스를 새로 띄운다. 인메모리 deque 만으로는
+        연속 MA 가 영원히 준비되지 않고(=매일 세션 리셋과 같아진다), 그러면 두 변형을
+        나눠 재는 의미 자체가 없어진다.
+
+        ⚠ 실패해도 예외를 밖으로 내지 않는다 — 대신 `ma_cont_ready=False` 로 남는다.
+          값을 지어내 「연속 MA 가 정상」인 척하지 않는다(계측 4원칙 ④).
+          경고는 거래일당 1회만 찍는다(로그 폭주 방지).
+        """
+        try:
+            from utils.db_utils import candle_ts_str, fetch_prior_regular_closes
+            ts = candle_ts_str(bar)
+            day = ts[:10]
+            if not day or self._ma_cont_primed_for == day:
+                return
+            self._ma_cont_primed_for = day       # 성공·실패 무관하게 1회만 시도한다
+            need = MA_REGIME_SLOW + 1 - len(self._close_history_cont)
+            if need <= 0:
+                return
+            prior = fetch_prior_regular_closes(ts, need)
+            if not prior:
+                if not self._ma_cont_prime_warned:
+                    self._ma_cont_prime_warned = True
+                    logger.info(
+                        "[MA-cont] %s 이전 정규장 종가 0건 — 연속 MA 는 세션 내 %d봉이 "
+                        "쌓일 때까지 ma_cont_ready=False 로 둔다(미측정, 0 아님)",
+                        ts, MA_REGIME_SLOW)
+                return
+            # 승계분을 **앞쪽**에 넣는다. deque 는 maxlen 이 있으므로 앞에서부터 밀어 넣되
+            # 순서(오래된 → 최신)가 유지되도록 역순 appendleft 한다.
+            for c in reversed(prior):
+                self._close_history_cont.appendleft(c)
+            logger.info("[MA-cont] %s 연속 MA 버퍼 프라이밍 %d봉 (버퍼 %d)",
+                        day, len(prior), len(self._close_history_cont))
+        except Exception as _exc:                # 피처 경로를 절대 죽이지 않는다
+            logger.debug("[MA-cont] 프라이밍 스킵: %s", _exc)
+
     def reset_daily(self) -> None:
         self.cvd.reset_daily()
         self.cvd_exhaustion_calc.reset_daily()
@@ -1136,4 +1287,9 @@ class FeatureBuilder:
         # 317차: 누락돼있던 Hurst 종가 버퍼 리셋 — 개장 후 최초 ~40분간 전일/주말
         # 종가가 창에 섞여 들어가 Hurst가 비정상적으로 낮게 나오던 원인(316차 딥다이브).
         self._close_history.clear()
+        # 🔴 [553차] `_close_history_cont` 는 **일부러 비우지 않는다.**
+        #   연속 MA 는 전일 종가를 이어받아야 사이보스 차트와 같은 값이 된다.
+        #   여기에 clear() 를 추가하면 두 변형이 같아져 `ma_regime_agree` 가 항상 1이 되고,
+        #   「어느 쪽이 맞는가」라는 질문 자체가 계측에서 사라진다.
+        #   `tests/test_553_ma_regime_features.py` 가 이 부재를 고정한다.
         logger.info("[FeatureBuilder] daily reset complete")
