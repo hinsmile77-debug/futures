@@ -24,8 +24,9 @@
   T3  진단 1줄이 나온다 — 락종류 · 마지막단계 · 점유 증거(스레드/커넥션/WAL/journal).
   T4  🔴 폴백이 데이터로 위장하지 않는다 — 진행이 없으면 `(진행 없음)` 이지,
       낡은 테이블 목록이 아니다. **이 검사가 깨지는 날이 ②가 되살아난 날이다.**
-  T5  🔴 **외부 점유가 0인데도 같은 실패가 난다** — 원인은 자기 트랜잭션이다.
-  T6  멈추는 지점은 언제나 `checkpoint:진입` 이고, 로그가 그 원인 후보를 말한다.
+  T5  🔴 [552차] **성공 경로** — 삭제 행수를 반환하고 `checkpoint:ok` 까지 간다.
+  T6  🔴 [552차] 소스 불변식 — `wal_checkpoint` 가 `_prune_once` **밖**에 있다.
+  T9  🔴 [552차] 커밋 후 체크포인트가 실패해도 삭제 행수를 0으로 되돌리지 않는다.
   T7  락종류 분류 문구 — SQLITE_LOCKED 는 busy_timeout 이 **듣지 않는다**는
       사실을 로그가 직접 말한다.
   T8  재현 4/4 — journal 모드(delete/wal)도, 지울 행의 유무도 무관하다.
@@ -46,10 +47,15 @@
 TOX 죽은 섀도와 같은 계열). 0824 의 `3,810행 삭제` 는 492차가 이미 지적한
 거짓 성공이다.
 
-⚠ **그런데 여기서 고치지 않는다.** 한 줄(체크포인트를 `with` 블록 밖으로)이면
-  끝나지만, 그 수정이 처음 성공하는 날 **52주 초과분이 실제로 삭제**된다 —
-  되돌릴 수 없는 데이터 삭제라 무인 실행이 자율로 반영할 성격이 아니다.
-  사용자 승인 후 반영한다(`NEXT_TODO` `1-3`).
+🔴 **[MW0602 552차] 2026-09-09 사용자 승인으로 반영됐다.** 체크포인트를 커밋·
+  close **이후 별도 커넥션**으로 옮겼다(`_checkpoint()`). 그래서 T5/T6 는
+  실패 고정에서 **성공 경로 불변식으로 교체**됐고, 커밋 후 체크포인트가
+  실패해도 삭제 행수를 0으로 되돌리지 않는다는 T9 가 추가됐다.
+  반영 전 실 DB 복사본 검증: `12,954행 삭제` · `checkpoint:ok` ·
+  `integrity_check ok` · cutoff 이전 잔존 0 (라이브 DB 미접촉).
+  ⚠ T8 은 그대로 둔다 — 그것은 우리 코드가 아니라 **SQLite 자체의 성질**
+  (쓰기 트랜잭션 안에서는 체크포인트가 막힌다)을 고정하며, 그 성질이 바로
+  체크포인트를 `_prune_once` 안으로 되돌리면 안 되는 이유다.
 
 ⚠ 실 DB 격리: 전부 임시 경로 전용이다. `config.settings.RAW_DATA_DB` 를 임시
   파일로 갈아끼운 뒤 원복한다 — 라이브 `data/db/raw_data.db` 를 절대 건드리지
@@ -196,36 +202,99 @@ def test_t4_no_placeholder_masquerading_as_data():
 
 # ── 🔴 근본원인 고정 ─────────────────────────────────────────────────────────
 
-def test_t5_t6_root_cause_is_self_inflicted():
-    """🔴 외부 점유가 **하나도 없어도** 같은 실패가 난다 — 원인은 자기 트랜잭션이다.
+def test_t5_t6_success_path_after_fix():
+    """🔴 [MW0602 552차 / 1-3 승인 반영] 이제 **성공한다** — 성공 경로를 고정한다.
 
-    깨끗한 임시 DB, 다른 커넥션·스레드 0, 삭제 대상 정상. 그런데도
-    `database table is locked` 가 난다. 멈추는 지점은 언제나 `checkpoint:진입`
-    이다 — `PRAGMA wal_checkpoint` 를 앞 DELETE 들이 **아직 커밋되지 않은**
-    쓰기 트랜잭션 안에서 부르기 때문이다
-    (`with sqlite3.connect(...)` 는 블록을 나갈 때 비로소 커밋한다).
+    538차까지 이 검사는 일부러 **실패를 고정**하고 있었다("이 검사가 깨지는 날이
+    근본원인이 고쳐진 날이다"). 2026-09-09 사용자 승인으로 체크포인트를 커밋
+    이후 별도 커넥션으로 옮겼고, 그래서 여기를 성공 불변식으로 교체했다.
 
-    🔴 **이 검사가 깨지는 날이 근본원인이 고쳐진 날이다.** 그때는 이 테스트와
-      `NEXT_TODO` `1-3` 을 함께 갱신하고, 성공 경로(삭제 행수 반환 ·
-      `checkpoint:ok`)를 새 불변식으로 세울 것.
+    실 DB 복사본 검증(2026-09-09): `12,954행 삭제` · `checkpoint:ok` ·
+    `integrity_check ok` · cutoff 이전 잔존 0.
+
+    ⚠ 되돌아가는 것을 막는 축은 아래 T6 의 **소스 불변식**이다 — 체크포인트가
+      `_prune_once` 안으로 다시 들어가면 그 즉시 깨진다.
     """
     got, log, path = _run(view_table=None)
 
-    check("T5: 외부 점유 0인데도 실패 (현재 상태 고정, got=%r)" % got, got == 0)
-    check("T5: 실패 문구가 라이브와 같다(database table is locked)",
-          "database table is locked" in log)
-    check("T6: 멈춘 지점은 체크포인트다", "마지막단계=checkpoint:진입" in log)
-    check("T6: 커밋 전 호출이라는 원인 후보를 로그가 직접 말한다",
-          "체크포인트를 **커밋 전에** 호출하고 있다" in log)
-    check("T5: 점유 증거가 '외부 없음'을 뒷받침한다(스레드 1개)",
-          "스레드=1개[MainThread]" in log)
+    # 임시 DB 는 4개 테이블 × OLD 1행 = 4행이 지워져야 한다
+    check("T5: 삭제 행수를 반환한다 (got=%r)" % got, got == 4)
+    check("T5: 더는 락으로 실패하지 않는다",
+          "database table is locked" not in log)
+    check("T5: 완료 로그가 나온다", "[Retrain] DB pruning 완료:" in log)
+    check("T5: 진단(실패) 줄이 나오지 않는다",
+          "[Retrain] DB pruning 진단:" not in log)
+    check("T6: 체크포인트가 끝까지 간다", "checkpoint:ok" in log)
 
-    # 그래서 **아무것도 지워지지 않는다** — 로그가 아니라 DB로 확인한다
+    # 실제로 지워졌는가 — 로그가 아니라 DB로 확인한다
     # (계측 4원칙 ⑤: 파생값 말고 구성요소를 직접 건다)
     conn = sqlite3.connect(path)
     rows = sorted(r[0] for r in conn.execute("SELECT ts FROM raw_features"))
+    integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
     conn.close()
-    check("T5: 오래된 행이 그대로 남아 있다(삭제 0)", rows == [OLD, NEW])
+    check("T5: 오래된 행만 지워지고 최신 행은 남는다", rows == [NEW])
+    check("T5: DB 무결성 유지", integrity == "ok")
+
+    # 🔴 T6 소스 불변식 — 체크포인트는 `_prune_once` 밖에 있어야 한다.
+    # ⚠ **주석은 빼고 코드 줄만 본다.** `_prune_once` 안에는 "여기에 있던
+    #   `PRAGMA wal_checkpoint` 를 뺐다"는 설명 주석이 남아 있고(되돌리지 말라는
+    #   경고다), 원문 전체를 그대로 훑으면 그 주석이 코드로 오인돼 잡힌다.
+    src = _read("learning/batch_retrainer.py")
+    body = src.split("def _prune_once(", 1)[1].split("def _checkpoint(", 1)[0]
+    code = "\n".join(ln for ln in body.splitlines()
+                     if not ln.lstrip().startswith("#"))
+    check("T6: `_prune_once` 코드에 wal_checkpoint 호출이 없다",
+          "wal_checkpoint" not in code)
+    check("T6: 되돌리지 말라는 경고 주석은 남아 있다", "wal_checkpoint" in body)
+    check("T6: 체크포인트 전용 함수가 있다", "def _checkpoint(" in src)
+    check("T6: 커밋 후 커넥션을 명시적으로 닫는다", "conn.close()" in src)
+
+
+def test_t9_post_commit_checkpoint_failure_keeps_count():
+    """🔴 커밋 **이후** 체크포인트가 실패해도 삭제 행수를 0으로 되돌리지 않는다.
+
+    492차 F-8 이 막은 것은 「커밋 안 된 수를 성공으로 보고」였다. 그 반대인
+    「커밋된 수를 실패로 보고」도 똑같은 오보다(계측 4원칙 ④). 체크포인트는
+    WAL 정리일 뿐이라 실패해도 삭제는 유효하다.
+    """
+    tmp = tempfile.mkdtemp(prefix="t538ck_")
+    path = os.path.join(tmp, "raw_data.db")
+    _build_db(path)
+
+    real_connect = sqlite3.connect
+    state = {"n": 0}
+
+    def _flaky(*a, **k):
+        state["n"] += 1
+        if state["n"] == 2:            # 1=본 커넥션, 2=체크포인트 전용
+            raise sqlite3.OperationalError("database table is locked")
+        return real_connect(*a, **k)
+
+    logger = logging.getLogger("LEARNING")
+    cap = _Capture()
+    logger.addHandler(cap)
+    prev_level, logger.level = logger.level, logging.INFO
+    prev_db = S.RAW_DATA_DB
+    S.RAW_DATA_DB = path
+    sqlite3.connect = _flaky
+    try:
+        got = _PRUNE(None, keep_weeks=52)
+    finally:
+        sqlite3.connect = real_connect     # 🔴 반드시 원복
+        S.RAW_DATA_DB = prev_db
+        logger.removeHandler(cap)
+        logger.level = prev_level
+    log = cap.text()
+
+    check("T9: 커밋된 삭제 행수를 그대로 반환한다 (got=%r)" % got, got == 4)
+    check("T9: 완료 로그가 나온다", "[Retrain] DB pruning 완료:" in log)
+    check("T9: 체크포인트 실패는 별도 줄로 드러난다",
+          "체크포인트 실패" in log and "커밋됨" in log)
+
+    conn = real_connect(path)
+    rows = sorted(r[0] for r in conn.execute("SELECT ts FROM raw_features"))
+    conn.close()
+    check("T9: 삭제는 실제로 커밋돼 있다", rows == [NEW])
 
 
 def test_t8_journal_mode_and_rowcount_are_irrelevant():
@@ -286,7 +355,8 @@ if __name__ == "__main__":
         pass
     for fn in (test_t1_t2_t3_failure_records_progress,
                test_t4_no_placeholder_masquerading_as_data,
-               test_t5_t6_root_cause_is_self_inflicted,
+               test_t5_t6_success_path_after_fix,
+               test_t9_post_commit_checkpoint_failure_keeps_count,
                test_t7_lock_classification_contract,
                test_t8_journal_mode_and_rowcount_are_irrelevant):
         try:

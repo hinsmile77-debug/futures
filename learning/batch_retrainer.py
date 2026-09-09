@@ -2404,12 +2404,30 @@ class BatchRetrainer:
                         continue
                     _detail.append("%s:%s" % (table, _msg))
                     raise
-            # 체크포인트도 실패 단계다 — DELETE 가 아니라 여기서 걸렸는지 구분한다.
-            # (`진입` 만 있고 `ok` 가 없으면 wal_checkpoint 에서 raise 된 것)
-            _detail.append("checkpoint:진입")
-            _conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
-            _detail.append("checkpoint:ok")
+            # 🔴 [MW0602 552차 / 1-3] 여기에 있던 `PRAGMA wal_checkpoint` 를 뺐다.
+            #    쓰기 트랜잭션 안(= 커밋 전)에서 부르면 SQLite 가 SQLITE_LOCKED 를
+            #    낸다 — 그게 160차(2026-06-11) 이래 이 경로가 **한 번도 성공하지
+            #    못한** 이유다. 체크포인트는 `_checkpoint()` 로 옮겼고, 커밋·close
+            #    **이후**에만 호출한다. 근거·재현 4/4 는 538차 후속 참조.
             return _n
+
+        def _checkpoint(_detail):
+            """WAL 체크포인트 — 🔴 **커밋 이후 별도 커넥션에서만** 부른다.
+
+            [MW0602 552차 / 1-3] 이 함수를 `_prune_once` 안으로 되돌리지 말 것.
+            `with sqlite3.connect(...)` 는 블록을 **나갈 때** 커밋하므로, 블록
+            안에서 체크포인트를 부르면 앞선 DELETE 들이 아직 커밋 전이고
+            SQLite 는 그 순서를 허용하지 않는다(`database table is locked`
+            = SQLITE_LOCKED, busy_timeout 무효).
+            회귀 가드: `tests/test_538_prune_lock_diagnostics.py` T5/T6.
+            """
+            _detail.append("checkpoint:진입")
+            _ck = sqlite3.connect(RAW_DATA_DB, timeout=15)
+            try:
+                _ck.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                _detail.append("checkpoint:ok")
+            finally:
+                _ck.close()
 
         def _lock_class(_e):
             """SQLITE_LOCKED / SQLITE_BUSY 구분 — 대응 레버가 서로 다르다."""
@@ -2463,12 +2481,31 @@ class BatchRetrainer:
                 _ev.append("journal=미측정(%s)" % _pe)
             return " ".join(_ev)
 
-        deleted, detail, last_err = 0, [], None
+        deleted, detail, last_err, ck_err = 0, [], None, None
         for _attempt in (1, 2):
             deleted, detail = 0, []          # 재시도 시 1차 집계를 이월하지 않는다
+            ck_err = None
             try:
-                with sqlite3.connect(RAW_DATA_DB, timeout=15) as conn:
-                    deleted = _prune_once(conn, detail)
+                # [MW0602 552차 / 1-3] `with` 는 커밋만 하고 **닫지는 않는다** —
+                # 종전에는 호출마다 커넥션이 새어 나갔고(538차 진단의 `열린커넥션`
+                # 항목이 그것), 체크포인트가 그 커넥션과 경합할 여지가 있었다.
+                conn = sqlite3.connect(RAW_DATA_DB, timeout=15)
+                try:
+                    with conn:               # 블록을 나갈 때 커밋된다
+                        deleted = _prune_once(conn, detail)
+                finally:
+                    conn.close()
+                # ── 여기 도달 = DELETE 가 **커밋됐다** ────────────────────────
+                # 🔴 이 뒤의 실패는 `deleted` 를 0 으로 되돌리면 안 된다.
+                #    492차 F-8 이 막은 것은 「커밋 안 된 수를 성공으로 보고」였고,
+                #    그 반대인 「커밋된 수를 실패로 보고」도 똑같은 오보다
+                #    (계측 4원칙 ④). 체크포인트는 WAL 정리일 뿐이라 실패해도
+                #    삭제는 유효하고, SQLite 가 나중에 알아서 다시 시도한다.
+                try:
+                    _checkpoint(detail)
+                except Exception as _ce:
+                    ck_err = _ce
+                    detail.append("checkpoint:실패")
                 last_err = None
                 break
             except Exception as e:
@@ -2487,6 +2524,13 @@ class BatchRetrainer:
                 "[Retrain] DB pruning 완료: %d행 삭제 (cutoff=%s, keep=%d주, 테이블별=%s)",
                 deleted, cutoff[:10], keep_weeks, "/".join(detail) or "-",
             )
+            if ck_err is not None:
+                # 삭제는 유효하다 — 지워졌다는 사실을 흐리지 않도록 별도 줄로 남긴다.
+                logger.warning(
+                    "[Retrain] DB pruning 체크포인트 실패(삭제 %d행은 커밋됨, "
+                    "WAL 정리는 SQLite 가 다음 기회에 재시도): %s",
+                    deleted, ck_err,
+                )
         else:
             logger.warning(
                 "[Retrain] DB pruning 실패(2회, 반환=0행): %s | cutoff=%s keep=%d주 "
@@ -2503,21 +2547,21 @@ class BatchRetrainer:
                     "[Retrain] DB pruning 진단: 락종류=%s | 마지막단계=%s | %s",
                     _lock_class(last_err), _stage, _lock_evidence(),
                 )
-                # 🔴 [538차 후속] 멈춘 단계가 체크포인트면 **외부 점유가 아니다**.
-                #    `PRAGMA wal_checkpoint` 는 쓰기 트랜잭션 안에서 부를 수 없고,
-                #    여기서는 바로 앞 DELETE 들이 아직 커밋되지 않은 상태다
-                #    (`with sqlite3.connect(...)` 는 블록을 나갈 때 커밋한다).
-                #    실측 4/4: journal=delete/wal × 삭제대상 유/무 전 조합에서
-                #    같은 `database table is locked` 가 난다 — 즉 **자기 자신이
-                #    건 락**이고 재시도·busy_timeout 으로는 절대 풀리지 않는다.
-                #    로그가 이 사실을 직접 말하게 둔다(다음 조사자가 다시 외부
-                #    커넥션을 찾아 헤매지 않도록).
+                # 🔴 [MW0602 552차 / 1-3] 538차가 규명한 원인(커밋 전 체크포인트)은
+                #    **고쳐졌다** — 체크포인트는 이제 커밋·close 이후 별도 커넥션에서
+                #    돌고, 거기서 실패하면 `deleted` 를 유지한 채 위의 전용 경고로
+                #    따로 나간다. 그래서 이 실패 경로에 도달했다는 것은
+                #    **DELETE 또는 커밋 단계에서 걸렸다**는 뜻이고, 그때는 538차와
+                #    달리 외부 점유를 실제로 의심할 근거가 된다.
+                #    ⚠ 종전에 여기 있던 "체크포인트를 커밋 전에 호출하고 있다"
+                #      안내문은 제거했다 — 이미 반영된 조치를 계속 권고하면
+                #      다음 세션이 같은 수정을 또 하려 든다(함정 ①).
                 if _stage.startswith("checkpoint:"):
                     logger.warning(
-                        "[Retrain] DB pruning 진단(원인 후보): 체크포인트를 **커밋 전에** "
-                        "호출하고 있다 — 외부 커넥션 점유가 아니라 자기 트랜잭션이 원인일 "
-                        "수 있다. 조치는 매매 무관하나 첫 성공 시 52주 초과분이 실제로 "
-                        "삭제되므로 사용자 승인 후 반영할 것(NEXT_TODO `1-3`)"
+                        "[Retrain] DB pruning 진단: 예상 밖 — 552차 이후 체크포인트는 "
+                        "커밋 이후 별도 커넥션에서만 돌아야 하는데 실패 단계가 "
+                        "`%s` 로 잡혔다. `_checkpoint()` 가 `_prune_once` 안으로 "
+                        "되돌아간 것은 아닌지 확인할 것(NEXT_TODO `1-3`)", _stage,
                     )
             except Exception as _de:
                 logger.warning("[Retrain] DB pruning 진단 실패: %s", _de)
