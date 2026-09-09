@@ -39623,3 +39623,81 @@ PC 마다 다르다.** 판정은 감지 채널 요율로, 표기는 두 채널 �
 
 Phase 1(GP MA 배선) → Phase 2(엔진 결함 5건) → Phase 3(도전자 2종) → Phase 4(수익 판넬
 GP 구분, 브로커 net **분리 합성**) → Phase 5(무개입 60거래일). 상세는 `NEXT_TODO.md`.
+
+
+---
+
+## 2026-09-10 (MW0601 553차 후속 — GP 병행운용 Phase 1: MA20/MA60 배선)
+
+**매매 정책 무변경.** 기록 전용 11키 신설, 소비자 0곳
+(`tests/test_553_ma_regime_features.py` 가 `strategy/`·`model/`·`learning/`·`safety/`·
+`main.py` 전수 검사로 고정).
+
+### A. 배선 내용
+
+- `config/settings.py`: `MA_REGIME_FAST = 20` · `MA_REGIME_SLOW = 60`
+- `features/feature_builder.py:compute_ma_regime_features()` — 순수 함수, **numpy 미사용**
+  (537차 BLAS delay-load 즉사 계열을 이 경로에 들이지 않는다. 60개 평균은 순수 파이썬으로 충분).
+- `FeatureBuilder._close_history_cont` — 연속 종가 deque. 🔴 **`reset_daily()` 에서
+  지우지 않는다**(`_close_history` 는 317차 이유로 계속 세션 리셋 — 둘을 한 버퍼로 합치면
+  둘 중 하나가 틀린다).
+- `utils/db_utils.py:fetch_prior_regular_closes()` — 연속 버퍼 프라이밍. 미륵이는 매일 아침
+  프로세스를 새로 띄우므로 인메모리만으로는 연속 MA 가 영원히 준비되지 않는다.
+  정규장(09:00~15:09) 봉만, ts(PK) 역순 `LIMIT` 상한 600 — 456차 전수 스캔 금지에
+  걸리지 않는다(수십 행에서 멈춘다). 실패 시 `ma_cont_ready=False`, 값을 지어내지 않는다.
+
+### B. 🔴 미해결 사양을 기록으로 남겼다 — 세션 리셋인가 연속인가
+
+`gp_rule_short_watch["ma_basis"] = None` (+ `ma_basis_options` · `ma_basis_evidence_key`).
+· 규칙의 **출처**는 사이보스 차트 → HTS 이동평균은 **연속**
+· 규칙을 만든 **백테스트**는 세션 groupby 였을 가능성이 높다
+  (`analysis/rules_backtest.py:81` 이 전부 그 형태). 211거래일 최종 스크립트가 repo 에 없어
+  **확정 불가**.
+⇒ 한쪽을 조용히 고르면 그 선택이 60거래일 관측에 섞이므로 **둘 다 낸다.**
+⚠ **`ma_basis` 를 정하기 전에는 Phase 3 도전자를 만들지 않는다** — 잘못 고르면 60거래일이 날아간다.
+  회귀 가드 `test_ma_basis_is_explicitly_undecided` 가 정하는 순간 깨진다(의도된 것).
+
+### C. 🔴 하마터면 죽은 지표를 심을 뻔했다 — 초판 `ma_regime_agree` 를 교체
+
+초판은 「두 변형의 판정 일치율」(`ma_regime_agree`)을 선택 근거로 등록했다.
+**9거래일 리플레이(2026-07-09 ~ 09-09)로 검증한 결과 판별력이 0이다:**
+
+    동시측정 2,770분 전수 · 판정 불일치 **0건 (0.0%)**
+
+우연이 아니라 **구조**다 — 둘 다 준비된 뒤에는 두 버퍼의 마지막 60봉이 **같은 봉**이라
+값이 같을 수밖에 없다. 그대로 뒀으면 FP-CRITICAL(학습분포 미호출로 PSI=0.0 2개월)·
+TOX 죽은 섀도와 **같은 계열**의 상시 1.0 지표가 사전등록 근거로 박힐 뻔했다.
+
+**교체**: 실제 선택 축은 **가용성**이며 그것을 재는 키가 `ma_cont_only` 다.
+세션 리셋은 09:00+60봉 = **10:00** 이 돼야 준비되는데 숏 진입창은 **09:20** 부터다.
+
+| 실측(2026-09-09) | 값 |
+|---|---|
+| `ma_sess_ready` 최초 | **09:59** |
+| `ma_cont_ready` 최초 | **09:00** (프라이밍 정상 동작) |
+| 숏 진입창 331분 중 sess 미준비 | **39분** (09:20~09:58) |
+| 9거래일 범위 | **39~43분/일** = 진입창의 약 12% |
+
+⇒ 세션 리셋을 고르면 **매일 진입창의 12%가 통째로 사라진다.** 숏은 하루 최대 1회·
+  149건/211일이라 표본에 직접 영향한다. 이것이 `ma_basis` 결정의 실질 내용이다.
+`ma_regime_agree` 는 폐기하지 않고 **버퍼 정렬 불변식**으로 남긴다(1.0 이어야 정상).
+
+### D. 검증
+
+- `tests/test_553_ma_regime_features.py` **24건** — 산술·경계(정확히 60봉)·워밍업 미측정·
+  `agree` 무판별력 고정(§2-b)·`reset_daily` 에 cont clear 부재·프라이밍이 append 보다 앞·
+  조회 상한/세션창·**AST 기반 numpy 부재**·**소비자 전수 부재**·사전등록 동기화.
+  ⚠ 초판 2건이 깨졌고 **둘 다 테스트 버그**였다: `ast.get_source_segment` 는 3.8+ 인데
+    런타임이 **3.7**, numpy 검사가 문자열이라 「numpy 를 쓰지 않는다」는 주석까지 잡았다.
+- 라이브 경로 리플레이 9거래일 — 11키 전부 출력, 누락 0.
+- 회귀: feature_builder·db_utils 관련 43개 파일 **508 passed**.
+  ⚠ 사전 존재 실패 2건(`test_456_wave1_stats_and_shs::test_trend_sql_counts_positions_not_legs`,
+    `test_493_commission_rate_and_net_recon::test_cost_formulas_do_not_use_live_rate`)은
+    **변경 전 stash 대조에서 동일하게 실패** — 이번 작업과 무관하다.
+  ⚠ `tests/test_500_*.py` 5종은 모듈 레벨 `sys.exit(0)` 스크립트형이라 pytest 수집에서
+    빠진다(기존 상태). 직접 실행으로 4종 OK 확인.
+
+### E. 다음
+
+**사용자 결정 대기 — `ma_basis` = `"sess"` | `"cont"`.** 정해지면 Phase 2(엔진 결함 5건,
+미청산 누수 최우선) → Phase 3(도전자 2종).

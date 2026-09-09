@@ -1585,6 +1585,51 @@ SWING_FEATURE_DIST_CLIP_ATR = 20.0       # 거리 상한(ATR 배수) — 극단 
 GP_CROSS_PERIOD = 20        # 룩백 봉 수
 GP_CROSS_LEVEL = 0.5        # 교차 임계
 GP_CROSS_TIGHT_EPS = 0.05   # 「반대편이 0 에 수렴」 판정 임계
+
+# ── [MW0601 553차 / Phase 1] GP 숏 국면필터용 이동평균 — 기록 전용 ───────────────
+#
+# 무엇에 쓰나: 사전등록 채널 `gp_rule_short_watch` 의 **필수** 국면 필터
+# 「MA20 < MA60」. 이 필터를 빼면 숏 규칙이 −186.7pt(t=−2.71)로 뒤집힌다 —
+# 선택이 아니라 규칙의 일부다(검증완료 진입청산규칙 §숏).
+#
+# 🔴 **미해결 사양 1건 — 세션 리셋인가 연속인가.** 둘이 서로 다른 신호를 낸다.
+#   · 규칙의 **출처**는 사이보스 차트이고, HTS 이동평균은 **날짜를 넘어 연속**이다.
+#   · 규칙을 만든 **백테스트**는 세션별 groupby 안에서 계산했을 가능성이 높다
+#     (`analysis/rules_backtest.py:81` 이 전부 그 형태다). 다만 211거래일 최종
+#     스크립트가 repo 에 없어 **확정할 수 없다**.
+#   ⇒ 한쪽을 조용히 고르면 그 선택이 60거래일 관측 결과에 그대로 섞인다.
+#     그래서 **두 변형을 다 낸다.** 어느 쪽을 규칙이 쓸지는 Phase 3 이전에
+#     사용자가 정하고, 그때 `gp_rule_short_watch["ma_basis"]` 로 못박는다.
+#     그 전까지는 `ma_regime_agree` 로 **차이가 실제로 얼마나 나는지**를 계측한다
+#     (가정하지 말고 재라 — 계측 4원칙 ⑤).
+#
+# 기록 키 11종(`features/feature_builder.py:compute_ma_regime_features`):
+#   ma20_sess · ma60_sess · ma_sess_ready · ma_regime_down_sess   세션 리셋(09:00 초기화)
+#   ma20_cont · ma60_cont · ma_cont_ready · ma_regime_down_cont   연속(전일 종가 승계)
+#   ma_regime_agree · ma_agree_measured   구조적 불변식(아래) — 판단 근거 아님
+#   ma_cont_only                          🔴 **실제 선택 축** (아래)
+#
+# 🔴 **[Phase 1 실측] 두 변형의 차이는 「값」이 아니라 「가용성」이다.**
+#   둘 다 준비된 뒤에는 두 버퍼의 마지막 60봉이 **같은 봉**이라 값이 같을 수밖에 없다.
+#   9거래일 리플레이(2026-07-09 ~ 09-09) 동시측정 **2,770분 전수에서 판정 불일치 0건**.
+#   ⇒ `ma_regime_agree` 를 「어느 쪽이 맞는가」의 근거로 쓰면 안 된다 — 구조적으로 항상
+#     1.0 이라 아무것도 못 가른다(FP-CRITICAL PSI=0.0 계열의 죽은 지표가 될 뻔했다).
+#     0 이 나오면 버퍼 정렬이 깨진 것이며, 그 용도로만 유효하다.
+#   ⇒ 선택을 가르는 것은 **`ma_cont_only`** 다: 세션 리셋은 09:00+60봉(=10:00)이 돼야
+#     준비되는데 숏 진입창은 **09:20** 부터다. 실측 **하루 39~43분**(진입창 331분의 약 12%)이
+#     「cont 는 답을 주는데 sess 는 못 주는」 구간이고 **그게 차이의 전부**다.
+#
+# ⚠ **워밍업은 「미측정」이지 「하락 아님」이 아니다**(계측 4원칙 ②).
+#   세션 리셋은 09:00+60봉 = **10:00** 이 돼야 준비된다. 숏 진입창이 09:20 부터이므로
+#   세션 리셋을 고르면 **09:20~10:00 약 40분간 숏이 구조적으로 불가능**하다 —
+#   실측 39~43분/일. 이것이 두 변형 선택의 실질 내용이다(`ma_cont_only` 로 계측).
+# ⚠ 연속 변형은 재기동 시 버퍼가 비므로 DB 프라이밍이 필요하다. 프라이밍이 실패하면
+#   `ma_cont_ready=False` 로 남기고 **값을 지어내지 않는다**(계측 4원칙 ④).
+#
+# 🔴 **소비자를 붙이지 말 것** — GP_CROSS 와 같다. 진입·사이징·체크리스트 어디에서도
+#    읽지 않는다(`tests/test_553_ma_regime_features.py` 가 전수 검사한다).
+MA_REGIME_FAST = 20         # gp_rule_short_watch["ma_fast"] 와 일치해야 한다
+MA_REGIME_SLOW = 60         # gp_rule_short_watch["ma_slow"] 와 일치해야 한다
 REGIME_EXHAUSTION_EXT_ATR_THRESHOLD = 1.5  # 초기값, 표본 축적 후 재보정 검토
 REGIME_EXHAUSTION_GATE_ENABLED: bool = False  # 기본 비활성 — 섀도 로그만 (§9 원칙)
 REGIME_EXHAUSTION_DEMOTE_TO: str = (
@@ -5002,7 +5047,22 @@ VALIDATION_CAMPAIGN = {
         "enabled": True,
         "entry_source": "GP_SHADOW",
         "rule_doc": "docs/미륵이고도화3/Golden power/검증완료_진입청산규칙_정리.md",
-        "feature_wired_date": None,      # MA20/MA60 배선 시점. Phase 1 에서 채운다
+        "feature_wired_date": "2026-09-10",   # [553차 Phase 1] ma20/ma60 배선 완료
+        # 🔴 **미해결 사양 — Phase 3 이전에 사용자가 정한다.** 세션 리셋(sess) 과
+        #   연속(cont) 이 서로 다른 신호를 낸다. 규칙의 출처는 사이보스 차트(연속)이고,
+        #   규칙을 만든 백테스트는 세션 groupby 였을 가능성이 높다(확정 불가 — 211거래일
+        #   최종 스크립트가 repo 에 없다). 정해질 때까지 **둘 다 계측**한다.
+        # ⚠ 고르면 여기에 "sess" | "cont" 를 박고 DECISION_LOG 에 사유를 남긴다.
+        #   그전에는 Phase 3 도전자를 만들지 않는다 — 잘못 고르면 60거래일이 날아간다.
+        "ma_basis": None,
+        "ma_basis_options": ["sess", "cont"],
+        # 🔴 근거 키는 `ma_regime_agree` 가 **아니다** — 구조적으로 항상 1.0 이라 못 가른다
+        #   (Phase 1 실측: 9거래일 2,770분 불일치 0건). 선택을 가르는 것은 가용성이다.
+        "ma_basis_evidence_key": "ma_cont_only",
+        # 실측 참고치(2026-07-09~09-09 리플레이): 숏 진입창 331분 중 sess 미준비 39~43분.
+        "ma_cont_only_minutes_observed": [39, 43],
+        # ⚠ 세션 리셋을 고르면 MA60 워밍업이 09:00+60봉 = **10:00** 이라
+        #   진입창 09:20~10:00 40분간 숏이 구조적으로 불가능해진다. 표본에 직접 영향.
         "data_start": None,
         "data_start_rule": "GP 섀도 배선 커밋 후 첫 REGULAR 세션",
         "observation_days": 60,

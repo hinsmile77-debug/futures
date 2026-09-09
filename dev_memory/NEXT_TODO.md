@@ -24,11 +24,22 @@
       상태줄 「미배선/0건/n건」 분리. 픽셀 렌더링 검사 13건.
       ⚠ Phase 3 전까지는 **상시 「GP 미배선」**이 정상이다 — 결함이 아니다.
 
-- [ ] **553-1** Phase 1 — `ma20`·`ma60`·`ma_ready` 배선(`compute_gp_cross_features` 와 같은
-      순수함수 형태, `_close_history`(maxlen 90) 재사용, **numpy 미사용** — 537차 BLAS 즉사 회피).
-      배선 후 `gp_rule_short_watch.feature_wired_date` 를 채운다.
-      ⚠ 재기동 직후 버퍼가 비어 `ma_ready=False` 인 구간이 실제로 생긴다 — 그 분은 **미측정**
-      이지 「신호 없음」이 아니다. 세어서 리포트 분모와 함께 남길 것(계측 4원칙 ②).
+- [x] **553-1** Phase 1 — MA 국면 피처 11키 배선(순수함수 · numpy 미사용 · 소비자 0곳).
+      세션 리셋(`*_sess`)·연속(`*_cont`) **두 변형** + DB 프라이밍
+      (`fetch_prior_regular_closes`). `feature_wired_date=2026-09-10` 기입. 테스트 24건.
+      🔴 초판 `ma_regime_agree`(일치율)는 **판별력 0**이었다 — 9거래일 2,770분 불일치 0건,
+      구조적으로 항상 1.0. `ma_cont_only`(가용성 축)로 교체했다.
+
+- [ ] **553-1D** 🔴 **사용자 결정 필요 — `gp_rule_short_watch["ma_basis"]`.**
+      `"sess"`(세션 리셋) vs `"cont"`(연속, 사이보스 차트와 동일).
+      **실질 차이**: sess 를 고르면 MA60 워밍업이 10:00 이라 숏 진입창 09:20~10:00,
+      **하루 39~43분(진입창의 약 12%)이 구조적으로 사라진다.** 숏은 하루 최대 1회라
+      표본에 직접 영향.
+      · `"cont"` 근거 — 규칙의 출처가 사이보스 차트이고 HTS MA 는 연속이다.
+      · `"sess"` 근거 — 211거래일 백테스트가 세션 groupby 였을 가능성
+        (`analysis/rules_backtest.py:81`). 단 최종 스크립트가 repo 에 없어 확정 불가.
+      ⚠ **정하기 전에 Phase 3 를 시작하지 말 것** — 잘못 고르면 60거래일이 날아간다.
+      정하면 `test_ma_basis_is_explicitly_undecided` 가 깨진다(의도) → 갱신 + DECISION_LOG 기록.
 - [ ] **553-2** Phase 2 — challenger 엔진 결함 5건. 🔴 **1번이 최우선**:
       ⓐ EOD 강제마감(15:10 안전망 도달 불가 + 인메모리 `_open_trades`) — 현재 28건 중 3건
          `exit_ts=NULL` 영구 미청산. 재기동 승계도 함께(552-10 계열).

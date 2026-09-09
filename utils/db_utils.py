@@ -3758,6 +3758,56 @@ def save_regime_at(ts: str, regime: str) -> None:
     execute(RAW_DATA_DB, "INSERT OR REPLACE INTO regime_history (ts, regime) VALUES (?, ?)", (ts, regime))
 
 
+def fetch_prior_regular_closes(before_ts: str, limit: int) -> List[float]:
+    """[MW0601 553차] `before_ts` **이전**의 정규장 종가를 오래된 → 최신 순으로 반환.
+
+    용도: GP 숏 국면필터의 **연속(cont) 이동평균** 워밍업. 미륵이는 매일 아침
+    프로세스를 새로 띄우므로 인메모리 버퍼만으로는 연속 MA 가 영원히 준비되지
+    않는다 — 전일 종가를 DB 에서 승계해야 비로소 「차트와 같은」 MA 가 된다.
+
+    ⚠ **정규장(09:00~15:09) 봉만** 담는다. 프리장·장후 단일가를 섞으면 백테스트
+      패널(raw_candles 정규장)과 창이 어긋나 같은 규칙이 다른 값을 낸다.
+
+    ⚠ 456차(장중 라이브 DB 분석 금지)에 걸리지 않는다 — 그 금지는 468MB·835MB DB 를
+      **전수 스캔**하는 분석 쿼리를 막는 것이고, 이 조회는 ts(PK) 역순 상위 `limit`
+      행(≤수십 행)만 읽고 멈춘다. 그래도 남용을 막기 위해 limit 에 상한을 건다.
+
+    Returns:
+        종가 리스트(오름차순). 조회 실패·데이터 부재는 **빈 리스트**이며 0 이 아니다 —
+        호출부는 이를 「미측정」으로 다뤄야 한다(계측 4원칙 ②).
+    """
+    try:
+        n = int(limit)
+    except (TypeError, ValueError):
+        return []
+    if n <= 0 or not before_ts:
+        return []
+    n = min(n, 600)          # 상한 — 실수로 전수 스캔이 되지 않게
+    try:
+        rows = fetchall(
+            RAW_DATA_DB,
+            """SELECT close FROM raw_candles
+               WHERE ts < ?
+                 AND substr(ts, 12, 5) >= '09:00'
+                 AND substr(ts, 12, 5) <= '15:09'
+                 AND close > 0
+               ORDER BY ts DESC
+               LIMIT ?""",
+            (before_ts, n),
+        )
+    except Exception as _e:                       # 테이블 부재·락 등 — 값을 지어내지 않는다
+        logger.debug("[MA-cont] 이전 정규장 종가 조회 실패: %s", _e)
+        return []
+    out = []
+    for r in rows:
+        try:
+            out.append(float(r["close"]))
+        except (TypeError, ValueError, IndexError, KeyError):
+            continue
+    out.reverse()                                  # 오래된 → 최신
+    return out
+
+
 def fetch_regime_today(today_str: str = None) -> dict:
     """오늘 날짜 레짐 히스토리를 {ts: regime} dict로 반환."""
     import datetime as _dt
