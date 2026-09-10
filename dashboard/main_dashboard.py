@@ -7233,6 +7233,42 @@ class PnlHistoryPanel(QWidget):
         real_n = sum(1 for r in day_rows if not r.get("_gp_only"))
         return real_n == self._day_total_n.get(date_str, real_n)
 
+    def _effective_day_pt(self, date_str, day_rows):
+        """그 날의 **표시용 P/L pt**. GP(가상)가 켜져 있으면 함께 더한다.
+
+        🔴 원(krw) 관문과 달리 **브로커 분기가 없다** — 브로커는 pt 를 주지 않는다.
+          그래서 여기는 언제나 「선택된 실거래 pt + GP pt」다.
+
+        🔴 [MW0602 557차 후속5] 종전에는 pt 열이 실거래만 셌다. 그 결과 GP 전용 날에
+          **원은 값이 있는데 pt 는 `—`** 인 모순이 화면에 보였고, 차트의 GP pt 합
+          (예: −16.96 +8.36 +5.80 = −2.81pt)을 패널에서 대조할 수단이 없었다.
+          pt 는 실거래·GP 가 **같은 단위**이므로 더하는 것이 정당하다(원과 다르다 —
+          그쪽은 브로커 net 이 섞여 pt×승수가 아니다).
+        """
+        real = sum(r["pnl_pts"] * r["quantity"]
+                   for r in day_rows if not r.get("_gp_only"))
+        gp = self._gp_by_day.get(date_str, 0.0) if self._gp_on() else 0.0
+        return real + gp
+
+    def _group_effective_pt(self, grp):
+        """grp 의 날짜별 표시용 pt 합계."""
+        day_rows = self._daily_bucket(grp)
+        return sum(self._effective_day_pt(d, rs) for d, rs in day_rows.items())
+
+    def _group_has_gp(self, grp) -> bool:
+        """그룹(주/월) 안에 가상 손익이 섞인 날이 하나라도 있는가.
+
+        🔴 주별·월별에 표식이 없으면 가상이 **조용히** 섞인다 — 일별에만 표식을
+          달면 탭을 바꾸는 순간 그 사실이 사라진다.
+        """
+        if not self._gp_on() or not self._gp_by_day:
+            return False
+        return any(d in self._gp_by_day for d in self._daily_bucket(grp))
+
+    def _day_has_gp(self, date_str) -> bool:
+        """그 날 값에 가상 손익이 섞여 있는가(🟣 표식 판정 단일 지점)."""
+        return bool(self._gp_on() and self._gp_by_day.get(date_str))
+
     def _group_effective_krw(self, grp):
         """grp(여러 날짜에 걸친 거래 목록)의 날짜별 브로커 정산 우선 합계."""
         day_rows = self._daily_bucket(grp)
@@ -7389,9 +7425,15 @@ class PnlHistoryPanel(QWidget):
             cum       = cum_map[date_str]
             disp_krw  = self._effective_day_krw(date_str, grp)
             krw_text  = self._fmt_single(disp_krw, suffix="원")
+            disp_pt   = self._effective_day_pt(date_str, grp)
+            _gp_day   = self._day_has_gp(date_str)
+            # 거래도 GP 도 없으면 「미측정」이다 — 0.00pt 로 쓰면 「본전」으로 읽힌다.
+            pt_text   = (self._fmt_single(disp_pt, decimals=2, suffix="pt")
+                         if (n or _gp_day) else "—")
             # 🟣 그 날 값에 **가상 손익이 섞여 있다**는 셀 단위 표식.
-            if self._gp_on() and self._gp_by_day.get(date_str):
+            if _gp_day:
                 krw_text = "🟣 " + krw_text
+                pt_text = "🟣 " + pt_text
             wr   = f"{wins/n*100:.0f}%" if n else "—"
             bg   = self._row_bg(disp_krw)
             pc   = self._pcol(disp_krw)
@@ -7403,8 +7445,7 @@ class PnlHistoryPanel(QWidget):
                 self._item(str(wins),                                           fg=C['green'], bg=bg, align=Qt.AlignRight),
                 self._item(str(losses),                                         fg=C['red'],   bg=bg, align=Qt.AlignRight),
                 self._item(wr,                                                  fg=C['cyan'],  bg=bg),
-                self._item(self._fmt_single(ppts, decimals=2, suffix="pt") if n else "—",
-                                                                                fg=pc, bg=bg, align=Qt.AlignRight),
+                self._item(pt_text,                                             fg=pc, bg=bg, align=Qt.AlignRight),
                 self._item(krw_text,                                            fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
                 self._item(self._fmt_single(cum, suffix="원"),                  fg=cc, bg=bg, align=Qt.AlignRight),
             ]
@@ -7424,7 +7465,8 @@ class PnlHistoryPanel(QWidget):
         tbl = self.tbl_weekly
         tbl.setRowCount(len(groups))
         for r_idx, (wk, grp) in enumerate(reversed(groups)):
-            n, wins, losses, ppts, _ = self._stats(grp)
+            n, wins, losses, _, _ = self._stats(grp)
+            ppts      = self._group_effective_pt(grp)
             pkrw      = self._group_effective_krw(grp)
             mdd       = self._mdd_daily(grp)
             cum       = cum_map[wk]
@@ -7434,14 +7476,15 @@ class PnlHistoryPanel(QWidget):
             pc   = self._pcol(disp_krw)
             cc   = self._pcol(cum)
             mc   = self._pcol(mdd)
+            _v   = "🟣 " if self._group_has_gp(grp) else ""
             cells = [
                 self._item(wk,                                                  bg=bg, bold=True),
                 self._item(str(n),                                              bg=bg, align=Qt.AlignRight),
                 self._item(str(wins),                                           fg=C['green'], bg=bg, align=Qt.AlignRight),
                 self._item(str(losses),                                         fg=C['red'],   bg=bg, align=Qt.AlignRight),
                 self._item(wr,                                                  fg=C['cyan'],  bg=bg),
-                self._item(self._fmt_single(ppts, decimals=2, suffix="pt"),     fg=pc, bg=bg, align=Qt.AlignRight),
-                self._item(self._fmt_single(pkrw, suffix="원"),                 fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
+                self._item(_v + self._fmt_single(ppts, decimals=2, suffix="pt"), fg=pc, bg=bg, align=Qt.AlignRight),
+                self._item(_v + self._fmt_single(pkrw, suffix="원"),            fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
                 self._item(self._fmt_single(cum, suffix="원"),                  fg=cc, bg=bg, align=Qt.AlignRight),
                 self._item(self._fmt_single(mdd, suffix="원"),                  fg=mc, bg=bg, align=Qt.AlignRight),
             ]
@@ -7461,7 +7504,8 @@ class PnlHistoryPanel(QWidget):
         tbl = self.tbl_monthly
         tbl.setRowCount(len(groups))
         for r_idx, (mon, grp) in enumerate(reversed(groups)):
-            n, wins, losses, ppts, _ = self._stats(grp)
+            n, wins, losses, _, _ = self._stats(grp)
+            ppts      = self._group_effective_pt(grp)
             pkrw      = self._group_effective_krw(grp)
             cum       = cum_map[mon]
             disp_krw  = pkrw
@@ -7470,6 +7514,7 @@ class PnlHistoryPanel(QWidget):
             bg   = self._row_bg(disp_krw)
             pc   = self._pcol(disp_krw)
             cc   = self._pcol(cum)
+            _v   = "🟣 " if self._group_has_gp(grp) else ""
             sc   = (C['green'] if sharpe >= 1.0
                     else C['yellow'] if sharpe >= 0.5
                     else C['red']    if sharpe < 0
@@ -7480,8 +7525,8 @@ class PnlHistoryPanel(QWidget):
                 self._item(str(wins),                                           fg=C['green'], bg=bg, align=Qt.AlignRight),
                 self._item(str(losses),                                         fg=C['red'],   bg=bg, align=Qt.AlignRight),
                 self._item(wr,                                                  fg=C['cyan'],  bg=bg),
-                self._item(self._fmt_single(ppts, decimals=2, suffix="pt"),     fg=pc, bg=bg, align=Qt.AlignRight),
-                self._item(self._fmt_single(pkrw, suffix="원"),                 fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
+                self._item(_v + self._fmt_single(ppts, decimals=2, suffix="pt"), fg=pc, bg=bg, align=Qt.AlignRight),
+                self._item(_v + self._fmt_single(pkrw, suffix="원"),            fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
                 self._item(self._fmt_single(cum, suffix="원"),                  fg=cc, bg=bg, align=Qt.AlignRight),
                 self._item(self._fmt_single(sharpe, decimals=2),                fg=sc, bg=bg),
             ]
@@ -7532,7 +7577,8 @@ class PnlHistoryPanel(QWidget):
         _set("days",    f"{days}일",                              C['blue'])
         _set("trades",  f"{trades}건",                             C['text'])
         _set("winrate", (f"{wr:.1f}%" if trades else "—"),         (wc if trades else C['text2']))
-        _set("total",   self._fmt_single(disp_total, suffix="원"), pc)
+        _set("total",   (("🟣 " if self._group_has_gp(active) else "")
+                         + self._fmt_single(disp_total, suffix="원")), pc)
         _set("mdd",     self._fmt_single(mdd, suffix="원"),        C['orange'])
         _set("streak",  (f"{best}연승" if trades else "—"),        (C['yellow'] if trades else C['text2']))
 
@@ -8890,9 +8936,11 @@ class MinuteChartCanvas(QWidget):
     def _draw_gp_markers(self, painter, plot, candles, index_map, lo, hi, step, occupied):
         """GP(가상) 진입·청산 마커 + 보유 구간 점선.
 
-        🔴 실거래 마커와 **모양·채움·색이 모두 다르다.** 실거래는 채워진 도형이고
-          GP 는 채움 없는 보라 파선 원이다. 라벨도 반드시 'GP' 로 시작한다 —
-          화면에서 가상과 실적을 구분하지 못하면 이 계측은 해가 된다.
+        🔴 [557차 후속6 / 사용자 지시] 진입은 **방향별**이다 —
+          GB(LONG) 청색 상방 · GS(SHORT) 적색 하방, 청산은 **검은 X**.
+        ⚠ 그 결과 **GS 진입이 실거래 SHORT 와 색·방향이 같아졌다.** 가상임을 말하는
+          것은 ① 채움 없는 파선 원 ② `GS` 라벨 접두 둘뿐이다 — 없애지 말 것.
+          색·라벨의 단일 결정 지점은 `_gp_style()` 이다.
         ⚠ 미청산 진입은 청산 마커 없이 진입만 그린다(계측 4원칙 ②: 미청산 ≠ 미진입).
           그 경우 점선은 **마지막 봉까지** 이어 「아직 들고 있다」를 보인다.
 
@@ -8902,7 +8950,6 @@ class MinuteChartCanvas(QWidget):
         """
         if not self._gp_trades or not candles:
             return
-        col = QColor(C["purple"])
 
         # ── 1벌: 위치 확정 ────────────────────────────────────────
         spans = []
@@ -8927,7 +8974,9 @@ class MinuteChartCanvas(QWidget):
                 spans.append((t, pos))
 
         # ── 2벌: 보유 구간 점선 (마커 아래) ───────────────────────
-        _link = QColor(col)
+        # 연결선은 **보라 유지** — 진입 청/적, 청산 검정과 겹치지 않는 GP 고유색이라
+        # 「이 구간은 가상이다」를 색 하나로 계속 말해 준다.
+        _link = QColor(C["purple"])
         _link.setAlpha(150)          # 실거래 마커를 덮지 않도록 옅게
         painter.setBrush(Qt.NoBrush)
         for t, pos in spans:
@@ -8942,59 +8991,102 @@ class MinuteChartCanvas(QWidget):
                 _last = candles[-1]
                 x2 = plot.left() + step * (len(candles) - 1 + 0.5)
                 y2 = self._price_to_y(float(_last["close"] or 0.0), plot, lo, hi)
-                _hold = QColor(col)
+                _hold = QColor(C["purple"])
                 _hold.setAlpha(110)   # 확정 구간보다 더 옅게 — 아직 결과가 아니다
                 painter.setPen(QPen(_hold, 1.3, Qt.DashDotLine))
             painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
 
         # ── 3벌: 도형 + 라벨 ─────────────────────────────────────
         for t, pos in spans:
+            _dir = str(t.get("direction_txt") or "")
             for role, (x, y, dt) in pos.items():
                 is_entry = (role == "entry")
-                self._draw_gp_shape(painter, x, y, col, is_entry,
-                                    str(t.get("direction_txt") or ""))
+                _mcol, _lcol, _tag = self._gp_style(is_entry, _dir)
+                self._draw_gp_shape(painter, x, y, is_entry, _dir)
                 if is_entry:
                     _open = t.get("exit_ts") is None
                     # 🔴 strftime 포맷 문자열에 **한글을 넣지 말 것.**
                     # py37 32-bit Windows 에서 UnicodeEncodeError 가 나고, 그것이
                     # paintEvent 안이면 PyQt5 가 프로세스를 그냥 죽인다(557차 후속2).
                     # 시각은 ASCII 포맷으로 만들고 한글은 뒤에 이어붙인다.
-                    label = "GP진입 " + dt.strftime("%H:%M") + (" ·보유중" if _open else "")
+                    label = _tag + " " + dt.strftime("%H:%M") + (" ·보유중" if _open else "")
                     dy = -S.p(26)
                 else:
+                    # 진입과 대칭으로 「GB청산 시각 손익」 — 부호가 숫자 바로 앞에
+                    # 오게 해 +/− 오독을 줄인다(2026-09-10 사용자가 +5.80 을 −5.80
+                    # 으로 읽었다. 값은 맞았고 배치가 문제였다).
                     _p = t.get("pnl_pt")
-                    label = ("GP %+.2fpt " % float(_p)) if _p is not None else "GP "
-                    label += dt.strftime("%H:%M")
+                    label = _tag + " " + dt.strftime("%H:%M")
+                    if _p is not None:
+                        label += " %+.2fpt" % float(_p)
                     dy = S.p(26)
-                painter.setPen(col)
-                # 오른쪽 끝 진입은 라벨이 플롯 밖으로 잘린다(실측: "·보유중" 절단).
-                # 폭을 확보할 수 없으면 마커 **왼쪽**에 붙인다.
-                _w = S.p(112)
+                painter.setPen(_lcol)
+                # 🔴 폭을 **폰트로 실측**한다. 고정 폭(S.p(112))이면 잘린다 —
+                # 2026-09-10 실측 "GP진입 14:29 ·보유중" = 255px 인데 사각형이 112px
+                # 였다. 후속4 의 클램프는 위치만 당겼고 폭은 그대로였다.
+                _w = painter.fontMetrics().width(label) + S.p(6)
                 _x0 = x - S.p(30)
                 if _x0 + _w > plot.right():
-                    _x0 = max(plot.left(), plot.right() - _w)
+                    _x0 = plot.right() - _w          # 오른쪽 끝은 왼쪽으로 붙인다
+                if _x0 < plot.left():
+                    _x0 = plot.left()
                 painter.drawText(QRectF(_x0, y + dy, _w, S.p(14)),
                                  Qt.AlignLeft | Qt.AlignVCenter, label)
 
-    def _draw_gp_shape(self, painter, x, y, color, is_entry, direction_txt):
-        """채움 없는 보라 파선 원 + 방향 화살표(진입) / X(청산)."""
-        painter.setBrush(Qt.NoBrush)                      # 🔴 채우지 않는다 = 가상
-        painter.setPen(QPen(color, 1.6, Qt.DashLine))
-        r = 8.0
-        painter.drawEllipse(QRectF(x - r, y - r, 2 * r, 2 * r))
-        painter.setPen(QPen(color, 1.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    # 청산 X 의 검정이 배경(#0D1117)에 묻히지 않도록 먼저 까는 테두리 색.
+    _GP_EXIT_HALO = "#C9D1D9"
+
+    @staticmethod
+    def _gp_style(is_entry, direction_txt):
+        """[MW0602 557차 후속6 / 사용자 지시] GP 마커의 색·라벨 접두 단일 결정 지점.
+
+        · **GB 진입** = GP LONG  → 청색 상방 화살표
+        · **GS 진입** = GP SHORT → 적색 하방 화살표
+        · **청산** → 검은색 X
+
+        🔴 청산의 검정은 차트 배경(`#0D1117`)과 거의 같다 — 그대로 그리면 **보이지
+          않는다.** 밝은 테두리(`_GP_EXIT_HALO`)를 먼저 깔고 그 위에 검정을 얹는다.
+          라벨까지 검정으로 쓰면 읽을 수 없으므로 라벨은 밝은 회색이다.
+
+        ⚠ **GS 진입(적색 하방)은 실거래 SHORT 마커와 색·방향이 같다.** 구분은
+          ① 채움 없는 파선 원 ② `GS진입` 라벨 접두 두 가지에 의존한다 —
+          이 둘 중 하나라도 없애면 가상이 실적으로 보인다.
+
+        Returns:
+            (마커색, 라벨색, 라벨접두)
+        """
+        _short = str(direction_txt).upper() == "SHORT"
+        tag = ("GS" if _short else "GB") + ("진입" if is_entry else "청산")
         if is_entry:
+            col = QColor(C["red"] if _short else C["blue"])
+            return col, col, tag
+        return QColor("#000000"), QColor(C["text2"]), tag
+
+    def _draw_gp_shape(self, painter, x, y, is_entry, direction_txt):
+        """진입: 채움 없는 파선 원 + 방향 화살표 / 청산: 검은 X(밝은 테두리)."""
+        painter.setBrush(Qt.NoBrush)                      # 🔴 채우지 않는다 = 가상
+        col, _lab, _tag = self._gp_style(is_entry, direction_txt)
+        if is_entry:
+            painter.setPen(QPen(col, 1.6, Qt.DashLine))
+            r = 8.0
+            painter.drawEllipse(QRectF(x - r, y - r, 2 * r, 2 * r))
+            painter.setPen(QPen(col, 1.9, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
             if str(direction_txt).upper() == "SHORT":
-                painter.drawLine(QPointF(x, y - 4.2), QPointF(x, y + 4.2))
-                painter.drawLine(QPointF(x - 3.0, y + 1.2), QPointF(x, y + 4.2))
-                painter.drawLine(QPointF(x + 3.0, y + 1.2), QPointF(x, y + 4.2))
+                painter.drawLine(QPointF(x, y - 4.6), QPointF(x, y + 4.6))
+                painter.drawLine(QPointF(x - 3.4, y + 1.2), QPointF(x, y + 4.6))
+                painter.drawLine(QPointF(x + 3.4, y + 1.2), QPointF(x, y + 4.6))
             else:
-                painter.drawLine(QPointF(x, y + 4.2), QPointF(x, y - 4.2))
-                painter.drawLine(QPointF(x - 3.0, y - 1.2), QPointF(x, y - 4.2))
-                painter.drawLine(QPointF(x + 3.0, y - 1.2), QPointF(x, y - 4.2))
-        else:
-            painter.drawLine(QPointF(x - 4.0, y - 4.0), QPointF(x + 4.0, y + 4.0))
-            painter.drawLine(QPointF(x - 4.0, y + 4.0), QPointF(x + 4.0, y - 4.0))
+                painter.drawLine(QPointF(x, y + 4.6), QPointF(x, y - 4.6))
+                painter.drawLine(QPointF(x - 3.4, y - 1.2), QPointF(x, y - 4.6))
+                painter.drawLine(QPointF(x + 3.4, y - 1.2), QPointF(x, y - 4.6))
+            return
+        # 청산 — 검은 X. 테두리를 먼저 깔지 않으면 배경에 묻혀 안 보인다.
+        # 테두리는 **얇게**, 검정 심을 **굵게** — 반대로 하면 회색 X 로 읽힌다
+        # (2026-09-10 렌더 대조로 확인).
+        for _c, _w in ((QColor(self._GP_EXIT_HALO), 5.0), (col, 3.4)):
+            painter.setPen(QPen(_c, _w, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            painter.drawLine(QPointF(x - 4.6, y - 4.6), QPointF(x + 4.6, y + 4.6))
+            painter.drawLine(QPointF(x - 4.6, y + 4.6), QPointF(x + 4.6, y - 4.6))
 
     def _draw_one_marker(self, painter, plot, candles, index_map, lo, hi, step, marker, occupied):
         dt = self._coerce_dt(marker.get("ts"))

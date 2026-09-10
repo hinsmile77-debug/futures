@@ -97,7 +97,9 @@ class FakePanel(object):
                       "_update_gp_banner", "_effective_day_krw",
                       "_group_effective_krw", "_daily_bucket",
                       "_mdd", "_mdd_daily", "_active_rows", "_stats",
-                      "_day_is_whole", "_group"):
+                      "_day_is_whole", "_group",
+                      "_effective_day_pt", "_group_effective_pt",
+                      "_day_has_gp", "_group_has_gp"):
             setattr(self, _name, getattr(_P, _name).__get__(self, FakePanel))
         # staticmethod 는 바인딩하지 않는다 — 하면 self 가 첫 인자로 들어간다.
         for _name in ("_gp_placeholder_row", "_week_key"):
@@ -489,6 +491,117 @@ def test_11_chart_draws_gp_holding_span_and_clamps_labels():
     # 위치를 먼저 확정해야 선이 마커에 닿는다(occupied 갱신 순서)
     assert body.index("drawLine") < body.index("_draw_gp_shape("), \
         "점선을 마커보다 나중에 그리면 마커를 덮는다"
+
+
+def test_12_pt_column_carries_gp_and_reverts_when_off():
+    """P/L pt 열에도 GP 가 들어가야 한다 — 안 그러면 화면이 모순으로 읽힌다.
+
+    🔴 2026-09-10 사용자 관측 *"손익패널정보와 차트의 GP정보가 다르다"*.
+      GP 전용 날에 **원은 값이 있는데 pt 는 `—`** 였고, 차트가 보여주는 GP pt 합
+      (−16.96 +8.36 +5.80 = −2.81pt)을 패널에서 대조할 수단이 없었다.
+      pt 는 실거래·GP 가 **같은 단위**라 더하는 것이 정당하다(원과 다르다 —
+      그쪽은 브로커 net 이 섞여 pt×승수가 아니다).
+    """
+    on = _panel(True)
+    off = _panel(False)
+    bucket = on._daily_bucket(_ROWS)
+
+    # 실거래 pt 는 pnl_pts × quantity 합, 거기에 GP pt 를 더한다.
+    real_08 = sum(r["pnl_pts"] * r["quantity"] for r in bucket["2026-09-08"])
+    assert on._effective_day_pt("2026-09-08", bucket["2026-09-08"]) == real_08 + 1.5
+    assert off._effective_day_pt("2026-09-08", bucket["2026-09-08"]) == real_08
+
+    # 🔴 해제하면 완전 동치 — pt 축에도 같은 계약이 걸린다.
+    for d, rs in bucket.items():
+        assert off._effective_day_pt(d, rs) == \
+            sum(r["pnl_pts"] * r["quantity"] for r in rs)
+    # 🔴 델타를 1.1 과 비교하지 말 것 — 1.1 이 이진수로 안 떨어져
+    #    4.1 - 3.0 = 1.1000000000000005 가 된다(같은 함정을 test_2 에서도 밟았다).
+    #    관문이 날짜별로 더하므로 그 순서 그대로 센다.
+    _expect = (sum(r["pnl_pts"] * r["quantity"] for r in bucket["2026-09-08"]) + 1.5)         + (sum(r["pnl_pts"] * r["quantity"] for r in bucket["2026-09-09"]) + (-0.4))
+    assert on._group_effective_pt(_ROWS) == _expect
+
+    # 자리 행(GP 전용 날)은 pt 에서도 거래로 세지 않는다 — GP pt 만 남는다.
+    lonely = _panel(True, gp_by_day=dict(_GP, **{"2026-09-07": 2.0}),
+                    gp_cnt=dict(_GPC, **{"2026-09-07": 1}))
+    days = dict(lonely._group(lambda ts: ts[:10]))
+    assert lonely._effective_day_pt("2026-09-07", days["2026-09-07"]) == 2.0
+
+    # 표식은 일별·그룹 양쪽에 붙어야 한다 — 한쪽만이면 탭을 바꿀 때 사실이 사라진다.
+    assert on._day_has_gp("2026-09-08") is True
+    assert off._day_has_gp("2026-09-08") is False
+    assert on._group_has_gp(_ROWS) is True
+    assert off._group_has_gp(_ROWS) is False
+    assert on._group_has_gp([_row("2026-01-02 10:00:00", 1)]) is False
+
+
+def test_13_chart_label_width_is_measured_not_fixed():
+    """차트 라벨 폭은 **폰트로 실측**해야 한다 — 고정 폭이면 잘린다.
+
+    🔴 2026-09-10 사용자 관측 *"보유중 라벨이 잘린다"*. 실측:
+      `GP진입 14:29 ·보유중` = 255px 인데 사각형이 `S.p(112)` 였다.
+      후속4 의 클램프는 **위치**만 당겼고 폭은 그대로여서 증상이 남았다.
+
+    ⚠ offscreen 은 글자를 아예 못 그리므로(빈 이미지 확인) 이 수정은 실제 화면으로만
+      최종 확인된다 — `dev_memory/NEXT_TODO.md` T-QT2·T-GP3.
+    """
+    src = io.open(_PANEL_SRC, encoding="utf-8").read()
+    body = src[src.index("def _draw_gp_markers"):]
+    body = body[:body.index(chr(10) + "    def ", 10)]
+    # 주석에는 사건 기록으로 S.p(112) 가 남아 있다 — **실행문만** 본다.
+    code = chr(10).join(ln for ln in body.splitlines()
+                        if ln.strip() and not ln.strip().startswith("#"))
+    assert "fontMetrics()" in code, "라벨 폭을 폰트로 재지 않는다"
+    assert "S.p(112)" not in code, "고정 폭이 남아 있다 — 긴 라벨이 잘린다"
+    assert "plot.right()" in code and "plot.left()" in code, "양쪽 클램프가 없다"
+
+
+def test_14_gp_marker_style_is_direction_aware():
+    """[사용자 지시 2026-09-10] GP 진입은 **방향별**, 청산은 **검은 X**.
+
+    · GB 진입 = GP LONG  → 청색 상방
+    · GS 진입 = GP SHORT → 적색 하방
+    · 청산 → 검은색 X
+
+    🔴 청산의 검정은 차트 배경(`#0D1117`)과 거의 같다 — 밝은 테두리를 먼저 깔지
+      않으면 **보이지 않는다.** 라벨까지 검정이면 읽을 수 없으므로 라벨은 밝은 회색.
+    ⚠ 그 결과 **GS 진입이 실거래 SHORT 와 색·방향이 같아졌다.** 가상임을 말하는 것은
+      ① 채움 없는 파선 원 ② `GS` 라벨 접두 둘뿐이다 — 없애면 가상이 실적으로 보인다.
+    """
+    from dashboard.main_dashboard import MinuteChartCanvas as _M, C as _C
+
+    # 진입 — 방향별 색·접두
+    mk, lb, tag = _M._gp_style(True, "LONG")
+    assert tag == "GB진입"
+    assert mk.name().lower() == _C["blue"].lower() == "#58a6ff"
+    assert lb.name().lower() == mk.name().lower()
+
+    mk, lb, tag = _M._gp_style(True, "SHORT")
+    assert tag == "GS진입"
+    assert mk.name().lower() == _C["red"].lower() == "#f85149"
+
+    # 청산 — 방향과 무관하게 검정, 라벨은 밝은 회색
+    for d, want in (("LONG", "GB청산"), ("SHORT", "GS청산")):
+        mk, lb, tag = _M._gp_style(False, d)
+        assert tag == want
+        assert mk.name().lower() == "#000000", "청산이 검정이 아니다"
+        assert lb.name().lower() != "#000000", "검은 라벨은 배경에서 안 보인다"
+
+    # 방향 문자열이 비어도 죽지 않고 LONG 취급(계측 4원칙 ④ — 조용한 폴백 금지는
+    # 값에 대한 규약이고, 여기서는 그리기가 예외를 내면 paintEvent 가 죽는다).
+    assert _M._gp_style(True, "")[2] == "GB진입"
+    assert _M._gp_style(True, None)[2] == "GB진입"
+
+    src = io.open(_PANEL_SRC, encoding="utf-8").read()
+    body = src[src.index("def _draw_gp_shape"):]
+    body = body[:body.index(chr(10) + "    def ", 10)]
+    code = chr(10).join(ln for ln in body.splitlines()
+                        if ln.strip() and not ln.strip().startswith("#"))
+    # 청산 X 는 테두리 + 검정 2벌로 그린다 — 한 벌이면 배경에 묻힌다.
+    assert "_GP_EXIT_HALO" in code, "검은 X 에 테두리가 없다 — 배경에 묻힌다"
+    # 진입은 여전히 채움 없는 파선 원이어야 한다(가상 표식의 마지막 방어선).
+    assert "Qt.NoBrush" in code and "Qt.DashLine" in code, \
+        "진입이 채워지거나 실선이 되면 실거래와 구분되지 않는다"
 
 
 # ── 스텁 방어 — 504차 「반쪽 이식」 재발 방지 ─────────────────
