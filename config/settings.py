@@ -6632,7 +6632,14 @@ PROFIT_GUARD_SYSTEM_ONLY_PNL = True
 #     BROKER_SYNC_RECOVERY 브로커 잔고 동기화로 되살린 포지션
 #     OPERATOR_RESTORE     운영자 수동 복원
 #     NULL                 311차 이전 미기록 구간 — **미측정이지 시스템진입이 아니다**
-PROFIT_GUARD_SYSTEM_SOURCES = ("SYSTEM_AUTO",)
+#     PHANTOM_STATE_ARTIFACT  554차 유령(테스트가 심은 상태파일) — 거래가 아니다
+#
+# 🔴 [MW0601 555차 후속2 / P2] **정본은 `config/constants.py:ENTRY_SOURCE_REGISTRY` 다.**
+#   리터럴 사본을 두지 않는다 — 554차 유령처럼 새 라벨이 생겼을 때 분류가 한 곳에만
+#   반영되면 소비처마다 다른 숫자가 나온다(그날 실측: 진입 통계 +148.54pt 중 93.5%가
+#   허구, 계좌 금일손익은 +463,281원). 새 라벨은 레지스트리에만 등록하면 된다.
+from config.constants import SYSTEM_ENTRY_SOURCES as _SYSTEM_ENTRY_SOURCES
+PROFIT_GUARD_SYSTEM_SOURCES = _SYSTEM_ENTRY_SOURCES
 
 # ── [MW0601 419차 / P0] cancel_stress 정규화 ceiling 재보정 ────────────────────
 # 380차가 cancel_churn_ratio(신규 피처)의 ceiling을 0.08로 잠정 설정하면서

@@ -10792,7 +10792,10 @@ class TradingSystem:
 
         # 당일 진입 통계 갱신 — STEP 9 예외와 무관하게 항상 실행
         _ds = self.position.daily_stats()
-        self.dashboard.update_entry_stats(_ds["trades"], _ds["wins"], _ds["pnl_pts"])
+        # [555차 후속2 / P0] 전체 dict 를 넘긴다 — 패널이 시스템 축을 앞에 세우고
+        # 제외분(유령·수동·외부·미기록)을 병기한다. 인자 3개는 종전 그대로다.
+        self.dashboard.update_entry_stats(
+            _ds["trades"], _ds["wins"], _ds["pnl_pts"], stats=_ds)
 
         # 주문/체결 탭 메트릭 갱신 (LatencySync — Cybos에서는 항상 0ms)
         _ls = self.latency_sync.summary()
@@ -12517,6 +12520,27 @@ class TradingSystem:
             f"| net 기준 {stats.get('wins_net', '?')}승 {stats.get('losses_net', '?')}패 "
             f"| PnL={stats['pnl_krw']:+,.0f}원(net)"
         )
+        # [MW0601 555차 후속2 / P0] 마감 로그에 **출처축**을 병기한다.
+        # 🔴 이 줄이 일일점검 리포트의 원천이다. 2026-09-10 마감이 종전 형식이었다면
+        #   `승=2 패=0 PnL=+7,384,826원` 으로 남았을 텐데, 그중 93.5%가 554차 유령이다.
+        #   제외분을 같은 줄에 박아야 리포트가 그것을 재인용하지 않는다(계측 4원칙 ③).
+        _excl_n = int(stats.get("excluded_trades", 0) or 0)
+        if _excl_n:
+            log_manager.system(
+                f"일일 마감(시스템 축) | 진입={stats.get('sys_trades', 0)} "
+                f"승={stats.get('sys_wins', 0)} 패={stats.get('sys_losses', 0)} "
+                f"| PnL={stats.get('sys_pnl_krw', 0):+,.0f}원(net) "
+                f"| 🔴 제외 {_excl_n}건 {stats.get('excluded_pnl_krw', 0):+,.0f}원 "
+                f"출처={','.join(stats.get('excluded_sources') or []) or '(미상)'} "
+                f"— 위 「일일 마감」 줄은 제외분을 **포함**한 전체 축이다",
+                "WARNING",
+            )
+        else:
+            log_manager.system(
+                "일일 마감(시스템 축) | 제외 0건 — 전체 축과 동일하다"
+                "(실측이며 미측정이 아니다)",
+                "INFO",
+            )
 
         # [MW0601 507차 후속 / F-12] 오늘 PSI 가 한 번도 계산되지 않았으면 마감에
         # 그 사실을 남긴다. 2026-08-31에는 매분 예외 로그(5분 스로틀)만 있었고

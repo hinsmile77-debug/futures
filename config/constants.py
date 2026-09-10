@@ -202,6 +202,84 @@ def detect_broker_channel():
 #   ⚠ 순환 import 방지 — settings 가 constants 를 import 하므로 여기서는
 #     **지연 import** 로 읽고, 실패 시 하드코딩 폴백을 쓴다(폴백 사용은 로그로
 #     남긴다 — 계측 4원칙 ④).
+# ── [MW0601 555차 후속2 / P2] `trades.entry_source` 라벨 레지스트리 ──────────
+#
+# 🔴 **왜 필요한가 — 라벨 하나가 소비처마다 다르게 흘렀다.**
+# 2026-09-10, 554차가 유령 포지션(`trades` id=572,573 · 허구 +6,921,594원)의
+# `entry_source` 를 `SYSTEM_AUTO` → `PHANTOM_STATE_ARTIFACT` 로 정정했다.
+# 그런데 **그 라벨을 아는 코드가 0곳이었다**(저장소 grep 0건, dev_memory 문서만).
+# 소비처마다 「시스템 거래란 무엇인가」를 따로 정의하고 있어서 정정이 한 곳에만 먹었다:
+#
+#   화이트리스트 소비처(ProfitGuard)  → 새 라벨을 **자동 배제**   ⇒ 정정 1회로 해결
+#   블랙리스트 소비처(손익 추이 패널) → 새 라벨을 **자동 편입**   ⇒ 별도 수정 필요(555차 후속)
+#   필터 없는 소비처(진입 통계·차트) → **정정이 닿지도 않는다**  ⇒ 555차 후속2
+#
+# ⇒ 분류를 **한 곳에** 두고 모든 소비처가 여기서 파생한다. 새 라벨을 배선하면
+#   여기 등록하지 않는 한 `classify_entry_source()` 가 "unknown" 을 돌려주고,
+#   `tests/test_555_entry_source_registry.py` 가 깨져 등록을 강제한다.
+#
+# 분류 값의 뜻:
+#   system   : 미륵이가 스스로 낸 진입. **성과로 집계되는 유일한 부류.**
+#   manual   : 사람이 개입했거나 미륵이 밖에서 일어난 것(복구 경로 포함).
+#              ⚠ `GHOST_PENDING_MISS` 는 「외부 진입」과 「미륵이 주문추적 실패」가
+#                같은 라벨에 섞인다 — 전부 사람이 한 것이라고 읽지 말 것.
+#   artifact : **거래가 아니다.** 테스트·상태파일 오염 등이 만든 허구 체결.
+#              집계에서 빼되 행은 지우지 않는다(461차 관례 — 기록 보존).
+#   unknown  : 여기 등록되지 않은 라벨. **미측정이며 system 이 아니다**(계측 4원칙 ②).
+#   virtual  : 주문이 나간 적 없는 **가상/신호 단위** 기록(GP 섀도·사전등록 채널).
+#              집계상 artifact 와 같이 제외되지만 성격이 다르다 — 이쪽은 **설계된
+#              관측**이고 artifact 는 **사고**다. 이름으로 그 차이를 남긴다.
+ENTRY_SOURCE_SYSTEM   = "system"
+ENTRY_SOURCE_MANUAL   = "manual"
+ENTRY_SOURCE_ARTIFACT = "artifact"
+ENTRY_SOURCE_VIRTUAL  = "virtual"
+ENTRY_SOURCE_UNKNOWN  = "unknown"
+
+ENTRY_SOURCE_REGISTRY = {
+    # 시스템 자동 진입 — 성과 축의 유일한 구성원
+    "SYSTEM_AUTO":            ENTRY_SOURCE_SYSTEM,
+    # 사람·외부·복구
+    "OPERATOR_MANUAL":        ENTRY_SOURCE_MANUAL,   # 대시보드 수동 진입 버튼
+    "OPERATOR_RESTORE":       ENTRY_SOURCE_MANUAL,   # 운영자 수동 복원
+    "GHOST_PENDING_MISS":     ENTRY_SOURCE_MANUAL,   # pending 미등록 외부 체결
+    "BROKER_SYNC_RECOVERY":   ENTRY_SOURCE_MANUAL,   # 브로커 잔고 동기화로 되살린 포지션
+    # 거래가 아닌 것
+    # [554차] pytest 가 운영 position_state.json 에 심은 포지션이 08:40 기동에
+    #   복원돼 08:45 프리장 첫 틱에 TP1/TP2 가 발동한 건. 계좌 실보유는 없었다.
+    "PHANTOM_STATE_ARTIFACT": ENTRY_SOURCE_ARTIFACT,
+    # 가상 — 주문이 나간 적 없다. `trades` 테이블에는 들어가지 않으며 패널 행에만 붙는다.
+    "GP_SHADOW":              ENTRY_SOURCE_VIRTUAL,  # 553차 GP 규칙 섀도 가상 체결
+    "SIGNAL":                 ENTRY_SOURCE_VIRTUAL,  # 사전등록 채널의 신호 단위 표기
+}
+
+SYSTEM_ENTRY_SOURCES = tuple(
+    k for k, v in ENTRY_SOURCE_REGISTRY.items() if v == ENTRY_SOURCE_SYSTEM)
+MANUAL_ENTRY_SOURCES = tuple(
+    k for k, v in ENTRY_SOURCE_REGISTRY.items() if v == ENTRY_SOURCE_MANUAL)
+ARTIFACT_ENTRY_SOURCES = tuple(
+    k for k, v in ENTRY_SOURCE_REGISTRY.items() if v == ENTRY_SOURCE_ARTIFACT)
+
+
+def classify_entry_source(src):
+    """`entry_source` → 분류 문자열.
+
+    🔴 **모르는 라벨의 기본값은 `unknown` 이지 `system` 이 아니다.**
+      블랙리스트("알려진 manual 이 아니면 system")는 빠뜨리면 낙관 쪽으로 틀린다 —
+      이 프로젝트가 반복해서 당한 방향이다(계측 4원칙 ②).
+
+    ⚠ NULL·빈 문자열도 `unknown` 이다. 311차 이전 미기록 구간이 여기 들어오며,
+      그것은 「미측정」이지 「시스템 진입」이 아니다.
+    """
+    if not src:
+        return ENTRY_SOURCE_UNKNOWN
+    return ENTRY_SOURCE_REGISTRY.get(str(src).strip(), ENTRY_SOURCE_UNKNOWN)
+
+
+def entry_source_is_system(src):
+    """성과 집계에 넣을 진입인가 — 소비처는 이 한 줄만 부르면 된다."""
+    return classify_entry_source(src) == ENTRY_SOURCE_SYSTEM
+
+
 def _derive_core_features():
     try:
         from config.settings import CORE_FEATURES_BY_GROUP

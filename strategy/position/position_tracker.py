@@ -12,7 +12,10 @@ from typing import Optional, Dict, Tuple
 
 from utils.time_utils import now_kst
 
-from config.constants import POSITION_LONG, POSITION_SHORT, POSITION_FLAT, FUTURES_PT_VALUE
+from config.constants import (POSITION_LONG, POSITION_SHORT, POSITION_FLAT,
+                              FUTURES_PT_VALUE,
+                              # [555차 후속2 / P0] entry_source 분류 정본
+                              entry_source_is_system)
 from config.settings import (
     ATR_STOP_MULT, ATR_TP1_MULT, ATR_TP2_MULT, ATR_TP3_MULT,
     ATR_HORIZON_TP1_MULT, FUTURES_COMMISSION_RATE,
@@ -221,6 +224,26 @@ class PositionTracker:
         # 때문이다. 두 축을 **함께** 보여주는 것이 이 필드의 전부다(계측 4원칙 ①).
         self._daily_wins_net:  int   = 0
         self._daily_commission: float = 0.0
+        # ── [MW0601 555차 후속2 / P0] 출처축 병행 집계 ────────────────────────
+        # 🔴 위 `_daily_*` 는 **무변경**이다 — `daily_stats()["pnl_krw"]` 소비처가
+        #   18곳이라 축을 갈아끼우면 461차 `mdd_pct` 유형의 조용한 재정의가 된다.
+        #   546차 관례대로 **새 키를 추가**하고 소비처를 하나씩 옮긴다.
+        #
+        # 왜 필요한가(2026-09-10 실측): 554차 유령 2레그(+138.84pt)가 진입 통계에
+        # 그대로 들어가 `진입 2회 · 승 2 패 0 · 승률 100% · +148.54pt` 로 표시됐다.
+        # **93.5%가 허구**인데 화면은 그것을 말하지 않았다. `restore_daily_stats()`
+        # 에 `entry_source` 참조가 0건이라 554차의 DB 라벨 정정이 닿지 않았다.
+        self._daily_sys_pnl_pts:    float = 0.0
+        self._daily_sys_trades:     int   = 0
+        self._daily_sys_wins:       int   = 0
+        self._daily_sys_wins_net:   int   = 0
+        self._daily_sys_commission: float = 0.0
+        # 제외분 — **버리지 않는다.** 얼마가 왜 빠졌는지 남겨야 운영자가
+        # 「집계가 작다」와 「거래가 없었다」를 구분한다(계측 4원칙 ③ 탈락 가시화).
+        self._daily_excl_pnl_pts:    float = 0.0
+        self._daily_excl_trades:     int   = 0
+        self._daily_excl_commission: float = 0.0
+        self._daily_excl_sources:    set   = set()
         self._daily_forward_pnl_pts: float = 0.0
         self._daily_forward_trades: int = 0
         self._daily_forward_wins: int = 0
@@ -566,6 +589,12 @@ class PositionTracker:
         # 수수료를 뺀 값을 쌓는다(위 `pnl_krw`). 동률은 패(gross 축과 같은 규약).
         if self._pos_realized_pnl_krw > 0:
             self._daily_wins_net += 1
+        # [555차 후속2 / P0] 위 누적과 **같은 값**을 출처축으로 한 번 더 가른다.
+        self._accrue_origin_axis(
+            pnl_pts_weighted=pnl_pts * self.quantity, commission=commission,
+            trades=1,
+            wins=1 if self._pos_realized_pnl_pts > 0 else 0,
+            wins_net=1 if self._pos_realized_pnl_krw > 0 else 0)
         self._daily_forward_trades += 1
         if self._pos_realized_fwd_pnl_pts > 0:
             self._daily_forward_wins += 1
@@ -850,6 +879,11 @@ class PositionTracker:
         self._pos_realized_leg_count += 1
         self._pos_realized_fwd_pnl_pts += forward_pnl_pts * quantity
 
+        # [555차 후속2 / P0] 레그 손익은 최종 여부와 무관하게 즉시 가른다 —
+        # 카운트(trades/wins)만 아래 `is_final` 에서 더한다(기존 설계와 같은 단위).
+        self._accrue_origin_axis(
+            pnl_pts_weighted=pnl_pts * quantity, commission=commission)
+
         is_final = quantity == self.quantity
         if is_final:
             # 동률(총합 0.0)은 패 — 종전 레그 단위 `>0` 규약과 같은 방향(변경 금지).
@@ -861,6 +895,11 @@ class PositionTracker:
             # [507차 후속 / F-11] net 축 병기 — 판정 축(gross)은 무변경.
             if self._pos_realized_pnl_krw > 0:
                 self._daily_wins_net += 1
+            # [555차 후속2 / P0] 카운트만 — 손익은 위에서 이미 갈랐다.
+            self._accrue_origin_axis(
+                trades=1,
+                wins=1 if self._pos_realized_pnl_pts > 0 else 0,
+                wins_net=1 if self._pos_realized_pnl_krw > 0 else 0)
             self._daily_forward_trades += 1
             if self._pos_realized_fwd_pnl_pts > 0:
                 self._daily_forward_wins += 1
@@ -1025,6 +1064,9 @@ class PositionTracker:
 
         self._daily_pnl_pts += pnl_pts * qty
         self._daily_commission += commission
+        # [555차 후속2 / P0] 부분청산 레그 — 카운트는 최종 청산에서만 센다.
+        self._accrue_origin_axis(
+            pnl_pts_weighted=pnl_pts * qty, commission=commission)
         self._daily_forward_pnl_pts += forward_pnl_pts * qty
         self._daily_forward_commission += forward_commission
         # [456차/459차 F1] 최종 청산(close_position/is_final)의 포지션 단위
@@ -1677,6 +1719,34 @@ class PositionTracker:
         self.last_update_ts = self.last_update_ts or now_kst()
         self._save_state()
 
+    # ── [MW0601 555차 후속2 / P0] 출처축 누적 ─────────────────────────────────
+    def _accrue_origin_axis(self, *, pnl_pts_weighted: float = 0.0,
+                            commission: float = 0.0, trades: int = 0,
+                            wins: int = 0, wins_net: int = 0,
+                            source: Optional[str] = None) -> None:
+        """기존 `_daily_*` 누적 **직후**에 같은 값을 출처축으로 한 번 더 가른다.
+
+        🔴 기존 누적문은 손대지 않는다 — 라이브 손익 경로를 건드리면 사고가 난다.
+          이 메서드는 **추가 집계만** 한다.
+
+        `source=None` 이면 현재 포지션의 `entry_source` 를 쓴다(라이브 경로).
+        복원 경로는 그룹의 `entry_source` 를 명시로 넘긴다.
+        """
+        src = source if source is not None else self.entry_source
+        if entry_source_is_system(src):
+            self._daily_sys_pnl_pts    += pnl_pts_weighted
+            self._daily_sys_commission += commission
+            self._daily_sys_trades     += trades
+            self._daily_sys_wins       += wins
+            self._daily_sys_wins_net   += wins_net
+        else:
+            self._daily_excl_pnl_pts    += pnl_pts_weighted
+            self._daily_excl_commission += commission
+            self._daily_excl_trades     += trades
+            # 라벨을 남긴다 — "무엇이 빠졌는지" 없이 "얼마가 빠졌는지"만 보면
+            # 유령인지 수동매매인지 미기록인지 구분할 수 없다.
+            self._daily_excl_sources.add(str(src) if src else "(미기록)")
+
     # ── 일일 통계 ──────────────────────────────────────────────
     def daily_stats(self) -> dict:
         gross_krw = round(self._daily_pnl_pts * self._pt_value, 0)
@@ -1697,6 +1767,24 @@ class PositionTracker:
             "wins_net":     self._daily_wins_net,
             "losses_net":   self._daily_trades - self._daily_wins_net,
             "win_rate_net": self._daily_wins_net / max(self._daily_trades, 1),
+            # ── [MW0601 555차 후속2 / P0] 출처축 — **추가만 한다** ─────────────
+            # 위 키들은 무변경이다(소비처 18곳). 아래가 「미륵이가 스스로 낸 거래」
+            # 만의 축이고, `excluded_*` 는 그 축에서 빠진 몫이다.
+            # ⚠ `excluded_*` 를 0 으로 착각하지 말 것 — 제외분이 있으면
+            #   `excluded_sources` 가 무엇이 빠졌는지 말한다(계측 4원칙 ③).
+            "sys_trades":     self._daily_sys_trades,
+            "sys_wins":       self._daily_sys_wins,
+            "sys_losses":     self._daily_sys_trades - self._daily_sys_wins,
+            "sys_win_rate":   self._daily_sys_wins / max(self._daily_sys_trades, 1),
+            "sys_wins_net":   self._daily_sys_wins_net,
+            "sys_pnl_pts":    round(self._daily_sys_pnl_pts, 4),
+            "sys_pnl_krw":    round(self._daily_sys_pnl_pts * self._pt_value
+                                    - self._daily_sys_commission, 0),
+            "excluded_trades":  self._daily_excl_trades,
+            "excluded_pnl_pts": round(self._daily_excl_pnl_pts, 4),
+            "excluded_pnl_krw": round(self._daily_excl_pnl_pts * self._pt_value
+                                      - self._daily_excl_commission, 0),
+            "excluded_sources": sorted(self._daily_excl_sources),
         }
 
     def daily_forward_stats(self) -> dict:
@@ -1776,12 +1864,26 @@ class PositionTracker:
             # 경로(`_pos_realized_pnl_krw`)와 같은 정의여야 재시작 전후 값이 안 갈린다.
             leg_net_krw = pnl_pts * self._pt_value * qty - commission
 
+            # [MW0601 555차 후속2 / P0] 행의 출처. 컬럼이 없으면 **미측정**이며
+            # 그것은 시스템 진입이 아니다(계측 4원칙 ②) — `None` 그대로 넘긴다.
+            row_src = (row["entry_source"]
+                       if "entry_source" in keys else None)
+            # 손익·수수료는 레그 단위로 즉시 가른다(카운트는 아래 그룹 루프에서).
+            self._accrue_origin_axis(
+                pnl_pts_weighted=pnl_pts * qty, commission=commission,
+                source=row_src)
+
             entry_ts = str(row["entry_ts"] or "") if "entry_ts" in keys else ""
             if entry_ts:
-                g = groups.setdefault(entry_ts, {"pnl": 0.0, "fwd": 0.0, "krw": 0.0})
+                g = groups.setdefault(entry_ts, {"pnl": 0.0, "fwd": 0.0, "krw": 0.0,
+                                                 "src": row_src})
                 g["pnl"] += pnl_pts * qty
                 g["fwd"] += forward_pnl_pts * qty
                 g["krw"] += leg_net_krw
+                # 한 포지션의 레그들은 같은 출처여야 정상이다. 갈리면 보수적으로
+                # **비시스템**을 택한다 — 시스템 성과를 부풀리지 않는 방향.
+                if g["src"] != row_src and not entry_source_is_system(row_src):
+                    g["src"] = row_src
             else:
                 # 포지션 귀속 불가 — 종전대로 행 단위 1트레이드
                 self._daily_trades += 1
@@ -1789,6 +1891,11 @@ class PositionTracker:
                     self._daily_wins += 1
                 if leg_net_krw > 0:
                     self._daily_wins_net += 1
+                self._accrue_origin_axis(
+                    trades=1,
+                    wins=1 if pnl_pts > 0 else 0,
+                    wins_net=1 if leg_net_krw > 0 else 0,
+                    source=row_src)
                 self._daily_forward_trades += 1
                 if forward_pnl_pts > 0:
                     self._daily_forward_wins += 1
@@ -1801,6 +1908,11 @@ class PositionTracker:
                 self._daily_wins += 1
             if g["krw"] > 0:
                 self._daily_wins_net += 1
+            self._accrue_origin_axis(
+                trades=1,
+                wins=1 if g["pnl"] > 0 else 0,
+                wins_net=1 if g["krw"] > 0 else 0,
+                source=g["src"])
             self._daily_forward_trades += 1
             if g["fwd"] > 0:
                 self._daily_forward_wins += 1
@@ -1811,6 +1923,17 @@ class PositionTracker:
         self._daily_wins    = 0
         self._daily_wins_net = 0      # [507차 후속 / F-11]
         self._daily_commission = 0.0
+        # [555차 후속2 / P0] 출처축도 함께 리셋 — 빠뜨리면 전날 값이 이월돼
+        # 「어제 유령이 오늘 제외분으로」 남는다(계측 4원칙 ④).
+        self._daily_sys_pnl_pts = 0.0
+        self._daily_sys_trades = 0
+        self._daily_sys_wins = 0
+        self._daily_sys_wins_net = 0
+        self._daily_sys_commission = 0.0
+        self._daily_excl_pnl_pts = 0.0
+        self._daily_excl_trades = 0
+        self._daily_excl_commission = 0.0
+        self._daily_excl_sources = set()
         self._daily_forward_pnl_pts = 0.0
         self._daily_forward_trades = 0
         self._daily_forward_wins = 0

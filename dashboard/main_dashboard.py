@@ -41,7 +41,9 @@ from PyQt5.QtGui import (
 )
 
 from config.constants import (FUTURES_PT_VALUE, BROKER_CHANNEL_SPECS,
-                             MINI_FUTURES_PT_VALUE)
+                             MINI_FUTURES_PT_VALUE,
+                             # [555차 후속2 / P2] entry_source 분류 정본
+                             MANUAL_ENTRY_SOURCES)
 from config.settings import (
     FUTURES_COMMISSION_RATE as _LIVE_COMM_RATE,
     FUTURES_COMMISSION_RATE_LEGACY_KIWOOM as _LEGACY_COMM_RATE,
@@ -4360,15 +4362,57 @@ class EntryPanel(QWidget):
             for _l in (up_l, dn_l):
                 _l.setToolTip(("%s\n\n%s" % (_tip_txt, _sn)) if _sn else _tip_txt)
 
-    def update_stats(self, trades: int, wins: int, pnl_pts: float):
-        """당일 진입 통계 라벨 갱신"""
+    def update_stats(self, trades: int, wins: int, pnl_pts: float, stats: dict = None):
+        """당일 진입 통계 라벨 갱신.
+
+        [MW0601 555차 후속2 / P0] `stats`(=`position.daily_stats()`)가 오면
+        **시스템 축을 앞에 세우고 제외분을 병기**한다.
+
+        🔴 2026-09-10 실측: 554차 유령 2레그가 섞여 화면이
+          `진입 2회 · 승 2 패 0 · 승률 100% · +148.54pt` 였다. **93.5%가 허구**인데
+          화면은 그 사실을 말하지 않았다. 종전 인자 3개는 여전히 전체 축이므로
+          `stats` 없이 부르면 종전과 똑같이 동작한다(하위호환).
+        """
         losses   = trades - wins
         win_rate = f"{wins/max(trades,1)*100:.0f}%" if trades > 0 else "—%"
         pnl_col  = C['green'] if pnl_pts >= 0 else C['red']
         pnl_str = f"{pnl_pts:+.2f}pt" if trades > 0 else "——pt"
-        self.stat_label.setText(
-            f"진입 {trades}회 | 승 {wins} 패 {losses} | 승률 {win_rate} | 손익 {pnl_str}"
-        )
+
+        _excl_n = int((stats or {}).get("excluded_trades", 0) or 0)
+        _excl_pt = float((stats or {}).get("excluded_pnl_pts", 0.0) or 0.0)
+        if stats is not None and _excl_n:
+            # 제외분이 있을 때만 축을 가른다 — 평소 화면을 어지럽히지 않는다.
+            _s_n  = int(stats.get("sys_trades", 0) or 0)
+            _s_w  = int(stats.get("sys_wins", 0) or 0)
+            _s_l  = int(stats.get("sys_losses", 0) or 0)
+            _s_pt = float(stats.get("sys_pnl_pts", 0.0) or 0.0)
+            _s_wr = f"{stats.get('sys_win_rate', 0.0)*100:.0f}%" if _s_n else "—%"
+            _s_pt_str = f"{_s_pt:+.2f}pt" if _s_n else "——pt"
+            pnl_col = C['green'] if _s_pt >= 0 else C['red']
+            self.stat_label.setText(
+                f"[시스템] 진입 {_s_n}회 | 승 {_s_w} 패 {_s_l} | 승률 {_s_wr} | "
+                f"손익 {_s_pt_str}   ⚠ 제외 {_excl_n}건 {_excl_pt:+.2f}pt"
+            )
+            _srcs = ", ".join(stats.get("excluded_sources") or []) or "(미상)"
+            self.stat_label.setToolTip(
+                "🔴 **시스템 자동매매 축**이다 — 미륵이가 스스로 넣고 뺀 거래만 센다.\n\n"
+                f"제외 {_excl_n}건 {_excl_pt:+.2f}pt · 출처: {_srcs}\n"
+                "  · PHANTOM_STATE_ARTIFACT = 거래가 아니다(테스트·상태파일 오염)\n"
+                "  · OPERATOR_* / GHOST_* / BROKER_SYNC_* = 사람·외부·복구 경로\n"
+                "  · (미기록) = 311차 이전 구간 — 미측정이지 시스템진입이 아니다\n\n"
+                f"전체 축(제외분 포함): 진입 {trades}회 · 승 {wins} 패 {losses} · "
+                f"{pnl_pts:+.2f}pt\n"
+                "분류 정본: config/constants.py:ENTRY_SOURCE_REGISTRY"
+            )
+        else:
+            self.stat_label.setText(
+                f"진입 {trades}회 | 승 {wins} 패 {losses} | 승률 {win_rate} | 손익 {pnl_str}"
+            )
+            self.stat_label.setToolTip(
+                "미륵이가 스스로 넣고 뺀 거래만 집계된다.\n"
+                "비시스템 진입(수동·외부·복구·유령)이 생기면 「⚠ 제외 N건」이 붙는다.\n"
+                "분류 정본: config/constants.py:ENTRY_SOURCE_REGISTRY"
+            )
         self.stat_label.setStyleSheet(f"color:{pnl_col};font-size:{S.f(11)}px;")
 
     def _setup_time_zone_timer(self):
@@ -6926,8 +6970,8 @@ class PnlHistoryPanel(QWidget):
     #: [553차 Phase 4] GP 가상거래 승수 — **미니선물**. 정규선물 250,000 이 아니다.
     #: 원문서가 250,000 으로 환산해 원화를 5배 과대계상했던 바로 그 지점이다.
     _GP_ORIGIN = "gp"
-    _MANUAL_SOURCES = ("OPERATOR_MANUAL", "GHOST_PENDING_MISS",
-                       "BROKER_SYNC_RECOVERY", "OPERATOR_RESTORE")
+    # [MW0601 555차 후속2 / P2] 정본 레지스트리에서 파생 — 리터럴 사본 금지.
+    _MANUAL_SOURCES = MANUAL_ENTRY_SOURCES
     # ── [MW0601 555차 후속] 「자동」 화이트리스트 ────────────────────────────────
     # 🔴 **정본은 `config/settings.py:PROFIT_GUARD_SYSTEM_SOURCES` 다** — 여기 리터럴
     #   사본을 만들지 않는다. ProfitGuard 가 판정하는 「시스템 자동매매분」과 이 패널의
@@ -8734,6 +8778,11 @@ class MinuteChartCanvas(QWidget):
         # `_gp_wired` 는 「미배선」과 「0건」을 가른다(계측 4원칙 ② — 미측정 ≠ 0).
         self._gp_trades = []
         self._gp_wired = False
+        # [555차 후속2 / P1] 이번 paint 의 Y축 범위. `paintEvent` 가 매번 채운다.
+        # 🔴 `__init__` 에서 명시 초기화한다 — 기본값 폴백으로 읽으면 첫 paint 전에
+        #   「축 안」으로 조용히 오판한다(계측 4원칙 ④).
+        self._axis_lo = None
+        self._axis_hi = None
         self._visible_count = 0
         self._min_visible_count = 20
         self._view_offset = 0
@@ -8981,20 +9030,28 @@ class MinuteChartCanvas(QWidget):
         plot = QRectF(left, top, max(10, self.width() - left - right), max(10, self.height() - top - bottom))
         self._last_plot_rect = plot
 
+        # ── [MW0601 555차 후속2 / P1] Y축은 **봉 범위**가 정한다 ──────────────
+        #
+        # 🔴 종전에는 거래 마커 가격까지 min/max 에 넣어 **마커 한 건이 축을 늘렸다.**
+        #   2026-09-10 실측: 554차 유령 진입가 1040.00 이 그날 봉 최저(1088.58)보다
+        #   48.6pt 아래라 축이 1033.69~1125.23(span 91.55pt)로 벌어졌고,
+        #   봉(span 30.34pt)이 세로의 **33.1%** 만 차지했다 — 66.9%가 죽은 공간이다.
+        #   (유령 제외 시 86.2%.)
+        #
+        # ⚠ 유령만의 문제가 아니다 — **갭·이상체결 한 건이면 같은 일이 난다.**
+        #   그래서 유령을 거르는 게 아니라 **축 산출에서 마커를 빼는 것**이 처방이다.
+        #   축 밖 마커는 `_price_to_y()` 가 이미 [0,1] 로 클램프하므로 가장자리에
+        #   붙고, 아래 `_axis_lo/_axis_hi` 로 그 사실을 캐럿으로 표시한다(원칙 ③).
         prices = []
         for candle in candles:
             prices.extend([candle["open"], candle["high"], candle["low"], candle["close"]])
-        for trade in self._completed_trades:
-            prices.append(float(trade.get("entry_price") or 0.0))
-            prices.append(float(trade.get("exit_price") or 0.0))
-        if self._active_trade:
-            prices.append(float(self._active_trade.get("entry_price") or 0.0))
-        for marker in self._exit_markers:
-            prices.append(float(marker.get("price") or 0.0))
-        for trade in self._gp_trades:
-            prices.append(float(trade.get("entry_price") or 0.0))
-            prices.append(float(trade.get("exit_price") or 0.0))
         prices = [p for p in prices if p > 0]
+        if not prices:
+            # 봉 가격이 하나도 없으면 그때만 마커로 축을 잡는다(빈 화면 방지).
+            for trade in self._completed_trades:
+                prices.extend([float(trade.get("entry_price") or 0.0),
+                               float(trade.get("exit_price") or 0.0)])
+            prices = [p for p in prices if p > 0] or [0.0, 1.0]
         lo = min(prices)
         hi = max(prices)
         if hi <= lo:
@@ -9002,6 +9059,8 @@ class MinuteChartCanvas(QWidget):
         pad = max((hi - lo) * 0.08, 0.2)
         lo -= pad
         hi += pad
+        # 축 밖 판정용 — 마커 그리기 함수들이 참조한다.
+        self._axis_lo, self._axis_hi = lo, hi
 
         import time as _t2
         _t_grid = _t2.monotonic(); self._draw_grid(painter, plot, lo, hi)
@@ -9274,6 +9333,51 @@ class MinuteChartCanvas(QWidget):
             x = plot.left() + step * idx
             painter.drawRect(QRectF(x, bar_y, step - 1, _REGIME_BAR_H))
 
+    def _is_off_axis(self, price: float) -> bool:
+        """[555차 후속2 / P1] 가격이 이번 paint 의 Y축 밖인가.
+
+        축 범위가 아직 없으면(첫 paint 전) **판정하지 않는다** — `False` 를 돌려
+        「축 안」이라 단정하지 않고, 캐럿을 안 그릴 뿐이다(계측 4원칙 ②).
+        """
+        if self._axis_lo is None or self._axis_hi is None or price <= 0:
+            return False
+        return price < self._axis_lo or price > self._axis_hi
+
+    def _draw_off_axis_caret(self, painter: QPainter, x: float, y: float,
+                             color: QColor, above: bool):
+        """축 밖 마커에 캐럿 + `↕` 를 붙인다 — 「여기가 실제 가격이 아니다」 표시.
+
+        🔴 클램프만 하고 표시를 안 하면 마커가 **가장자리 가격인 척**한다.
+          그건 축이 늘어나는 것보다 더 나쁘다(계측 4원칙 ④ — 폴백 가시화).
+        """
+        painter.setBrush(color)
+        painter.setPen(QPen(color, 1.0))
+        if above:
+            poly = QPolygonF([QPointF(x, y - 7.0),
+                              QPointF(x - 4.0, y - 1.0),
+                              QPointF(x + 4.0, y - 1.0)])
+        else:
+            poly = QPolygonF([QPointF(x, y + 7.0),
+                              QPointF(x - 4.0, y + 1.0),
+                              QPointF(x + 4.0, y + 1.0)])
+        painter.drawPolygon(poly)
+        painter.setBrush(Qt.NoBrush)
+
+    def _draw_link_line(self, painter: QPainter, x1: float, y1: float,
+                        x2: float, y2: float, color: QColor,
+                        width: int = 2, style=Qt.DashLine):
+        """[MW0601 555차 후속2 / 요청2] 진입점 ↔ 청산점을 **직접** 잇는다.
+
+        🔴 종전에는 진입가 수평선이었다 — 가격이 어디서 어디로 갔는지 선이 말해주지
+          않았고, 청산 마커와 선이 따로 놀아 눈으로 짝지어야 했다. 대각선이면
+          기울기 자체가 손익의 방향과 크기다.
+        """
+        pen = QPen(color)
+        pen.setWidth(width)
+        pen.setStyle(style)
+        painter.setPen(pen)
+        painter.drawLine(int(x1), int(y1), int(x2), int(y2))
+
     def _draw_trade_spans(self, painter: QPainter, plot: QRectF, candles, index_map, lo: float, hi: float, padded_count: int):
         count = max(padded_count, 1)
         step = plot.width() / count
@@ -9286,35 +9390,49 @@ class MinuteChartCanvas(QWidget):
             end_idx = self._resolve_index(index_map, candles, exit_dt)
             if start_idx is None or end_idx is None:
                 continue
-            y = self._price_to_y(float(trade.get("entry_price") or 0.0), plot, lo, hi)
+            entry_px = float(trade.get("entry_price") or 0.0)
+            exit_px  = float(trade.get("exit_price") or 0.0)
+            y1 = self._price_to_y(entry_px, plot, lo, hi)
+            # [요청2] 청산가가 있으면 그 점까지 잇는다. 없으면 종전처럼 수평.
+            y2 = self._price_to_y(exit_px, plot, lo, hi) if exit_px > 0 else y1
             x1 = plot.left() + step * (start_idx + 0.5)
             x2 = plot.left() + step * (end_idx + 0.5)
             pnl_pts = float(trade.get("pnl_pts") or 0.0)
             if pnl_pts > 0:
-                pen = QPen(QColor("#2FBF71"))
+                color = QColor("#2FBF71")
             elif pnl_pts < 0:
-                pen = QPen(QColor("#FF5D73"))
+                color = QColor("#FF5D73")
             else:
-                pen = QPen(QColor("#8B949E"))
-            pen.setWidth(2)
-            pen.setStyle(Qt.DashLine)
-            painter.setPen(pen)
-            painter.drawLine(int(x1), int(y), int(x2), int(y))
+                color = QColor("#8B949E")
+            self._draw_link_line(painter, x1, y1, x2, y2, color)
+            # [P1] 축 밖으로 클램프된 끝점을 표시한다.
+            if self._is_off_axis(entry_px):
+                self._draw_off_axis_caret(painter, x1, y1, color,
+                                          above=entry_px > (self._axis_hi or 0))
+            if exit_px > 0 and self._is_off_axis(exit_px):
+                self._draw_off_axis_caret(painter, x2, y2, color,
+                                          above=exit_px > (self._axis_hi or 0))
 
         if self._active_trade:
             entry_dt = self._coerce_dt(self._active_trade.get("entry_ts"))
             start_idx = self._resolve_index(index_map, candles, entry_dt)
             end_idx = len(candles) - 1 if candles else None
             if start_idx is not None and end_idx is not None:
-                y = self._price_to_y(float(self._active_trade.get("entry_price") or 0.0), plot, lo, hi)
+                # 보유 중은 청산점이 없다 — 현재 봉 종가까지 잇는다.
+                # 「손익 0」이 아니라 「아직 안 끝났다」를 그리는 것이다(계측 4원칙 ②).
+                entry_px = float(self._active_trade.get("entry_price") or 0.0)
+                y1 = self._price_to_y(entry_px, plot, lo, hi)
+                _last_close = float(candles[end_idx].get("close") or 0.0)
+                y2 = (self._price_to_y(_last_close, plot, lo, hi)
+                      if _last_close > 0 else y1)
                 x1 = plot.left() + step * (start_idx + 0.5)
                 x2 = plot.left() + step * (end_idx + 0.5)
-                color = C["green"] if self._active_trade.get("direction") == "LONG" else C["red"]
-                pen = QPen(QColor(color))
-                pen.setWidth(2)
-                pen.setStyle(Qt.DashLine)
-                painter.setPen(pen)
-                painter.drawLine(int(x1), int(y), int(x2), int(y))
+                color = QColor(C["green"] if self._active_trade.get("direction") == "LONG"
+                               else C["red"])
+                self._draw_link_line(painter, x1, y1, x2, y2, color)
+                if self._is_off_axis(entry_px):
+                    self._draw_off_axis_caret(painter, x1, y1, color,
+                                              above=entry_px > (self._axis_hi or 0))
 
     # ── [MW0601 553차 / Phase 0] GP 규칙 섀도 레이어 ──────────────────────────
     #
@@ -9323,8 +9441,19 @@ class MinuteChartCanvas(QWidget):
     #     GP   = 속 빈 윤곽선 · 점선 · 보라/자홍       (가상)
     # 같은 모양으로 그리면 화면이 「조용히 그럴듯한 값」이 된다(계측 4원칙 ④).
     # 겹칠 때 실측이 위로 오도록 이 메서드를 `_draw_markers` **앞**에서 호출한다.
-    GP_LONG_COLOR = "#A78BFA"    # 보라 — GP 롱(GB 단순돌파 · 90분)
-    GP_SHORT_COLOR = "#F0ABFC"   # 자홍 — GP 숏(압축돌파 · 60분)
+    # ── [MW0601 555차 후속2 / 사용자 지시] GP 마커 시각 언어 재지정 ─────────────
+    # GB 진입 = **청색 상방 화살표** · GS 진입 = **적색 하방 화살표**
+    # 청산 = **밝은 테두리 위에 검은 X**
+    #
+    # ⚠ 553차가 「GP=보라 계열」로 실측과 색을 갈라놨던 취지는 유지된다 —
+    #   색이 아니라 **형태·선종**이 구분을 진다:
+    #     실측 = 채워진 배지 + 글로우 + 파선(Dash) 2px + `L/S` 글리프
+    #     GP   = 속 빈 화살표 + 점선(Dot) 1px + `GB/GS` 글리프 + 검은 X 청산
+    #   같은 적색이라도 실측 숏은 배지, GP 숏은 화살표라 한눈에 갈린다.
+    GP_LONG_COLOR = "#3B82F6"    # 청색 — GB(단순돌파 롱 · 90분)
+    GP_SHORT_COLOR = "#EF4444"   # 적색 — GS(압축돌파 숏 · 60분)
+    GP_EXIT_RIM = "#F8FAFC"      # 청산 밝은 테두리
+    GP_EXIT_X = "#0B0F14"        # 그 위의 검은 X
 
     def _draw_gp_layer(self, painter: QPainter, plot: QRectF, candles, index_map,
                        lo: float, hi: float, padded_count: int):
@@ -9359,49 +9488,84 @@ class MinuteChartCanvas(QWidget):
             x1 = plot.left() + step * (start_idx + 0.5)
             x2 = plot.left() + step * (end_idx + 0.5)
 
-            pen = QPen(color)
-            pen.setWidth(1)
-            pen.setStyle(Qt.DotLine)
-            painter.setPen(pen)
-            painter.drawLine(int(x1), int(y), int(x2), int(y))
+            # [MW0601 555차 후속2 / 요청2] 진입점 → 청산점을 **직접** 잇는다.
+            # 보유 중이면 청산점이 없으므로 현재 봉 종가까지 — 「미청산」을 그리는
+            # 것이지 「손익 0」이 아니다(계측 4원칙 ②).
+            exit_price = float(trade.get("exit_price") or 0.0)
+            if open_leg:
+                _last_close = float(candles[end_idx].get("close") or 0.0)
+                y2 = (self._price_to_y(_last_close, plot, lo, hi)
+                      if _last_close > 0 else y)
+            else:
+                y2 = self._price_to_y(exit_price, plot, lo, hi) if exit_price > 0 else y
+            # GP 는 가상이므로 실측(DashLine·2px)과 달리 **DotLine·1px** 를 유지한다.
+            self._draw_link_line(painter, x1, y, x2, y2, color,
+                                 width=1, style=Qt.DotLine)
 
             self._draw_gp_entry_marker(painter, x1, y, color, up=is_long)
+            if self._is_off_axis(entry_price):
+                self._draw_off_axis_caret(painter, x1, y, color,
+                                          above=entry_price > (self._axis_hi or 0))
 
             if not open_leg:
-                exit_price = float(trade.get("exit_price") or 0.0)
                 if exit_price > 0:
-                    y2 = self._price_to_y(exit_price, plot, lo, hi)
                     self._draw_gp_exit_marker(
                         painter, x2, y2, color,
                         trade.get("pnl_pt"), str(trade.get("exit_reason") or ""))
+                    if self._is_off_axis(exit_price):
+                        self._draw_off_axis_caret(
+                            painter, x2, y2, color,
+                            above=exit_price > (self._axis_hi or 0))
 
     def _draw_gp_entry_marker(self, painter: QPainter, x: float, y: float,
                               color: QColor, up: bool):
-        """속 빈 삼각형 + G 글리프. 실측 진입(채워진 삼각형 + 글로우)과 대비된다."""
-        painter.setBrush(Qt.NoBrush)
-        painter.setPen(QPen(color, 1.4, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        """[555차 후속2 / 사용자 지시] 진입 화살표.
+
+        GB(롱) = 청색 **상방** 화살표 · GS(숏) = 적색 **하방** 화살표.
+        축(shaft) + 머리(head)를 그려 삼각형 하나보다 방향이 분명하게 읽힌다.
+        글리프도 `GP` 가 아니라 **`GB`/`GS`** — 어느 규칙이 낸 신호인지 화면에서 바로 안다.
+        """
+        pen = QPen(color, 2.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+        painter.setPen(pen)
         if up:
-            poly = QPolygonF([QPointF(x, y - 6.0),
-                              QPointF(x - 5.0, y + 2.0),
-                              QPointF(x + 5.0, y + 2.0)])
-            gy = y - S.p(15)
+            # 아래에서 위로 — 머리가 가격 지점(y)에 닿는다.
+            painter.drawLine(QPointF(x, y + 9.0), QPointF(x, y - 2.0))
+            head = QPolygonF([QPointF(x, y - 7.5),
+                              QPointF(x - 5.0, y - 0.5),
+                              QPointF(x + 5.0, y - 0.5)])
+            gy = y - S.p(19)
         else:
-            poly = QPolygonF([QPointF(x, y + 6.0),
-                              QPointF(x - 5.0, y - 2.0),
-                              QPointF(x + 5.0, y - 2.0)])
-            gy = y + S.p(6)
-        painter.drawPolygon(poly)
+            painter.drawLine(QPointF(x, y - 9.0), QPointF(x, y + 2.0))
+            head = QPolygonF([QPointF(x, y + 7.5),
+                              QPointF(x - 5.0, y + 0.5),
+                              QPointF(x + 5.0, y + 0.5)])
+            gy = y + S.p(8)
+        painter.setBrush(color)
+        painter.setPen(QPen(color, 1.0))
+        painter.drawPolygon(head)
+        painter.setBrush(Qt.NoBrush)
         painter.setPen(color)
-        painter.drawText(QRectF(x - S.p(9), gy, S.p(18), S.p(12)),
-                         Qt.AlignCenter, "GP")
+        painter.drawText(QRectF(x - S.p(10), gy, S.p(20), S.p(12)),
+                         Qt.AlignCenter, "GB" if up else "GS")
 
     def _draw_gp_exit_marker(self, painter: QPainter, x: float, y: float,
                              color: QColor, pnl_pt, reason: str):
-        """속 빈 사각형 + pt. 손익 부호는 색이 아니라 **부호 문자**로 읽힌다 —
-        색을 실측 초록/빨강과 맞추면 가상·실측 구분이 무너진다."""
+        """[555차 후속2 / 사용자 지시] 청산 = **밝은 테두리 위에 검은 X**.
+
+        🔴 손익 부호는 **색이 아니라 부호 문자**로 읽는다 — 청산 마커를 손익 색으로
+          칠하면 실측 초록/빨강과 섞여 가상·실측 구분이 무너진다(계측 4원칙 ④).
+          그래서 X 는 언제나 검정이고, 테두리만 방향색을 띤다.
+        """
+        # ① 밝은 바탕 + ② 방향색 테두리 — 캔들 위에서도 X 가 죽지 않게 깔아준다.
+        painter.setBrush(QColor(self.GP_EXIT_RIM))
+        painter.setPen(QPen(color, 1.8))
+        painter.drawEllipse(QRectF(x - 6.5, y - 6.5, 13.0, 13.0))
+        # ③ 그 위에 검은 X
         painter.setBrush(Qt.NoBrush)
-        painter.setPen(QPen(color, 1.4))
-        painter.drawRect(QRectF(x - 4.5, y - 4.5, 9.0, 9.0))
+        painter.setPen(QPen(QColor(self.GP_EXIT_X), 2.0, Qt.SolidLine, Qt.RoundCap))
+        painter.drawLine(QPointF(x - 3.2, y - 3.2), QPointF(x + 3.2, y + 3.2))
+        painter.drawLine(QPointF(x + 3.2, y - 3.2), QPointF(x - 3.2, y + 3.2))
+
         if pnl_pt is None:
             return
         try:
@@ -9409,7 +9573,7 @@ class MinuteChartCanvas(QWidget):
         except (TypeError, ValueError):
             return
         painter.setPen(color)
-        painter.drawText(QRectF(x - S.p(26), y + S.p(6), S.p(52), S.p(12)),
+        painter.drawText(QRectF(x - S.p(26), y + S.p(8), S.p(52), S.p(12)),
                          Qt.AlignCenter, "%+.2fpt" % val)
 
     def _draw_markers(self, painter: QPainter, plot: QRectF, candles, index_map, lo: float, hi: float, padded_count: int):
@@ -9460,6 +9624,14 @@ class MinuteChartCanvas(QWidget):
         x = plot.left() + step * (idx + 0.5)
         y = self._price_to_y(price, plot, lo, hi)
         x, y = self._resolve_marker_overlap(x, y, occupied, kind)
+        # [555차 후속2 / P1] 축 밖 마커는 가장자리에 클램프돼 있다 — 그 사실을
+        # 캐럿으로 남긴다. 표시가 없으면 가장자리 가격인 척한다(계측 4원칙 ④).
+        if self._is_off_axis(price):
+            self._draw_off_axis_caret(
+                painter, x, y,
+                QColor(C["green"] if kind == "LONG" else
+                       (C["red"] if kind == "SHORT" else "#8B949E")),
+                above=price > (self._axis_hi or 0))
         if kind == "LONG":
             color = QColor(C["green"])
             label = dt.strftime("L %H:%M")
@@ -9991,7 +10163,7 @@ class MinuteChartDialog(QDialog):
     def _set_status(self, gp_trades=None, gp_wired=False):
         self._status.setText(
             "%s  |  휠 줌  |  드래그 이동  |  더블클릭 전체보기  |  크로스헤어"
-            "  |  GP 섀도 △▽ 점선 = **가상**  |  %s"
+            "  |  GP 섀도(가상) ↑GB 청 · ↓GS 적 · 청산 ⊗  |  %s"
             % (self.SHORTCUT_TEXT, self._gp_status_text(gp_trades or [], gp_wired))
         )
 
@@ -12850,9 +13022,10 @@ class DashboardAdapter:
         """
         self._win.entry_panel.update_manual_levels(row)
 
-    def update_entry_stats(self, trades: int, wins: int, pnl_pts: float):
-        """당일 진입 통계 갱신"""
-        self._win.entry_panel.update_stats(trades, wins, pnl_pts)
+    def update_entry_stats(self, trades: int, wins: int, pnl_pts: float,
+                           stats: dict = None):
+        """당일 진입 통계 갱신. `stats`=daily_stats() 전체(출처축 포함, 555차 후속2)."""
+        self._win.entry_panel.update_stats(trades, wins, pnl_pts, stats=stats)
 
     def update_divergence(self, div_data: dict):
         """다이버전스 패널 업데이트"""
