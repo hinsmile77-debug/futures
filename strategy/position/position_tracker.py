@@ -7,6 +7,7 @@ import datetime
 import json
 import logging
 import os
+import shutil
 from collections import OrderedDict
 from typing import Optional, Dict, Tuple
 
@@ -45,6 +46,74 @@ _PROD_STATE_FILE = _STATE_FILE
 
 #: 테스트 모드에서 운영 경로 저장을 차단했다는 경고를 세션당 1회만 남기기 위한 플래그.
 _TEST_SAVE_BLOCK_LOGGED = False
+
+#: [MW0601 556차 후속 / G-1] 포지션 상태파일 회전 백업 보관 세대 수.
+#:
+#: 2026-09-10, 출처 불명 이월 포지션의 "언제 열렸는가"를 조사하려 했더니 상태파일이
+#: 청산 직후 값(FLAT)으로 이미 덮어써져 **이전 세대가 하나도 없었다**. 552-10·552-11
+#: 이 고친 "재시작이 상태를 지운다"와 같은 계열이며, 이번 것은 "덮어쓰기 전 스냅샷이
+#: 없다" 변종이다.
+#:
+#: ⚠ **매 저장마다 돌리지 않는다.** `_save_state()` 는 트레일링 조정 등으로 자주
+#:   불리므로, 그때마다 세대를 밀면 링이 몇 분 만에 같은 포지션으로 가득 차 정작
+#:   필요한 **직전 포지션**이 밀려난다. 그래서 아래 `_position_identity()` 가 바뀔
+#:   때(진입·청산·수량 변동)에만 회전한다.
+_STATE_BACKUP_KEEP = 3
+
+#: 회전 백업 파일 접두. `_reject_restore()` 가 만드는 `.rejected_*` 증거 파일과
+#: **접두가 달라야** 한다 — 정리 루틴이 그 증거를 지우면 안 된다.
+_STATE_BACKUP_PREFIX = ".gen_"
+
+
+def _position_identity(state: dict) -> tuple:
+    """[G-1] 회전 여부를 가르는 포지션 동일성 키.
+
+    같은 포지션의 손절 조정·부분청산 플래그 변화는 세대를 밀 만한 사건이 아니다.
+    """
+    return (
+        state.get("status"),
+        state.get("entry_price"),
+        state.get("quantity"),
+        state.get("entry_time"),
+    )
+
+
+def _rotate_state_backup(new_state: dict) -> None:
+    """[MW0601 556차 후속 / G-1] 덮어쓰기 **전** 세대를 남긴다.
+
+    ⚠ 이 함수는 저장을 절대 막지 않는다 — 백업 실패는 삼키고 로그만 남긴다.
+      계측이 본업(상태 영속화)을 깨뜨리면 안 된다.
+    """
+    if not os.path.exists(_STATE_FILE):
+        return
+    try:
+        with open(_STATE_FILE, "r", encoding="utf-8") as f:
+            prev = json.load(f)
+    except Exception as e:
+        # 읽을 수 없는 파일이야말로 남겨야 한다 — 동일성 비교는 포기하고 회전한다.
+        logger.warning("[PositionState] 이전 세대 판독 실패 — 그대로 회전한다: %s", e)
+        prev = None
+
+    if prev is not None and _position_identity(prev) == _position_identity(new_state):
+        return
+
+    stamp = now_kst().strftime("%Y%m%d_%H%M%S")
+    dest = "%s%s%s" % (_STATE_FILE, _STATE_BACKUP_PREFIX, stamp)
+    try:
+        shutil.copy2(_STATE_FILE, dest)
+    except Exception as e:
+        logger.warning("[PositionState] 회전 백업 실패(저장은 계속): %s", e)
+        return
+
+    # 오래된 세대부터 정리 — `.gen_` 접두만 대상으로 한다.
+    try:
+        _base = os.path.basename(_STATE_FILE) + _STATE_BACKUP_PREFIX
+        _dir  = os.path.dirname(_STATE_FILE)
+        gens  = sorted(n for n in os.listdir(_dir) if n.startswith(_base))
+        for stale in gens[:-_STATE_BACKUP_KEEP]:
+            os.remove(os.path.join(_dir, stale))
+    except Exception as e:
+        logger.warning("[PositionState] 회전 백업 정리 실패: %s", e)
 
 
 def compute_trailing_stop_tier(
@@ -2037,6 +2106,9 @@ class PositionTracker:
                 "saved_at":     now_kst().isoformat(),
             }
             os.makedirs(os.path.dirname(_STATE_FILE), exist_ok=True)
+            # [MW0601 556차 후속 / G-1] 덮어쓰기 전에 세대를 남긴다. 포지션 동일성이
+            # 바뀔 때만 회전하므로 트레일링 조정 저장으로는 링이 소모되지 않는다.
+            _rotate_state_backup(state)
             with open(_STATE_FILE, "w", encoding="utf-8") as f:
                 json.dump(state, f, ensure_ascii=False, indent=2)
         except Exception as e:

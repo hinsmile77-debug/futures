@@ -22,6 +22,10 @@ from logging_system.log_manager import log_manager
 
 logger = logging.getLogger("TRADE")
 
+# [MW0601 556차 후속 / G-4] 래치 스냅샷 한 줄에 나열할 최대 레그 수.
+# 넘치면 잘라내되 `… 외 N건` 으로 **잔여 개수를 반드시 남긴다**(계측 4원칙 ③).
+_LATCH_SNAPSHOT_MAX_LEGS = 8
+
 
 # ── 파라미터 설정 오브젝트 ────────────────────────────────────────
 class ProfitGuardConfig:
@@ -135,6 +139,40 @@ class _TrailingGuard:
         self._halt_reason = ""
 
 
+def _format_latch_contributors(contributors) -> str:
+    """[MW0601 556차 후속 / G-4] 래치 시점 손익을 구성한 청산 레그 요약 문자열.
+
+    ⚠ **미측정 ≠ 0**(계측 4원칙 ②). 호출부가 목록을 안 주면 `0건`이 아니라
+      `미측정(호출부 미제공)` 이라고 말한다 — 이 둘을 같은 문구로 쓰면 "구성 레그가
+      없다"와 "누가 구성했는지 안 봤다"가 구분되지 않는다.
+    ⚠ **탈락 가시화**(계측 4원칙 ③). 길면 앞에서 자르되 **잔여 개수를 반드시**
+      적는다(`… 외 N건`). 457차 C6 이 5개만 찍고 7개라 적어 오독을 낳았다.
+    """
+    if contributors is None:
+        return "미측정(호출부 미제공)"
+    items = list(contributors)
+    if not items:
+        return "0건(구성 레그 없음)"
+    parts = []
+    for c in items[:_LATCH_SNAPSHOT_MAX_LEGS]:
+        try:
+            _id  = c.get("id")
+            _ts  = c.get("entry_ts") or "?"
+            _src = c.get("entry_source") or "미기록"
+            _net = float(c.get("net_krw") or 0.0)
+        except Exception:
+            parts.append("?")
+            continue
+        # ⚠ `%` 포매팅은 천단위 콤마(`%,.0f`)를 지원하지 않는다 — ValueError.
+        #   `.format()` 으로 만든다(session_recovery_service 가 같은 함정을 기록해 뒀다).
+        _ids = "id={} ".format(_id) if _id is not None else ""
+        parts.append("{}entry_ts={} src={} net={:+,.0f}원".format(_ids, _ts, _src, _net))
+    _rest = len(items) - len(parts)
+    if _rest > 0:
+        parts.append("… 외 %d건" % _rest)
+    return "%d건 [%s]" % (len(items), " | ".join(parts))
+
+
 # ── Layer 2: 수익 구간별 등급 게이트 ────────────────────────────
 class _TierGate:
     def __init__(self):
@@ -142,14 +180,23 @@ class _TierGate:
         self._halted: bool = False
         self._halt_tier: int = 0
         self._halt_threshold: float = 0.0
+        # [MW0601 556차 후속 / G-4] 래치가 걸린 **그 순간**의 사유 스냅샷.
+        # None = 아직 래치된 적 없음(미측정). 빈 문자열로 채우지 않는다 — 계측 4원칙 ②.
+        self._halt_snapshot = None
 
     def check(
         self,
         current_pnl: float,
         size_mult: float,
         cfg: ProfitGuardConfig,
+        contributors=None,
     ) -> Tuple[bool, int, str]:
         """
+        Args:
+            contributors: [MW0601 556차 후속 / G-4] `current_pnl` 을 구성한 청산 레그
+                목록(선택). `{"id","entry_ts","entry_source","net_krw"}` 키를 읽는다.
+                **판정에는 일절 쓰지 않는다** — 래치 순간 로그에만 실린다.
+
         Returns:
             (blocked, tier_index, reason)
         """
@@ -176,6 +223,25 @@ class _TierGate:
         if stop_tier_hit is not None:
             self._halted = True
             self._halt_tier, self._halt_threshold = stop_tier_hit
+            # ── [MW0601 556차 후속 / G-4] 래치 사유 스냅샷 ────────────────
+            # 2026-09-10, Tier4 가 오염된 손익으로 걸린 뒤 "왜 500,000원을 넘겼다고
+            # 판단했는가"를 재구성하는 데 EOD 마감 로그·DB 조회까지 동원해야 했다.
+            # 래치는 하루에 한 번뿐이므로 **그 순간 한 줄**만 남긴다(로그 폭주 없음).
+            # ⚠ 이 블록은 위 3줄의 판정 결과에 아무 영향을 주지 않는다 — 순수 계측이다.
+            self._halt_snapshot = (
+                "tier={} 임계={:,.0f}원 판정손익={:+,.0f}원 size_mult={:.2f} "
+                "구성레그={}".format(
+                    self._halt_tier, self._halt_threshold, current_pnl, size_mult,
+                    _format_latch_contributors(contributors),
+                )
+            )
+            _msg = "[ProfitGuard][LatchSnapshot] 당일 영구 중단 래치 — " + self._halt_snapshot
+            logger.warning(_msg)
+            try:
+                log_manager.signal(_msg)
+            except Exception:
+                # 계측이 판정을 깨뜨리지 않게 한다 — 로그 실패는 삼키되 위 logger 에는 남는다.
+                pass
             return (
                 True,
                 self._halt_tier,
@@ -208,6 +274,14 @@ class _TierGate:
         self._halted = False
         self._halt_tier = 0
         self._halt_threshold = 0.0
+        # 래치가 풀렸으면 스냅샷도 「미측정」으로 돌아간다 — 어제 사유를 오늘 것으로
+        # 읽게 두지 않는다(계측 4원칙 ④).
+        self._halt_snapshot = None
+
+    @property
+    def halt_snapshot(self):
+        """[G-4] 래치 순간 사유 스냅샷. None = 아직 래치된 적 없음(미측정)."""
+        return self._halt_snapshot
 
     @property
     def is_halted(self) -> bool:
@@ -362,8 +436,15 @@ class ProfitGuard:
         size_mult: float,
         now: Optional[datetime.datetime] = None,
         pnl_source: Optional[str] = None,
+        pnl_contributors=None,
     ) -> Tuple[bool, str]:
         """
+        Args:
+            pnl_contributors: [MW0601 556차 후속 / G-4] `daily_pnl_krw` 를 구성한 청산
+                레그 목록(선택). L2 래치가 걸리는 **그 순간 한 줄**을 남기는 데만 쓰며,
+                **어떤 판정에도 관여하지 않는다.** 안 주면 스냅샷이 `미측정` 이라고
+                말한다(0건과 구분 — 계측 4원칙 ②).
+
         Returns:
             (allowed: bool, reason: str)
         """
@@ -378,7 +459,8 @@ class ProfitGuard:
             return self._block("L1-Trail", self._trail._halt_reason)
 
         # Layer 2
-        blocked, tier, reason = self._tier.check(daily_pnl_krw, size_mult, self.cfg)
+        blocked, tier, reason = self._tier.check(
+            daily_pnl_krw, size_mult, self.cfg, contributors=pnl_contributors)
         if blocked:
             return self._block(f"L2-Tier{tier}", reason)
 
@@ -437,6 +519,8 @@ class ProfitGuard:
             "pcb_consec":     self._pcb.consec_loss,
             "pcb_halted":     self._pcb.is_halted,
             "tier_halted":    self._tier.is_halted,
+            # [MW0601 556차 후속 / G-4] 래치 사유. None = 미측정(래치 없음).
+            "tier_halt_snapshot": self._tier.halt_snapshot,
             "tier_halt_threshold": self._tier.halt_threshold,
             "blocked_today":  self._blocked_today,
             "block_log":      list(self._block_log[-20:]),

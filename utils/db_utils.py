@@ -2470,6 +2470,47 @@ def sum_today_system_net_krw(rows, sources=None) -> dict:
     }
 
 
+def system_leg_details(rows, sources=None) -> list:
+    """[MW0601 556차 후속 / G-4] `sum_today_system_net_krw()` 의 **합계에 들어간 레그**를
+    그대로 목록으로 돌려준다 — ProfitGuard L2 래치 스냅샷용.
+
+    같은 파일·같은 화이트리스트를 쓰는 것이 요점이다. 합계와 목록이 다른 곳에서
+    각자 골라지면 "스냅샷이 지목한 레그의 합"과 "판정에 쓴 금액"이 어긋난다
+    (계측 4원칙 ⑤ — 대사는 모든 축을 걸어라).
+
+    Returns:
+        [{"id","entry_ts","entry_source","net_krw"}, ...] — 시스템 레그만.
+        빈 목록은 **"시스템 레그가 없다"** 이고, 호출 자체를 안 한 「미측정」과는
+        다르다(계측 4원칙 ②). 그 구분은 소비처가 `None` vs `[]` 로 표현한다.
+    """
+    if sources is None:
+        try:
+            from config.settings import PROFIT_GUARD_SYSTEM_SOURCES as _S
+            sources = _S
+        except Exception:
+            sources = ("SYSTEM_AUTO",)
+    sources = tuple(sources or ())
+
+    out = []
+    for r in (rows or []):
+        try:
+            keys = r.keys() if hasattr(r, "keys") else ()
+            src = r["entry_source"] if "entry_source" in keys else None
+            if src not in sources:
+                continue
+            out.append({
+                "id":           r["id"] if "id" in keys else None,
+                "entry_ts":     (r["entry_ts"] if "entry_ts" in keys else None) or "?",
+                "entry_source": src,
+                "net_krw":      float(r["pnl_krw"] or 0.0),
+            })
+        except Exception:
+            # 한 행이 깨져도 나머지 스냅샷은 살린다 — 다만 조용히 지우지 않는다.
+            out.append({"id": None, "entry_ts": "?", "entry_source": "판독실패",
+                        "net_krw": 0.0})
+    return out
+
+
 def fetch_ev_by_grade(days_back: int = 30, system_only: bool = False) -> List[sqlite3.Row]:
     """등급별 순EV(수수료 차감 후 실집행 기준) — grade, cnt, win_rate, avg_net_pnl_krw, total_net_pnl_krw.
     [260704 감사 P0] "방향 적중률" 대신 "거래당 순기대값"을 보는 관점 — fetch_grade_stats()(pnl_pts 방향)와 병행 참고.

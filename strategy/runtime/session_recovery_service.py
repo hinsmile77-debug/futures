@@ -7,7 +7,8 @@ from typing import Any
 from PyQt5.QtCore import QTimer
 
 from logging_system.log_manager import log_manager
-from utils.db_utils import fetch_today_trades, sum_today_system_net_krw
+from utils.db_utils import (fetch_today_trades, sum_today_system_net_krw,
+                            system_leg_details)
 
 logger = logging.getLogger("SYSTEM")
 
@@ -273,6 +274,14 @@ class SessionRecoveryService:
             system._sys_daily_other_krw  = float(_sys["other_net_krw"])
             system._sys_daily_other_legs = int(_sys["other_legs"])
             system._sys_daily_date       = today_str
+            # [MW0601 556차 후속 / G-4] 래치 스냅샷 원장도 함께 복원한다.
+            # 합계만 되살리고 원장을 비워 두면, 재기동 직후 걸리는 래치가
+            # **매번 「0건(구성 레그 없음)」**이라고 말한다 — 2026-09-10 12:17
+            # 재기동 직후의 재latch 가 정확히 그런 경우였다(합계 +6,921,594원이
+            # 되살아나 즉시 래치됐는데 그 구성이 어디에도 안 남았다).
+            # ⚠ 위 `sum_today_system_net_krw()` 와 **같은 화이트리스트**로 고른다.
+            #   여기서 갈리면 스냅샷 구성과 합계가 어긋난다.
+            system._sys_daily_legs_detail = system_leg_details(rows)
             # ⚠ `%` 포매팅은 천단위 콤마(`%,.0f`)를 지원하지 않는다 — ValueError.
             #   포맷을 먼저 만들어 넘긴다.
             logger.info(

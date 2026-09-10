@@ -226,6 +226,30 @@ _SHAP_RR_HORIZONS = ("1m", "3m", "5m")
 #   `_armistice_time_ok AND _armistice_sync_ok` 가 단독으로 정한다.
 _ARMISTICE_STUCK_AFTER = datetime.time(9, 30)
 _ARMISTICE_STUCK_LOG_THROTTLE_SEC = 300
+# 🔴 [MW0601 556차 후속 / F-5] 고착 경보의 **워밍업 유예**.
+#
+# 종전 경보 조건은 `in_armistice AND 벽시계 >= 09:30` 뿐이었다. 그런데
+# `in_armistice = not (time_ok and sync_ok)` 이고 `time_ok` 는 프로세스가 뜬 뒤
+# 90초 동안 **정상적으로** False 다. 그래서 **09:30 이후에 재기동하면 그 90초 창이
+# 통째로 "🔴 개장 30분 초과 고착" ERROR 로 찍힌다** — 2026-09-10 14:41:01 재기동
+# 61초 뒤인 14:42:02 에 `time_ok=False sync=2/2 broker_verified=True
+# block_new_entries=False` 로 실측됐다. 진입 차단 효과는 없었고(90초 뒤 자동 해제)
+# 경보만 거짓으로 울린 것이다.
+#
+# ⚠ **`_restart_armistice_until` 이 재연장된 것이 아니다** — 그 필드의 대입 지점은
+#   `__init__` 단 1곳이며, 90초가 지나면 `time_ok` 는 True 로 굳는다. 즉
+#   `time_ok=False` 는 **항상 90초 이내의 일시 상태**이고, 그것을 "고착"이라 부르는
+#   것 자체가 오분류였다. 진짜 고착(2026-08-31 47분 사고)은 `time_ok=True` 인데
+#   `sync_ok=False` 로 멈춘 형태다.
+#
+# 조치: 경보를 두 갈래로 나눈다.
+#   · `sync` — time_ok=True 인데 sync 가 안 오른 상태. 2026-08-31 양식, 즉시 경보.
+#   · `time` — time_ok=False 가 워밍업 유예(아래)를 넘겨 지속. 지금 코드에서는
+#              도달 불가지만, 훗날 재연장 경로가 생기면 이쪽이 잡는다(가드 보존).
+# 유예는 90초 창의 10배로 넉넉히 잡는다 — 정상 워밍업을 절대 물지 않으면서
+# 이상 지속은 15분 안에 드러난다.
+# ⚠ 차단 판정(`in_armistice`)은 **한 글자도 바뀌지 않는다** — 여기는 경보 게이트다.
+_ARMISTICE_WARMUP_GRACE_SEC = 900
 
 EFFECT_MONITOR_HISTORY_PATH = os.path.join(BASE_DIR, "effect_monitor_history.json")
 # [432차] TP1_PROTECT_PLUS_ALPHA_PTS / TP1_PROTECT_ATR_LOCK_MULT는 여기서 리터럴로
@@ -1135,6 +1159,12 @@ class TradingSystem:
         self._restart_armistice_until: object = (
             datetime.datetime.now() + datetime.timedelta(seconds=90)
         )
+        # [MW0601 556차 후속 / F-5] 이 프로세스의 유예 **시작** 시각.
+        # 고착 경보가 "벽시계 09:30"만 보고 판정하면 장중 재기동의 정상 워밍업
+        # 90초를 고착으로 오인한다(2026-09-10 14:42:02 실측). 경과시간을 재려면
+        # 기준점이 있어야 하므로 여기서 명시 초기화한다 — `getattr(..., default)`
+        # 로 나중에 읽지 않는다(계측 4원칙 ④, 552-10 이 기준점을 잃어 터진 계열).
+        self._restart_armistice_started_at: object = datetime.datetime.now()
         self._restart_armistice_sync_count: int = 0
         # [506차 F-6] 고착 감시 — 승격 1회 로그 / 30분 초과 ERROR 5분 스로틀.
         # None = 아직 한 번도 찍지 않음(미기록). 0.0 같은 폴백 금지 — 계측 4원칙 ②·④.
@@ -1288,6 +1318,12 @@ class TradingSystem:
         self._sys_daily_other_krw: float = 0.0   # 외부·수동·복구분(표시 전용)
         self._sys_daily_other_legs: int  = 0
         self._sys_daily_date:      str   = datetime.date.today().isoformat()
+        # [MW0601 556차 후속 / G-4] 위 `_sys_daily_net_krw` 를 **구성한** 시스템 레그
+        # 원장. ProfitGuard L2 래치가 걸리는 순간 "무엇이 그 금액을 만들었는가"를
+        # 한 줄로 남기기 위한 것이며, **판정에는 쓰이지 않는다**(표시·로그 전용).
+        # 2026-09-10 Tier4 오염 래치의 원인 거래를 특정하는 데 EOD 로그·DB 조회까지
+        # 동원해야 했던 것이 계기다.
+        self._sys_daily_legs_detail: list = []
         # [260704 감사 P1] 지정가 우선 집행 상태 (LIMIT_ENTRY_FIRST_ENABLED=False면 미사용)
         self._pending_limit_is_active: bool = False
         self._pending_limit_order_no: str = ""
@@ -3910,10 +3946,20 @@ class TradingSystem:
             self._sys_daily_legs = 0
             self._sys_daily_other_krw = 0.0
             self._sys_daily_other_legs = 0
+            self._sys_daily_legs_detail = []
         _leg_net = float(executed_metrics["net_pnl_krw"])
         if _entry_src_this_leg in PROFIT_GUARD_SYSTEM_SOURCES:
             self._sys_daily_net_krw += _leg_net
             self._sys_daily_legs += 1
+            # [MW0601 556차 후속 / G-4] 합계와 **같은 자리·같은 조건**에서 원장에도
+            # 적는다. 여기서 갈리면 스냅샷이 말하는 구성과 실제 합계가 어긋난다
+            # (546차가 DB INSERT 와 같은 자리에 누적기를 둔 것과 같은 이유).
+            self._sys_daily_legs_detail.append({
+                # DB INSERT 와 **같은 키**를 읽는다(`result.get("entry_ts", now_str)`).
+                "entry_ts":     str(result.get("entry_ts") or now_str),
+                "entry_source": _entry_src_this_leg or "미기록",
+                "net_krw":      _leg_net,
+            })
         else:
             self._sys_daily_other_krw += _leg_net
             self._sys_daily_other_legs += 1
@@ -9429,6 +9475,14 @@ class TradingSystem:
             # `[DebugPnL]` 줄은 등급이 이미 X면 찍히지 않아 커버리지가 23%뿐이다
             # (08-18 실측 37/160). 계측 4원칙 ①(단위 명시)·④(폴백 가시화).
             pnl_source=_pg_pnl_source,
+            # [MW0601 556차 후속 / G-4] L2 래치가 걸리는 순간 "무엇이 이 금액을
+            # 만들었는가"를 한 줄로 남기기 위한 원장. **판정에는 관여하지 않는다.**
+            # ⚠ 판정에 쓴 축이 시스템 한정일 때만 의미가 있다 — 계좌 전체 축으로
+            #   판정한 날 시스템 레그 목록을 사유로 내밀면 축이 어긋난다(계측 4원칙 ①).
+            #   그 경우 None 을 넘겨 스냅샷이 스스로 「미측정」이라 말하게 둔다.
+            pnl_contributors=(
+                self._sys_daily_legs_detail if PROFIT_GUARD_SYSTEM_ONLY_PNL else None
+            ),
         )
         if not _pg_allowed and _final_grade not in ("X",):
             _final_grade = "X"
@@ -12974,6 +13028,9 @@ class TradingSystem:
         self._sys_daily_legs = 0
         self._sys_daily_other_krw = 0.0
         self._sys_daily_other_legs = 0
+        # [556차 후속 / G-4] 원장도 같은 자리에서 비운다 — 합계만 0이 되고 원장이
+        # 남으면 다음날 래치 스냅샷이 전날 레그를 사유로 지목한다.
+        self._sys_daily_legs_detail = []
         self._sys_daily_date = datetime.date.today().isoformat()
         self.online_learner.reset_daily()
         # [311차 후속 B안] 극단성 보정기 — GBM 배치재학습과 같은 리듬(일 1회)으로 재적합.
@@ -16304,19 +16361,41 @@ def _ts_evaluate_armistice(self, now_dt):
     # 종전에는 `[차단] Restart Armistice` INFO 한 줄뿐이라 하루를 통째로 잃고도
     # 아무 경보가 뜨지 않았다(계측 4원칙 ④ — 폴백이 정상값처럼 보인다).
     # 등급과 무관하게 찍는다 — 등급이 X뿐인 것 자체가 증상일 수 있다.
+    # [MW0601 556차 후속 / F-5] 고착 **종류**를 먼저 가른다. None = 경보 없음.
+    #   sync — time_ok 는 이미 True 인데 sync 가 안 올랐다(2026-08-31 47분 사고 양식).
+    #   time — time_ok=False 가 워밍업 유예를 넘겨 지속(현행 코드에선 도달 불가).
+    # 유예 안의 time_ok=False 는 **정상 워밍업**이므로 경보하지 않는다.
+    _started_at = self._restart_armistice_started_at
+    # 기준점이 없으면 경과시간을 "0"으로 채우지 않는다 — 미측정이다(계측 4원칙 ②).
+    _armistice_elapsed = (
+        (now_dt - _started_at).total_seconds() if _started_at is not None else None
+    )
+    _stuck_kind = None
     if in_armistice and now_dt.time() >= _ARMISTICE_STUCK_AFTER:
+        if time_ok:
+            _stuck_kind = "sync"
+        elif _armistice_elapsed is None or _armistice_elapsed >= _ARMISTICE_WARMUP_GRACE_SEC:
+            # 미측정도 경보한다 — 모르면 조용히 넘기지 않는다(계측 4원칙 ②·④).
+            _stuck_kind = "time"
+
+    if _stuck_kind is not None:
         stuck_last = self._armistice_stuck_last_log
         if (
             stuck_last is None
             or (now_dt - stuck_last).total_seconds() >= _ARMISTICE_STUCK_LOG_THROTTLE_SEC
         ):
             self._armistice_stuck_last_log = now_dt
+            _elapsed_str = (
+                "미측정" if _armistice_elapsed is None
+                else "%.0f초" % _armistice_elapsed
+            )
             log_manager.system(
-                "[Armistice] 🔴 개장 30분 초과 고착 — 자동진입 전면 차단 중 "
-                "(time_ok=%s sync=%d/2 broker_verified=%s block_new_entries=%s) "
-                "— 2026-08-31 47분 전 구간 차단 사고와 동일 양식"
-                % (time_ok, self._restart_armistice_sync_count,
-                   self._broker_sync_verified, self._broker_sync_block_new_entries),
+                "[Armistice] 🔴 개장 30분 초과 고착[%s] — 자동진입 전면 차단 중 "
+                "(time_ok=%s sync=%d/2 broker_verified=%s block_new_entries=%s "
+                "유예경과=%s) — 2026-08-31 47분 전 구간 차단 사고와 동일 양식"
+                % (_stuck_kind, time_ok, self._restart_armistice_sync_count,
+                   self._broker_sync_verified, self._broker_sync_block_new_entries,
+                   _elapsed_str),
                 "ERROR",
             )
 

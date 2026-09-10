@@ -74,6 +74,9 @@ class _StubSelf(object):
                  verified=False, block_new_entries=True):
         # __init__ 이 now+90s 로 세우는 값을 시각으로 고정
         self._restart_armistice_until = started_at + datetime.timedelta(seconds=90)
+        # [MW0601 556차 후속 / F-5] 고착 경보가 워밍업 90초를 오탐하지 않도록
+        # __init__ 이 함께 세우는 유예 시작 시각. 스텁도 같이 갖는다.
+        self._restart_armistice_started_at = started_at
         self._restart_armistice_sync_count = sync_count
         self._armistice_promoted_logged = False
         self._armistice_stuck_last_log = None
