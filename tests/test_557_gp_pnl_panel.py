@@ -71,7 +71,7 @@ class FakePanel(object):
     """
 
     def __init__(self, rows, broker_pnl, gp_by_day, gp_cnt, wired, gp_on,
-                 gp_loaded=True):
+                 gp_loaded=True, fwd=True, rev=True):
         from dashboard.main_dashboard import PnlHistoryPanel as _P
         self._rows = rows
         self._broker_pnl = dict(broker_pnl)
@@ -82,15 +82,24 @@ class FakePanel(object):
         # None(미시도) 을 보존한다 — bool(None) 로 접으면 3분법이 무너진다.
         self._gp_loaded = gp_loaded if gp_loaded is None else bool(gp_loaded)
         self._cb_gp = _CB(gp_on)
-        self._cb_forward = _CB(True)
-        self._cb_reverse = _CB(True)
+        self._cb_forward = _CB(fwd)
+        self._cb_reverse = _CB(rev)
+        # 브로커 net 을 써도 되는 날인지 판정하는 분모(_day_is_whole).
+        self._day_total_n = {}
+        for _r in rows:
+            _d = _r["entry_ts"][:10]
+            self._day_total_n[_d] = self._day_total_n.get(_d, 0) + 1
         self._gp_banner = _Banner()
         for _name in ("_gp_on", "_gp_day_krw", "_gp_total_count",
                       "_gp_banner_state", "_gp_offtable_days", "_gp_probe_note",
                       "_update_gp_banner", "_effective_day_krw",
                       "_group_effective_krw", "_daily_bucket",
-                      "_mdd", "_mdd_daily", "_active_rows", "_stats"):
+                      "_mdd", "_mdd_daily", "_active_rows", "_stats",
+                      "_day_is_whole", "_group"):
             setattr(self, _name, getattr(_P, _name).__get__(self, FakePanel))
+        # staticmethod 는 바인딩하지 않는다 — 하면 self 가 첫 인자로 들어간다.
+        for _name in ("_gp_placeholder_row", "_week_key"):
+            setattr(self, _name, getattr(_P, _name))
 
 
 def _row(ts, krw, pts=1.0):
@@ -175,12 +184,17 @@ def test_2_gp_applies_on_broker_days_too():
     #    55000.00000000001 이 된다. 관문은 날짜별로 더하므로 그 순서 그대로 센다.
     assert delta == 1.5 * MINI_PT + (-0.4) * MINI_PT
 
-    # GP 만 있는 날은 **표에 행이 없다** — 그 사실이 숨지 않아야 한다(계측 4원칙 ③).
+    # 실거래가 없는 날에도 GP 는 표에 남아야 한다(557차 후속2 — 종전엔 사라졌다).
     lonely = _panel(True, gp_by_day=dict(_GP, **{"2026-09-07": 2.0}),
                     gp_cnt=dict(_GPC, **{"2026-09-07": 1}))
-    assert lonely._gp_offtable_days() == 1
-    lonely._update_gp_banner()
-    assert "표 밖 1일" in lonely._gp_banner.text
+    days = dict(lonely._group(lambda ts: ts[:10]))
+    assert "2026-09-07" in days, "실거래 0건인 GP 날짜가 표에서 사라졌다"
+    assert lonely._effective_day_krw("2026-09-07", days["2026-09-07"]) == 2.0 * MINI_PT
+    # 자리 행은 거래가 아니다 — 건수·승패·pt 에 들어가면 안 된다.
+    n, wins, losses, ppts, pkrw = lonely._stats(days["2026-09-07"])
+    assert (n, wins, losses, ppts, pkrw) == (0, 0, 0, 0.0, 0.0)
+    # 그리고 표에 그려졌으므로 「표 밖」은 0 이다(축이 렌더 기준으로 바뀌었다).
+    assert lonely._gp_offtable_days() == 0
 
 
 # ── 회귀 ③ 승수 50,000 ────────────────────────────────────────
@@ -292,6 +306,110 @@ def test_5_banner_three_states():
     never._update_gp_banner()
     assert "아직 조회 전" in never._gp_banner.text
     assert "조회 실패" not in never._gp_banner.text
+
+
+# ══ 557차 후속2 — 화면에서 GP 가 보이지 않던 결함 3종 ═════════
+
+def test_6_gp_visible_when_source_filters_all_off():
+    """🔴 2026-09-10 실제 발생. 순방향·역방향을 모두 해제하고 GP(가상)만 켜면
+    표가 통째로 비었는데 배너는 「GP 1건이 합산돼 있다」고 말했다.
+
+    체크박스는 사용자에게 **세 개의 소스**로 보인다. GP 만 남기는 선택은 자연스럽고,
+    그 선택이 아무것도 보여주지 못하면 계측이 아니라 오해의 원천이다.
+    """
+    p = _panel(True, fwd=False, rev=False)
+    # 실거래는 전부 필터로 빠지지만 GP 날짜는 살아 있어야 한다.
+    days = dict(p._group(lambda ts: ts[:10]))
+    assert set(days) == {"2026-09-08", "2026-09-09"}, days
+    # 값은 **GP 만**이다 — 빠진 실거래의 브로커 net 이 섞이면 안 된다.
+    assert p._effective_day_krw("2026-09-08", days["2026-09-08"]) == 1.5 * MINI_PT
+    assert p._effective_day_krw("2026-09-09", days["2026-09-09"]) == -0.4 * MINI_PT
+    # 거래 건수·승패는 0 이다(자리 행은 거래가 아니다).
+    for d in days:
+        assert p._stats(days[d])[0] == 0
+    # 배너가 「실거래가 빠져 있다」를 말한다(계측 4원칙 ③).
+    p._update_gp_banner()
+    assert "실거래는 표에서 빠져 있다" in p._gp_banner.text
+
+    # GP 도 끄면 종전대로 완전히 빈다 — 자리 행이 새어 나오지 않는다.
+    off = _panel(False, fwd=False, rev=False)
+    assert off._active_rows() == []
+    assert off._group(lambda ts: ts[:10]) == []
+
+
+def test_7_broker_net_not_used_on_partially_selected_day():
+    """🔴 브로커 net 은 그 날 **전체**의 예탁금 차액이라 쪼갤 수 없다.
+
+    순방향/역방향으로 일부만 선택된 날에 그 값을 쓰면 **빠진 거래의 손익까지**
+    표시된다. 557차 검토가 "dev 엔 부분 선택이 없다"고 판단한 것은 틀렸다.
+    """
+    rows = [
+        _row("2026-09-08 10:00:00", 100_000),
+        dict(_row("2026-09-08 11:00:00", -30_000), reverse_entry_enabled=1),
+    ]
+    whole = FakePanel(rows=rows, broker_pnl={"2026-09-08": 62_000}, gp_by_day={},
+                      gp_cnt={}, wired=False, gp_on=False)
+    part = FakePanel(rows=rows, broker_pnl={"2026-09-08": 62_000}, gp_by_day={},
+                     gp_cnt={}, wired=False, gp_on=False, fwd=True, rev=False)
+
+    b_whole = whole._daily_bucket(whole._active_rows())["2026-09-08"]
+    assert whole._day_is_whole("2026-09-08", b_whole) is True
+    assert whole._effective_day_krw("2026-09-08", b_whole) == 62_000   # 전량 선택 = 실측
+
+    b_part = part._daily_bucket(part._active_rows())["2026-09-08"]
+    assert part._day_is_whole("2026-09-08", b_part) is False
+    got = part._effective_day_krw("2026-09-08", b_part)
+    assert got == 100_000, "부분 선택인데 브로커 전량 net 이 표시됐다"
+    assert got != 62_000
+
+
+def test_8_offtable_axis_is_what_is_rendered():
+    """탈락 가시화(계측 4원칙 ③)는 **실제로 그려진 것**을 축으로 재야 한다.
+
+    종전 구현은 self._rows(필터 이전 전체)를 축으로 삼아, 표가 비어 있어도
+    「표 밖 0일」을 보고했다 — 탈락을 재는 계측이 탈락을 놓쳤다.
+    """
+    p = _panel(True)
+    assert p._gp_offtable_days() == 0
+
+    # 일별 탭은 최근 60일만 그린다. 그보다 오래된 GP 날짜는 「표 밖」이어야 한다.
+    many = {"2026-%02d-%02d" % (m, d): 1.0
+            for m in (5, 6, 7) for d in range(1, 29)}      # 84일
+    far = _panel(True, gp_by_day=dict(_GP, **many),
+                 gp_cnt=dict(_GPC, **{k: 1 for k in many}))
+    shown = set(d for d, _ in far._group(lambda ts: ts[:10])[-60:])
+    hidden = [d for d in far._gp_by_day if d not in shown]
+    assert len(hidden) > 0, "60일을 넘겼는데 잘린 날짜가 없다"
+    assert far._gp_offtable_days() == len(hidden)
+    far._update_gp_banner()
+    assert ("표 밖 %d일" % len(hidden)) in far._gp_banner.text
+
+    # GP 를 끄면 탈락 개념 자체가 없다.
+    assert _panel(False)._gp_offtable_days() == 0
+
+
+def test_9_no_hangul_inside_strftime_format():
+    """🔴 `strftime` 포맷 문자열에 한글이 들어가면 py37 32-bit Windows 에서
+    **프로세스가 트레이스백 없이 즉사**한다.
+
+    2026-09-10 실측: 차트 GP 진입 라벨의 `dt.strftime("GP진입 %H:%M")` 한 줄이
+    `paintEvent` 를 죽였다. 예외가 아니라 프로세스 종료라 `try/except` 로 못 잡고
+    로그도 안 남는다 — CLAUDE.md 의 BLAS 즉사(0xC06D007F)와 같은 계열의 증상이다.
+    기준선 대조로 확인했다: GP 도형만 그리면 정상, 라벨을 그리면 죽는다.
+
+    ⚠ 시각은 ASCII 포맷으로 만들고 한글은 **뒤에 이어붙일 것**.
+    """
+    import glob
+
+    _pat = re.compile(r"""strftime\(\s*(['"])(.*?)\1""")
+    bad = []
+    for path in glob.glob(os.path.join(_ROOT, "dashboard", "*.py")):
+        for lineno, line in enumerate(io.open(path, encoding="utf-8"), 1):
+            for m in _pat.finditer(line):
+                if any("가" <= ch <= "힣" for ch in m.group(2)):
+                    bad.append("%s:%d  %s" % (os.path.basename(path), lineno,
+                                              line.strip()[:90]))
+    assert not bad, "strftime 포맷에 한글 — py37_32 즉사:\n" + "\n".join(bad)
 
 
 # ── 스텁 방어 — 504차 「반쪽 이식」 재발 방지 ─────────────────

@@ -3432,6 +3432,68 @@ def fetch_gp_shadow_positions(limit_days: int = 90) -> List[dict]:
     return out
 
 
+def fetch_gp_shadow_chart_markers(date_str: str) -> List[dict]:
+    """[MW0602 557차 후속2] 그 날짜의 GP(가상) 진입·청산 — **차트 마커 전용**.
+
+    🔴 `fetch_gp_shadow_positions()` 와 목적이 다르다. 그쪽은 손익 합산용이라
+      `exit_ts IS NOT NULL` 로 **청산분만** 준다. 차트는 **아직 안 닫힌 진입**도
+      그려야 한다 — 그 마커가 없으면 화면상 「GP 가 진입하지 않은 것」과 구분되지
+      않는다(계측 4원칙 ②: 미청산 ≠ 미진입).
+
+    ⚠ 반환 행은 **실적이 아니다.** `exit_ts`·`exit_price`·`pnl_pt` 는 미청산 시
+      `None` 이며 0 이 아니다 — 호출부가 그 둘을 구분해야 한다.
+
+    Returns:
+        dict 리스트(진입 시각 오름차순). 조회 실패·테이블 부재는 **빈 리스트**이며
+        「진입 0건」이 아니라 **미배선/미측정**일 수 있다.
+    """
+    if not date_str or len(str(date_str)) < 10:
+        return []
+    day = str(date_str)[:10]
+    try:
+        from config.settings import CHALLENGER_DB, VALIDATION_CAMPAIGN
+        ids = VALIDATION_CAMPAIGN["gp_rule_challenger_ids"]
+        wanted = (ids["long"], ids["short"])
+    except Exception as _e:
+        logger.debug("[GP차트] 사전등록 조회 실패: %s", _e)
+        return []
+    try:
+        rows = fetchall(
+            CHALLENGER_DB,
+            """SELECT challenger_id, entry_ts, exit_ts, direction,
+                      entry_price, exit_price, pnl_pt, exit_reason
+               FROM challenger_trades
+               WHERE challenger_id IN (?,?)
+                 AND (substr(entry_ts,1,10) = ? OR substr(exit_ts,1,10) = ?)
+               ORDER BY entry_ts ASC""",
+            (wanted[0], wanted[1], day, day),
+        )
+    except Exception as _e:
+        logger.debug("[GP차트] challenger.db 조회 스킵: %s", _e)
+        return []
+
+    out = []
+    for r in rows:
+        try:
+            _d = int(r["direction"] or 0)
+            out.append({
+                "challenger_id": r["challenger_id"],
+                "entry_ts": r["entry_ts"],
+                "exit_ts": r["exit_ts"],            # None = 미청산
+                "direction": _d,
+                "direction_txt": "LONG" if _d > 0 else ("SHORT" if _d < 0 else ""),
+                "entry_price": float(r["entry_price"] or 0.0),
+                "exit_price": (float(r["exit_price"])
+                               if r["exit_price"] is not None else None),
+                "pnl_pt": (float(r["pnl_pt"])
+                           if r["pnl_pt"] is not None else None),
+                "exit_reason": r["exit_reason"] or "",
+            })
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def gp_shadow_is_wired() -> bool:
     """GP 섀도가 **배선돼 있는가**(신호를 낸 적이 있는가).
 

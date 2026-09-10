@@ -357,18 +357,46 @@ def test_recovery_is_skippable_for_tests():
 # ── 통합 불변식 ─────────────────────────────────────────────────────────────
 
 def test_live_db_has_no_orphan_open_trades():
-    """실 DB 회귀 — 553차 Phase 2 정규화 이후 미청산 0건이어야 한다."""
+    """실 DB 회귀 — 553차 Phase 2 정규화 이후 **고아** 미청산 0건이어야 한다.
+
+    🔴 [MW0602 557차 후속2 정정] 종전에는 `exit_ts IS NULL` 을 통째로 세어
+      **「보유 중」과 「고아」를 같은 것으로 취급**했다. GP 챌린저가 한 번도
+      거래한 적이 없던 동안에는 그 수가 늘 0 이라 결함이 보이지 않았고,
+      2026-09-10 에 GP 가 처음 장중 포지션을 들자 곧바로 FAIL 이 됐다
+      (12:47 진입 · 보유 중 — 정상 상태다).
+
+    고아의 정의는 **절대원칙 §1(오버나이트 금지)** 에서 나온다:
+    당일 진입분은 그날 안에 닫혀야 하므로, **진입일이 오늘이 아닌 미청산 행**만
+    고아다. 마감 경로가 새면 다음 거래일에 이 테스트가 잡는다(하루 지연).
+
+    ⚠ 상시 FAIL 하는 테스트는 사람을 무디게 만든다 — 그래서 축을 고쳤지,
+      단정을 지운 것이 아니다.
+    """
+    import datetime as _dt
     from config.settings import CHALLENGER_DB
     if not os.path.exists(CHALLENGER_DB):
         pytest.skip("challenger.db 없음")
+    today = _dt.date.today().isoformat()
     con = sqlite3.connect("file:%s?mode=ro" % CHALLENGER_DB, uri=True)
-    n_open = con.execute(
-        "SELECT COUNT(*) FROM challenger_trades WHERE exit_ts IS NULL").fetchone()[0]
+    orphans = con.execute(
+        "SELECT challenger_id, entry_ts FROM challenger_trades "
+        "WHERE exit_ts IS NULL AND substr(entry_ts,1,10) <> ? "
+        "ORDER BY entry_ts LIMIT 5", (today,)).fetchall()
+    n_orphan = con.execute(
+        "SELECT COUNT(*) FROM challenger_trades "
+        "WHERE exit_ts IS NULL AND substr(entry_ts,1,10) <> ?", (today,)).fetchone()[0]
+    n_open_today = con.execute(
+        "SELECT COUNT(*) FROM challenger_trades "
+        "WHERE exit_ts IS NULL AND substr(entry_ts,1,10) = ?", (today,)).fetchone()[0]
     n_legacy = con.execute(
         "SELECT COUNT(*) FROM challenger_trades "
         "WHERE exit_ts IS NOT NULL AND commission_rate_used IS NULL").fetchone()[0]
     con.close()
-    assert n_open == 0, "미청산 %d건 — 마감/복구 경로가 새고 있다" % n_open
+    # 당일 보유분은 실패가 아니다 — 다만 **미측정**이므로 눈에 보이게 남긴다.
+    print("[553] 당일 보유 중 %d건 (실패 아님) · 고아 %d건" % (n_open_today, n_orphan))
+    assert n_orphan == 0, (
+        "고아 미청산 %d건 — 마감/복구 경로가 새고 있다(절대원칙 §1 위반): %s"
+        % (n_orphan, [tuple(r) for r in orphans]))
     assert n_legacy == 0, (
         "비용 세대 미표기 %d건 — scripts/challenger_cost_normalize.py --apply 필요" % n_legacy)
 
