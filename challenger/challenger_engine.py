@@ -78,16 +78,30 @@ class ChallengerEngine(object):
     # ── 공개 API ──────────────────────────────────────────────────
 
     def run_shadow(self, features, candle, context):
-        # type: (Dict[str, Any], Dict[str, Any], Dict[str, Any]) -> None
+        # type: (Dict[str, Any], Dict[str, Any], Dict[str, Any]) -> List[str]
+        """이번 봉의 섀도 1회전.
+
+        [MW0601 555차] 반환값 신설 — **이번 봉에 DB 로 청산이 기입된 도전자 id 목록**.
+
+        🔴 종전에는 `None` 이었고, 그래서 가상 청산에 **어떤 소비자도 붙을 수 없었다.**
+          호출부(`main.py` STEP 9 훅)가 「청산이 났는지」를 알 방법이 없으니 손익 추이
+          패널은 실거래 이벤트에만 갱신됐다 — FP-CRITICAL 죽은 게이트·TOX 죽은 섀도와
+          같은 계열이다(계산은 하는데 아무도 안 본다).
+
+        ⚠ **예외로 죽지 않는다**는 성질은 그대로다. 예외가 나면 그 봉의 청산 목록은
+          부분적일 수 있으며, 그것은 「청산 0건」이 아니라 **미측정**이다 — 로그가 남는다.
+        """
         t0 = time.time()
+        closed_cids = []   # type: List[str]
         try:
-            self._run_shadow_inner(features, candle, context)
+            closed_cids = self._run_shadow_inner(features, candle, context) or []
         except Exception:
             logger.error("[Engine] run_shadow 예외:\n%s", traceback.format_exc())
         finally:
             elapsed_ms = (time.time() - t0) * 1000.0
             if elapsed_ms > SHADOW_WARN_MS:
                 logger.warning("[Engine] run_shadow %.1fms (목표 <5ms)", elapsed_ms)
+        return closed_cids
 
     def update_daily_metrics(self, date_str):
         # type: (str) -> None
@@ -257,6 +271,8 @@ class ChallengerEngine(object):
     # ── 내부 구현 ─────────────────────────────────────────────────
 
     def _run_shadow_inner(self, features, candle, context):
+        # type: (Dict[str, Any], Dict[str, Any], Dict[str, Any]) -> List[str]
+        closed_cids = []   # type: List[str]
         ts          = context.get("ts", "")
         close_price = float(candle.get("close", 0) or 0)
         atr         = float(context.get("atr", 1.0) or 1.0)
@@ -291,7 +307,10 @@ class ChallengerEngine(object):
                 reason = (ExitReason.FORCE if is_force
                           else challenger.should_exit(open_trade, close_price, ts, atr))
                 if reason:
-                    self._close_virtual_trade(open_trade, close_price, ts, reason)
+                    # [555차] 기입 성공분만 센다 — 실패를 세면 소비자가 「갱신했는데
+                    # 값이 안 변한다」는 조용한 오작동을 겪는다(계측 4원칙 ②).
+                    if self._close_virtual_trade(open_trade, close_price, ts, reason):
+                        closed_cids.append(cid)
                     self._open_trades[cid] = None
                     open_trade = None
 
@@ -325,6 +344,8 @@ class ChallengerEngine(object):
             self.db.insert_signals_bulk(pending_signals, regime=regime)
         except Exception:
             logger.error("[Engine] insert_signals_bulk 실패 (%d건)", len(pending_signals))
+
+        return closed_cids
 
     def _day_cap_ok(self, challenger, ts):
         # type: (Any, str) -> bool
@@ -372,6 +393,13 @@ class ChallengerEngine(object):
             logger.error("[Engine] insert_trade 실패: %s", challenger.challenger_id)
 
     def _close_virtual_trade(self, trade, exit_price, exit_ts, reason):
+        # type: (Any, float, str, str) -> bool
+        """가상 청산을 DB 에 기입한다.
+
+        [MW0601 555차] 반환값 신설 — **DB 기입에 성공했는가.** 소비자가 이 값으로
+        「패널을 다시 그릴 이유가 있는가」를 판단하므로, 실패를 True 로 돌리면
+        갱신은 도는데 값은 그대로인 상태가 된다(계측 4원칙 ②·④).
+        """
         ctx = cost_context()
         pnl = calc_pnl_pt(trade.direction, trade.entry_price, exit_price, ctx)
         try:
@@ -379,6 +407,8 @@ class ChallengerEngine(object):
                                 cost_ctx=ctx)
         except Exception:
             logger.error("[Engine] close_trade 실패: id=%s", trade.trade_id)
+            return False
+        return True
 
     # ── 일별 집계 ─────────────────────────────────────────────────
 

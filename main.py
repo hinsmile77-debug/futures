@@ -887,6 +887,19 @@ class TradingSystem:
         # ── 챔피언-도전자 Shadow 엔진 (대시보드 주입 전 먼저 초기화) ───
         self.challenger_engine = None  # type: ignore
         self.promotion_manager = None  # type: ignore
+        # [MW0601 555차] 손익 추이 패널이 집는 GP 도전자 id — 사전등록이 권위다.
+        # 🔴 **여기서 명시 초기화한다** — 런타임 상태를 기본값 폴백으로 읽으면
+        #   미설정이 조용히 정상값으로 위장한다(계측 4원칙 ④).
+        #   조회에 실패하면 **빈 집합**이며 그것은 「GP 없음」이 아니라 미측정이다 —
+        #   그 경우 갱신 트리거가 조용히 죽으므로 WARNING 을 남긴다(계측 4원칙 ②).
+        try:
+            self._gp_shadow_ids = frozenset(
+                VALIDATION_CAMPAIGN["gp_rule_challenger_ids"].values())
+        except Exception as _gpid_e:
+            self._gp_shadow_ids = frozenset()
+            logger.warning(
+                "[GP패널] 사전등록 도전자 id 조회 실패 — 가상 청산 시 손익 추이 "
+                "자동 갱신이 동작하지 않는다(0건이 아니라 미측정): %s", _gpid_e)
         try:
             from challenger.challenger_engine import ChallengerEngine
             from challenger.promotion_manager import PromotionManager
@@ -11143,7 +11156,31 @@ class TradingSystem:
                     "grade":      grade,
                 },
             }
-            self.challenger_engine.run_shadow(features, _ctx.get("candle", {}), _ctx)
+            _shadow_closed = self.challenger_engine.run_shadow(
+                features, _ctx.get("candle", {}), _ctx) or []
+
+            # ── [MW0601 555차] GP 가상 청산 → 손익 추이 패널 갱신 ──────────────
+            # 🔴 **종전에는 트리거가 없었다.** `_refresh_pnl_history()` 호출부가 전부
+            #   실거래 이벤트(청산 기록·세션 복원·브로커 잔고 푸시)라, GP 섀도가
+            #   청산돼도 패널은 다시 그려지지 않았다. FLAT 이면 잔고 폴링까지 잠들어
+            #   (`_balance_active=False` → "SLEEP") 마지막 실거래 청산 시각에 화면이
+            #   그대로 굳는다.
+            #
+            #   2026-09-10 실측: 마지막 실거래 청산 12:18:02 → GP 2번째 청산 12:39:00
+            #   → 13:17 화면이 「GP 1건 −856,820원」. DB 에는 2건(−17.1364 / +8.1841)이
+            #   다 있었고 패널 조회 조건으로도 2건이 잡혔다 — **표시 지연**이다.
+            #   차트는 자체 `reload_today()` 로 최신이라 두 화면이 어긋났다.
+            #   게다가 GP 배너가 "GP 섀도 N건이 합산돼 있다"고 **개수까지 단언**하므로
+            #   낡은 값이 그럴듯하게 읽힌다 — 계측 4원칙 ④가 말하는 그 형태다.
+            #
+            # ⚠ **매분 부르지 않는다.** 90일 조회 + 표 3종 재구성이라 비용이 있고,
+            #   청산이 없는 봉은 값이 같다. 청산이 난 봉에만 부른다.
+            # ⚠ **GP 도전자만 본다.** 이 패널은 `fetch_gp_shadow_positions()` 로 GP 2종만
+            #   집으므로, 다른 도전자(CVD 탈진 등)의 청산으로 갱신해봐야 값이 안 바뀐다.
+            if self._gp_shadow_ids.intersection(_shadow_closed):
+                logger.info("[GP패널] 가상 청산 %s — 손익 추이 갱신",
+                            sorted(self._gp_shadow_ids.intersection(_shadow_closed)))
+                self._refresh_pnl_history()
 
         # ── CB⑤ 파이프라인 지연 감시 + CB 배지 매분 갱신 ─────────
         self.circuit_breaker.record_pipe_latency(_pipe_ms)
