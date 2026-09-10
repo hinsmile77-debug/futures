@@ -40,7 +40,7 @@ from PyQt5.QtGui import (
     QTextCursor, QTextBlockFormat,
 )
 
-from config.constants import FUTURES_PT_VALUE
+from config.constants import FUTURES_PT_VALUE, MINI_FUTURES_PT_VALUE
 from config.settings import (
     RAW_DATA_DB, DATA_DIR, TIME_ZONES, ENTRY_GRADE, MAX_CONTRACTS,
     HEALTH_LATENCY_WARN_MS, HEALTH_LATENCY_CRIT_MS,
@@ -6758,6 +6758,16 @@ class PnlHistoryPanel(QWidget):
         # ⚠ 종전에는 브로커 **gross**가 들어와 엔진 net과 섞였다 — refresh() 참조.
         self._broker_pnl: dict = {}
         self._broker_pnl_src: dict = {}   # date → "broker" | "engine" (폴백 가시화)
+        # ── [MW0602 557차] GP(가상) 섀도 별도집계 ──────────────────────
+        # 🔴 GP 는 **실주문이 없는 가상거래**다. `trades` 를 읽지 않으며(원천은
+        #    challenger.db), 아래 값은 실전 전환 기준 ① 판정에 쓰지 말 것.
+        # 계측 4원칙 ②·④: 「미배선」·「미측정」을 0 과 같은 값으로 표현하지 않는다.
+        self._gp_by_day: dict = {}       # date → Σ pnl_pt (원화 환산 전)
+        self._gp_cnt_by_day: dict = {}   # date → 청산 건수
+        self._gp_wired: bool = False     # 신호 기록이 있는가 (미배선 ≠ 0건)
+        # 🔴 3분법이다 — None=아직 시도 안 함 / False=조회 실패 / True=성공.
+        # 「미시도」를 「실패」로 말하면 그 자체가 계측 4원칙 ② 위반이다.
+        self._gp_loaded = None
         self._build()
 
     # ── UI 구성 ────────────────────────────────────────────────
@@ -6798,6 +6808,11 @@ class PnlHistoryPanel(QWidget):
             self._sum[key] = vl
         lay.addWidget(sf)
 
+        # [MW0602 557차] GP(가상) 상태 배너 — 3상태(미배선 / 배선됨·0건 / 가상 존재).
+        self._gp_banner = mk_label("", C['text2'], 9)
+        self._gp_banner.setWordWrap(True)
+        lay.addWidget(self._gp_banner)
+
         # 일별·주별·월별 내부 탭
         inner = QTabWidget()
         inner.setStyleSheet(
@@ -6836,15 +6851,32 @@ class PnlHistoryPanel(QWidget):
         self._cb_reverse.setStyleSheet(_cb_style)
         self._cb_forward.stateChanged.connect(self._on_source_changed)
         self._cb_reverse.stateChanged.connect(self._on_source_changed)
+        # [MW0602 557차] GP(가상) 합산 스위치 — 🔴 **기본 해제**.
+        # 켜야만 가상 손익이 합산되며, 해제 상태의 표는 종전과 완전 동치다.
+        _cb_gp_style = _cb_style.replace(C['cyan'], C['purple'])
+        self._cb_gp = QCheckBox("GP(가상)")
+        self._cb_gp.setChecked(self._load_gp_pref())
+        self._cb_gp.setStyleSheet(_cb_gp_style)
+        self._cb_gp.setToolTip(
+            "GP(Golden Power) 규칙 섀도의 **가상** 손익을 표에 합산한다.\n"
+            "· 원천: challenger.db (실주문 없음 · trades 무오염)\n"
+            "· 환산: 미니선물 50,000원/pt\n"
+            "🔴 실적이 아니다 — 실전 전환 기준 ① 판정에 쓰지 말 것."
+        )
+        self._cb_gp.stateChanged.connect(self._on_source_changed)
         _corner = QWidget()
         _cl = QHBoxLayout(_corner)
         _cl.setContentsMargins(0, 0, 6, 0)
         _cl.setSpacing(10)
         _cl.addWidget(self._cb_forward)
         _cl.addWidget(self._cb_reverse)
+        _cl.addWidget(self._cb_gp)
         inner.setCornerWidget(_corner, Qt.TopRightCorner)
 
         lay.addWidget(inner, 1)
+
+        # _cb_gp 생성 이후에 부른다 — 배너가 체크 상태를 읽는다.
+        self._update_gp_banner()
 
     # 날짜/주간/월(0) · 거래(1) · 승(2) · 패(3) · 승률(4) → Fixed 고정폭
     # 나머지 값 열(5+) → Stretch
@@ -6947,10 +6979,113 @@ class PnlHistoryPanel(QWidget):
                 })
             except Exception:
                 pass
+        self._load_gp_shadow()
         self._build_daily()
         self._build_weekly()
         self._build_monthly()
         self._build_summary()
+        self._update_gp_banner()
+
+    # ── GP(가상) 섀도 ──────────────────────────────────────────
+
+    def _load_gp_shadow(self):
+        """challenger.db 의 GP 규칙 **가상** 청산을 날짜별로 접는다.
+
+        🔴 `trades` 를 읽지 않는다 — 실거래 테이블에 가상거래가 섞이면 브로커 대사·
+          전환기준 ①·수수료 재환산·승패 사후검증이 전부 오염된다.
+        ⚠ 빈 결과가 「0건」인지 「미배선」인지는 `gp_shadow_is_wired()` 로만 갈린다
+          (계측 4원칙 ②) — 그래서 두 값을 따로 들고 배너가 구분해 말한다.
+        """
+        self._gp_by_day = {}
+        self._gp_cnt_by_day = {}
+        self._gp_wired = False
+        self._gp_loaded = None
+        try:
+            from utils.db_utils import fetch_gp_shadow_positions, gp_shadow_is_wired
+            self._gp_wired = bool(gp_shadow_is_wired())
+            for _p in fetch_gp_shadow_positions(90):
+                _d = str(_p.get("exit_ts") or "")[:10]
+                if len(_d) != 10:
+                    continue
+                self._gp_by_day[_d] = self._gp_by_day.get(_d, 0.0) + float(_p["pnl_pt"])
+                self._gp_cnt_by_day[_d] = self._gp_cnt_by_day.get(_d, 0) + 1
+            self._gp_loaded = True
+        except Exception:
+            # 조회 실패는 「0건」이 아니라 **미측정**이다 — 배너가 그렇게 말한다.
+            self._gp_by_day = {}
+            self._gp_cnt_by_day = {}
+            self._gp_loaded = False
+
+    def _gp_on(self) -> bool:
+        """GP(가상) 합산 스위치. 해제(기본)면 어떤 집계에도 들어가지 않는다."""
+        return bool(self._cb_gp.isChecked())
+
+    def _gp_day_krw(self, date_str) -> float:
+        """그 날 GP 가상 손익의 **원화** 환산.
+
+        🔴 승수는 **미니선물 50,000원/pt** 다. `FUTURES_PT_VALUE`(250,000)를 쓰면
+          가상 손익이 5배로 부풀어 표 전체를 오도한다.
+        """
+        return self._gp_by_day.get(date_str, 0.0) * MINI_FUTURES_PT_VALUE
+
+    def _gp_probe_note(self) -> str:
+        """조회 시도 상태를 문구로. 미시도·실패·성공을 구분한다(계측 4원칙 ②)."""
+        if self._gp_loaded is None:
+            return "  (아직 조회 전 — 첫 갱신을 기다리는 중)"
+        if self._gp_loaded is False:
+            return "  (challenger.db 조회 실패)"
+        return ""
+
+    def _gp_total_count(self) -> int:
+        return sum(self._gp_cnt_by_day.values())
+
+    def _gp_banner_state(self) -> str:
+        """배너 3상태: `unwired` / `wired_zero` / `virtual`."""
+        if not self._gp_wired:
+            return "unwired"
+        if self._gp_total_count() <= 0:
+            return "wired_zero"
+        return "virtual"
+
+    def _gp_offtable_days(self) -> int:
+        """표에 **행이 없는** GP 일자 수 — 실거래 0건인 날은 표에 나타나지 않는다.
+
+        계측 4원칙 ③(탈락 가시화): 합산에서 빠진 것을 조용히 두지 않는다.
+        """
+        _have = set(r["entry_ts"][:10] for r in self._rows if r["entry_ts"])
+        return sum(1 for d in self._gp_by_day if d not in _have)
+
+    def _update_gp_banner(self):
+        st = self._gp_banner_state()
+        if st == "unwired":
+            self._gp_banner.setStyleSheet(f"color:{C['text2']};")
+            self._gp_banner.setText(
+                "⚪ GP(가상) 미배선 — 챌린저 신호 기록이 없다. "
+                "「청산 0건」이 아니라 측정된 적 없음이다."
+                + self._gp_probe_note()
+            )
+            return
+        if st == "wired_zero":
+            self._gp_banner.setStyleSheet(f"color:{C['text2']};")
+            self._gp_banner.setText(
+                "⚪ GP(가상) 배선됨 · 최근 90일 청산 0건 — 합산할 가상 손익이 없다."
+            )
+            return
+        _n = self._gp_total_count()
+        _off = self._gp_offtable_days()
+        _tail = f"  · 표 밖 {_off}일(실거래 0건인 날)" if _off else ""
+        if self._gp_on():
+            self._gp_banner.setStyleSheet(f"color:{C['purple']};")
+            self._gp_banner.setText(
+                f"🟣 가상 포함 — GP {_n}건(미니 50,000원/pt)이 합산돼 있다. "
+                "실적이 아니며 실전 전환 기준 ① 판정에 쓰지 말 것." + _tail
+            )
+        else:
+            self._gp_banner.setStyleSheet(f"color:{C['text2']};")
+            self._gp_banner.setText(
+                f"⚪ GP(가상) {_n}건 있음 · 합산 해제 — 표는 실거래만 담고 있다."
+                + _tail
+            )
 
     # ── 그룹화 유틸 ────────────────────────────────────────────
 
@@ -7009,11 +7144,17 @@ class PnlHistoryPanel(QWidget):
 
         [493차 F-4] 두 갈래가 **같은 단위(net)** 가 된 것은 이번부터다 —
         종전 브로커 갈래는 gross였다(refresh() 주석 참조).
+
+        🔴 [MW0602 557차] GP(가상)는 **브로커 분기 밖에서** 더한다.
+        브로커 갈래는 `day_rows` 를 읽지 않고 조기 반환하므로, GP 를 `day_rows` 에
+        섞으면 브로커 실측이 있는 날에 **조용히 전부 사라진다** — 이 브랜치의 최근
+        90일은 브로커 50일 / 엔진 0일, 즉 100%가 그 갈래다.
         """
+        gp_krw = self._gp_day_krw(date_str) if self._gp_on() else 0.0
         broker_krw = self._broker_pnl.get(date_str)
         if broker_krw is not None:
-            return broker_krw
-        return sum(r["pnl_krw"] for r in day_rows)
+            return broker_krw + gp_krw
+        return sum(r["pnl_krw"] for r in day_rows) + gp_krw
 
     def _group_effective_krw(self, grp):
         """grp(여러 날짜에 걸친 거래 목록)의 날짜별 브로커 정산 우선 합계."""
@@ -7106,6 +7247,18 @@ class PnlHistoryPanel(QWidget):
         except Exception:
             return True, True
 
+    def _load_gp_pref(self) -> bool:
+        """GP(가상) 합산 체크 상태 복원. 🔴 기본값 **False** — 켜는 것은 사용자 행위다."""
+        try:
+            _f = os.path.join(DATA_DIR, "ui_prefs.json")
+            if not os.path.exists(_f):
+                return False
+            with open(_f, "r", encoding="utf-8") as _fp:
+                _p = json.load(_fp)
+            return bool(_p.get("pnl_cb_gp", False))
+        except Exception:
+            return False
+
     def _save_cb_prefs(self):
         """현재 체크 상태를 ui_prefs.json에 저장."""
         try:
@@ -7116,6 +7269,7 @@ class PnlHistoryPanel(QWidget):
                     _p = json.load(_fp)
             _p["pnl_cb_forward"] = self._cb_forward.isChecked()
             _p["pnl_cb_reverse"] = self._cb_reverse.isChecked()
+            _p["pnl_cb_gp"] = self._cb_gp.isChecked()
             with open(_f, "w", encoding="utf-8") as _fp:
                 json.dump(_p, _fp, ensure_ascii=False)
         except Exception:
@@ -7123,6 +7277,7 @@ class PnlHistoryPanel(QWidget):
 
     def _on_source_changed(self):
         self._save_cb_prefs()
+        self._update_gp_banner()
         if self._rows:
             self._build_daily()
             self._build_weekly()
@@ -7145,10 +7300,9 @@ class PnlHistoryPanel(QWidget):
         groups = self._group(lambda ts: ts[:10])[-60:]
         cum_map, c = {}, 0.0
         for date_str, grp in groups:
-            _, _, _, _, pkrw = self._stats(grp)
-            broker_krw = self._broker_pnl.get(date_str)
-            day_krw = broker_krw if broker_krw is not None else pkrw
-            c += day_krw
+            # [MW0602 557차] 단일 관문 경유. 종전 인라인 분기는 브로커·엔진 갈래
+            # 자체는 관문과 동치였으나, 관문 밖이라 GP 합산이 누적 열에만 빠졌다.
+            c += self._effective_day_krw(date_str, grp)
             cum_map[date_str] = c
 
         tbl = self.tbl_daily
@@ -7156,13 +7310,11 @@ class PnlHistoryPanel(QWidget):
         for r_idx, (date_str, grp) in enumerate(reversed(groups)):
             n, wins, losses, ppts, pkrw = self._stats(grp)
             cum       = cum_map[date_str]
-            broker_krw = self._broker_pnl.get(date_str)
-            if broker_krw is not None:
-                disp_krw = broker_krw
-                krw_text = f"{broker_krw:+,.0f}원"
-            else:
-                disp_krw = pkrw
-                krw_text = self._fmt_single(pkrw, suffix="원")
+            disp_krw  = self._effective_day_krw(date_str, grp)
+            krw_text  = self._fmt_single(disp_krw, suffix="원")
+            # 🟣 그 날 값에 **가상 손익이 섞여 있다**는 셀 단위 표식.
+            if self._gp_on() and self._gp_by_day.get(date_str):
+                krw_text = "🟣 " + krw_text
             wr   = f"{wins/n*100:.0f}%" if n else "—"
             bg   = self._row_bg(disp_krw)
             pc   = self._pcol(disp_krw)
