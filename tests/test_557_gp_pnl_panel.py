@@ -71,13 +71,14 @@ class FakePanel(object):
     """
 
     def __init__(self, rows, broker_pnl, gp_by_day, gp_cnt, wired, gp_on,
-                 gp_loaded=True, fwd=True, rev=True):
+                 gp_loaded=True, fwd=True, rev=True, gp_open=0):
         from dashboard.main_dashboard import PnlHistoryPanel as _P
         self._rows = rows
         self._broker_pnl = dict(broker_pnl)
         self._broker_pnl_src = {}
         self._gp_by_day = dict(gp_by_day)
         self._gp_cnt_by_day = dict(gp_cnt)
+        self._gp_open_n = int(gp_open)   # 미청산 — 손익 합산 대상 아님
         self._gp_wired = bool(wired)
         # None(미시도) 을 보존한다 — bool(None) 로 접으면 3분법이 무너진다.
         self._gp_loaded = gp_loaded if gp_loaded is None else bool(gp_loaded)
@@ -92,6 +93,7 @@ class FakePanel(object):
         self._gp_banner = _Banner()
         for _name in ("_gp_on", "_gp_day_krw", "_gp_total_count",
                       "_gp_banner_state", "_gp_offtable_days", "_gp_probe_note",
+                      "_gp_open_count",
                       "_update_gp_banner", "_effective_day_krw",
                       "_group_effective_krw", "_daily_bucket",
                       "_mdd", "_mdd_daily", "_active_rows", "_stats",
@@ -429,6 +431,64 @@ def test_9_no_non_ascii_inside_strftime_format():
     assert not bad, (
         "strftime 포맷에 non-ASCII — paint 경로면 프로세스가 죽는다:\n"
         + "\n".join(bad))
+
+
+def test_10_banner_is_plain_text_and_reports_open_positions():
+    """배너는 **평문 QLabel** 이다 — 마크다운을 쓰면 별표가 그대로 보인다.
+
+    2026-09-10 화면 실측: `**실거래는 표에서 빠져 있다**` 가 별표째 렌더됐다.
+    그리고 미청산 GP 는 손익에 안 들어가므로, 그 사실을 말하지 않으면
+    「GP 3건」이 그날 전부인 것처럼 읽힌다(계측 4원칙 ②: 미청산 ≠ 없음).
+    """
+    for p in (_panel(True), _panel(False), _panel(True, fwd=False, rev=False),
+              _panel(False, gp_by_day={}, gp_cnt={}, wired=False),
+              _panel(False, gp_by_day={}, gp_cnt={}, wired=True)):
+        p._update_gp_banner()
+        assert "**" not in p._gp_banner.text, p._gp_banner.text
+
+    # 미청산이 있으면 배너가 말한다 — 없으면 말하지 않는다(빈 문구 금지).
+    quiet = _panel(True, gp_open=0)
+    quiet._update_gp_banner()
+    assert "보유 중" not in quiet._gp_banner.text
+
+    held = _panel(True, gp_open=2)
+    held._update_gp_banner()
+    assert "보유 중 2건" in held._gp_banner.text
+    assert "합산에서 빠져" in held._gp_banner.text
+    assert "**" not in held._gp_banner.text
+
+    # 🔴 배너는 체크박스를 만질 때마다 갱신된다 — DB 를 치면 안 된다.
+    src = io.open(_PANEL_SRC, encoding="utf-8").read()
+    body = src[src.index("def _gp_open_count"):]
+    body = body[:body.index(chr(10) + "    def ", 10)]
+    assert "fetch_" not in body, "배너 경로에서 DB 조회를 하고 있다"
+
+
+def test_11_chart_draws_gp_holding_span_and_clamps_labels():
+    """GP 진입→청산을 **점선으로 잇고**, 라벨이 플롯 밖으로 잘리지 않아야 한다.
+
+    사용자 요청(2026-09-10): "진입지점 부터 청산지점까지 점선으로 표시해줘".
+    화면 실측 결함: 오른쪽 끝 진입의 "GP진입 14:29 ·보유중" 이 절단됐다.
+
+    ⚠ 그리기 결과 자체는 헤드리스에서 단정하기 어렵다 — 여기서는 **배선**만 건다.
+      실제 렌더는 offscreen 스모크(show/grab/render)가 확인한다.
+    """
+    from dashboard.main_dashboard import MinuteChartCanvas as _M
+    assert callable(getattr(_M, "_draw_gp_markers", None))
+    assert callable(getattr(_M, "_draw_gp_shape", None))
+
+    src = io.open(_PANEL_SRC, encoding="utf-8").read()
+    body = src[src.index("def _draw_gp_markers"):]
+    body = body[:body.index(chr(10) + "    def ", 10)]
+    # 점선 연결
+    assert "drawLine" in body, "진입→청산 연결선이 없다"
+    assert "Qt.DotLine" in body, "청산 구간이 점선이 아니다"
+    assert "Qt.DashDotLine" in body, "미청산(보유 중) 구간 표기가 없다"
+    # 라벨 클램프
+    assert "plot.right()" in body, "라벨이 플롯 오른쪽으로 잘리는 것을 막지 않는다"
+    # 위치를 먼저 확정해야 선이 마커에 닿는다(occupied 갱신 순서)
+    assert body.index("drawLine") < body.index("_draw_gp_shape("), \
+        "점선을 마커보다 나중에 그리면 마커를 덮는다"
 
 
 # ── 스텁 방어 — 504차 「반쪽 이식」 재발 방지 ─────────────────

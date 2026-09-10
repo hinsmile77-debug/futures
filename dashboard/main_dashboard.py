@@ -6764,6 +6764,7 @@ class PnlHistoryPanel(QWidget):
         # 계측 4원칙 ②·④: 「미배선」·「미측정」을 0 과 같은 값으로 표현하지 않는다.
         self._gp_by_day: dict = {}       # date → Σ pnl_pt (원화 환산 전)
         self._gp_cnt_by_day: dict = {}   # date → 청산 건수
+        self._gp_open_n: int = 0         # 미청산 진입 수 (손익 합산 대상 아님)
         self._gp_wired: bool = False     # 신호 기록이 있는가 (미배선 ≠ 0건)
         # 🔴 3분법이다 — None=아직 시도 안 함 / False=조회 실패 / True=성공.
         # 「미시도」를 「실패」로 말하면 그 자체가 계측 4원칙 ② 위반이다.
@@ -7005,11 +7006,18 @@ class PnlHistoryPanel(QWidget):
         """
         self._gp_by_day = {}
         self._gp_cnt_by_day = {}
+        self._gp_open_n = 0
         self._gp_wired = False
         self._gp_loaded = None
         try:
-            from utils.db_utils import fetch_gp_shadow_positions, gp_shadow_is_wired
+            import datetime as _dt
+            from utils.db_utils import (fetch_gp_shadow_positions, gp_shadow_is_wired,
+                                        fetch_gp_shadow_chart_markers)
             self._gp_wired = bool(gp_shadow_is_wired())
+            # 미청산 진입 수 — 손익에는 안 들어가지만 배너가 말해야 한다.
+            self._gp_open_n = sum(
+                1 for _m in fetch_gp_shadow_chart_markers(_dt.date.today().isoformat())
+                if _m.get("exit_ts") is None)
             for _p in fetch_gp_shadow_positions(90):
                 _d = str(_p.get("exit_ts") or "")[:10]
                 if len(_d) != 10:
@@ -7045,6 +7053,18 @@ class PnlHistoryPanel(QWidget):
 
     def _gp_total_count(self) -> int:
         return sum(self._gp_cnt_by_day.values())
+
+    def _gp_open_count(self) -> int:
+        """아직 안 닫힌 GP 진입 수. 🔴 손익에 **합산되지 않는다** — 미측정이다.
+
+        배너가 이 수를 말하지 않으면 「GP 3건」이 그날 전부인 것처럼 읽힌다
+        (계측 4원칙 ②: 미청산 ≠ 없음).
+
+        ⚠ 값은 `_load_gp_shadow()` 가 적재해 둔 것을 돌려줄 뿐 **DB 를 치지 않는다.**
+          배너는 체크박스를 만질 때마다 갱신되므로, 여기서 조회하면 장중에 클릭
+          한 번마다 DB 를 읽는다.
+        """
+        return int(self._gp_open_n)
 
     def _gp_banner_state(self) -> str:
         """배너 3상태: `unwired` / `wired_zero` / `virtual`."""
@@ -7085,10 +7105,15 @@ class PnlHistoryPanel(QWidget):
         _n = self._gp_total_count()
         _off = self._gp_offtable_days()
         _tail = f"  · 표 밖 {_off}일(60일 창 밖)" if _off else ""
+        _op = self._gp_open_count()
+        if _op:
+            _tail += f"  · 보유 중 {_op}건은 미청산이라 합산에서 빠져 있다"
         # 계측 4원칙 ③ — 소스 필터로 실거래가 빠져 있으면 그 사실을 말한다.
         if self._gp_on() and not (self._cb_forward.isChecked()
                                   or self._cb_reverse.isChecked()):
-            _tail += "  · ⚠ 순방향·역방향이 모두 해제돼 **실거래는 표에서 빠져 있다**"
+            # ⚠ QLabel 은 평문이다 — `**강조**` 를 쓰면 별표가 그대로 보인다.
+            #   (2026-09-10 화면 실측). 마크다운을 넣지 말 것.
+            _tail += "  · ⚠ 순방향·역방향이 모두 해제돼 실거래는 표에서 빠져 있다"
         if self._gp_on():
             self._gp_banner.setStyleSheet(f"color:{C['purple']};")
             self._gp_banner.setText(
@@ -8863,17 +8888,26 @@ class MinuteChartCanvas(QWidget):
         self._draw_gp_markers(painter, plot, candles, index_map, lo, hi, step, occupied)
 
     def _draw_gp_markers(self, painter, plot, candles, index_map, lo, hi, step, occupied):
-        """GP(가상) 진입·청산 마커.
+        """GP(가상) 진입·청산 마커 + 보유 구간 점선.
 
         🔴 실거래 마커와 **모양·채움·색이 모두 다르다.** 실거래는 채워진 도형이고
-          GP 는 **채움 없는 보라 파선 원**이다. 라벨도 반드시 'GP' 로 시작한다 —
+          GP 는 채움 없는 보라 파선 원이다. 라벨도 반드시 'GP' 로 시작한다 —
           화면에서 가상과 실적을 구분하지 못하면 이 계측은 해가 된다.
         ⚠ 미청산 진입은 청산 마커 없이 진입만 그린다(계측 4원칙 ②: 미청산 ≠ 미진입).
+          그 경우 점선은 **마지막 봉까지** 이어 「아직 들고 있다」를 보인다.
+
+        ⚠ 두 벌로 도는 이유: `_resolve_marker_overlap` 이 `occupied` 를 갱신하므로
+          위치를 **먼저 전부 확정**해야 점선이 실제 마커에 닿는다. 점선을 먼저 깔고
+          도형·라벨을 위에 얹어야 선이 마커를 가리지 않는다.
         """
         if not self._gp_trades or not candles:
             return
         col = QColor(C["purple"])
+
+        # ── 1벌: 위치 확정 ────────────────────────────────────────
+        spans = []
         for t in self._gp_trades:
+            pos = {}
             for role in ("entry", "exit"):
                 _ts = t.get(role + "_ts")
                 _px = t.get(role + "_price")
@@ -8888,15 +8922,42 @@ class MinuteChartCanvas(QWidget):
                     continue
                 x = plot.left() + step * (idx + 0.5)
                 y = self._price_to_y(price, plot, lo, hi)
-                x, y = self._resolve_marker_overlap(x, y, occupied, "GP")
+                pos[role] = self._resolve_marker_overlap(x, y, occupied, "GP") + (dt,)
+            if pos:
+                spans.append((t, pos))
+
+        # ── 2벌: 보유 구간 점선 (마커 아래) ───────────────────────
+        _link = QColor(col)
+        _link.setAlpha(150)          # 실거래 마커를 덮지 않도록 옅게
+        painter.setBrush(Qt.NoBrush)
+        for t, pos in spans:
+            if "entry" not in pos:
+                continue
+            x1, y1 = pos["entry"][0], pos["entry"][1]
+            if "exit" in pos:
+                x2, y2 = pos["exit"][0], pos["exit"][1]
+                painter.setPen(QPen(_link, 1.3, Qt.DotLine))
+            else:
+                # 미청산 — 마지막 봉의 종가까지 이어 「보유 중」을 보인다.
+                _last = candles[-1]
+                x2 = plot.left() + step * (len(candles) - 1 + 0.5)
+                y2 = self._price_to_y(float(_last["close"] or 0.0), plot, lo, hi)
+                _hold = QColor(col)
+                _hold.setAlpha(110)   # 확정 구간보다 더 옅게 — 아직 결과가 아니다
+                painter.setPen(QPen(_hold, 1.3, Qt.DashDotLine))
+            painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+
+        # ── 3벌: 도형 + 라벨 ─────────────────────────────────────
+        for t, pos in spans:
+            for role, (x, y, dt) in pos.items():
                 is_entry = (role == "entry")
                 self._draw_gp_shape(painter, x, y, col, is_entry,
                                     str(t.get("direction_txt") or ""))
                 if is_entry:
                     _open = t.get("exit_ts") is None
                     # 🔴 strftime 포맷 문자열에 **한글을 넣지 말 것.**
-                    # py37 32-bit Windows 에서 프로세스가 트레이스백 없이 즉사한다
-                    # (2026-09-10 실측: 이 한 줄이 차트 paintEvent 를 죽였다).
+                    # py37 32-bit Windows 에서 UnicodeEncodeError 가 나고, 그것이
+                    # paintEvent 안이면 PyQt5 가 프로세스를 그냥 죽인다(557차 후속2).
                     # 시각은 ASCII 포맷으로 만들고 한글은 뒤에 이어붙인다.
                     label = "GP진입 " + dt.strftime("%H:%M") + (" ·보유중" if _open else "")
                     dy = -S.p(26)
@@ -8906,7 +8967,13 @@ class MinuteChartCanvas(QWidget):
                     label += dt.strftime("%H:%M")
                     dy = S.p(26)
                 painter.setPen(col)
-                painter.drawText(QRectF(x - S.p(30), y + dy, S.p(112), S.p(14)),
+                # 오른쪽 끝 진입은 라벨이 플롯 밖으로 잘린다(실측: "·보유중" 절단).
+                # 폭을 확보할 수 없으면 마커 **왼쪽**에 붙인다.
+                _w = S.p(112)
+                _x0 = x - S.p(30)
+                if _x0 + _w > plot.right():
+                    _x0 = max(plot.left(), plot.right() - _w)
+                painter.drawText(QRectF(_x0, y + dy, _w, S.p(14)),
                                  Qt.AlignLeft | Qt.AlignVCenter, label)
 
     def _draw_gp_shape(self, painter, x, y, color, is_entry, direction_txt):
