@@ -67,3 +67,29 @@ def _isolate_feature_exclusion_state(tmp_path, monkeypatch):
         str(tmp_path / "feature_exclusion_state.json"), raising=False,
     )
     monkeypatch.setattr(_reg, "_CHRONIC_CACHE", None, raising=False)
+
+
+# ── [MW0601 554차] 포지션 상태 파일 격리 ────────────────────────────────────
+#
+# 2026-09-10 08:02, `tests/test_493_exit_stage_all_builders.py:_opened()` 가
+# `PositionTracker.open_position(price=1040.0, quantity=2)` 를 부르자
+# `_save_state()` 가 **운영** `data/position_state.json` 을 덮어썼다. 08:40 기동이
+# 그것을 "오늘 저장분"으로 복원했고, 08:45:21 프리장 첫 틱(1109.60)에 TP1/TP2 가
+# 발동해 **실제 매도 2계약이 체결**됐다(허구 이익 +6,921,594원, 계좌 실보유는 없었음).
+#
+# 422차(CB CRITICAL 30건)·473차(만성도 상태파일 삭제)에 이은 **세 번째 사례**다.
+# 세 번 다 개별 테스트를 고쳐서는 재발을 막지 못했다 — 규율이 아니라 구조의 문제다.
+# 그래서 여기서 전 테스트를 일괄 격리한다.
+#
+# 프로덕션 측에도 같은 가드가 따로 있다(`_save_state()` 가 테스트 모드 + 운영 경로면
+# 저장을 생략). 이 fixture 는 경로 자체를 바꾸므로 **저장/복원 왕복을 검증하는
+# 테스트는 정상 동작한다** — 그 두 겹이 서로를 무력화하지 않게 맞물려 있다.
+@pytest.fixture(autouse=True)
+def _isolate_position_state(tmp_path, monkeypatch):
+    try:
+        import strategy.position.position_tracker as _pt
+    except Exception:
+        return  # 포지션 트래커를 안 쓰는 환경 — 격리할 대상이 없다
+    monkeypatch.setattr(
+        _pt, "_STATE_FILE", str(tmp_path / "position_state.json"), raising=False,
+    )

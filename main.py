@@ -563,6 +563,37 @@ def format_premarket_scaler_trace(trace, canary_z=None):
             % (" → ".join(parts), tail, len(trace), regrowth))
 
 
+def _startup_reference_price():
+    """[MW0601 554차] 포지션 복원 가드용 참조가 — **직전 거래일 마지막 종가**.
+
+    왜 이 값인가: 복원 대상은 "오늘 저장된 포지션"뿐이고, 기동 시점(08:40)에는
+    당일 시세가 아직 없다. 직전 거래일 종가는 그 시점에 얻을 수 있는 가장 가까운
+    "정상 가격대"이며, 오버나이트 갭만큼만 벌어진다.
+
+    ⚠ 실패하면 `None` 을 돌려준다 — 호출부는 그것을 "괴리 없음"이 아니라
+      **"재지 못했다"** 로 다루고 로그에 남긴다(계측 4원칙 ②).
+
+    비용: `raw_candles` 1행. 같은 성격의 조회를 기동 시 이미 하고 있다
+    (`_load_prev_day_closes` 는 전일 384봉을 통째로 읽는다).
+    """
+    try:
+        from config.settings import RAW_DATA_DB as _RDB
+        import sqlite3 as _sqlite3
+        today_str = datetime.datetime.now().date().isoformat()
+        with _sqlite3.connect(_RDB, timeout=10) as _conn:
+            _row = _conn.execute(
+                "SELECT close FROM raw_candles "
+                "WHERE ts = (SELECT MAX(ts) FROM raw_candles WHERE ts < ?)",
+                (today_str,),
+            ).fetchone()
+        if _row and _row[0]:
+            return float(_row[0])
+        logger.warning("[PositionRestoreGuard] 참조가 없음 — 직전 거래일 봉이 DB에 없다")
+    except Exception as _e:
+        logger.warning("[PositionRestoreGuard] 참조가 조회 실패: %s", _e)
+    return None
+
+
 class TradingSystem:
     """미륵이 메인 트레이딩 시스템"""
 
@@ -843,7 +874,8 @@ class TradingSystem:
         self._session_start_ts: str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         # 재시작 시 이전 포지션 복원 (당일 데이터만)
-        if self.position.load_state():
+        # [MW0601 554차] 참조가(직전 거래일 종가)를 함께 넘겨 진입가 온전성을 검사한다.
+        if self.position.load_state(reference_price=_startup_reference_price()):
             msg = (
                 f"[Position] 이전 포지션 복원: {self.position.status} "
                 f"{self.position.quantity}계약 @ {self.position.entry_price} "
@@ -961,6 +993,17 @@ class TradingSystem:
         self._broker_sync_verified: bool = False
         self._broker_sync_block_new_entries: bool = True
         self._broker_sync_last_error: str = "startup sync not attempted"
+        # [MW0601 554차] `_broker_sync_verified` 와 **다른 축**이다 — 섞지 말 것.
+        #   · `_broker_sync_verified` : sync 절차가 정상 종료했는가(진입 게이팅용).
+        #     Armistice 승격이 여기 걸려 있어(`_ts_armistice_state`) False 로 내리면
+        #     자동진입이 하루 종일 막힌다(2026-08-31 47분 차단 사고와 같은 경로).
+        #   · `_broker_position_reconciled` : **보유 포지션을 브로커 행과 실제로
+        #     대조했는가.** 모의서버는 잔고 TR 에 상시 `97007 데이터가 없습니다`를
+        #     주므로, 저장 포지션을 유지하는 경로는 대조가 아니라 **가정**이다.
+        # 2026-09-10 사고에서 로그가 `verified=True` 만 찍어 "계좌와 맞춰봤다"로
+        # 읽혔다 — 실제로는 유령 포지션이었다(계측 4원칙 ②: 미측정 ≠ 확인됨).
+        self._broker_position_reconciled: bool = False
+        self._unreconciled_exit_warned: bool = False
         # [2026-08-06] 설정 계좌(secrets.ACCOUNT_NO)가 브로커 세션 계좌목록에 없을 때 True.
         # 계좌를 대체하지 않는 대신 신규 진입만 차단한다(sticky — BrokerSync가 풀지 못함).
         self._account_mismatch_block: bool = False
@@ -11501,6 +11544,22 @@ class TradingSystem:
         account_no = self._get_active_account_no()
         if not account_no:
             return -1
+        # ── [MW0601 554차] 브로커와 대조된 적 없는 포지션의 청산 ──────────────
+        # 🔴 **막지 않는다.** 모의서버는 잔고 TR 이 상시 blank 라 미대조가 예외가
+        #    아니라 상시 상태다. 여기서 막으면 진짜 포지션의 손절과 15:10 강제청산이
+        #    함께 막혀 절대원칙 §1 을 깨뜨린다 — 안전장치가 새 사고를 만드는 형태
+        #    (480차 교훈). 바꾸는 것은 "그 사실이 로그에 남는가" 하나다.
+        # 2026-09-10 08:45 이 이 경보가 있었다면 유령 포지션 청산 2건이 즉시 보였다.
+        if not self._broker_position_reconciled and not self._unreconciled_exit_warned:
+            self._unreconciled_exit_warned = True
+            log_manager.system(
+                "[UnreconciledExit] 🔴 브로커와 대조된 적 없는 포지션을 청산한다 — "
+                "%s %s계약 @ %.2f (qty=%s) | broker_sync=%s | "
+                "저장 상태만 근거이며 계좌 실보유는 미확인이다."
+                % (self.position.status, self.position.quantity,
+                   self.position.entry_price, qty, self._broker_sync_last_error),
+                "CRITICAL",
+            )
         # [511차 F-21] 직전 거부 백오프 — 안전망. 폭주의 주 발원지(틱 하드스톱)는
         # _process_tick_stop 쪽에서 pending 등록 전에 먼저 걸러 ERROR 로그 자체를
         # 만들지 않는다. 여기는 분당 1회 도는 STEP8 경로들을 위한 2차 방어다.
@@ -18623,7 +18682,14 @@ def _ts_sync_position_from_broker(self) -> None:
                     f"브로커 잔고 TR 공란은 모의서버 정상 응답 — FLAT 강제 불가.",
                     "WARNING",
                 )
-                _ts_set_broker_sync_status(self, True, "mock server blank rows — keeping saved position", False)
+                # [554차] 대조가 아니라 가정이다 — 축을 분리해 정직하게 남긴다.
+                self._broker_position_reconciled = False
+                _ts_set_broker_sync_status(
+                    self, True,
+                    "mock server blank rows — keeping saved position "
+                    "(position NOT reconciled with broker)",
+                    False,
+                )
                 _ts_push_balance_to_dashboard(self, result)
                 return
             if self.position.status != "FLAT":
@@ -18638,6 +18704,7 @@ def _ts_sync_position_from_broker(self) -> None:
                 self.position.sync_flat_from_broker()
                 self.dashboard.minute_chart_clear_active_position()
             self._clear_pending_order()
+            self._broker_position_reconciled = True   # [554차] 무포지션 확인 = 대조 성립
             _ts_set_broker_sync_status(self, True, "blank/no holdings response interpreted as flat", False)
             # P1-a: blank-as-flat = FLAT 확인 완료 → Armistice 즉시 해제 (sync_count=2 직접 설정)
             # +1 방식은 FLAT 재시작 시 두 번째 sync가 영구적으로 오지 않아 장 종료까지 Armistice가 지속되는 버그 유발
@@ -18732,6 +18799,7 @@ def _ts_sync_position_from_broker(self) -> None:
         self.position.entry_time,
     )
     self._clear_pending_order()
+    self._broker_position_reconciled = True   # [554차] 브로커 잔고 행과 실제 대조됨
     _ts_set_broker_sync_status(self, True, f"synced {side} {qty} @ {avg_price}", False)
     after = _ts_get_position_snapshot(self)
     log_manager.system(

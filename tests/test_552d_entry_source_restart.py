@@ -131,8 +131,11 @@ def test_init_inherits_restored_source():
     assert "_restored_src = self.position.entry_source" in src
     assert 'self._entry_source = _restored_src or "SYSTEM_AUTO"' in src
     assert "[EntrySource]" in src, "승계 사실을 로그로 남겨야 한다(계측 4원칙 ④)"
-    # 순서 불변식: 복원 블록이 승계보다 앞에 있어야 한다
-    assert src.index("if self.position.load_state():") < src.index("_restored_src ="), (
+    # 순서 불변식: 복원 블록이 승계보다 앞에 있어야 한다.
+    # ⚠ 호출 **형태**는 고정하지 않는다 — 554차가 복원 가드 참조가를 인자로 붙이면서
+    #   `if self.position.load_state():` 라는 문자열이 사라져 이 검사가 깨졌다.
+    #   재는 대상은 인자가 아니라 순서다.
+    assert src.index("self.position.load_state(") < src.index("_restored_src ="), (
         "load_state() 가 출처 승계보다 뒤에 있으면 승계가 항상 None 이 된다")
 
 

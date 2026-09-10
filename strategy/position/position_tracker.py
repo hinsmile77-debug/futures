@@ -19,7 +19,9 @@ from config.settings import (
     HURST_REGIME_ATR_MULT_ENABLED, HURST_REGIME_ATR_MULT,
     PARTIAL_EXIT_RATIOS,
     LOSS_TIER1_STOP_FRACTION, LOSS_TIER1_CUT_RATIO,
+    POSITION_RESTORE_MAX_DEVIATION_PCT,
 )
+from utils.runtime_mode import is_test_mode
 
 # 인스턴스별 pt_value를 주입받기 전 module-level fallback 으로만 사용
 def _calc_commission(price: float, quantity: int, pt_value: float = FUTURES_PT_VALUE) -> float:
@@ -32,6 +34,14 @@ _STATE_FILE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "data", "position_state.json",
 )
+
+#: [MW0601 554차] 운영 상태파일의 **불변** 경로. `_STATE_FILE` 은 테스트가
+#: monkeypatch 로 tmp 경로로 갈아끼우므로, "지금 쓰려는 곳이 운영 경로인가"를
+#: 판별하려면 patch 되지 않는 원본이 따로 필요하다. `_save_state()` 가드가 쓴다.
+_PROD_STATE_FILE = _STATE_FILE
+
+#: 테스트 모드에서 운영 경로 저장을 차단했다는 경고를 세션당 1회만 남기기 위한 플래그.
+_TEST_SAVE_BLOCK_LOGGED = False
 
 
 def compute_trailing_stop_tier(
@@ -1809,7 +1819,35 @@ class PositionTracker:
     # ── 포지션 상태 퍼시스턴스 ────────────────────────────────────
 
     def _save_state(self) -> None:
-        """포지션 상태를 JSON 파일에 저장 — 재시작 시 복원용."""
+        """포지션 상태를 JSON 파일에 저장 — 재시작 시 복원용.
+
+        🔴 [MW0601 554차] 테스트 실행은 **운영 경로에 쓰지 못한다.**
+
+        2026-09-10 08:02, `tests/test_493_exit_stage_all_builders.py:_opened()` 가
+        `PositionTracker.open_position(price=1040.0, quantity=2)` 를 부르면서 이
+        함수를 통해 운영 `data/position_state.json` 을 덮어썼다. 08:40 기동이
+        그것을 "오늘 저장분"으로 복원했고, 08:45:21 프리장 첫 틱(1109.60)에
+        TP1/TP2 가 발동해 **실제 매도 2계약이 체결**됐다(허구 이익 +692만원).
+
+        422차(테스트가 CB CRITICAL 30건을 프로덕션 로그에 남긴 사고)·473차
+        (테스트가 만성도 상태파일을 삭제한 사고)와 **같은 계열의 세 번째 사례**다.
+        그때마다 개별 테스트를 고쳤지만 규율이 아니라 구조가 문제였다.
+
+        가드가 경로를 비교하는 이유: `tests/conftest.py` 가 `_STATE_FILE` 을 tmp 로
+        격리하면 저장/복원 왕복을 검증하는 기존 테스트는 **정상 동작해야** 한다.
+        그래서 막는 대상은 "테스트 모드인데 목적지가 운영 경로인 경우"뿐이다.
+        """
+        global _TEST_SAVE_BLOCK_LOGGED
+        if is_test_mode() and _STATE_FILE == _PROD_STATE_FILE:
+            # 계측 4원칙 ④ — 조용히 건너뛰면 "저장됐다"는 착각이 남는다.
+            if not _TEST_SAVE_BLOCK_LOGGED:
+                _TEST_SAVE_BLOCK_LOGGED = True
+                logger.warning(
+                    "[PositionState] 테스트 모드 — 운영 상태파일 저장 차단 (%s). "
+                    "저장/복원을 검증하려면 `_STATE_FILE` 을 tmp 로 patch 할 것.",
+                    _PROD_STATE_FILE,
+                )
+            return
         try:
             state = {
                 "status":       self.status,
@@ -1881,8 +1919,42 @@ class PositionTracker:
         except Exception as e:
             logger.warning(f"[Position] 상태 저장 실패: {e}")
 
-    def load_state(self) -> bool:
-        """저장된 포지션 상태 복원. 반환값: 복원 성공 여부."""
+    def _reject_restore(self, state: dict, reason: str) -> None:
+        """[MW0601 554차] 복원 거부 — 상태파일을 증거로 격리하고 CRITICAL 을 남긴다.
+
+        파일을 지우지 않는 이유는 두 가지다. ① 사후 분석에 원본이 필요하다
+        (오늘 사고도 `saved_at=08:02:01` · `last_update_reason=open_position:LONG`
+        두 필드로 출처를 특정했다). ② 이름을 바꿔두지 않으면 다음 재기동이 같은
+        파일을 다시 복원해 **거부가 1회용으로 끝난다**.
+        """
+        stamp = now_kst().strftime("%Y%m%d_%H%M%S")
+        moved = "%s.rejected_%s" % (_STATE_FILE, stamp)
+        try:
+            os.rename(_STATE_FILE, moved)
+        except OSError as e:                       # 이동 실패해도 거부는 유지한다
+            moved = "(이동 실패: %s)" % e
+        logger.critical(
+            "[Position] 🔴 포지션 복원 거부 — %s | 저장분=%s %s계약 @ %s "
+            "(saved_at=%s reason=%s) | 상태파일 격리 → %s | "
+            "  ⚠ 브로커에 실제 포지션이 있으면 BrokerSync 가 복구한다. "
+            "없으면 이 거부가 유령 포지션의 자동 청산 주문을 막은 것이다.",
+            reason,
+            state.get("status"), state.get("quantity"), state.get("entry_price"),
+            state.get("saved_at", ""), state.get("last_update_reason", ""),
+            moved,
+        )
+
+    def load_state(self, reference_price: Optional[float] = None) -> bool:
+        """저장된 포지션 상태 복원. 반환값: 복원 성공 여부.
+
+        `reference_price` 는 **직전 거래일 종가** 등 "이 시각의 시세가 대략 얼마인가"를
+        말해주는 값이다. 저장된 진입가가 거기서 `POSITION_RESTORE_MAX_DEVIATION_PCT`
+        를 넘게 떨어져 있으면 복원을 거부한다(2026-09-10 사고: 저장 1040.0 vs 실제
+        1109.6 = **6.6%**. 그 괴리를 아무도 이상하게 보지 않았다).
+
+        ⚠ `None` 이면 **검사하지 않는다** — 그것은 "괴리가 없다"가 아니라
+        "재지 못했다"이므로 로그로 구분해 남긴다(계측 4원칙 ②).
+        """
         if not os.path.exists(_STATE_FILE):
             return False
         try:
@@ -1898,6 +1970,33 @@ class PositionTracker:
             # FLAT이면 복원 불필요
             if state.get("status") == POSITION_FLAT:
                 return False
+
+            # ── [MW0601 554차] 가격 온전성 검사 ─────────────────────────
+            _entry = float(state.get("entry_price") or 0.0)
+            if _entry <= 0.0:
+                self._reject_restore(state, "진입가가 0 이하 — 손상된 상태파일")
+                return False
+            _ref = float(reference_price or 0.0)
+            if _ref > 0.0:
+                _dev = abs(_entry - _ref) / _ref * 100.0
+                if _dev > POSITION_RESTORE_MAX_DEVIATION_PCT:
+                    self._reject_restore(
+                        state,
+                        "진입가 %.2f 가 참조가 %.2f 대비 %.2f%% 괴리 (한도 %.1f%%)"
+                        % (_entry, _ref, _dev, POSITION_RESTORE_MAX_DEVIATION_PCT),
+                    )
+                    return False
+                logger.info(
+                    "[PositionRestoreGuard] 통과 진입가=%.2f 참조가=%.2f 괴리=%.2f%% "
+                    "(한도 %.1f%%)",
+                    _entry, _ref, _dev, POSITION_RESTORE_MAX_DEVIATION_PCT,
+                )
+            else:
+                logger.warning(
+                    "[PositionRestoreGuard] 미측정 — 참조가 없음(reference_price=%r). "
+                    "괴리 검사를 건너뛴다(「괴리 없음」이 아니다).",
+                    reference_price,
+                )
 
             self._loaded_futures_code = str(state.get("futures_code") or "").strip()
             self.status      = state["status"]
