@@ -56,6 +56,56 @@ ensure_conda_dll_path()
   `win32com`이 `0xc0000139`로 깨져 수집 단계에서 5건이 실패한다(같은 계열, 프로덕션 무관).
 - 근거·실측: `docs/정기점검/매일점검/MW0601-20260907-BLAS즉사-딥다이브.md`
 
+### 🔴 PyQt5 `paintEvent` 등 가상 메서드 안에서 예외를 내지 말 것 [2026-09-10 557차 후속3]
+
+**증상**: 대시보드가 **트레이스백 한 줄 없이 사라진다.** 로그도 안 남는다.
+`try/except` 로 감싼 바깥 호출부에서도 안 잡힌다 — 예외가 전파되는 것이 아니라
+**PyQt5 가 프로세스를 죽이기** 때문이다.
+
+⚠ **위의 BLAS 즉사와 「증상만」 같고 기전은 다르다 — 같은 계열로 진단하지 말 것.**
+BLAS 쪽은 애초에 예외가 없다(DLL delay-load 실패). 이쪽은 **평범한, 잡을 수 있는
+파이썬 예외**가 하필 Qt 가상 메서드 안에서 났을 뿐이다. 그래서 고치는 법도 다르다:
+PATH 를 손보는 게 아니라 **그 줄을 예외가 안 나게 고치거나 감싸는 것**이다.
+
+**최소 재현**(py37_32, `QT_QPA_PLATFORM=offscreen`):
+
+```python
+class W(QWidget):
+    def paintEvent(self, e):
+        raise ValueError("의도적 예외")
+w = W(); w.show(); app.processEvents()
+print("여기는 실행되지 않는다")     # ← 프로세스가 이미 없다
+```
+
+**실제로 이렇게 터졌다** — 차트 GP 마커 라벨의 한 줄:
+
+```python
+dt.strftime("GP진입 %H:%M")     # ← UnicodeEncodeError → paintEvent → 프로세스 사망
+```
+
+`strftime` 포맷의 non-ASCII 가 원인이다. 이 env 의 `locale.getlocale()` 은
+`(None, None)`(LC_CTYPE `"C"`)이라 **로케일 코덱이 ASCII** 다 —
+`locale.getpreferredencoding()` 이 `cp949` 인 것과 **별개**이므로 그 값을 보고
+"한글 되겠지"라고 판단하지 말 것. 시각은 **ASCII 포맷으로 만들고 한글은 뒤에
+이어붙인다**: `"GP진입 " + dt.strftime("%H:%M")`.
+
+**규약**
+
+- **paint 경로**(`paintEvent`·`drawForeground`·delegate `paint()` 등)에서는
+  예외가 날 수 있는 호출을 **하지 말거나 감싸라.** 특히 인코딩·포맷·DB·파일 I/O.
+- **`strftime` 포맷 문자열에 non-ASCII 금지**(paint 밖이라도 그냥 버그다).
+- 진단 순서: 대시보드가 조용히 죽으면 **BLAS 를 먼저 의심하지 말고**, 최근에 손댄
+  paint 코드부터 볼 것. 도형만 그리기 / 라벨만 그리기로 **기준선 대조**하면 빠르다.
+- ⚠ **`QWidget.grab()` · `render(QImage)` 는 offscreen 에서 정상이다.** 2026-09-10
+  초판 기록이 이것들을 즉사 원인으로 적었으나 **틀렸다**(그 둘이 `paintEvent` 를
+  태워 위 버그를 건드린 것뿐이다). 스모크에서 paint 를 태우는 수단으로 써도 된다.
+
+**회귀 가드**: `tests/test_557_gp_pnl_panel.py::test_9_no_non_ascii_inside_strftime_format`
+(프로덕션 코드 전수). ⚠ 이것은 **한 사례만** 잡는다 — paint 경로의 다른 예외는
+정적 검사로 못 잡으므로, 그리기 코드를 만지면 **offscreen 스모크로 실제로 그려 볼 것**
+([[feedback_pyqt_offscreen_testing]]).
+근거: `dev_memory/DECISION_LOG.md` 2026-09-10(557차 후속2 §1 + 후속3 정정).
+
 ---
 
 ## 멀티PC 작업 컨벤션

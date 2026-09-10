@@ -388,28 +388,47 @@ def test_8_offtable_axis_is_what_is_rendered():
     assert _panel(False)._gp_offtable_days() == 0
 
 
-def test_9_no_hangul_inside_strftime_format():
-    """🔴 `strftime` 포맷 문자열에 한글이 들어가면 py37 32-bit Windows 에서
-    **프로세스가 트레이스백 없이 즉사**한다.
+def test_9_no_non_ascii_inside_strftime_format():
+    """`strftime` 포맷 문자열에 non-ASCII 를 넣지 말 것.
 
-    2026-09-10 실측: 차트 GP 진입 라벨의 `dt.strftime("GP진입 %H:%M")` 한 줄이
-    `paintEvent` 를 죽였다. 예외가 아니라 프로세스 종료라 `try/except` 로 못 잡고
-    로그도 안 남는다 — CLAUDE.md 의 BLAS 즉사(0xC06D007F)와 같은 계열의 증상이다.
-    기준선 대조로 확인했다: GP 도형만 그리면 정상, 라벨을 그리면 죽는다.
+    이 env 의 `locale.getlocale()` 은 `(None, None)`(LC_CTYPE "C")이라 로케일
+    코덱이 ASCII 다 — `getpreferredencoding()` 이 cp949 인 것과 별개다. 그래서
+    `datetime.strftime("GP진입 %H:%M")` 은 `UnicodeEncodeError` 를 낸다.
+
+    🔴 그 자체는 **잡을 수 있는 예외**지만, `paintEvent` 안에서 나면 PyQt5 가
+      **프로세스를 그냥 죽인다**(2026-09-10 실측: 차트가 통째로 사라졌다).
+      그러니 이 검사는 「더 넓은 규약」의 한 사례만 잡는 것이다 —
+      **paint 경로에서는 예외가 날 수 있는 호출을 하지 말거나 감싸라.**
 
     ⚠ 시각은 ASCII 포맷으로 만들고 한글은 **뒤에 이어붙일 것**.
-    """
-    import glob
+    ⚠ [2026-09-10 정정] 초판 docstring 이 이것을 「BLAS 즉사와 같은 계열」이라 썼고
+      `grab()`/`render(QImage)` 도 즉사한다고 썼다. **둘 다 틀렸다** — 재인용 금지
+      (`dev_memory/DECISION_LOG.md` 557차 후속2 §1 정정 블록).
 
+    검사 범위는 **프로덕션 코드 전체**다(dashboard 뿐이었다 → 확대).
+    """
     _pat = re.compile(r"""strftime\(\s*(['"])(.*?)\1""")
+    _skip_dirs = {".git", "_archive", "node_modules", "__pycache__",
+                  "data", "logs", "docs", "tests", ".claude", "dev_memory"}
     bad = []
-    for path in glob.glob(os.path.join(_ROOT, "dashboard", "*.py")):
-        for lineno, line in enumerate(io.open(path, encoding="utf-8"), 1):
-            for m in _pat.finditer(line):
-                if any("가" <= ch <= "힣" for ch in m.group(2)):
-                    bad.append("%s:%d  %s" % (os.path.basename(path), lineno,
-                                              line.strip()[:90]))
-    assert not bad, "strftime 포맷에 한글 — py37_32 즉사:\n" + "\n".join(bad)
+    for root, dirs, files in os.walk(_ROOT):
+        dirs[:] = [d for d in dirs if d not in _skip_dirs and not d.startswith(".")]
+        for fn in files:
+            if not fn.endswith(".py"):
+                continue
+            path = os.path.join(root, fn)
+            try:
+                lines = io.open(path, encoding="utf-8").readlines()
+            except (OSError, UnicodeDecodeError):
+                continue
+            for lineno, line in enumerate(lines, 1):
+                for m in _pat.finditer(line):
+                    if any(ord(ch) > 127 for ch in m.group(2)):
+                        bad.append("%s:%d  %s" % (
+                            os.path.relpath(path, _ROOT), lineno, line.strip()[:90]))
+    assert not bad, (
+        "strftime 포맷에 non-ASCII — paint 경로면 프로세스가 죽는다:\n"
+        + "\n".join(bad))
 
 
 # ── 스텁 방어 — 504차 「반쪽 이식」 재발 방지 ─────────────────

@@ -19030,15 +19030,19 @@ P0 0건 · P1 5건(1-1~1-5) · P2 4건(1-6~1-9)
 
 ## 2026-09-10 (MW0602 557차 후속2 — 차트 GP 마커·패널 가시성)
 
-- **T-QT1 — py37 32-bit Windows 즉사 패턴 2종을 규약으로 승격할지 결정할 것**
-  둘 다 예외가 아니라 **프로세스 종료**라 `try/except`·로그로 잡히지 않는다.
-  1. `strftime()` **포맷 문자열에 한글** — 2026-09-10 실측으로 차트 paintEvent 가
-     죽었다. `test_9_no_hangul_inside_strftime_format` 이 `dashboard/*.py` 를
-     훑지만, **검사 범위가 dashboard 뿐**이다. `main.py`·`scripts/` 로 넓힐지,
-     아니면 CLAUDE.md 「conda env 미활성 BLAS 즉사」 옆에 같은 계열로 적을지 정할 것.
-  2. `QWidget.grab()` · `render(QImage)` 가 **offscreen 에서 즉사**한다.
-     스모크에서 paintEvent 를 태우려면 `show()` + `processEvents()` 를 쓸 것 —
-     [[feedback_pyqt_offscreen_testing]] 에 이 단서를 덧붙일지 결정할 것.
+- **T-QT1 — [2026-09-10 557차 후속3 해소] PyQt5 paint 경로 예외 규약** ✅
+  🔴 **진단 정정**: 초판이 적은 「grab()/render(QImage) 가 offscreen 에서 즉사」는
+  **틀렸다**(라벨 버그 수정 후 둘 다 정상 확인). 「BLAS 즉사와 같은 계열」도
+  부정확하다 — 한글 strftime 은 **잡을 수 있는** `UnicodeEncodeError` 다.
+  진짜 기전: **PyQt5 는 `paintEvent` 등 가상 메서드 안의 미처리 예외에 대해
+  프로세스를 그냥 죽인다**(최소 예제로 재현). CLAUDE.md 「운영 환경」 절에 등재했다.
+  회귀: `test_9_no_hangul_inside_strftime_format` — **프로덕션 코드 전수**로 확대
+  (dashboard/ 뿐이었다). 2026-09-10 스캔 결과 위반 **0건**.
+  ⚠ **남은 것 1건**: 정적 검사는 「한글 strftime」이라는 *한 사례*만 잡는다.
+    paint 경로에서 예외가 나는 다른 모든 경우는 못 잡는다 — 차트를 실제로 그려 보는
+    **서브프로세스 페인트 스모크**(py37_32 로 띄워 exit code 확인)를 회귀에 넣을지
+    결정할 것. pytest 는 base anaconda 에서 도는데 크래시는 py37_32 에서만 나므로
+    같은 프로세스 안에서는 잡을 수 없다.
 
 - **T-GP2 — 화면 GP 표기의 남은 판단 2건** (배선 완료, 관측 후 결정)
   1. **P/L pt 열에는 GP 를 넣지 않았다.** 원 열은 넣는다(관문) — 두 열의 축이

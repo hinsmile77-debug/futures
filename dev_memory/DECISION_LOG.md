@@ -26,8 +26,27 @@ Ctrl+Shift+X 로 차트를 여는 순간 대시보드가 통째로 죽는다.
 ⇒ 조치: 시각은 **ASCII 포맷**으로 만들고 한글은 뒤에 이어붙인다.
 회귀: `test_9_no_hangul_inside_strftime_format` — `dashboard/*.py` 전체를 훑는다.
 
-⚠ `c.grab()` · `render(QImage)` 도 py37_32 offscreen 에서 즉사한다(백킹스토어
-부재). 스모크에서 paintEvent 를 태우려면 `show()` + `processEvents()` 를 쓸 것.
+🔴 **[같은 날 557차 후속3 정정] 위 문단의 진단이 두 군데 틀렸다 — 재인용 금지.**
+
+**① `c.grab()` · `render(QImage)` 는 즉사하지 않는다.** 라벨 버그를 고친 뒤
+재실행하니 둘 다 정상이다(`grab() -> 976x558` · `render(QImage) OK`). 그때 죽은
+이유는 그 둘이 **`paintEvent` 를 태웠고 거기서 내 버그가 터졌기** 때문이다.
+「백킹스토어 부재」라는 설명은 근거 없는 추정이었다.
+
+**② 「BLAS 즉사와 같은 계열」도 부정확하다.** BLAS 쪽은 예외 없이 프로세스가
+종료되지만, 이쪽은 **잡을 수 있는 예외**다. 단독 실행 실측:
+`datetime.strftime('GP진입 %H:%M')` → `UnicodeEncodeError: 'locale' codec can't
+encode character '진'` (이 env 의 `locale.getlocale()` 이 `(None, None)` =
+LC_CTYPE "C" 라 로케일 코덱이 ASCII 다. `getpreferredencoding()` 이 cp949 인 것과
+별개다).
+
+**진짜 기전은 더 일반적이고 더 위험하다 — 실측으로 확인했다:**
+🔴 **PyQt5 는 `paintEvent` 같은 가상 메서드 안의 미처리 예외에 대해 프로세스를
+그냥 죽인다.** `paintEvent` 에서 `ValueError` 를 일부러 던지는 최소 예제로 재현했다
+(다음 `print` 가 실행되지 않고 프로세스가 사라진다).
+⇒ 규약은 「strftime 에 한글 금지」보다 넓다: **paint 경로에서는 예외가 날 수 있는
+호출을 하지 말거나 감싸라.** 한글 strftime 은 그 규약을 어긴 한 사례일 뿐이다.
+⇒ 프로덕션 코드 전수 스캔(2026-09-10): non-ASCII strftime 포맷 **0건**.
 
 ### 2. 차트 GP 마커 — 실거래와 **절대 같아 보이지 않게**
 
