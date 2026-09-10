@@ -66,6 +66,11 @@ from config.settings import (
     MAIN_STALL_TRACEBACK_MIN_MS as _MST_MIN_MS,
     MAIN_STALL_TRACEBACK_MIN_INTERVAL_SEC as _MST_MIN_INTERVAL,
     MAIN_STALL_TRACEBACK_DAILY_MAX as _MST_DAILY_MAX,
+    # [MW0601 555차 후속] 「미륵이가 스스로 넣은 거래」의 정본 정의.
+    # 🔴 사본을 만들지 않는다 — ProfitGuard 판정축(main.py `_sys_daily_net_krw`)과
+    #   손익 추이 패널의 `자동` 축은 **같은 질문**이다. 리터럴로 베끼면 한쪽만 바뀌어
+    #   두 화면이 다른 「자동」을 말하게 된다(495차 요율 하드코딩 전례와 같은 형태).
+    PROFIT_GUARD_SYSTEM_SOURCES as _AUTO_ENTRY_SOURCES,
 )
 from strategy.entry.time_strategy_router import TimeStrategyRouter
 from utils.time_utils import get_time_zone, now_kst
@@ -6904,8 +6909,11 @@ class PnlHistoryPanel(QWidget):
                   "⚠ GHOST_PENDING_MISS는 외부 진입과 미륵이 주문추적 실패가 같은\n"
                   "  라벨에 섞인다 — 전부 사람이 한 것이라고 읽지 말 것.\n"
                   "포지션에 한 레그라도 이 흔적이 있으면 그 포지션 전체가 여기 들어간다.",
-        "unknown": "entry_source 미기록 구간(311차 이전, ~2026-07-10).\n"
-                   "**미측정이지 자동이 아니다** — 자동에 붙이면 시스템 성과가 부푼다.",
+        "unknown": "다음 **두 가지**가 들어온다 — 둘 다 「자동」이 아니다.\n"
+                   "· entry_source 미기록 구간(311차 이전, ~2026-07-10)\n"
+                   "· 코드가 모르는 entry_source 라벨 [555차 후속]\n\n"
+                   "**미측정이지 자동이 아니다** — 자동에 붙이면 시스템 성과가 부푼다.\n"
+                   "모르는 라벨이 있으면 이 툴팁 끝에 그 목록이 붙고 로그에도 남는다.",
         "gp": "🟣 GOLDEN POWER 규칙 섀도 — **가상 거래다. 실적이 아니다.**\n"
               "원천은 challenger.db(가상 체결)이며 trades 테이블과 무관하다.\n"
               "· 주문이 나간 적 없다 — 브로커 예탁금 차액에 들어 있지 않다\n"
@@ -6920,6 +6928,14 @@ class PnlHistoryPanel(QWidget):
     _GP_ORIGIN = "gp"
     _MANUAL_SOURCES = ("OPERATOR_MANUAL", "GHOST_PENDING_MISS",
                        "BROKER_SYNC_RECOVERY", "OPERATOR_RESTORE")
+    # ── [MW0601 555차 후속] 「자동」 화이트리스트 ────────────────────────────────
+    # 🔴 **정본은 `config/settings.py:PROFIT_GUARD_SYSTEM_SOURCES` 다** — 여기 리터럴
+    #   사본을 만들지 않는다. ProfitGuard 가 판정하는 「시스템 자동매매분」과 이 패널의
+    #   「자동」은 같은 질문이므로, 정의가 갈리면 두 화면이 서로 다른 자동을 말한다.
+    # ⚠ 새 `entry_source` 를 배선하면 **여기(정본) 또는 `_MANUAL_SOURCES` 에 등록**할 것.
+    #   등록하지 않으면 `unknown`(미측정)으로 떨어지며 로그가 그 사실을 알린다 —
+    #   종전처럼 조용히 `auto` 로 편입되지 않는다.
+    _AUTO_SOURCES = frozenset(_AUTO_ENTRY_SOURCES)
 
     @staticmethod
     def _exit_is_manual(reason):
@@ -6949,6 +6965,11 @@ class PnlHistoryPanel(QWidget):
         #   refresh() 전 호출이 조용히 "전량 선택"으로 판정된다(계측 4원칙 ④).
         self._day_total_legs: dict = {}
         self._gp_wired: bool = False       # [553차] 미배선 ≠ 0건 (계측 4원칙 ②)
+        # [555차 후속] 이번 조회에서 만난 미분류 entry_source 라벨.
+        # 🔴 `__init__`에서 명시 초기화한다 — 기본값 폴백으로 읽으면 「아직 판정 전」과
+        #   「판정했더니 없다」가 같은 값이 된다(계측 4원칙 ②·④).
+        self._unrecognized_sources: set = set()
+        self._unrecognized_logged: set = set()   # 같은 라벨 반복 로그 억제
         # 필터를 함께 움직일 짝 패널(실측 ↔ 반사실). link_filter()로 연결한다.
         self._filter_peers: list = []
         self._build()
@@ -7309,24 +7330,80 @@ class PnlHistoryPanel(QWidget):
         빼고 잔량은 사람이 뺀 포지션이 실제로 있다(계측 4원칙 ①의 이 패널 판).
         그래서 `entry_ts`로 묶어 **한 레그라도** 사람·외부 흔적이 있으면 그 포지션
         전체를 `manual`로 본다. 보수적 방향이다 — 시스템 성과를 부풀리지 않는다.
+
+        ── [MW0601 555차 후속] 화이트리스트로 뒤집었다 ────────────────────────────
+        🔴 **종전에는 「알려진 manual 이 아니면 auto」였다.** 그래서 코드가 모르는
+          새 `entry_source` 라벨이 나타나면 **자동으로 시스템 성과에 편입**됐다.
+          블랙리스트는 「빠뜨리면 낙관 쪽으로 틀린다」 — 이 프로젝트가 반복해서
+          당한 방향이다.
+
+          2026-09-10 실측이 그것이다. 554차가 pytest 가 심은 유령 포지션
+          (`trades` id=572,573 · 허구 +6,921,594원)을 규명하고 `entry_source` 를
+          `SYSTEM_AUTO` → `PHANTOM_STATE_ARTIFACT` 로 정정했는데, 그 라벨은
+          **저장소 코드 어디에도 없다**(grep 0건 — dev_memory 문서에만 있다).
+          554차는 ProfitGuard 쪽 화이트리스트(`PROFIT_GUARD_SYSTEM_SOURCES`)만
+          보고 정정했고, 블랙리스트인 이 패널은 그 라벨을 그대로 `auto` 로 읽었다.
+          결과: 「자동」 필터에 **허구 692만원이 잡히고** 실제 브로커 수익
+          +463,281원(`BROKER_SYNC_RECOVERY` = manual)은 빠진다 — 정확히 반대다.
+
+        ⇒ **`auto` 는 정본 화이트리스트에 있는 진입만.** 모르는 라벨은 `auto` 로
+          승격하지 않고 `unknown`(미측정)으로 떨어뜨린다. 「모르면 시스템 공로로
+          치지 않는다」가 이 축의 보수적 방향이다(계측 4원칙 ②).
+
+        ⚠ `unknown` 은 이제 **두 가지**를 담는다 — ① `entry_source` NULL(311차 이전)
+          ② 코드가 모르는 라벨. 섞인 채로 두면 원칙 ③(탈락 가시화) 위반이므로
+          ②는 `_unrecognized_sources` 에 모아 로그·툴팁으로 드러낸다.
         """
         from collections import defaultdict
         groups = defaultdict(list)
         for r in self._rows:
             groups[r["pos_key"]].append(r)
 
+        unrecognized = set()
         for _key, legs in groups.items():
             src = next((l["entry_source"] for l in legs if l["entry_source"]), None)
             if not src:
                 origin = "unknown"          # 미측정 — auto 도 manual 도 아니다
             elif src in self._MANUAL_SOURCES:
                 origin = "manual"
+            elif src not in self._AUTO_SOURCES:
+                # 🔴 모르는 라벨 — **auto 로 승격하지 않는다**(555차 후속).
+                origin = "unknown"
+                unrecognized.add(src)
             elif any(self._exit_is_manual(l["exit_reason"]) for l in legs):
                 origin = "manual"           # 진입은 시스템인데 사람이 뺀 포지션
             else:
                 origin = "auto"
             for l in legs:
                 l["origin"] = origin
+
+        self._note_unrecognized_sources(unrecognized)
+
+    def _note_unrecognized_sources(self, unrecognized):
+        """[555차 후속] 미분류 라벨을 **드러낸다** — 조용히 삼키지 않는다(원칙 ③).
+
+        새 `entry_source` 가 배선되면 여기 걸리므로, 그때 정본 화이트리스트
+        (`PROFIT_GUARD_SYSTEM_SOURCES`) 또는 `_MANUAL_SOURCES` 에 등록하면 된다.
+        """
+        self._unrecognized_sources = set(unrecognized)
+        if not unrecognized:
+            return
+        _new = unrecognized - self._unrecognized_logged
+        if _new:
+            self._unrecognized_logged |= _new
+            logger.warning(
+                "[출처축] 미분류 entry_source %s — 「자동」이 아니라 「미측정」으로 "
+                "집계한다. 시스템 거래라면 PROFIT_GUARD_SYSTEM_SOURCES 에, "
+                "사람·외부라면 _MANUAL_SOURCES 에 등록할 것",
+                sorted(_new))
+        try:
+            _cb = self._cb_origin.get("unknown")
+            if _cb is not None:
+                _cb.setToolTip("%s\n\n⚠ 이번 조회의 미분류 라벨: %s"
+                               % (self._ORIGIN_TIP["unknown"],
+                                  ", ".join(sorted(unrecognized))))
+        except Exception:
+            pass
 
     # ── 그룹화 유틸 ────────────────────────────────────────────
 
