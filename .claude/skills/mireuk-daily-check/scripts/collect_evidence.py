@@ -656,6 +656,49 @@ DEFAULT_CONFIG = {
                        "🔴 `[AutoMasked]` 문구나 `scaler_events` 스키마가 바뀌면 조용히 "
                        "죽는다 → 26주 WFA 「고착 지표 감시목록」(468차 G-2)",
             },
+            # ── [MW0602 560차 후속 / 0910 G-1i] 장중 엔진 재기동 ───────────────
+            # 2026-09-10 에 대시보드 코드 배포로 장중 재기동이 일어났고, 그 여파로
+            # 09:13 분봉이 결측되고 Hurst 워밍업 버퍼가 초기화돼 약 70분간
+            # `hurst=neutral` 상태로 진입 3건이 나갔다. **사건 자체는 로그에
+            # 다 있었다** — 없던 것은 *"그것이 일어났다"를 말해주는 자리*였고,
+            # 그래서 사람이 로그를 전수로 뒤진 세션만 발견할 수 있었다.
+            # 468차 G-2 가 등록한 사각지대와 같은 형태다.
+            #
+            # 🔴 **분모(witness)는 재기동 줄 그 자체다.** 정상 가동일이면 08:41 무렵
+            #   기동 1줄이 **무조건** 찍힌다. 줄이 하나도 없으면 그날 엔진이 안 돌았다는
+            #   뜻이므로 `0(무재기동)` 이 아니라 **미측정**으로 뺀다(계측 4원칙 ②) —
+            #   휴장일을 「재기동 없는 깨끗한 날」로 세면 표본이 조용히 희석된다.
+            "session_restart_intraday": {
+                "kind": "session_restart_intraday",
+                "files": ["_SYSTEM"],
+                "benign": ["0(무재기동)"],
+                "measured_since": "2026-06-02",   # `[Session] 재기동 #N | cause=` 도입(102차)
+                # 🔴 이 채널은 `변동` 으로도 적신호가 떠야 한다. §11 은 고착·무기록·
+                #   분기편향만 올리므로, 재기동이 **가끔** 있는 지표는 판정이 `변동`
+                #   이 되어 아무 데도 안 뜬다 — 그러면 신설한 의미가 없다.
+                "alert_today_unless_benign": True,
+                # 적신호는 **장중(09:00~15:10) 재기동이 있는 날만.** 장 끝난 뒤
+                # 재기동(0906 20:42 · 0907 22:02 · 0908 16:20)은 값에는 남지만
+                # 적신호로 올리지 않는다 — 매매에 닿지 않는데 매번 뜨면 무시된다.
+                "alert_today_re": r"\(장중[1-9]",
+                "alert_hint": ("장중 재기동은 그 분 분봉을 결측시키고 Hurst·스윙 "
+                               "워밍업 버퍼를 초기화한다 — 재기동 시각과 그 뒤 "
+                               "진입의 `hurst=` 값을 확인할 것(0910 1-2)."),
+                "why": "장중 엔진 재기동 발생 여부(0910 G-1i). `0(무재기동)` 이 기대값이고 "
+                       "**1건 이상이면 그날 §11 적신호로 뜬다**(`alert_today_unless_benign`). "
+                       "값은 `N건(장중M)` — N 은 09:00 이후 전체, M 은 그중 09:00~15:10 "
+                       "구간이다. 둘을 나눈 이유: 장중 재기동은 분봉 결측·워밍업 버퍼 "
+                       "초기화로 **그날 판단에 직접 닿고**, 15:10 이후 재기동은 같은 "
+                       "사건이지만 매매에는 닿지 않는다. 하나로 뭉치면 해로운 쪽이 "
+                       "묻히고, 장중만 세면 EOD 를 건드린 재기동이 사라진다(계측 4원칙 ③). "
+                       "`·의도외K` 접미는 `cause=AUTO_DISCONNECT` 건수다 — 사람이 배포하려고 "
+                       "끈 것이 아니라 **연결이 끊겨서** 재기동한 것이라 성격이 다르다. "
+                       "⚠ 섀도 계측 — 차단·판정 없음. 재기동을 막지 않는다. "
+                       "⚠ 그날 재기동 줄이 하나도 없으면 `0(무재기동)` 이 아니라 **미측정** "
+                       "이다(엔진 미기동·휴장). "
+                       "🔴 `[Session] 재기동 #N` 문구(`main.py`)가 바뀌면 조용히 죽는다 → "
+                       "26주 WFA 「고착 지표 감시목록」(468차 G-2)",
+            },
         },
     },
     # ── [MW0602 526차 후속 / G-1] 미판정 관측의 나이 ───────────────────────────
@@ -2653,11 +2696,48 @@ def scan_derived_indicators(root, cfg, day):
         unmatched = [t for t in slot["n3"] if t not in masked and (t + 1) not in masked]
         return "격리" if not unmatched else "비격리(N≥3·확인대상)"
 
+    # [MW0602 560차 후속 / 0910 G-1i] 장중 엔진 재기동. 근거는 설정의 `why` 참조.
+    # ⚠ `cause=` 는 도입 시점(102차)부터 같은 커밋에 있었지만, 문구가 바뀌어도
+    #   **건수는 계속 세도록** 선택 그룹으로 둔다 — cause 를 못 읽는 것과 재기동을
+    #   못 보는 것은 심각도가 다르다.
+    _restart_rx = re.compile(
+        r"^(?P<d>\d{4}-\d{2}-\d{2}) (?P<h>\d{2}):(?P<mi>\d{2}):(?P<se>\d{2})"
+        r".*\[Session\] 재기동 #\d+(?:\s*\|\s*cause=(?P<c>\w+))?")
+
+    def _kind_session_restart_intraday(d, paths, spec):
+        # 🔴 `_lines` 기본 상한은 8MB 인데 `_SYSTEM` 로그는 20MB 를 넘는 날이 있다
+        #   (0909 실측 18.3MB). 기본값으로 두면 **바쁜 날일수록 조용히 미측정**이
+        #   되는데, 재기동이 잦은 날이 곧 바쁜 날이라 하필 보고 싶은 날을 놓친다.
+        _mb = int(spec.get("max_file_mb", 64))
+        seen = set()
+        for ln in _lines(paths, [f.lower() for f in (spec.get("files") or [])], max_mb=_mb):
+            # 정규식 앞에 값싼 부분문자열 관문 — 20MB 전수 스캔의 비용은 여기서 갈린다.
+            if "[Session] 재기동 #" not in ln:
+                continue
+            m = _restart_rx.match(ln)
+            if not m or m.group("d").replace("-", "") != d:
+                continue
+            # 같은 파일이 두 스캔 경로에 잡혀도 한 사건은 한 번만 센다.
+            seen.add((int(m.group("h")) * 3600 + int(m.group("mi")) * 60
+                      + int(m.group("se")), m.group("c") or "?"))
+        if not seen:
+            # 재기동 줄이 **하나도** 없다 = 그날 엔진이 안 돌았다(휴장·미기동).
+            # `0(무재기동)` 으로 세면 안 돈 날이 「깨끗한 날」로 둔갑한다(계측 4원칙 ②).
+            return None
+        after = [(t, c) for t, c in seen if t >= 9 * 3600]
+        if not after:
+            return "0(무재기동)"
+        intra = sum(1 for t, _ in after if t < 15 * 3600 + 10 * 60)
+        unint = sum(1 for _, c in after if c == "AUTO_DISCONNECT")
+        return "%d건(장중%d)%s" % (len(after), intra,
+                                   "·의도외%d" % unint if unint else "")
+
     _KINDS = {
         "core_degen_open":   _kind_core_degen_open,
         "presence":          _kind_presence,
         "crash_signature":   _kind_crash_signature,
         "automask_coverage": _kind_automask_coverage,
+        "session_restart_intraday": _kind_session_restart_intraday,
     }
 
     rows = []
@@ -2679,11 +2759,18 @@ def scan_derived_indicators(root, cfg, day):
                          "measured_since": spec.get("measured_since")})
             continue
         counts, hit_days = {}, set()
+        # [MW0602 560차 후속 / 0910 G-1i] **당일값**을 따로 들고 나간다.
+        # 창 전체의 분포만으로는 "오늘 무슨 일이 있었나"를 못 묻는다 — 아래
+        # `alert_today_unless_benign` 이 그 물음을 §11 로 올린다.
+        today_tok = date_tokens(day)["ymd"]
+        today_val = None
         for d in p_days:
             try:
                 v = fn(d, by_day.get(d, []), spec)
             except Exception as e:
                 v = "산출오류(%s)" % type(e).__name__
+            if d == today_tok:
+                today_val = v          # None 이면 **미측정**이지 정상이 아니다
             if v is None:
                 continue
             counts[v] = counts.get(v, 0) + 1
@@ -2696,10 +2783,26 @@ def scan_derived_indicators(root, cfg, day):
             int(spec.get("min_samples", conf.get("min_samples", 5))),
             int(spec.get("min_days", conf.get("min_days", 3))),
             [str(b) for b in (spec.get("benign") or [])])
+        # 🔴 §11 은 `고착`·`무기록`·`분기편향` 만 올린다. 사건이 **가끔** 나는 지표는
+        #   판정이 `변동` 이 되어 어디에도 안 뜨는데, 그러면 "오늘 일어났다"를 알리려고
+        #   만든 채널이 정작 그날 침묵한다. 그래서 당일값이 기대값(benign)이 아니면
+        #   판정과 **무관하게** 적신호를 하나 만든다.
+        # ⚠ `alert_today_re` 는 **적신호만** 좁힌다 — §12 표의 값·분포는 그대로다.
+        #   0906·0907·0908 실측처럼 장 끝난 뒤(20:42·22:02·16:20) 재기동한 날까지
+        #   매번 적신호를 올리면 이 채널은 늑대소년이 되어 죽는다. 그렇다고 값에서
+        #   지우면 「장후 재기동은 아예 없었다」가 되므로(계측 4원칙 ③) 값에는 남긴다.
+        _alert = None
+        _art = spec.get("alert_today_re")
+        if spec.get("alert_today_unless_benign") and today_val is not None                 and today_val not in [str(b) for b in (spec.get("benign") or [])]                 and (not _art or re.search(_art, today_val)):
+            _alert = ("지표 **`%s`** 당일값 **`%s`** — 기대값 `%s` 이 아니다 (§12). %s"
+                      % (name, today_val,
+                         "` / `".join(str(b) for b in (spec.get("benign") or [])) or "—",
+                         spec.get("alert_hint", "")))
         rows.append({"name": name, "why": spec.get("why", ""), "days": len(hit_days),
                      "n": n, "dist": dist, "verdict": verdict, "note": note,
                      "ratio": None, "expected": None, "scanned_days": len(p_days),
-                     "measured_since": spec.get("measured_since"), "source": "파생"})
+                     "measured_since": spec.get("measured_since"), "source": "파생",
+                     "today": today_val, "today_alert": _alert})
     return rows
 
 
@@ -4734,6 +4837,11 @@ def build(root, day, phase, cfg, discover_only=False):
             # [MW0602 476차 F-2'] 계측 중단 의심이 아니라 **수집기 환경 문제**다.
             flags.append("지표 **`%s`** — DB 접근 실패로 **미측정** (계측 중단이 아니라 "
                          "수집기 환경 문제. 라이브 프로세스 WAL 경합 가능성 — §12)" % r["name"])
+        # [MW0602 560차 후속 / 0910 G-1i] 위 네 판정과 **독립**이다(elif 아님).
+        # 누적 판정이 `변동`(=여러 값)이어도 당일값이 기대값이 아니면 올린다 —
+        # 사건형 지표는 바로 그 조합에서만 말할 것이 있다.
+        if r.get("today_alert"):
+            flags.append(r["today_alert"])
     # [MW0602 476차 G-4] 임계 미도달 — **규명 안 된 것만** 올린다(known 은 §12b 표시로 충분).
     for r in reach_rows:
         if r["verdict"].startswith("미도달") and not r.get("known"):
