@@ -18727,6 +18727,24 @@ def _ts_refresh_dashboard_balance_ui_only(self) -> None:
     _ts_push_balance_to_dashboard(self, cached, quiet=True)
 
 
+# ── [MW0601 558차 후속 / G-3(556-6 이월)] 브로커 대사 결과 원장 기록 ──────
+#
+# 아래 `_ts_sync_position_from_broker()` 의 **모든 종결 분기**가 이 함수를 부른다.
+# 불일치(MISMATCH)만 적으면 분자만 남아 "몇 번 중 몇 번"을 못 낸다 —
+# G-3 원문이 요구한 것이 그 비율이다(계측 4원칙 ⑤).
+#
+# 🔴 **관측 전용이다.** 반환값을 어떤 분기 조건으로도 쓰지 않으며, 예외는 두 겹
+#    (여기 + `record_broker_sync_recon` 내부)으로 삼킨다. 계측이 재기동 경로의
+#    브로커 동기화를 깨뜨리는 일은 없어야 한다.
+#    회귀 가드: `tests/test_558_broker_sync_recon.py` 의 「라이브 반영 0」 불변식.
+def _ts_record_broker_sync_recon(outcome, detail, **kw):
+    try:
+        from utils.db_utils import record_broker_sync_recon
+        record_broker_sync_recon(outcome, detail, **kw)
+    except Exception as _bsr_e:          # pragma: no cover - 방어
+        logger.debug("[BrokerSyncRecon] 기록 스킵: %s", _bsr_e)
+
+
 def _ts_sync_position_from_broker(self) -> None:
     # 장외 가드: 장외 BlockRequest는 ~30초 타임아웃 → 메인 스레드 블로킹.
     # 장 시작 전 startup sync는 is_market_open 이전에 실행되므로 예외적으로 허용.
@@ -18743,6 +18761,8 @@ def _ts_sync_position_from_broker(self) -> None:
     code = self._normalize_broker_code(getattr(self, "_futures_code", ""))
     if not account_no or not code:
         _ts_set_broker_sync_status(self, False, "missing account/code for startup sync", True)
+        # [558차 후속 / G-3] 대조 불가 — 시도는 있었으므로 분모에 남긴다.
+        _ts_record_broker_sync_recon("UNVERIFIED", "missing_account_or_code")
         return
 
     before = _ts_get_position_snapshot(self)
@@ -18762,6 +18782,9 @@ def _ts_sync_position_from_broker(self) -> None:
     if result is None:
         _ts_set_broker_sync_status(self, False, "broker balance TR returned None", True)
         log_manager.system("[BrokerSync] 브로커 잔고 TR 조회 실패로 startup sync를 건너뜁니다.", "WARNING")
+        # [558차 후속 / G-3] 대조 불가(원천이 응답하지 않음) — MATCH 로 섞지 않는다.
+        _ts_record_broker_sync_recon("UNVERIFIED", "balance_tr_none",
+                                     before_state=before)
         return
 
     rows = result.get("rows") or []
@@ -18831,6 +18854,10 @@ def _ts_sync_position_from_broker(self) -> None:
                     False,
                 )
                 _ts_push_balance_to_dashboard(self, result)
+                # [558차 후속 / G-3] `_broker_position_reconciled=False` 와 같은 축이다 —
+                # 포지션을 유지했을 뿐 대조된 것이 아니다(계측 4원칙 ②).
+                _ts_record_broker_sync_recon("UNVERIFIED", "mock_blank_rows_keep_position",
+                                             before_state=before, after_state=before)
                 return
             if self.position.status != "FLAT":
                 # [Bug3] blank-as-flat 강제 시 TRADE 로그 기록
@@ -18867,6 +18894,12 @@ def _ts_sync_position_from_broker(self) -> None:
                     all_blank_rows=all_blank_rows,
                     raw_rows=rows,
                 )
+            # [558차 후속 / G-3] 무포지션 확인 = 대조 성립(`_broker_position_reconciled=True`).
+            # before 가 FLAT 이 아니었다면 엔진이 없는 포지션을 들고 있었다는 뜻이다.
+            _ts_record_broker_sync_recon(
+                "MATCH" if before == "FLAT" else "MISMATCH", "blank_as_flat",
+                before_state=before, after_state="FLAT", reconciled_measured=True,
+                broker_qty_per_position=0)
             return
         _ts_set_broker_sync_status(self, False, "no broker row matched requested code", True)
         logger.warning(
@@ -18880,6 +18913,9 @@ def _ts_sync_position_from_broker(self) -> None:
             f"[BrokerSync] startup sync 실패: code={code} 매칭 잔고행 없음. 자동진입 차단 유지 | before={before}",
             "CRITICAL",
         )
+        # [558차 후속 / G-3] 대조 불가.
+        _ts_record_broker_sync_recon("UNVERIFIED", "no_matching_row",
+                                     before_state=before)
         return
 
     qty_text = broker_row.get("잔고수량") or "0"  # enc 확인: 잔고수량 존재 (보유수량 x)
@@ -18922,6 +18958,10 @@ def _ts_sync_position_from_broker(self) -> None:
             f"[BrokerSync] startup sync 응답 해석 실패 code={code} qty={qty_text} side={side_text}",
             "WARNING",
         )
+        # [558차 후속 / G-3] 대조 불가 — 파싱값은 신뢰할 수 없으므로 수량·평단은
+        # 넣지 않는다(0 으로 채우면 "브로커가 0계약이라 답했다"로 위장된다).
+        _ts_record_broker_sync_recon("UNVERIFIED", "parse_failure",
+                                     before_state=before)
         return
 
     self._entry_source = "BROKER_SYNC_RECOVERY"
@@ -18982,6 +19022,14 @@ def _ts_sync_position_from_broker(self) -> None:
             f"의도한 자리가 아니면 수동 청산이 자동 손절보다 빠르다",
             "ERROR",
         )
+
+    # [558차 후속 / G-3] 정상 종결 — 여기가 **분모의 대부분**이다.
+    # before == after 인 재기동이 압도적으로 많고, 그 사실이 기록돼야
+    # "불일치가 드물다"를 수치로 말할 수 있다.
+    _ts_record_broker_sync_recon(
+        "MATCH" if before == after else "MISMATCH", "synced",
+        before_state=before, after_state=after, reconciled_measured=True,
+        broker_qty_per_position=qty, broker_avg_price=avg_price)
 
 
 def _ts_sync_from_balance_payload(self, payload: dict) -> None:

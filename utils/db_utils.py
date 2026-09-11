@@ -3215,6 +3215,155 @@ def init_daily_broker_pnl_db():
                     "ALTER TABLE daily_broker_pnl ADD COLUMN %s %s" % (_c, _t))
 
 
+# ── [MW0601 558차 후속 / G-3(556-6 이월)] 재기동 시 엔진↔브로커 상태 대사 원장 ──
+#
+# **왜 있는가.** 2026-09-10 사고는 재기동이라는 **우연한 계기**가 없었으면 15:10
+# 강제청산까지, 어쩌면 그 뒤까지도 몰랐을 수 있다. 불일치 자체는 그때도 ERROR 로
+# 찍혔지만(518차, `main.py` `[BrokerSync] 🔴 재기동해 보니 …`), **로그는 세어지지
+# 않는다** — "이번 달에 몇 번이나 어긋났는가"를 물으면 사람이 매번 로그를 뒤져야 했다.
+# F-3(장중 주기 재대사)이 아직 없는 동안의 **임시 안전판**으로 빈도를 정량화한다.
+#
+# 🔴 **불일치만 적으면 분자만 남는다 — 그래서 모든 종결 분기를 적는다.**
+#    G-3 원문이 요구한 것은 *"몇 번 재기동했고 **그중** 몇 번 불일치가 있었는지"* 다.
+#    MISMATCH 행만 쌓으면 분모(총 대사 시도)가 없어 비율을 못 낸다
+#    (계측 4원칙 ⑤ — 대사는 모든 축을 걸어라).
+#
+# 🔴 **「일치」와 「대조 못 함」을 같은 값으로 표현하지 않는다.**
+#    모의서버 blank rows·매칭 잔고행 없음·응답 해석 실패는 **대조가 성립하지 않은**
+#    경우다. 이것을 MATCH 로 적으면 "오늘 이상 없음"으로 위장된다 — FP-CRITICAL
+#    PSI=0.0 과 같은 계열의 사고다(계측 4원칙 ②).
+#    ⇒ `outcome='UNVERIFIED'` + `reconciled_measured=0` 으로 분리한다.
+#
+# ⚠ **이 원장은 판정에 관여하지 않는다.** 쓰기 전용 관측이며, 읽는 쪽은 사람과
+#    점검 스크립트뿐이다. 기록 실패가 startup sync 를 깨뜨려서는 안 되므로
+#    `record_broker_sync_recon()` 은 예외를 **삼킨다**(호출부도 한 겹 더 감싼다).
+#
+# 컬럼 단위 표기(계측 4원칙 ①): 브로커 잔고 수량은 **포지션 단위**다(청산 레그가
+# 아니다) — `broker_qty_per_position`.
+
+BROKER_SYNC_OUTCOMES = ("MATCH", "MISMATCH", "UNVERIFIED")
+
+
+def init_broker_sync_recon_db():
+    """[MW0601 558차 후속 / G-3] `broker_sync_recon` 테이블 생성."""
+    execute(TRADES_DB, """
+        CREATE TABLE IF NOT EXISTS broker_sync_recon (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts          TEXT NOT NULL,      -- 발생 시각 (ISO, 초 단위)
+            trade_date  TEXT NOT NULL,      -- YYYY-MM-DD
+            outcome     TEXT NOT NULL,      -- MATCH | MISMATCH | UNVERIFIED
+            reconciled_measured INTEGER NOT NULL,  -- 1=실제 대조됨 / 0=대조 불가
+            before_state TEXT,              -- 재기동 전 엔진 상태 스냅샷
+            after_state  TEXT,              -- 대사 후 엔진 상태 스냅샷
+            direction    TEXT,              -- 'FLAT->SHORT' 등 (UNVERIFIED면 NULL)
+            broker_qty_per_position INTEGER,-- 브로커 잔고 계약수 (미측정이면 NULL)
+            broker_avg_price REAL,          -- 브로커 평단 (미측정이면 NULL)
+            detail       TEXT,              -- 분기 식별자 (synced/blank_as_flat/…)
+            pc_id        TEXT,
+            session_pid  INTEGER
+        )
+    """)
+    execute(TRADES_DB,
+            "CREATE INDEX IF NOT EXISTS idx_bsr_date "
+            "ON broker_sync_recon(trade_date, outcome)")
+
+
+def record_broker_sync_recon(outcome, detail, before_state=None,
+                             after_state=None, reconciled_measured=False,
+                             broker_qty_per_position=None,
+                             broker_avg_price=None, ts=None):
+    """[MW0601 558차 후속 / G-3] 대사 결과 1행 append.
+
+    🔴 **예외를 삼킨다.** 여기는 재기동 경로 한복판이며, 이 함수는 관측일 뿐이다 —
+    DB 가 잠겨 있다고 브로커 동기화가 실패하면 안 된다. 다만 조용히 지우지는
+    않는다(실패 시 `logging.getLogger("SYSTEM").warning`).
+
+    Returns:
+        bool — 기록 성공 여부. **호출부가 이 값으로 분기하면 안 된다**(관측 전용).
+    """
+    try:
+        import datetime as _dt
+        _now = _dt.datetime.now()
+        _ts = ts or _now.strftime("%Y-%m-%d %H:%M:%S")
+        _date = _ts[:10]
+        _outcome = str(outcome or "").upper()
+        if _outcome not in BROKER_SYNC_OUTCOMES:
+            # 모르는 값을 그대로 넣어 집계를 오염시키지 않는다 — 다만 남긴다.
+            logging.getLogger("SYSTEM").warning(
+                "[BrokerSyncRecon] 알 수 없는 outcome=%r → UNVERIFIED 로 기록", outcome)
+            detail = "%s|unknown_outcome=%s" % (detail, outcome)
+            _outcome = "UNVERIFIED"
+        _dir = None
+        if _outcome in ("MATCH", "MISMATCH") and before_state and after_state:
+            _dir = "%s->%s" % (before_state, after_state)
+        if _outcome == "UNVERIFIED":
+            # 계측 4원칙 ②·④ — 대조가 성립하지 않은 것을 **그 자리에서** 말한다.
+            # 이 줄이 없으면 원장에 UNVERIFIED 만 조용히 쌓이고, 집계를 따로
+            # 보지 않는 사람에게는 "불일치 0건"으로 읽힌다.
+            logging.getLogger("SYSTEM").warning(
+                "[BrokerSyncRecon] 엔진↔브로커 대조 불가(%s) — "
+                "불일치 0건이 아니라 미측정이다", detail)
+        execute(TRADES_DB, """
+            INSERT INTO broker_sync_recon
+                (ts, trade_date, outcome, reconciled_measured,
+                 before_state, after_state, direction,
+                 broker_qty_per_position, broker_avg_price,
+                 detail, pc_id, session_pid)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            _ts, _date, _outcome, 1 if reconciled_measured else 0,
+            before_state, after_state, _dir,
+            broker_qty_per_position, broker_avg_price,
+            detail, pc_id(), os.getpid(),
+        ))
+        return True
+    except Exception as e:
+        logging.getLogger("SYSTEM").warning(
+            "[BrokerSyncRecon] 기록 실패(무시하고 진행): %s", e)
+        return False
+
+
+def broker_sync_recon_counts(days_back=30):
+    """[MW0601 558차 후속 / G-3] 최근 N일 대사 집계 — **분모까지** 돌려준다.
+
+    Returns:
+        {"attempts": int, "match": int, "mismatch": int, "unverified": int,
+         "mismatch_rate_of_reconciled": float|None, "days_back": int}
+
+        `mismatch_rate_of_reconciled` 의 분모는 **실제로 대조가 성립한 건수**
+        (match+mismatch)다 — UNVERIFIED 를 분모에 넣으면 "대조를 못 한 날"이
+        비율을 좋아 보이게 만든다. 대조 건수가 0이면 **0.0 이 아니라 None** 이다
+        (계측 4원칙 ② — 미측정 ≠ 0).
+    """
+    try:
+        import datetime as _dt
+        _since = (_dt.datetime.now()
+                  - _dt.timedelta(days=int(days_back))).strftime("%Y-%m-%d")
+        rows = fetchall(TRADES_DB,
+                        "SELECT outcome, COUNT(*) AS n FROM broker_sync_recon "
+                        "WHERE trade_date >= ? GROUP BY outcome", (_since,))
+    except Exception as e:
+        logging.getLogger("SYSTEM").warning(
+            "[BrokerSyncRecon] 집계 실패: %s", e)
+        rows = []
+    by = {}
+    for r in rows:
+        by[str(r["outcome"])] = int(r["n"])
+    match = by.get("MATCH", 0)
+    mismatch = by.get("MISMATCH", 0)
+    unverified = by.get("UNVERIFIED", 0)
+    reconciled = match + mismatch
+    return {
+        "attempts": match + mismatch + unverified,
+        "match": match,
+        "mismatch": mismatch,
+        "unverified": unverified,
+        "mismatch_rate_of_reconciled": (
+            (float(mismatch) / reconciled) if reconciled else None),
+        "days_back": int(days_back),
+    }
+
+
 # [477차 후속2 / F-4] 거래일 판정 캐시 — 날짜당 1회만 DB를 본다
 _trading_date_cache: Dict[str, bool] = {}
 
@@ -4576,4 +4725,5 @@ def init_all_dbs():
     init_shap_db()
     init_raw_data_db()
     init_daily_broker_pnl_db()
+    init_broker_sync_recon_db()   # [558차 후속 / G-3]
     init_premarket_levels_db()

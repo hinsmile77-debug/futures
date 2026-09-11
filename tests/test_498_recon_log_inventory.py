@@ -104,6 +104,29 @@ RECON_INVENTORY = {
                  "청산 트리거 경로 변경이라 섀도 10거래일 관찰이 선행조건이다(P5-06). "
                  "단일계약 1레그는 `arm_tp1_single_contract*()` 설계 경로라 의심에서 뺀다"),
     },
+    # ── [MW0601 558차 후속 / G-3(556-6 이월)] 재기동 대사 원장 ───────────────
+    "BrokerSyncRecon": {
+        "compares": ("재기동 직전 엔진 포지션 스냅샷(`_ts_get_position_snapshot`) vs "
+                     "브로커 잔고 TR 응답행(수량·평단·매매구분)"),
+        "independent": True,
+        "why_independent": (
+            "한쪽은 이 프로세스가 메모리·상태파일에서 복원한 값이고 다른 쪽은 "
+            "`request_futures_balance()` 가 계좌에서 받아온 행이다. 엔진이 자기가 "
+            "써넣은 값을 되읽지 않는다 — 2026-09-10 에 실제로 갈렸다(FLAT 으로 "
+            "복원했는데 계좌에는 포지션이 남아 있었다)"),
+        # ③ 한쪽이 없을 때 — 모의서버 blank rows·매칭행 없음·해석 실패는
+        #    「일치」가 아니라 **대조 불가**다. UNVERIFIED 로 갈라 적는다.
+        "missing_literal": "불일치 0건이 아니라 미측정이다",
+        "owner": ("main.py: _ts_sync_position_from_broker() / "
+                  "utils.db_utils.record_broker_sync_recon()"),
+        "note": ("G-3 은 「몇 번 재기동했고 그중 몇 번 불일치가 있었는지」를 물었다 — "
+                 "그래서 MISMATCH 만이 아니라 **모든 종결 분기**를 적는다"
+                 "(분자만 쌓으면 비율이 안 나온다, 계측 4원칙 ⑤). "
+                 "**관측 전용 — 차단·청산 없음.** 불일치 자체의 경보는 518차 "
+                 "`[BrokerSync] 재기동해 보니…` ERROR 가 이미 하고 있고, 이 원장은 "
+                 "그 사건을 **세는** 역할만 한다. 라이브 반영 0 불변식은 "
+                 "`tests/test_558_broker_sync_recon.py`"),
+    },
 }
 
 
