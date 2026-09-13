@@ -33,17 +33,31 @@ def _src():
         return f.read()
 
 
+def _R():
+    """리포트 생성기 모듈 — 유일성 검사의 **단일 출처**를 여기서 가져온다."""
+    import sys
+    if _ROOT not in sys.path:
+        sys.path.insert(0, _ROOT)
+    import scripts.generate_validation_campaign_report as R
+    return R
+
+
 def test_1_summary_channel_numbers_unique():
     """요약표에서 같은 채널 번호가 두 행에 붙으면 안 된다 (0821 1-18의 재발 방지).
 
-    수집 대상: ① `L.append("| [NN] …` 리터럴 행 ② `_row_462(NN, …)` 포맷 행.
-    [47-B]류 접미 라벨은 별개 채널이라 숫자 패턴에 안 걸린다(의도된 제외).
+    🔴 [MW0602 564차 후속4 / R2] 검사를 **생성기의 함수로 일원화**했다.
+    종전에는 이 테스트가 자체 정규식을 들고 있었다. 그러면 런타임(리포트 생성)과
+    테스트가 서로 다른 정의를 보게 되어 한쪽만 느슨해질 수 있다.
+
+    ⚠ **이 테스트는 더 이상 유일한 경보가 아니다.** 같은 함수를 `build_report()`
+    진입부가 부르므로, 스위트가 죽어 있어도 EOD 체인이 리포트를 **쓰기 전에**
+    멈춘다 — 2026-09-07 충돌이 6일간 묻힌 경로를 막은 것이 그 변경의 요점이다.
     """
-    src = _src()
-    nums = re.findall(r'L\.append\("\| \[(\d+)\]', src)
-    nums += re.findall(r"_row_462\((\d+),", src)
-    dupes = sorted({n for n in nums if nums.count(n) > 1})
-    assert not dupes, "요약표 채널 번호 중복: %s — 새 채널 등록 시 번호를 확인하라" % dupes
+    R = _R()
+    try:
+        R.assert_channel_numbers_unique()
+    except R.ChannelNumberCollision as e:
+        raise AssertionError(str(e))
 
 
 def test_2_f9_renumbering_holds():
@@ -90,9 +104,7 @@ def test_4_channel_numbers_respect_pc_bands():
     브랜치에서는 통과하고, 합류 시점에 `test_1` 이 중복으로 잡는다.
     발생 억제(대역) + 사후 탐지(중복)의 조합이지 완전한 차단이 아니다.
     """
-    src = _src()
-    nums = set(int(n) for n in re.findall(r'L\.append\("\| \[(\d+)\]', src))
-    nums |= set(int(n) for n in re.findall(r"_row_462\((\d+),", src))
+    nums = set(int(n) for n in _R().channel_numbers())
     assert nums, "채널 번호를 하나도 못 읽었다 — 정규식이 생성기와 어긋났다"
 
     lo = min(b[0] for b in _CHANNEL_BANDS.values())
@@ -112,3 +124,54 @@ def test_4_channel_numbers_respect_pc_bands():
         "선언된 대역 밖의 채널 번호: %s (레거시<=%d · 대역 %s · 상한 %d). "
         "CLAUDE.md 「캠페인 채널 번호 — PC별 대역 분할」 표를 먼저 고치고 커밋할 것"
         % (stray, _LEGACY_MAX, dict(_CHANNEL_BANDS), hi))
+
+
+def test_5_collision_check_is_not_vacuous():
+    """검사가 **실제로 중복을 잡는가** — 단일 출처가 조용히 느슨해지는 것을 막는다.
+
+    `test_1` 은 "지금 중복이 없다"만 말한다. 검사 자체가 망가져 아무것도 못 잡게
+    되어도 `test_1` 은 그대로 초록이다 — 488차가 잡아낸 *"지킨다고 믿는 초록불"* 이
+    정확히 그 형태다. 그래서 인공 충돌을 먹여 **예외가 나는지** 본다.
+
+    두 등록 관용구(직접 렌더 · `_row_462` 헬퍼)를 각각 시험한다 — 한쪽 패턴만
+    살아 있어도 나머지는 사각지대가 된다.
+    """
+    R = _R()
+    nl = chr(10)
+    cases = {
+        "직접 렌더": nl.join(['L.append("| [58] A |")', 'L.append("| [58] B |")']),
+        "_row_462 헬퍼": nl.join(["_row_462(59, x)", "_row_462(59, y)"]),
+    }
+    for label, src in sorted(cases.items()):
+        try:
+            R.assert_channel_numbers_unique(src)
+        except R.ChannelNumberCollision:
+            continue
+        raise AssertionError(
+            "%s 관용구의 인공 중복을 잡지 못했다 — 유일성 검사가 무력화됐다" % label)
+
+    # 과탐도 막는다 — 정상 소스에서 멈추면 EOD 체인이 매번 죽는다.
+    ok_src = nl.join(['L.append("| [62] A |")', "_row_462(63, x)"])
+    R.assert_channel_numbers_unique(ok_src)
+
+
+def test_6_check_is_wired_into_report_generation():
+    """검사가 **리포트 생성 경로에 실제로 걸려 있는가** — R2 의 요점.
+
+    함수가 옳게 동작해도(`test_5`) 아무도 부르지 않으면 의미가 없다. 이 저장소가
+    반복해서 당한 형태가 정확히 그것이다 — FP-CRITICAL 은 학습분포 저장 함수가
+    프로덕션에서 호출된 적이 없어 2개월간 PSI=0.0 이었고, TOX 섀도는 계산만 하고
+    아무도 소비하지 않아 한 달 넘게 죽어 있었다.
+
+    ⚠ 호출 위치는 `build_report()` **진입부**여야 한다. 뒤에 있으면 이미 무거운
+    집계가 끝난 뒤이고, 더 뒤면 오염된 리포트가 이미 파일로 나간다.
+    """
+    import inspect
+    src = inspect.getsource(_R().build_report)
+    assert "assert_channel_numbers_unique()" in src, (
+        "build_report 가 유일성 검사를 부르지 않는다 — 검사가 테스트 안에서만 "
+        "살아 있으면 스위트가 죽는 순간 다시 안 들린다(O-77 이 그랬다)")
+    body = [l for l in src.splitlines()[1:] if l.strip()
+            and not l.strip().startswith("#")]
+    assert body and "assert_channel_numbers_unique()" in body[0], (
+        "검사가 build_report 진입부가 아니다 — 실제 첫 문장: %r" % (body[:1],))

@@ -28,6 +28,7 @@ docs/260705_OFFENSE_READINESS_AUDIT_AND_NEXT_PHASE.md §3의 사전 등록 합�
 --out-dir로 출력 폴더를 덮어쓸 수 있으나 재현·검증용이며 주간 산출물은 기본 경로를 쓸 것.
 """
 import argparse
+import codecs
 import contextlib
 import datetime
 import json
@@ -9096,7 +9097,71 @@ def _fmt_channel_verdict(out: dict) -> str:
     return _fmt_verdict(out.get("verdict", ""))
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# [MW0602 564차 후속4 / R2] 채널 번호 유일성 — **리포트를 만들기 전에** 멈춘다
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# 2026-09-07 에 `[58]`·`[59]` 가 서로 다른 두 채널에 붙었다. 가드(`test_487`)는
+# 설계대로 그날 울렸지만 `O-77` 로 테스트 스위트가 죽어 있어 **6일간 아무도 듣지
+# 못했고**, 그 사이 주간 리포트 한 부가 오염된 채 커밋됐다.
+#
+# 이 저장소의 반복 실패는 「가드가 없다」가 아니라 **「가드가 들리지 않는다」** 다
+# (FP-CRITICAL 2개월 PSI=0.0 · TOX 죽은 섀도 한 달 · `test_479` 낡은 손 목록 14일).
+# 그래서 검사를 테스트 스위트 밖으로 꺼낸다 — EOD 체인이 리포트를 **쓰기 전에**
+# 실패하므로, 스위트가 살아 있든 죽어 있든 그날 드러나고 오염 산출물이 커밋되는
+# 경로 자체가 막힌다.
+#
+# 🔴 **임포트 시점에 부르지 않는다.** 모듈 임포트 중 예외는 pytest 수집을 통째로
+#    `Interrupted` 시킨다 — `O-77` 2차층이 정확히 그것이었다(스크립트형 6파일의
+#    모듈 최상위 `sys.exit()`). `build_report()` 진입 시 부른다.
+#
+# ⚠ 레지스트리를 만들어도 이 검사는 여전히 필요하다 — `{58: "a", 58: "b"}` 는
+#   파이썬이 **조용히 뒤엣것으로 덮는다**(예외·경고 없음). 자료구조는 중복을
+#   막지 못한다. 막는 것은 검사이고, 이 함수가 그 단일 출처다.
+
+_CH_NUM_PATTERNS = (
+    r'L\.append\("\| \[(\d+)\]',      # 요약표 직접 렌더
+    r"_row_462\((\d+),",                # 462차 헬퍼 경유
+)
+
+
+class ChannelNumberCollision(RuntimeError):
+    """요약표 채널 번호가 겹쳤다 — 리포트를 만들지 않고 멈춘다."""
+
+
+def channel_numbers(src=None):
+    """이 생성기가 배정한 채널 번호 목록(등장 순). `src` 를 주면 그 소스를 본다."""
+    if src is None:
+        _self = os.path.abspath(__file__)
+        if _self.endswith(".pyc"):          # __pycache__ 경유 실행 대비
+            _self = _self[:-1]
+        with codecs.open(_self, encoding="utf-8") as _f:
+            src = _f.read()
+    out = []
+    for pat in _CH_NUM_PATTERNS:
+        out.extend(re.findall(pat, src))
+    return out
+
+
+def assert_channel_numbers_unique(src=None):
+    """번호가 겹치면 `ChannelNumberCollision`. 겹치지 않으면 번호 집합을 돌려준다.
+
+    `test_487` 이 같은 함수를 부른다 — 런타임과 테스트가 **같은 정의**를 보게 해
+    한쪽만 느슨해지는 일을 막는다.
+    """
+    nums = channel_numbers(src)
+    dupes = sorted({n for n in nums if nums.count(n) > 1}, key=int)
+    if dupes:
+        raise ChannelNumberCollision(
+            "요약표 채널 번호 중복: %s — 리포트를 만들지 않는다. "
+            "CLAUDE.md 「캠페인 채널 번호 — PC별 대역 분할」 표에서 자기 PC 대역의 "
+            "미사용 번호를 쓸 것(빈 번호 재사용 금지)." % dupes)
+    return sorted(set(nums), key=int)
+
+
 def build_report(days: int) -> tuple:
+    # [564차 후속4 / R2] 번호가 겹치면 여기서 멈춘다 — 오염된 리포트를 쓰지 않는다.
+    assert_channel_numbers_unique()
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     # [MW0602 468차 G-3] 청산 2축 컬럼 보강 — main.py 기동 마이그레이션의 백스톱.
     # 리포트가 앱 재기동보다 먼저 도는 PC/백업 DB에서 채널이 조용히 죽는 것을 막는다.
