@@ -35,7 +35,6 @@
 import inspect
 import io
 import os
-import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -214,16 +213,19 @@ def test_8_preregistered_constants_frozen():
 # ── 9. 재현성 · 요약행 유일성 ───────────────────────────────────────────────
 
 def test_9_permutation_deterministic_and_row_unique():
-    """같은 seed → 같은 p. 그리고 [58] 요약행 번호가 중복되지 않는다(487차 불변식)."""
+    """같은 seed → 같은 p. 그리고 [58] 요약행이 살아 있다.
+
+    🔴 [MW0602 564차] **채널 번호 중복 검사는 여기서 뺐다.** 같은 검사가
+    `test_487`·`test_527`·`test_528` 세 곳에 복제돼 있어, 2026-09-07 의 `[58]`·`[59]`
+    충돌 **한 건**에 빨간불이 **세 번** 켜졌다. 원인 하나에 실패 셋이면 분류가 늦어진다.
+    정본은 `test_487_campaign_channel_hygiene.py::test_1_summary_channel_numbers_unique`
+    하나다. 이 파일은 **이 채널이 존재하는가**만 본다.
+    """
     rows = _rows_true_effect()
     a = _R()._hour_atr_residual(rows, _CFG)["by_hour"]["13"]["p_withinday_atr"]
     b = _R()._hour_atr_residual(_rows_true_effect(), _CFG)["by_hour"]["13"]["p_withinday_atr"]
     assert a == b, "순열검정이 재현되지 않는다 — seed 고정이 풀렸다"
     src = _src()
-    nums = re.findall(r'L\.append\("\| \[(\d+)\]', src)
-    nums += re.findall(r"_row_462\((\d+),", src)
-    dupes = sorted({n for n in nums if nums.count(n) > 1})
-    assert not dupes, "요약표 채널 번호 중복: %s" % dupes
     assert "_row_462(58," in src, "[58] 요약행이 없다"
 
 

@@ -29,17 +29,49 @@ except Exception:
 ROW = re.compile(r'^\| (\[[0-9A-B-]+\])([^|]*)\|([^|]*)\|(.*)\|\s*$')
 
 
+def _same_channel(a, b):
+    """두 행이 **같은 채널**인가 — 번호 충돌과 구분하기 위한 판정.
+
+    리포트는 같은 채널을 요약표와 수치표 양쪽에 싣는다(예: `[25]` · `[3-B]` ·
+    `[23-B]`). 뒤쪽 이름에 `⚠**부호 역전**` 같은 꼬리표가 붙기도 하므로 **접두
+    일치**로 본다. 이름이 아예 다르면 서로 **다른 채널이 같은 번호를 쓴 것**이고,
+    그것만 경보 대상이다 — 정상 반복까지 빨갛게 칠하면 경보가 무의미해진다.
+    """
+    a, b = a.strip(), b.strip()
+    return a == b or a.startswith(b) or b.startswith(a)
+
+
 def rows(p):
-    d, order = {}, []
+    """(채널 dict, 등장 순서, 중복 목록).
+
+    🔴 [MW0602 564차] 종전에는 같은 번호가 두 번 나오면 `continue` 로 **조용히
+    버렸다.** 2026-09-07~09-13 사이 `[58]`·`[59]` 가 실제로 겹쳤고(MW0602 526차
+    후속 vs MW0601 541차), 그동안 이 도구는 MW0602 채널 2개를 대조에서 빠뜨린 채
+    채널 수까지 2 적게 찍었다 — 게다가 CLAUDE.md 가 경고하는 "only 줄"에도 안
+    걸린다(양쪽에 다 있는 번호라서). 번호를 고쳐도 다음 충돌 때 또 먹히므로
+    **도구 쪽도 고친다.**
+
+    이제 두 번째부터는 `[58]#2` 처럼 접미를 붙여 **양쪽 다 보존**하고, 중복 자체를
+    호출부에 돌려준다. 계측 4원칙 ③ — 탈락시킬 거면 몇 개를 왜 탈락시켰는지 남겨라.
+    """
+    d, order, dups = {}, [], []
     for ln in io.open(p, encoding='utf-8'):
         m = ROW.match(ln)
-        if m:
-            k = m.group(1)
-            if k in d:
-                continue
-            d[k] = (m.group(2).strip(), m.group(3).strip(), m.group(4).strip())
-            order.append(k)
-    return d, order
+        if not m:
+            continue
+        k = m.group(1)
+        row = (m.group(2).strip(), m.group(3).strip(), m.group(4).strip())
+        if k in d:
+            if _same_channel(d[k][0], row[0]):
+                continue          # 같은 채널이 다른 표에 또 나온 것 — 종전대로 첫 행을 쓴다
+            dups.append((k, row[0]))
+            i = 2
+            while u"%s#%d" % (k, i) in d:
+                i += 1
+            k = u"%s#%d" % (k, i)
+        d[k] = row
+        order.append(k)
+    return d, order, dups
 
 
 def main():
@@ -53,8 +85,8 @@ def main():
     p1 = latest(args.pc1, "report", args.date1)
     p2 = latest(args.pc2, "report", args.date2)
 
-    a, oa = rows(p1)
-    b, ob = rows(p2)
+    a, oa, da = rows(p1)
+    b, ob, db = rows(p2)
     out = []
     out.append(u"%s: %s" % (args.pc1, os.path.basename(p1)))
     out.append(u"%s: %s" % (args.pc2, os.path.basename(p2)))
@@ -62,6 +94,12 @@ def main():
     out.append(u"%s %d채널 / %s %d채널" % (args.pc1, len(a), args.pc2, len(b)))
     out.append(u"%s only: %s" % (args.pc1, u' '.join(k for k in oa if k not in b)))
     out.append(u"%s only: %s" % (args.pc2, u' '.join(k for k in ob if k not in a)))
+    # [MW0602 564차] 번호 중복은 "only" 줄로는 절대 드러나지 않는다 — 따로 찍는다.
+    for pc, dd in ((args.pc1, da), (args.pc2, db)):
+        if dd:
+            out.append(u"🔴 %s 채널 번호 중복 %d건 — 대조가 왜곡된다. "
+                       u"리포트 생성기의 번호 배정을 고칠 것: %s"
+                       % (pc, len(dd), u' '.join(u"%s%s" % (k, n) for k, n in dd)))
     out.append(u"")
     out.append(u"| 채널 | %s | %s | 일치 |" % (args.pc1, args.pc2))
     out.append(u"|---|---|---|---|")

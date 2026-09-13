@@ -8679,7 +8679,7 @@ def eval_grade_ev_inversion() -> dict:
 # ──────────────────────────────────────────────────────────────
 
 # ──────────────────────────────────────────────────────────────
-# [58]/[59] GOLDEN POWER 교차 — 신호 단위 사전등록 채널 2종 (MW0601 541차)
+# [60]/[61] GOLDEN POWER 교차 — 신호 단위 사전등록 채널 2종 (MW0601 541차)
 # ──────────────────────────────────────────────────────────────
 
 def _gp_sim_one(i, hi, lo, cl, hhmm, direction, atr, sim, cost_pt):
@@ -8781,7 +8781,7 @@ def _gp_day_verdict(rows, ch, control_rows):
 
 
 def eval_gp_cross_channels() -> dict:
-    """[58] `gp_cross_highvol_watch` / [59] `gp_cross_any_watch` — 540차 배선.
+    """[60] `gp_cross_highvol_watch` / [61] `gp_cross_any_watch` — 540차 배선.
 
     기존 채널과 다른 점 세 가지 (그래서 집계 경로가 별도다)
     -------------------------------------------------------
@@ -8800,7 +8800,7 @@ def eval_gp_cross_channels() -> dict:
 
     소급을 세지 않는다 — `data_start`(2026-09-08) 이전 분은 제외한다. 소급 116건은
     가설의 출처이지 근거가 아니다(SOP 11 K-1).
-    두 채널은 `require_tight` 하나만 다르다. [59]는 **대조 전용**이며 승격 후보가 아니다.
+    두 채널은 `require_tight` 하나만 다르다. [61]는 **대조 전용**이며 승격 후보가 아니다.
     """
     ch1 = VALIDATION_CAMPAIGN.get("gp_cross_highvol_watch") or {}
     ch2 = VALIDATION_CAMPAIGN.get("gp_cross_any_watch") or {}
@@ -8978,7 +8978,7 @@ def eval_gp_cross_channels() -> dict:
     out["tight"] = _gp_day_verdict(_run(ev_tight), ch1, ctrl_rows)
     out["any"] = _gp_day_verdict(_run(ev_any), ch2, ctrl_rows)
     out["any"]["role"] = ch2.get("role")
-    # [59]는 대조 전용 — PASS 로 승격 후보가 되지 않도록 어휘를 바꾼다
+    # [61]는 대조 전용 — PASS 로 승격 후보가 되지 않도록 어휘를 바꾼다
     if out["any"]["verdict"] in ("PASS", "FAIL"):
         out["any"]["verdict_raw"] = out["any"]["verdict"]
         out["any"]["verdict"] = (
@@ -9122,7 +9122,7 @@ def build_report(days: int) -> tuple:
     efs = eval_exit_fill_slippage_watch(days)
     reg = resolve_and_eval_regime_exhaustion()
     teg = resolve_and_eval_trend_efficiency_gate()   # [57] MW0602 502차 U-2
-    gpx = eval_gp_cross_channels()                   # [58]/[59] MW0601 541차
+    gpx = eval_gp_cross_channels()                   # [60]/[61] MW0601 541차
     wcw = eval_weight_collapse_watch(days)
     msz = eval_meta_size_zero_shadow()        # [34] MW0601 422차 후속
     dev = eval_direction_ev_watch()
@@ -9250,7 +9250,7 @@ def build_report(days: int) -> tuple:
         "loss_tier2_remainder_shadow": lt2, "fast_reversal_watch": frw,
         "chase_foreign_combo_watch": cfc, "exit_fill_slippage_watch": efs,
         "regime_exhaustion_watch": reg, "toxicity_block_shadow": txb,
-        "gp_cross_channels": gpx,             # [58]/[59] MW0601 541차
+        "gp_cross_channels": gpx,             # [60]/[61] MW0601 541차
         "weight_collapse_watch": wcw,
         "trend_efficiency_entry_gate": teg,   # [57] MW0602 502차 U-2
         "hour_atr_residual": hres,            # [51-R] MW0602 526차 후속6 (OBSERVE)
@@ -9576,13 +9576,13 @@ def build_report(days: int) -> tuple:
         teg.get("start_date", "—"), teg.get("n_pending", 0),
         _dm("trend_efficiency_entry_gate")))
     # [MW0601 541차] GP 교차 2채널. 신호 단위이며 **비용이 실측 요율**이라
-    # 다른 채널의 손익과 직접 비교하면 안 된다(아래 §[58] 고지 참조).
+    # 다른 채널의 손익과 직접 비교하면 안 된다(아래 §[60] 고지 참조).
     _gt, _ga = gpx.get("tight") or {}, gpx.get("any") or {}
-    L.append("| [58] GP 교차 x 고변동 (좁은) | %s | 신호 %s건/%s일 · 건당 %s원 · %s |" % (
+    L.append("| [60] GP 교차 x 고변동 (좁은) | %s | 신호 %s건/%s일 · 건당 %s원 · %s |" % (
         _fmt_verdict(_gt.get("verdict", "")), _gt.get("n", 0), _gt.get("n_days", 0),
         _fmt_krw(_gt.get("net_krw_per")) if _gt.get("net_krw_per") is not None else "—",
         _gt.get("reason", "—")))
-    L.append("| [59] GP 교차 x 고변동 (순수·대조) | %s | 신호 %s건/%s일 · 건당 %s원 · %s |" % (
+    L.append("| [61] GP 교차 x 고변동 (순수·대조) | %s | 신호 %s건/%s일 · 건당 %s원 · %s |" % (
         _fmt_verdict(_ga.get("verdict", "")), _ga.get("n", 0), _ga.get("n_days", 0),
         _fmt_krw(_ga.get("net_krw_per")) if _ga.get("net_krw_per") is not None else "—",
         _ga.get("reason", "—")))
@@ -13248,9 +13248,9 @@ def build_report(days: int) -> tuple:
     L.append("> 이 리포트는 권고만 출력한다. 정책 적용/롤백은 주간 회의에서 수동 결정하고")
     L.append("> `dev_memory/DECISION_LOG.md`에 기록할 것 (§2 사전등록 원칙, §9 계엄령).")
 
-    # ── [58]/[59] GP 교차 — MW0601 541차 ──────────────────────────
+    # ── [60]/[61] GP 교차 — MW0601 541차 ──────────────────────────
     L.append("")
-    L.append("## [58] GOLDEN POWER 교차 x 고변동 — 좁은 교차 (540차 신설 · 신호 단위)")
+    L.append("## [60] GOLDEN POWER 교차 x 고변동 — 좁은 교차 (540차 신설 · 신호 단위)")
     L.append("")
     _gt = gpx.get("tight") or {}
     _ga = gpx.get("any") or {}
@@ -13286,12 +13286,12 @@ def build_report(days: int) -> tuple:
     if _gt.get("reason"):
         L.append("| 사유 | %s |" % _gt["reason"])
     L.append("")
-    L.append("## [59] GOLDEN POWER 교차 x 고변동 — 순수 교차 (**대조 전용**)")
+    L.append("## [61] GOLDEN POWER 교차 x 고변동 — 순수 교차 (**대조 전용**)")
     L.append("")
     L.append("| 항목 | 값 |")
     L.append("|---|---|")
     L.append("| 판정 | %s |" % _fmt_verdict(_ga.get("verdict", "")))
-    L.append("| 신호 정의 | [58]과 같되 **반대편 조건 없음**(`require_tight=False`) |")
+    L.append("| 신호 정의 | [60]과 같되 **반대편 조건 없음**(`require_tight=False`) |")
     L.append("| 표본 | 신호 **%s건** / %s거래일 (합격선 %s건 · %s일) |" % (
         _ga.get("n", 0), _ga.get("n_days", 0),
         (VALIDATION_CAMPAIGN.get("gp_cross_any_watch") or {}).get("min_samples", "—"),
@@ -13324,9 +13324,9 @@ def build_report(days: int) -> tuple:
     L.append("> **전·후반 경계에 민감**해서 5/1 경계면 전반 +10,685원인데 5/15 경계면 −13,343원")
     L.append("> 으로 뒤집힌다 — 승격 전 전향 검증이 필요한 직접 이유다.")
     L.append("> ")
-    L.append("> ⚠ **[59]는 승격 후보가 아니다.** 「반대편 0 수렴」 조건이 실제로 일하는지를")
-    L.append("> 가르는 **대조**다. 소급상 순수 교차는 건당 −8,548원이고 [58]이 아닌 것만 보면")
-    L.append("> −8,992원이라 그 조건이 사실상 전부를 설명한다. [59]는 빈도가 [58]의 25배라")
+    L.append("> ⚠ **[61]는 승격 후보가 아니다.** 「반대편 0 수렴」 조건이 실제로 일하는지를")
+    L.append("> 가르는 **대조**다. 소급상 순수 교차는 건당 −8,548원이고 [60]이 아닌 것만 보면")
+    L.append("> −8,992원이라 그 조건이 사실상 전부를 설명한다. [61]는 빈도가 [60]의 25배라")
     L.append("> **표본이 먼저 찬다 — 먼저 판정된다고 그쪽을 채택하지 말 것.**")
     L.append("> ")
     L.append("> ⚠ **미륵이 진입과 겹치지 않는다.** 신호분의 88.3%가 등급 X(진입 후보조차 아님)")

@@ -95,13 +95,21 @@ _RETRO_GLOB_EXEMPT = {
 # 괜찮다"다. 이 테스트가 지키려는 불변식은 *"소급 소비자가 조용히 표본을 잃지
 # 않는다"* 이고, 월 아카이브를 함께 훑으면 그 불변식은 만족된다.
 #
-# ⚠ **자기 신고를 믿지 않는다** — 아래 test가 해당 스크립트에 실제로
-#   `_<채널>.zip` glob과 `zipfile` 사용이 있는지 검사한다. 주석만 달고 등록하면
-#   그 검사에서 떨어진다(면제가 도피처가 되지 않게 하는 장치).
-_COMPRESSED_AWARE = {
-    "commission_rate_recon.py":
-        "[MW0601 493차 F-1] 26주 주기 재검증 — 원본 + YYYYMM_SYSTEM.zip 동시 소비",
-}
+# 🔴 [MW0602 564차] **손 목록을 없앴다 — 자동 판정으로 바꾼다.**
+#
+# 종전에는 여기 dict 에 이름을 적어야 면제됐다. 그런데 `broker_net_chain_audit.py`
+# (2026-08-30 501차 신설)는 **이미 `*_SYSTEM.zip` 을 함께 glob 하는데** 목록에만
+# 안 올라가서 2026-08-30~09-13 **14일간 이 테스트를 빨갛게** 만들었다. 코드가
+# 옳고 목록이 낡은 것이다 — 537차 규약 *"강제 대상은 자동 식별한다(손 목록 없음)"*
+# 이 정확히 이 상황을 막으려던 것이다.
+#
+# 판정 기준은 **그 파일이 같은 채널의 `.log` 와 `.zip` 을 둘 다 glob 하는가**다.
+# 주석이나 자기 신고가 아니라 **코드가 실제로 하는 일**을 본다.
+def _compressed_aware_channels(src, comp):
+    """이 소스가 **압축본까지 읽는** 채널 집합. (자동 판정 — 등록 불필요)"""
+    if "zipfile" not in src:
+        return set()
+    return set(re.findall(r"\*[^\"']*_(%s)\.zip" % "|".join(sorted(comp)), src))
 
 
 def test_no_script_retro_globs_compressed_channels(mc):
@@ -117,42 +125,59 @@ def test_no_script_retro_globs_compressed_channels(mc):
     for name in os.listdir(scripts_dir):
         if not name.endswith(".py") or name == "monthly_cleanup.py":
             continue
-        if name in _RETRO_GLOB_EXEMPT or name in _COMPRESSED_AWARE:
+        if name in _RETRO_GLOB_EXEMPT:
             continue
         path = os.path.join(scripts_dir, name)
         with open(path, "r", encoding="utf-8", errors="replace") as f:
-            for i, line in enumerate(f, 1):
-                if pat.search(line):
-                    offenders.append("%s:%d: %s" % (name, i, line.strip()))
+            src = f.read()
+        aware = _compressed_aware_channels(src, comp)      # [564차] 자동 판정
+        for i, line in enumerate(src.splitlines(), 1):
+            m = pat.search(line)
+            if m and m.group(1) not in aware:
+                offenders.append("%s:%d: %s" % (name, i, line.strip()))
     assert not offenders, (
         "Tier B(압축) 채널을 와일드카드로 소급 소비하는 스크립트 발견 — "
         "해당 채널을 _RAW_KEEP_CHANNELS로 옮기거나 스크립트를 압축본 대응으로 "
         "고칠 것:\n" + "\n".join(offenders))
 
 
-def test_compressed_aware_scripts_actually_read_archives(mc):
-    """[MW0601 493차] `_COMPRESSED_AWARE` 등록이 **자기 신고로 끝나지 않게** 한다.
+def test_compressed_aware_detection_is_not_vacuous(mc):
+    """[MW0602 564차] 자동 판정이 **실제로 무언가를 잡아내는가** — 양성·음성 대조.
 
-    등록만 해두고 실제로는 `.log`만 읽으면 면제가 곧 표본 손실의 은신처가 된다 —
-    이 저장소가 반복해서 당한 패턴(죽은 게이트·죽은 섀도)이 정확히 그것이다.
-    그래서 등록된 스크립트에 ① 압축 채널의 `.zip` glob과 ② `zipfile` 사용이
-    둘 다 있는지 확인한다.
+    손 목록을 없애면 반대 방향의 위험이 생긴다. 규칙이 너무 헐거우면 전부 면제돼
+    이 테스트가 **초록불인 채 아무것도 지키지 않는다** — 이 저장소가 반복해서 당한
+    패턴(죽은 게이트 · 죽은 섀도 · 488차 "지킨다고 믿는 초록불")이 정확히 그것이다.
+    그래서 규칙 자체를 시험한다.
+
+    양성: 압축본을 실제로 읽는 두 소비자가 잡혀야 한다.
+      · `commission_rate_recon.py`  (MW0601 493차 F-1, 26주 주기 재검증)
+      · `broker_net_chain_audit.py` (MW0602 501차 — 목록 누락으로 14일간 빨갰던 그 파일)
+    음성: `.zip` 을 읽지 않는 스크립트는 면제되면 안 된다.
     """
     comp = mc["_COMPRESS_CHANNELS"]
-    zip_pat = re.compile(r"\*[^\"']*_(%s)\.zip" % "|".join(sorted(comp)))
     scripts_dir = os.path.join(ROOT, "scripts")
-    for name, reason in sorted(_COMPRESSED_AWARE.items()):
-        assert reason, "%s: 면제 근거를 비워두지 말 것" % name
-        path = os.path.join(scripts_dir, name)
-        assert os.path.exists(path), (
-            "%s: _COMPRESSED_AWARE에 있는데 파일이 없다 — 삭제됐으면 목록에서도 뺄 것" % name)
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
-            src = f.read()
-        assert zip_pat.search(src), (
-            "%s: 압축본을 읽는다고 등록됐으나 `*_<채널>.zip` glob이 없다" % name)
-        assert "zipfile" in src, (
-            "%s: 압축본을 읽는다고 등록됐으나 zipfile을 쓰지 않는다" % name)
 
+    def _chans(name):
+        path = os.path.join(scripts_dir, name)
+        if not os.path.exists(path):
+            return None
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return _compressed_aware_channels(f.read(), comp)
+
+    for name in ("commission_rate_recon.py", "broker_net_chain_audit.py"):
+        ch = _chans(name)
+        assert ch is not None, "%s 가 없다 — 이름이 바뀌었으면 이 대조도 갱신할 것" % name
+        assert "SYSTEM" in ch, (
+            "%s 가 압축본 대응으로 인식되지 않는다 — 자동 판정 규칙이 좁아졌거나 "
+            "그 스크립트가 zip 읽기를 잃었다. 둘 다 표본 손실로 이어진다: %s" % (name, ch))
+
+    neg = "pipeperf_step_decomposition.py"
+    ch = _chans(neg)
+    if ch is not None:
+        assert not ch, (
+            "%s 는 zip 을 읽지 않는데 압축본 대응으로 인식됐다 — 규칙이 헐겁다. "
+            "이 스크립트의 면제 근거는 '30일 안 후행 창'(_RETRO_GLOB_EXEMPT)이지 "
+            "'zip 도 읽는다'가 아니다: %s" % (neg, ch))
 
 # ── 3. 압축 후보 선정 ────────────────────────────────────────────────────────
 

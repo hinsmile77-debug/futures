@@ -205,7 +205,7 @@ def test_evaluator_is_prospective_only():
 
 
 def test_control_channel_verdict_is_not_pass():
-    """[59]는 대조 전용 — PASS/FAIL 어휘로 승격 후보처럼 보이면 안 된다."""
+    """[61]는 대조 전용 — PASS/FAIL 어휘로 승격 후보처럼 보이면 안 된다."""
     rows = _rows(45, 8, 9000.0)                 # n=360 → GP-2 min_samples 300 충족
     ctrl = _rows(60, 4, -5000.0)
     r = G._gp_day_verdict(rows, CH2, ctrl)
@@ -221,8 +221,8 @@ def test_channel_is_wired_into_report():
                encoding="utf-8").read()
     assert "gpx = eval_gp_cross_channels()" in src, "build_report 가 호출하지 않는다"
     assert '"gp_cross_channels": gpx' in src, "metrics 에 실리지 않는다"
-    assert "## [58] GOLDEN POWER" in src, "리포트 섹션이 없다"
-    assert "[59] GP 교차" in src, "요약표 행이 없다"
+    assert "## [60] GOLDEN POWER" in src, "리포트 섹션이 없다"
+    assert "[61] GP 교차" in src, "요약표 행이 없다"
 
 
 def test_evaluator_runs_on_live_db_without_error():

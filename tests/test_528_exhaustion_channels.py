@@ -29,7 +29,6 @@
 import inspect
 import io
 import os
-import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -205,17 +204,18 @@ def test_12_cleanup_comments_present():
 
 
 def test_13_render_and_vocabulary_wired():
-    """요약행·판정 어휘·채널 번호 유일성."""
+    """요약행·판정 어휘·상세 절이 배선돼 있는가.
+
+    🔴 [MW0602 564차] **채널 번호 유일성 검사는 여기서 뺐다** — 정본은
+    `test_487_campaign_channel_hygiene.py::test_1_summary_channel_numbers_unique`.
+    같은 검사가 세 파일에 복제돼 있어 충돌 한 건이 실패 셋으로 번졌다.
+    """
     src = _src()
     assert "_row_462(59," in src, "[59] 요약행이 없다"
     assert '"SUPPORTS_LIVE": ' in src and '"REJECTS_LIVE": ' in src, (
         "판정 어휘 미등록 — _fmt_verdict가 INSUFFICIENT로 조용히 폴백한다")
     assert _R()._fmt_verdict("SUPPORTS_LIVE").startswith("🔶")
     assert "[18-U]" in src and "## [59]" in src, "상세 절이 없다"
-    nums = re.findall(r'L\.append\("\| \[(\d+)\]', src)
-    nums += re.findall(r"_row_462\((\d+),", src)
-    dupes = sorted({n for n in nums if nums.count(n) > 1})
-    assert not dupes, "요약표 채널 번호 중복: %s" % dupes
 
 
 if __name__ == "__main__":
