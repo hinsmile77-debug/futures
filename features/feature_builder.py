@@ -55,6 +55,14 @@ except Exception:
     _CVD_DEBIAS_MODE = "shadow"
 _CVD_DEBIAS_LIVE = str(_CVD_DEBIAS_MODE).lower() == "live"
 
+# [MW0601 559차 / P1-3] 체결 방향 원천. 기본 "legacy" = 소비 0(현행 그대로).
+# Phase 3 승인 전에는 절대 바꾸지 말 것 — 라이브 모델이 편향된 cvd_* 로 학습돼 있어
+# 값만 갈아끼우면 train/serve skew 가 된다(QDQ 계획서 Phase 3, 학습창 분리가 선행).
+try:
+    from config.settings import CVD_FLOW_SOURCE_MODE as _CVD_FLOW_SOURCE_MODE
+except Exception:
+    _CVD_FLOW_SOURCE_MODE = "legacy"
+
 
 def compute_swing_features(highs, lows, close, atr, lookbacks, clip_atr=20.0):
     """[MW0601 529차] 스윙 위치 피처 — 순수 함수(테스트 가능).
@@ -404,6 +412,26 @@ class FeatureBuilder:
         # 가격 기반(고저종) 추정으로 교체하여 과거 데이터에서도 의미 있는 CVD 생성.
         _bv = bar.get("buy_vol")
         _sv = bar.get("sell_vol")
+        # ── [MW0601 559차 / P1-3] 체결 방향 원천 선택 ─────────────────────────
+        # 기본은 `legacy` 라 **소비 0**이다. Phase 3 승인 시에만 모드를 올린다.
+        #   legacy = 현행 buy_vol/sell_vol (틱룰 폴백 편향 — 매수 64.5%)
+        #   shadow = 올바른 체결구분 파싱 (buy_vol_flag/sell_vol_flag — 49.9%)
+        #   anchor = 서버 정답지 (anchor_buy/anchor_sell — 49.9%)
+        # 🔴 컬럼을 덮어쓰지 않는다. 고르기만 하고, 무엇을 골랐는지 피처로 남긴다
+        #    (계측 4원칙 ④ — 폴백이 쓰였으면 그 사실을 남겨라).
+        _mode = str(_CVD_FLOW_SOURCE_MODE or "legacy").lower()
+        _src_code, _fell_back = 0, 0
+        if _mode in ("shadow", "anchor"):
+            _pair = (("buy_vol_flag", "sell_vol_flag") if _mode == "shadow"
+                     else ("anchor_buy", "anchor_sell"))
+            _nb, _ns = bar.get(_pair[0]), bar.get(_pair[1])
+            if _nb is not None and _ns is not None:
+                _bv, _sv = _nb, _ns
+                _src_code = 1 if _mode == "shadow" else 2
+            else:
+                _fell_back = 1        # 그 봉엔 섀도·앵커가 없다 → legacy 로 되돌아간다
+        features["cvd_flow_source"] = float(_src_code)      # 0=legacy 1=shadow 2=anchor
+        features["cvd_flow_fallback"] = float(_fell_back)
         if _bv is not None and _sv is not None:
             buy_vol  = float(_bv)
             sell_vol = float(_sv)

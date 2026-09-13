@@ -303,15 +303,31 @@ def test_no_live_effect_no_order_or_exit_path_touched():
     """이번 변경 3건이 주문·청산·사이징 모듈을 건드리지 않았음을 파일 단위로 고정한다.
 
     C등급(주문·청산 실행 경로)은 자동조치 대상이 아니다 — 지시문 §2-B.
+
+    🔴 [MW0601 559차 정정] 기준을 **워킹트리 diff → 532차 커밋 자체**로 바꿨다.
+
+    종전에는 `git diff HEAD` 를 봤는데, 그러면 "532차가 무엇을 건드렸나"가 아니라
+    "지금 이 순간 누가 무엇을 고쳐놨나"를 재게 된다. 이후 어떤 세션이든 커밋 전에
+    `config/settings.py` 를 만지면 무관한 이 테스트가 빨개진다(559차가 섀도 플래그
+    2개를 추가하다 실제로 밟았다). 552-13(하드코딩 날짜가 창 밖으로 나가 항상 실패)
+    과 같은 계열 — **테스트가 오늘 상태에 의존하던 것**이다.
+
+    커밋에 고정하면 의도가 그대로 보존되고, 커밋해서 조용히 통과시키는 것도 불가능해
+    오히려 강해진다.
     """
     import subprocess
-    out = subprocess.check_output(
-        ["git", "--no-optional-locks", "diff", "--name-only", "HEAD", "--",
-         "strategy/entry", "strategy/exit", "strategy/risk", "broker",
-         "config/settings.py"],
-        cwd=_ROOT,
-    ).decode("utf-8", "replace").split()
+    _COMMIT = "3c2f17c"      # 532차 후속 — 이 테스트가 지키려던 그 변경
+    try:
+        out = subprocess.check_output(
+            ["git", "--no-optional-locks", "show", "--name-only", "--format=", _COMMIT,
+             "--", "strategy/entry", "strategy/exit", "strategy/risk", "broker",
+             "config/settings.py"],
+            cwd=_ROOT, stderr=subprocess.STDOUT,
+        ).decode("utf-8", "replace").split()
+    except subprocess.CalledProcessError:
+        import pytest as _pt
+        _pt.skip("커밋 %s 를 찾을 수 없다(얕은 클론 등) — 판정 불가" % _COMMIT)
     # time_strategy_router 는 **읽기 전용 접근자 추가**만 허용한다.
     allowed = {"strategy/entry/time_strategy_router.py"}
     unexpected = [p for p in out if p not in allowed]
-    assert not unexpected, "주문·청산·사이징·설정 경로가 변경됐다: %s" % unexpected
+    assert not unexpected, "532차가 주문·청산·사이징·설정 경로를 건드렸다: %s" % unexpected

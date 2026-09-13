@@ -14,6 +14,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 from gp_lib import PT_VALUE, RATE_LIVE, TICK, golden_power           # noqa
 from gp_econ import bracket_sim, add_atr, SIM, FORCED_EXIT_HHMM, NONOVERLAP_MIN  # noqa
+from inv_unit_guard import invert_investor_log1p  # noqa  [559차 P0-2] 단위 불일치 가드
 ROOT = r"C:\Users\82108\PycharmProjects\futures"
 SNAP = os.path.join(HERE, "_snapshot")
 OUT = []
@@ -57,10 +58,13 @@ def build_panel():
     d["session"] = d["dt"].dt.strftime("%Y-%m-%d"); d["hhmm"] = d["dt"].dt.strftime("%H:%M")
     d = d[(d["hhmm"] >= "09:00") & (d["hhmm"] <= "15:35")].copy()
     d = d.set_index("dt")
-    sup = pd.to_numeric(d["quality_investor_futures_supported"], errors="coerce").fillna(0) > 0
+    # [559차 P0-2] 역변환은 가드를 통해서만 — 압축 이전 단위 4일(2026-06-02·04·05·08)에
+    # 그냥 걸면 inf 가 된다(클립 구현에서는 1.0686e+16). `inv_unit_guard` 참조.
+    sup = pd.to_numeric(d["quality_investor_futures_supported"], errors="coerce").fillna(0)
     for k in ["foreign_futures_net","retail_futures_net","institution_futures_net"]:
         v = pd.to_numeric(d[k], errors="coerce")
-        d[k+"_raw"] = (np.sign(v) * np.expm1(np.abs(v)) * 1000.0).where(sup)
+        d[k+"_raw"] = invert_investor_log1p(v.values, (sup > 0).astype(float).values,
+                                            d.index.astype(str), name=k)
     parts = []
     L = load_levels()
     for s, g in d.groupby("session"):

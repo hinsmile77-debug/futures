@@ -114,6 +114,15 @@ L4_JSON = os.path.join(ROOT, "data", "horizon_conf_stratified_latest.json")
 
 # [418차] 백필 생성 행 마커 (scripts/backfill_features.py:BACKFILL_QUALITY_MARKER와 동일).
 BACKFILL_QUALITY_MARKER = 0.3
+
+# [MW0601 559차 / P1'-4] 수급 로그압축 키와 단위 이상 임계.
+# `features/feature_builder.py` 의 `_INV_LOG_COLS` 와 같은 집합이어야 한다.
+_INV_LOG_KEYS = frozenset((
+    "foreign_futures_net", "foreign_call_net", "foreign_put_net",
+    "retail_futures_net", "institution_futures_net",
+    "program_arb_net", "program_non_arb_net", "foreign_retail_divergence",
+))
+_INV_UNIT_WARN_ABS = 10.0
 _LIVE_ONLY_SQL = ("json_extract(features,'$.feature_quality_score') IS NOT "
                   "%r" % BACKFILL_QUALITY_MARKER)
 
@@ -174,6 +183,7 @@ def collect(days, pool_days, include_backfill=False):
                 (wide[0],))
     vals = defaultdict(list)
     stamps = defaultdict(list)
+    unit_odd = defaultdict(set)   # [559차 P1'-4] 단위 이상 관측일
     presence = defaultdict(set)
     n_rows = 0
     n_health_rows = 0
@@ -205,6 +215,13 @@ def collect(days, pool_days, include_backfill=False):
             if isinstance(v, bool):
                 v = 1.0 if v else 0.0
             if isinstance(v, (int, float)):
+                # [MW0601 559차 / P1'-4] 수급 로그압축 **단위 일관성** 감시.
+                # 저장값은 sign(raw)*log1p(|raw|/1000) 이라 라이브 실측 최대가 2.6 수준이다.
+                # supported 인데 |v| 가 10 을 넘으면 그 행은 **압축 이전 단위**다
+                # (418차 복구분 2026-06-02·04·05·08). 역변환하면 1.0686e+16 으로 포화한다.
+                if k in _INV_LOG_KEYS and abs(float(v)) > _INV_UNIT_WARN_ABS:
+                    if float(f.get("quality_investor_supported") or 0.0) == 1.0:
+                        unit_odd[k].add(d)
                 vals[k].append(float(v))
                 # [2026-08-25] 시간축 프로파일용 스탬프. 값과 **병렬**로 쌓아야
                 # 거래일·시각 대응이 유지된다(451차 "행 정렬이 깨진다"와 같은 이유).
@@ -216,6 +233,7 @@ def collect(days, pool_days, include_backfill=False):
         "health_from": min(health_dates) if health_dates else None,
         "health_to": max(health_dates) if health_dates else None,
         "health_days": len(health_dates),
+        "unit_odd": dict((k, sorted(v)) for k, v in unit_odd.items()),
         "backfill_rows": n_backfill,
         "backfill_days": len(backfill_days),
         "include_backfill": bool(include_backfill),
@@ -407,6 +425,20 @@ def build_report(days, pool_days, include_backfill=False):
     vals, presence, meta, stamps = collect(days, pool_days, include_backfill)
     if not vals:
         warnings.append("raw_features에서 표본을 얻지 못했다 — DB 경로/데이터 확인 필요.")
+    # [MW0601 559차 / P1'-4] 수급 단위 일관성 — 압축 이전 단위 행이 섞였는가.
+    _unit_odd = (meta or {}).get("unit_odd") or {}
+    if _unit_odd:
+        _days = sorted(set(d for v in _unit_odd.values() for d in v))
+        warnings.append(
+            "수급 피처 %d종에서 **압축 이전 단위**로 보이는 행이 있다(|v| > %g, "
+            "supported=1): %s — 해당 거래일 %s. 역변환하면 expm1(30)*1000 = 1.07e+16 으로 "
+            "포화한다. 「센티널」이 아니라 단위 불일치이며, 분석 시 "
+            "`docs/미륵이고도화3/Golden power/analysis/inv_unit_guard.py` 를 쓸 것 "
+            "(559차 P0-2)."
+            % (len(_unit_odd), _INV_UNIT_WARN_ABS,
+               ", ".join(sorted(_unit_odd)[:4]) + (" 외" if len(_unit_odd) > 4 else ""),
+               ", ".join(_days[:6]) + (" 외 %d일" % (len(_days) - 6) if len(_days) > 6 else "")))
+
     health = health_table(vals)
     deployed = load_deployed(hz_list)
     sources = load_candidate_sources()      # §2-b·§4가 함께 쓴다(한 번만 읽는다)

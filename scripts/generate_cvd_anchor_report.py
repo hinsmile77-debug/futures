@@ -198,7 +198,11 @@ def identities(bars):
     """항등식 3종 위반 집계. I2 잔차는 부호를 나눠 센다(음수 = 이중 집계 버그)."""
     out = {"i1_n": 0, "i1_bad": 0, "i1_max": 0.0,
            "i2_n": 0, "i2_unclassified": 0, "i2_negative_bars": 0,
-           "i3_n": 0, "i3_bad": 0, "i3_bad_legacy_era": 0, "i3_bad_dates": []}
+           "i3_n": 0, "i3_bad": 0, "i3_bad_legacy_era": 0, "i3_bad_dates": [],
+           # [MW0601 559차 / P1-4] I4 — 미분류 버킷까지 포함한 완전 항등식.
+           # I2 의 "잔차"는 어디에도 안 실려 보이지 않던 물량이었다. `unk_vol` 이
+           # 생기면서 그 잔차가 **컬럼으로** 설명돼야 한다.
+           "i4_n": 0, "i4_bad": 0, "i4_unk_total": 0, "i4_absent": 0}
     for b in bars:
         v = int(b.get("volume") or 0)
         ab, as_ = b.get("anchor_buy"), b.get("anchor_sell")
@@ -216,6 +220,17 @@ def identities(bars):
                 out["i2_unclassified"] += resid
             elif resid < 0:
                 out["i2_negative_bars"] += 1   # 음수 = 이중 집계 (버그)
+        # [559차 P1-4] I4: buy_vol_flag + sell_vol_flag + unk_vol == volume
+        uv = b.get("unk_vol")
+        if fb is not None and fs is not None:
+            if uv is None:
+                out["i4_absent"] += 1        # 559차 이전 봉 — 미측정이지 0 이 아니다
+            else:
+                out["i4_n"] += 1
+                out["i4_unk_total"] += int(uv)
+                if (int(fb) + int(fs) + int(uv)) != v:
+                    out["i4_bad"] += 1
+
         bv, sv = b.get("buy_vol"), b.get("sell_vol")
         if bv is not None and sv is not None:
             out["i3_n"] += 1
@@ -443,7 +458,25 @@ def build_report(days):
              % (ident["i2_n"], ident["i2_unclassified"], ident["i2_negative_bars"]))
     L.append("| I3 | `buy_vol + sell_vol == volume` | %d봉 | %d | 라이브 경로는 구조상 항상 성립 |"
              % (ident["i3_n"], ident["i3_bad"]))
+    # [MW0601 559차 / P1-4] I4 — 미분류 버킷을 포함한 완전 항등식.
+    if ident["i4_n"]:
+        L.append("| I4 | `buy_vol_flag + sell_vol_flag + unk_vol == volume` | %d봉 | %d | "
+                 "미분류 누계 %d계약 |"
+                 % (ident["i4_n"], ident["i4_bad"], ident["i4_unk_total"]))
+    elif ident["i4_absent"]:
+        L.append("| I4 | `… + unk_vol == volume` | 0봉 | — | "
+                 "`unk_vol` 미측정 %d봉 (559차 이전 행) |" % ident["i4_absent"])
     L.append("")
+    if ident["i4_n"] and ident["i4_bad"] == 0:
+        L.append("> I4 통과 — I2 의 잔차 %d계약이 **전부 `unk_vol` 로 설명된다**. "
+                 "종전에는 그 물량이 어느 컬럼에도 실리지 않아 보이지 않았다(559차 P1-4)."
+                 % ident["i4_unk_total"])
+        L.append("")
+    elif ident["i4_bad"]:
+        L.append("> 🔴 **I4 위반 %d봉** — 미분류 버킷으로도 설명되지 않는 물량이 있다. "
+                 "섀도 누적과 `unk_vol` 누적이 같은 틱 집합을 보고 있는지 점검할 것."
+                 % ident["i4_bad"])
+        L.append("")
     if ident["i2_negative_bars"] > 0:
         L.append("> 🔴 **I2 음수 잔차 %d봉** — 섀도 합이 거래량을 초과했다. 미분류가 아니라 "
                  "**이중 집계 버그**다. `collection/cybos/realtime_data.py`의 섀도 누적 경로를 "

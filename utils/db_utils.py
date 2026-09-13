@@ -1817,6 +1817,9 @@ def init_raw_data_db():
             anchor_sell   INTEGER,   -- 서버 22_누적체결매도 봉내 증분 (정답지)
             buy_vol_flag  INTEGER,   -- 24_체결구분 올바른 파싱 기준 매수량 (섀도)
             sell_vol_flag INTEGER,   -- 〃 매도량 (섀도)
+            -- [MW0601 559차 / P1-4] 체결구분 판정 불가 볼륨. 매수로 접지 않는다.
+            -- NULL=판독 미시도 / 0=전량 분류됨. 항등식: buy_vol_flag+sell_vol_flag+unk_vol=volume
+            unk_vol       INTEGER,
             -- [MW0601 452차 / QDQ Phase 1] 봉의 내력. NULL=452차 이전 / 0=정상 실시간
             -- 경로 / 1=파이프라인 복구 재처리본(bid_qty·hoga 등 미복원 열화 상태).
             -- 측정값이 아니라 **기록자가 항상 아는 플래그**라 0을 쓰는 것이 위 NULL
@@ -1839,6 +1842,7 @@ def init_raw_data_db():
     for _col, _type in [("buy_vol", "INTEGER DEFAULT 0"), ("sell_vol", "INTEGER DEFAULT 0"),
                         ("anchor_buy", "INTEGER"), ("anchor_sell", "INTEGER"),
                         ("buy_vol_flag", "INTEGER"), ("sell_vol_flag", "INTEGER"),
+                        ("unk_vol", "INTEGER"),          # [559차 P1-4] 기존 행은 NULL(정상)
                         ("bar_recovered", "INTEGER"),
                         # [552차] 기존 96,903행은 NULL 이 된다(정상).
                         ("book_bid_tot", "INTEGER"), ("book_ask_tot", "INTEGER"),
@@ -1913,6 +1917,7 @@ def init_raw_data_db():
             sell_vol      INTEGER,
             anchor_buy    INTEGER,
             anchor_sell   INTEGER,
+            unk_vol       INTEGER,   -- [559차 P1-4] 체결구분 판정 불가 볼륨 (NULL=미시도)
             bid1          REAL,
             ask1          REAL,
             bid_qty       INTEGER,
@@ -1932,7 +1937,8 @@ def init_raw_data_db():
         )
     """)
     # [552차] 기존 session_bars 행에도 같은 5열을 붙인다(기존분은 NULL).
-    for _col, _type in [("book_bid_tot", "INTEGER"), ("book_ask_tot", "INTEGER"),
+    for _col, _type in [("unk_vol", "INTEGER"),      # [559차 P1-4]
+                        ("book_bid_tot", "INTEGER"), ("book_ask_tot", "INTEGER"),
                         ("book_bid_avg", "REAL"), ("book_ask_avg", "REAL"),
                         ("book_snaps", "INTEGER")]:
         try:
@@ -2079,9 +2085,9 @@ def save_candle(candle: dict) -> None:
         RAW_DATA_DB,
         """INSERT OR REPLACE INTO raw_candles
            (ts, open, high, low, close, volume, bid1, ask1, oi, buy_vol, sell_vol,
-            anchor_buy, anchor_sell, buy_vol_flag, sell_vol_flag, bar_recovered,
+            anchor_buy, anchor_sell, buy_vol_flag, sell_vol_flag, unk_vol, bar_recovered,
             book_bid_tot, book_ask_tot, book_bid_avg, book_ask_avg, book_snaps)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             ts,
             candle.get("open",     0.0),
@@ -2103,6 +2109,7 @@ def save_candle(candle: dict) -> None:
             candle.get("anchor_sell"),
             candle.get("buy_vol_flag"),
             candle.get("sell_vol_flag"),
+            candle.get("unk_vol"),          # [559차 P1-4] 없으면 NULL
             # [452차 Phase 1] 내력 플래그 — 기록자가 항상 아는 값이라 0/1로 확정한다.
             1 if candle.get("bar_recovered") else 0,
         ) + _book_depth_cols(candle),   # [552차] 호가 깊이 5열
@@ -2151,9 +2158,9 @@ def save_candle_and_features(candle: dict, ts: str, features: dict) -> None:
             conn.execute(
                 """INSERT OR REPLACE INTO raw_candles
                    (ts, open, high, low, close, volume, bid1, ask1, oi, buy_vol, sell_vol,
-                    anchor_buy, anchor_sell, buy_vol_flag, sell_vol_flag, bar_recovered,
+                    anchor_buy, anchor_sell, buy_vol_flag, sell_vol_flag, unk_vol, bar_recovered,
                     book_bid_tot, book_ask_tot, book_bid_avg, book_ask_avg, book_snaps)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     candle_ts,
                     candle.get("open",     0.0),
@@ -2171,6 +2178,7 @@ def save_candle_and_features(candle: dict, ts: str, features: dict) -> None:
                     candle.get("anchor_sell"),
                     candle.get("buy_vol_flag"),
                     candle.get("sell_vol_flag"),
+                    candle.get("unk_vol"),          # [559차 P1-4] 없으면 NULL — 0 으로 지어내지 않는다
                     1 if candle.get("bar_recovered") else 0,
                 ) + _book_depth_cols(candle),   # [552차] 호가 깊이 5열
             )
@@ -2199,11 +2207,11 @@ def save_session_bar(candle: dict, session: str, source: str = "rt") -> None:
             conn.execute(
                 """INSERT OR REPLACE INTO session_bars
                    (ts, session, open, high, low, close, volume, buy_vol, sell_vol,
-                    anchor_buy, anchor_sell, bid1, ask1, bid_qty, ask_qty, oi,
+                    anchor_buy, anchor_sell, unk_vol, bid1, ask1, bid_qty, ask_qty, oi,
                     tick_count, auction_code, auction_ticks,
                     book_bid_tot, book_ask_tot, book_bid_avg, book_ask_avg, book_snaps,
                     source)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                            ?, ?, ?, ?, ?, ?)""",
                 (
                     candle_ts_str(candle),
@@ -2217,6 +2225,7 @@ def save_session_bar(candle: dict, session: str, source: str = "rt") -> None:
                     candle.get("sell_vol"),
                     candle.get("anchor_buy"),
                     candle.get("anchor_sell"),
+                    candle.get("unk_vol"),          # [559차 P1-4]
                     candle.get("bid1"),
                     candle.get("ask1"),
                     candle.get("bid_qty"),

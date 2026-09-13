@@ -78,6 +78,12 @@ class CybosInvestorData:
         self._program_fields: Dict[str, int] = {}
         self._open_interest = 0
 
+        # [MW0601 559차 / P1'-1] **오늘 원천이 실제로 준 키**. 이월 폴백(`_futures` 는
+        # 직전값을 유지한다)과 프리장 초기 0 을 구분하는 유일한 근거다.
+        # 🔴 이게 없으면 「프리장이라 아직 안 왔다」와 「실측 순매수 0계약」이 DB 에서
+        #    같은 0.0 으로 보인다 — 계측 4원칙 ②. 481차 F-1 항목.
+        self._futures_seen: set = set()
+
         # 원천이 실제로 채운 키 감시 — 유령 필드 조기 경보(451차)
         self._futures_prov = ProvenanceTracker("CybosFuturesInvestor", warn_after=10)
         self._program_prov = ProvenanceTracker("CybosProgramInvestor", warn_after=10)
@@ -137,6 +143,8 @@ class CybosInvestorData:
         # 폴백은 "이번 조회에 값이 안 왔을 때 직전값 유지"라는 연속성 목적으로만 남긴다.
         # "한 번도 온 적 없는 키"는 그 폴백에 가려 보이지 않으므로 따로 감시한다(451차).
         self._futures_prov.observe(nets.keys())
+        # [559차 P1'-1] 이번 조회가 실제로 준 키만 적립한다. 값이 0 이어도 "왔다"는 사실이다.
+        self._futures_seen.update(k for k in nets.keys() if k in INVESTOR_KEYS)
         for key in INVESTOR_KEYS:
             self._futures[key] = _to_int(nets.get(key, self._futures.get(key, 0)))
         self._futures_prov.maybe_warn(
@@ -237,6 +245,14 @@ class CybosInvestorData:
         """
         return dict(self._program_fields)
 
+    def _is_measured(self, key: str) -> bool:
+        """[559차 P1'-1] 이 키를 오늘 원천에서 **실제로 받은 적이 있는가**.
+
+        `self._futures[key]` 는 이월 폴백 때문에 항상 값이 있다 — 그 값이 관측인지
+        초기 0 인지는 여기서만 알 수 있다. 프리장(08:45~08:59)에는 전부 False 다.
+        """
+        return bool(self._futures_supported) and key in self._futures_seen
+
     def get_features(self) -> Dict[str, float]:
         foreign_fut = self._futures.get("foreign", 0)
         retail_fut = self._futures.get("individual", 0)
@@ -255,6 +271,13 @@ class CybosInvestorData:
             "program_arb_net": float(self._program_arb),
             "program_non_arb_net": float(self._program_nonarb),
             "foreign_retail_divergence": float(foreign_fut - retail_fut),
+            # ── [MW0601 559차 / P1'-1] 피처별 미측정 플래그 (481차 F-1) ──────────
+            # 1.0 = 오늘 원천이 이 키를 실제로 줬다 / 0.0 = 아직 안 왔다(값 0 은 폴백).
+            # 값 자체는 하위호환으로 그대로 0.0 을 내보낸다 — 하류가 플래그를 보고
+            # 판단하게 하고, 값의 의미를 조용히 바꾸지 않는다.
+            "foreign_futures_net_measured": 1.0 if self._is_measured("foreign") else 0.0,
+            "retail_futures_net_measured": 1.0 if self._is_measured("individual") else 0.0,
+            "institution_futures_net_measured": 1.0 if self._is_measured("institution") else 0.0,
             # [MW0601 451차 폐기] program_foreign/individual/institution_net_krw 3종 제거.
             #   - individual/institution: 원천(CpSvr8111)에 없는 필드 → 상수 0이었다.
             #   - foreign: 값은 있었으나 외국인이 아니라 **전체 프로그램 순매수**를
@@ -399,6 +422,7 @@ class CybosInvestorData:
     def reset_daily(self) -> None:
         self._last_fetch = None
         self._fetch_count = 0
+        self._futures_seen = set()          # [559차 P1'-1] 하루 단위로 다시 센다
         self._futures = {k: 0 for k in INVESTOR_KEYS}
         self._call = {k: 0 for k in INVESTOR_KEYS}
         self._put = {k: 0 for k in INVESTOR_KEYS}

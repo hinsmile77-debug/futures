@@ -7169,6 +7169,51 @@ EXHAUSTION_RESTORE_MODE: str = "shadow"   # "shadow" | "live"
 # 근거: dev_memory/DECISION_LOG.md 2026-08-30(500-A·500-B·500-F 결정 1)
 CVD_DEBIAS_MODE: str = "shadow"   # "shadow" | "live"
 
+# ── [MW0601 559차 / P1-3] 체결 방향 원천 선택 ────────────────────────────────
+# 🔴 기본 "legacy" = **소비 0**. 지금 값을 바꾸면 매매 판단이 즉시 바뀐다.
+#
+#   "legacy" : 현행 buy_vol/sell_vol. `realtime_data.py:384-388` 의 체결구분 비교가
+#              성립하지 않아 100% 틱룰로 떨어지고 **보합틱이 매수로** 계상된다.
+#              실측 매수비중 64.53%(정상은 50% 근방).
+#   "shadow" : 올바른 체결구분 파싱(`buy_vol_flag`/`sell_vol_flag`). 실측 49.88%.
+#   "anchor" : 서버 정답지(`anchor_buy`/`anchor_sell`, 헤더 22·23). 실측 49.88%.
+#              섀도와 괴리 0.00% — 둘 중 어느 쪽을 써도 같다(452차 판정).
+#
+# 전환(Phase 3)은 **별도 승인 사항**이며 다음 셋을 함께 해야 한다.
+#   ① 정규화 포화 동시 수정 — `features/technical/cvd.py` 의 `cvd_abs_max` 가 현재값을
+#      포함해 `cvd_norm` 이 1.0 에 붙는다(98.8%). 방향만 고치면 포화가 남는다.
+#   ② 학습창 분리 — `CVD_SHADOW_EPOCH` 이전 구간은 섀도가 없어 영구 편향이다.
+#   ③ 우회책 3건 재검토(2026-06-25 CORE 키 교체 · 394차 detrend · AutoMask 면제).
+#
+# 폴백은 조용하지 않다 — 봉에 섀도·앵커가 없으면 legacy 로 되돌아가되
+# 피처 `cvd_flow_fallback=1` 로 남는다(계측 4원칙 ④). 원천 자체는 `cvd_flow_source`
+# (0=legacy 1=shadow 2=anchor).
+CVD_FLOW_SOURCE_MODE: str = "legacy"   # "legacy" | "shadow" | "anchor"
+
+# 섀도 계측 개시일. 이 날 이전 봉에는 `buy_vol_flag`/`anchor_buy` 가 없다(NULL).
+# 학습창 분리(P1-6)와 리포트가 같은 값을 봐야 하므로 여기 한 곳에서만 정의한다.
+CVD_SHADOW_EPOCH: str = "2026-08-10"
+
+# [MW0601 559차 / P1-6] 세대 분리 **적용** 스위치. 기본 False = 관측만.
+# True 로 켜면 `cvd_*` 계열 학습 표본이 CVD_SHADOW_EPOCH 이후로 잘린다(26주 → 수 주).
+# 그 손실을 감수할지는 Phase 3 승인 사항이며, 근거는 매 EOD `[FeatureEpoch]` 로그의
+# 실측 손실률이다. 켜기 전에 그 숫자를 먼저 볼 것.
+FEATURE_EPOCH_MASK_ENABLED: bool = False
+
+# [MW0601 559차 / P1'-1 · 481차 F-1] 수급 미측정 행을 스케일러 fit 에서 제외.
+# 기본 False = 섀도(집계만). 프리장 이월 0.0 이 분포에 섞이면 실측값이 이상치로 밀린다.
+# ⚠ 라이브 ScalerRefresh 경로에는 아직 배선되지 않았다 — `<key>_measured` 가 동결 97개
+#   피처명에 없어 그 경로의 X 컬럼으로 오지 않는다. 켜기 전에 로더부터 고칠 것
+#   (`learning/feature_epoch_mask.py` 모듈 주석 참조).
+INVESTOR_UNMEASURED_SCALER_EXCLUDE_ENABLED: bool = False
+
+# [MW0601 559차 / P1'-2] 압축 이전 단위 4거래일(2026-06-02·04·05·08)을 학습에서 제외.
+# 🔴 **기본 True** — 다른 559차 플래그와 달리 섀도가 아니다. 그 행들을 넣으면 수급 8키의
+# 스케일러 std 가 정상 0.88 → 5.0e+04(**5.7만 배**)로 뛰어 진짜 값이 전부 0 으로 짓눌린다
+# (2026-09-13 실측, `raw_features_horizon` 26주 창). 418차 결정 1 과 같은 취급이다.
+# False 로 되돌리려면 그 왜곡을 감수할 이유가 있어야 한다.
+INVESTOR_UNIT_MISMATCH_EXCLUDE_ENABLED: bool = True
+
 # ── [MW0601 500차 3단계 / 주간회의 결정 3] 97 슈퍼셋 폐기 예정 등록 ────────
 # `model/horizons/feature_names.pkl` 의 97개 동결 슈퍼셋은 ① `X_hz` 구성
 # ② **스케일러 fit** 에 쓰인다(GBM 은 호라이즌별 8~13개만 학습 —

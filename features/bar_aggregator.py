@@ -77,7 +77,7 @@ class BarAggregator(object):
     def _aggregate(self, bars):
         # type: (list) -> dict
         b0 = bars[0]
-        return {
+        out = {
             "ts":       bars[-1]["ts"],
             "open":     b0["open"],
             "high":     max(b["high"] for b in bars),
@@ -89,6 +89,15 @@ class BarAggregator(object):
             "bid1":     float(bars[-1].get("bid1") or 0.0),
             "ask1":     float(bars[-1].get("ask1") or 0.0),
         }
+        # [MW0601 559차 / P1-5] 섀도·앵커·미분류를 N분봉으로 **전달**한다.
+        # 안 올리면 CVD 전환(Phase 3) 뒤에도 3m·5m·15m 피처는 편향된 legacy 를 계속 본다
+        # — 1m 만 고쳐놓고 고쳤다고 착각하게 되는 자리다.
+        # 🔴 sum(b.get(k, 0)) 을 쓰지 않는다. 구간에 미계측 봉이 하나라도 섞이면
+        #    합계는 "부분만 센 값"이므로 **None** 이어야 한다(계측 4원칙 ②).
+        for _k in ("buy_vol_flag", "sell_vol_flag", "anchor_buy", "anchor_sell", "unk_vol"):
+            _vals = [b.get(_k) for b in bars]
+            out[_k] = None if any(v is None for v in _vals) else sum(_vals)
+        return out
 
     def reset_daily(self):
         """일일 리셋 — 당일 누적 봉 버퍼 초기화."""
