@@ -9145,66 +9145,79 @@ _CH_NUM_PATTERNS = (
 # 🔴 새 채널을 만들 때: CLAUDE.md 「캠페인 채널 번호 — PC별 대역 분할」 표에서
 #    자기 PC 대역의 미사용 번호를 고르고 **여기 한 줄을 추가**한다. 빠뜨리면
 #    `build_report()` 가 리포트를 만들기 전에 멈춘다.
+#
+# [564차 후속6 / R4] **키 열 추가** — 인용은 번호가 아니라 키로 한다.
+# 번호는 렌더링 산물이고 브랜치마다 다를 수 있다(사용자 결정: v9-dev GP 는
+# [58]/[59], dev 는 [60]/[61] 로 독립). 키는 그 채널의 정체성이다.
+#
+# 🔴 **키가 None 인 것은 '키가 없다'가 아니라 '아직 확인되지 않았다'** 이다
+#    (계측 4원칙 ② 미측정 ≠ 0). 채운 22개는 두 독립 경로로 확인했다:
+#      · 작성자가 소스에 명시한 키(`_dm("…")` · `_row_462(…, key)`)
+#      · 그 키가 `VALIDATION_CAMPAIGN` 에 실재하는지 기계 확인
+#    ⚠ `metrics` dict 경유 자동 추정(49개)은 **채우지 않았다** — [18] 에서
+#      `regime_exhaustion_watch` vs `regime_exhaustion_shadow` 로 갈렸다.
+#      틀린 매핑은 없는 것보다 나쁘다(엉뚱한 채널을 인용하게 된다).
+#    나머지는 그 채널을 손댈 때 **확인한 사람이** 채운다.
 CHANNEL_REGISTRY = (
-    (0, "표본 기아 경보"),
-    (1, "Triple-Barrier"),
-    (2, "Meta-Gate"),
-    (3, "분위 회귀"),
-    (4, "신호소멸청산"),
-    (5, "레짐 ATR 배수"),
-    (6, "Hurst 게이트 counterfactual"),
-    (7, "JointGateBlock counterfactual"),
-    (8, "KellyAdvisedSkip×C등급"),
-    (9, "OPEN_VOLATILE 시가이격 counterfactual"),
-    (10, "TP2 홀드 counterfactual (qty=2 재배분 A/B)"),
-    (11, "qty=1 손실1차 조기청산 counterfactual"),
-    (12, "qty=1 TP1 이후 트레일 폭 counterfactual"),
-    (13, "등급별 순EV 역전 감시"),
-    (14, "Tier1 잔여계약 2단계 조기청산 counterfactual"),
-    (15, "급행 풀스톱(TP1 미도달) 관찰"),
-    (16, "chase+foreign 조합 관찰"),
-    (17, "청산 체결 슬리피지"),
-    (18, "RegimeExhaustionGate(탈진반전)"),
-    (19, "ToxicityGate block counterfactual"),
-    (20, "BAR_ONLY_RELAX 수용/롤백"),
-    (21, "방향별 순EV (SYSTEM_AUTO)"),
-    (22, "MFE 캡처율 관찰"),
-    (23, "EOD 모델가드 판정 괴리"),
-    (24, "TP1 보호전환 반납 관찰"),
-    (25, "TP1 보호전환 offset A/B"),
-    (26, "거래불능(가격상한 고착) 구간"),
-    (27, "counterfactual 도달불가 목표가"),
-    (28, "사이징 역예측 감시…"),
-    (29, "mean-revert 레짐 사이즈"),
-    (30, "toxicity 재보정 밴드분포"),
-    (31, "tox reduce 연속배수 섀도"),
-    (34, "meta size0 무시"),
-    (35, "유령 하드스톱 결함/알파…"),
-    (36, "체크리스트 승격 경로"),
-    (37, "mean-revert 일자단위 재검정"),
-    (38, "ProfitGuard-L1 피크 트레일링"),
-    (39, "confidence 판별력"),
-    (40, "방향 선택의 가치"),
-    (41, "청산 측 학습기 게이지"),
-    (42, "타점의 가치"),
-    (43, "변동성 추정량 교체"),
-    (44, "DynMC 붕괴행 잠식"),
-    (45, "축퇴 가드 플래핑 (게이지)"),
-    (46, "Hurst 임계 위치 A/B"),
-    (48, "봉중 하드스톱 경로 건전성…"),
-    (49, "페이오프 기하 상시 감시"),
-    (50, "방향 편향 상시 감시"),
-    (51, "저변동성 이익기하 붕괴"),
-    (52, "준붕괴(유효가중합 저) 진입"),
-    (53, "진입금지 존 위반 코호트…"),
-    (54, "ConstOut 호라이즌 건강도 (구 [51])"),
-    (55, "09:20~09:29 A등급게이트 counterfactual"),
-    (56, "CB② 복원 반사실"),
-    (57, "te 진입 게이트 (섀도)"),
-    (58, "13:00~13:30 진입 금지 (섀도) — 판정창 …~"),
-    (59, "소진 피처 live 조건ⓐ (mode=… · 판정창 …~)"),
-    (60, "GP 교차 x 고변동 (좁은)"),
-    (61, "GP 교차 x 고변동 (순수·대조)"),
+    (0, None, "표본 기아 경보"),
+    (1, None, "Triple-Barrier"),
+    (2, "meta_gate", "Meta-Gate"),
+    (3, None, "분위 회귀"),
+    (4, "signal_decay", "신호소멸청산"),
+    (5, "hurst_regime", "레짐 ATR 배수"),
+    (6, "hurst_gate_shadow", "Hurst 게이트 counterfactual"),
+    (7, None, "JointGateBlock counterfactual"),
+    (8, "kelly_skip", "KellyAdvisedSkip×C등급"),
+    (9, None, "OPEN_VOLATILE 시가이격 counterfactual"),
+    (10, None, "TP2 홀드 counterfactual (qty=2 재배분 A/B)"),
+    (11, None, "qty=1 손실1차 조기청산 counterfactual"),
+    (12, None, "qty=1 TP1 이후 트레일 폭 counterfactual"),
+    (13, "grade_ev_inversion", "등급별 순EV 역전 감시"),
+    (14, None, "Tier1 잔여계약 2단계 조기청산 counterfactual"),
+    (15, None, "급행 풀스톱(TP1 미도달) 관찰"),
+    (16, "chase_foreign_combo_watch", "chase+foreign 조합 관찰"),
+    (17, None, "청산 체결 슬리피지"),
+    (18, None, "RegimeExhaustionGate(탈진반전)"),
+    (19, None, "ToxicityGate block counterfactual"),
+    (20, None, "BAR_ONLY_RELAX 수용/롤백"),
+    (21, "direction_ev_watch", "방향별 순EV (SYSTEM_AUTO)"),
+    (22, None, "MFE 캡처율 관찰"),
+    (23, None, "EOD 모델가드 판정 괴리"),
+    (24, None, "TP1 보호전환 반납 관찰"),
+    (25, "tp1_protect_offset_shadow", "TP1 보호전환 offset A/B"),
+    (26, None, "거래불능(가격상한 고착) 구간"),
+    (27, None, "counterfactual 도달불가 목표가"),
+    (28, None, "사이징 역예측 감시…"),
+    (29, None, "mean-revert 레짐 사이즈"),
+    (30, None, "toxicity 재보정 밴드분포"),
+    (31, None, "tox reduce 연속배수 섀도"),
+    (34, None, "meta size0 무시"),
+    (35, None, "유령 하드스톱 결함/알파…"),
+    (36, None, "체크리스트 승격 경로"),
+    (37, None, "mean-revert 일자단위 재검정"),
+    (38, None, "ProfitGuard-L1 피크 트레일링"),
+    (39, None, "confidence 판별력"),
+    (40, None, "방향 선택의 가치"),
+    (41, None, "청산 측 학습기 게이지"),
+    (42, "entry_timing_value_watch", "타점의 가치"),
+    (43, None, "변동성 추정량 교체"),
+    (44, "dynmc_collapse_feed_watch", "DynMC 붕괴행 잠식"),
+    (45, "cal_guard_flap_watch", "축퇴 가드 플래핑 (게이지)"),
+    (46, "hurst_threshold_shadow", "Hurst 임계 위치 A/B"),
+    (48, None, "봉중 하드스톱 경로 건전성…"),
+    (49, None, "페이오프 기하 상시 감시"),
+    (50, None, "방향 편향 상시 감시"),
+    (51, "profit_geometry_lowvol_watch", "저변동성 이익기하 붕괴"),
+    (52, "effective_weight_watch", "준붕괴(유효가중합 저) 진입"),
+    (53, "zone_ban_breach_watch", "진입금지 존 위반 코호트…"),
+    (54, None, "ConstOut 호라이즌 건강도 (구 [51])"),
+    (55, None, "09:20~09:29 A등급게이트 counterfactual"),
+    (56, "cb2_restore_shadow", "CB② 복원 반사실"),
+    (57, "trend_efficiency_entry_gate", "te 진입 게이트 (섀도)"),
+    (58, "lunch_early_entry_ban_shadow", "13:00~13:30 진입 금지 (섀도) — 판정창 …~"),
+    (59, "exhaustion_restore_watch", "소진 피처 live 조건ⓐ (mode=… · 판정창 …~)"),
+    (60, "gp_cross_highvol_watch", "GP 교차 x 고변동 (좁은)"),
+    (61, "gp_cross_any_watch", "GP 교차 x 고변동 (순수·대조)"),
 )
 
 
@@ -9217,7 +9230,7 @@ def assert_channel_registry_consistent(src=None):
 
     반환은 `{번호: 라벨}` — R4(인용은 번호가 아니라 이름으로)의 발판이다.
     """
-    nums = [n for n, _ in CHANNEL_REGISTRY]
+    nums = [n for n, _k, _l in CHANNEL_REGISTRY]
     dup = sorted({n for n in nums if nums.count(n) > 1})
     if dup:
         raise ChannelRegistryMismatch(
@@ -9232,7 +9245,27 @@ def assert_channel_registry_consistent(src=None):
             "전자는 **등록을 빠뜨린 새 채널**이고, 후자는 **렌더 관용구가 바뀌어 "
             "유일성 검사가 못 보게 된 채널**이다(후자가 더 위험하다)."
             % (only_src, only_reg))
-    return dict(CHANNEL_REGISTRY)
+    return dict((n, lab) for n, _k, lab in CHANNEL_REGISTRY)
+
+
+def channel_key(num):
+    """번호 → 캠페인 키. 아직 확인되지 않았으면 (≠ 키가 없다)."""
+    for n, key, _lab in CHANNEL_REGISTRY:
+        if n == int(num):
+            return key
+    raise KeyError("등록되지 않은 채널 번호: %r" % (num,))
+
+
+def channel_number(key):
+    """캠페인 키 → 이 브랜치에서의 번호. 미확인 키면 .
+
+    ⚠ **브랜치마다 다를 수 있다.** PC 간 비교는 이 함수로 번호를 각자 풀어서
+    맞추거나, 아예 키로 짝지어야 한다 — 번호를 직접 비교하면 안 된다.
+    """
+    for n, k, _lab in CHANNEL_REGISTRY:
+        if k == key:
+            return n
+    return None
 
 
 class ChannelNumberCollision(RuntimeError):
@@ -13510,6 +13543,34 @@ def build_report(days: int) -> tuple:
     L.append("> 이고 실제 집행은 0.4%다. 확증 필터가 아니라 **별도 관측 채널**이다.")
     L.append("> 근거: `docs/미륵이고도화3/Golden power/GP교차신호_검증_MW0601-20260907.md`")
     L.append("")
+
+    # -- [MW0602 564차 후속6 / R4] 채널 사전 — 번호가 아니라 **키**로 인용하라 --
+    #
+    # 번호는 렌더링 산물이고 **브랜치마다 다르다**(사용자 결정: v9-dev GP 는
+    # [58]/[59], dev 는 [60]/[61]). 키가 그 채널의 정체성이다.
+    # 이 표가 있으면 cmp_summary.py 가 번호가 아니라 키로 짝지을 수 있다.
+    L.append("")
+    L.append("---")
+    L.append("")
+    L.append("## 부록. 채널 사전 (번호 ↔ 캠페인 키)")
+    L.append("")
+    L.append("> 🔴 **인용은 번호가 아니라 키로 한다.** 번호는 브랜치마다 다를 수 있다")
+    L.append("> — 같은 채널이 dev 와 v9-dev 에서 다른 번호를 쓴다")
+    L.append("> (2026-09-13 사용자 결정: 맞추지 않고 독립으로 간다).")
+    L.append("> ")
+    L.append("> `_미확인_` 은 **키가 없다는 뜻이 아니라 아직 확인되지 않았다**는 뜻이다")
+    L.append("> (계측 4원칙 ② 미측정 ≠ 0). 틀린 키를 채우면 엉뚱한 채널을 인용하게 되므로")
+    L.append("> 확인된 것만 채운다 — 그 채널을 손대는 사람이 하나씩 채우면 된다.")
+    L.append("")
+    L.append("| 번호 | 캠페인 키 | 채널 |")
+    L.append("|---|---|---|")
+    for _n, _k, _lab in CHANNEL_REGISTRY:
+    # ⚠ 번호를 백틱으로 감싼다 — cmp_summary 의 요약행 정규식(^| [NN] …)에 걸리면
+    #   부록이 "중복 채널"로 오인돼 가짜 경보가 난다. 전용 패턴으로 읽게 한다.
+        L.append("| `[%d]` | `%s` | %s |" % (_n, _k if _k else "아직 미확인", _lab))
+    _known = sum(1 for _n, _k, _lab in CHANNEL_REGISTRY if _k)
+    L.append("")
+    L.append("키 확인 %d / %d 채널" % (_known, len(CHANNEL_REGISTRY)))
 
     return "\n".join(L), metrics
 

@@ -206,7 +206,7 @@ def test_8_registry_cannot_swallow_duplicates():
     assert isinstance(reg, tuple), (
         "CHANNEL_REGISTRY 가 tuple 이 아니다(%s) — dict 면 중복 번호를 조용히 "
         "삼킨다" % type(reg).__name__)
-    nums = [n for n, _ in reg]
+    nums = [n for n, _k, _lab in reg]
     assert len(nums) == len(set(nums)), (
         "레지스트리에 중복 번호: %s" % sorted({n for n in nums if nums.count(n) > 1}))
 
@@ -225,3 +225,84 @@ def test_9_registry_check_is_not_vacuous():
         except R.ChannelRegistryMismatch:
             continue
         raise AssertionError("%s 을 잡지 못했다 — 레지스트리 대조가 무력화됐다" % label)
+
+
+
+def test_10_registry_keys_are_real_campaign_keys():
+    """[R4] 채운 키는 **실재하는 캠페인 키**여야 한다.
+
+    번호는 렌더링 산물이고 브랜치마다 다를 수 있다(사용자 결정: v9-dev GP 는
+    `[58]`·`[59]`, dev 는 `[60]`·`[61]`). 키가 그 채널의 정체성이므로, 키가
+    틀리면 **엉뚱한 채널을 인용**하게 된다 — 번호가 틀린 것보다 나쁘다.
+
+    ⚠ `None` 은 "키가 없다"가 아니라 **"아직 확인되지 않았다"** 이다
+    (계측 4원칙 ② 미측정 ≠ 0). 그래서 미확인 자체는 실패로 세지 않는다 —
+    틀린 값을 채우는 것보다 비워두는 편이 낫다는 것이 이 설계의 요점이다.
+    """
+    import sys
+    if _ROOT not in sys.path:
+        sys.path.insert(0, _ROOT)
+    from config.settings import VALIDATION_CAMPAIGN as V
+    reg = _R().CHANNEL_REGISTRY
+    bad = [(n, k) for n, k, _lab in reg if k is not None and k not in V]
+    assert not bad, (
+        "VALIDATION_CAMPAIGN 에 없는 키가 레지스트리에 있다: %s — 오타이거나 "
+        "캠페인에서 사라진 채널이다" % bad)
+    keys = [k for _n, k, _lab in reg if k is not None]
+    assert len(keys) == len(set(keys)), (
+        "한 키가 두 번호에 붙었다: %s" % sorted({k for k in keys if keys.count(k) > 1}))
+
+
+def test_11_key_lookup_helpers_round_trip():
+    """[R4] `channel_key` ↔ `channel_number` 왕복 — PC 간 비교의 발판."""
+    R = _R()
+    for num, key, _lab in R.CHANNEL_REGISTRY:
+        assert R.channel_key(num) == key
+        if key is not None:
+            assert R.channel_number(key) == num
+    assert R.channel_number("존재하지_않는_키") is None
+    try:
+        R.channel_key(99999)
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("등록되지 않은 번호인데 조용히 통과했다")
+
+
+def test_12_cmp_summary_pairs_by_key_not_number():
+    """[R4] PC 대조가 **번호가 아니라 키**로 짝짓는가.
+
+    2026-09-13 사용자 결정으로 같은 채널이 브랜치마다 다른 번호를 쓴다
+    (v9-dev GP `[58]`/`[59]` vs dev `[60]`/`[61]`). 번호로 짝지으면 그 둘은
+    **양쪽 「only」 줄에 각각 떠서 비교 자체가 안 된다.**
+
+    ⚠ 한쪽 리포트에 부록이 없으면(구 세대) 종전대로 번호로 짝짓는다 — 퇴화하지
+    않게 하는 것이 조건이다. 그것도 함께 확인한다.
+    """
+    import sys
+    if _ROOT not in sys.path:
+        sys.path.insert(0, _ROOT)
+    import tempfile
+    from scripts.cmp_summary import rows
+    nl = chr(10)
+    body = [
+        "| [60] GP 좁은 | PASS | x |",
+        "",
+        "## 부록. 채널 사전",
+        "| 번호 | 캠페인 키 | 채널 |",
+        "|---|---|---|",
+        "| " + "`" + "[60]" + "`" + " | " + "`" + "gp_cross_highvol_watch" + "`" + " | GP 좁은 |",
+        "| " + "`" + "[0]" + "`" + " | " + "`" + "아직 미확인" + "`" + " | 표본 기아 |",
+    ]
+    fd, path = tempfile.mkstemp(suffix=".md")
+    os.close(fd)
+    with io.open(path, "w", encoding="utf-8") as f:
+        f.write(nl.join(body))
+    try:
+        d, order, dups, keymap = rows(path)
+    finally:
+        os.remove(path)
+    assert keymap.get("[60]") == "gp_cross_highvol_watch", keymap
+    assert "[0]" not in keymap, (
+        "「아직 미확인」을 키로 취급했다 — 미확인끼리 잘못 짝지어진다(계측 4원칙 ②)")
+    assert not dups, "부록 행이 요약행 중복으로 오인됐다: %s" % (dups,)
