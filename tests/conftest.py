@@ -108,13 +108,9 @@ def _isolate_position_state(tmp_path, monkeypatch):
 # 직접 실행 경로는 그대로다: `python tests/test_500_stage3_decisions.py`
 #
 # ⚠ dev 에서는 같은 계열 6파일을 **전부 pytest 테스트로 전환**해 이 목록이 비었다
-#   (`O-77-C`). 이 브랜치는 3파일(`test_455` · `test_500_cvd_ofi_live_defects` ·
-#   `test_500_warmup_measured`)만 dev 변환본을 그대로 가져왔고, 아래 4개는 **검사
-#   내용 자체가 dev 와 달라**(CORE 정의 갈래) 복사할 수 없어 전환을 남겼다.
-#   목록을 늘리기 전에 먼저 물을 것 — **왜 이 파일은 테스트 함수가 없는가.**
+# 🔴 [O-77-C 배포 완료] 이 브랜치의 스크립트형 **7파일을 전부 pytest 로 전환**해
+#    목록이 비었다(3파일은 dev 변환본이 바이트 동일해 그대로, 4파일은 검사 내용이
+#    dev 와 달라 이 브랜치 소스로 개별 이식). 전환 전에는 그 검사들이 **스위트에서
+#    한 건도 돌지 않았다** — 죽은 섀도·죽은 게이트와 같은 형태였다.
 collect_ignore = [
-    "test_500_constructive_dup.py",
-    "test_500_known_unresolved_visible.py",
-    "test_500_stage3_decisions.py",
-    "test_511_exit_order_reject.py",
 ]

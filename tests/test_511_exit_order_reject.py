@@ -32,21 +32,22 @@ msg=94025모의투자 주문가능금액이 부족합니다.` 142건 + `ret=4 st
    미체결 주문 자동 취소(F-18)는 자동조치 C등급이라 주간회의 승인 전까지 미배선이다.
 
 실행: python tests/test_511_exit_order_reject.py   (COM/브로커 불필요)
-"""
+            또는 pytest tests/test_511_exit_order_reject.py
 
+🔴 [MW0602 564차 후속3 / `O-77-C` 5단계] **스크립트형 → pytest 전환.**
+
+검사 문구와 조건은 **원문 그대로**다. `# ── Tn. ... ──` 배너를 경계로 블록을
+함수로 감싸 그룹별 테스트에서 부른다. 스텁 클래스와 `import main` 은 모듈 최상위에
+남긴다 — 정의·임포트일 뿐 계산이 아니다.
+
+⚠ 모듈 최상위의 `sys.stdout.reconfigure(...)` 는 CLI 러너로 옮겼다.
+"""
 import datetime
 import inspect
 import io as _io
 import os
 import re
 import sys
-
-# 콘솔 코드페이지(cp949)에서 판정 문구의 U+2014 등이 UnicodeEncodeError를 내
-# 통과한 검사에서도 죽는다 — 판정과 무관한 출력 문제이므로 여기서 못 박는다.
-try:
-    sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace", line_buffering=True)
-except Exception:
-    pass
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -114,198 +115,304 @@ def _reject(s, ret=-1, kind="하드스톱(틱)", qty=2):
     )
 
 
+
+def _assert_group(fn):
+    """블록을 실행하고 **그 안에서 난 실패만** 모아 단언한다."""
+    before = len(FAILURES)
+    fn()
+    new = FAILURES[before:]
+    assert not new, "실패 %d건 — %s" % (len(new), " / ".join(new))
+
+
+# ⚠ `_src_all` 은 **T8 과 T9~T12 가 함께 쓴다.** 원본에서는 T8 블록이 만들고
+#   T9~T12 가 그대로 참조했다 — 그룹을 나누면 끊기는 자리다. 전환 중 실측으로
+#   확인했다: 이 헬퍼 없이는 `_t9_t12` 가 NameError 로 중단되어 **T12·T12b 두
+#   검사가 조용히 사라졌다**(검사 이름 집합 대조 42 → 40 에서 잡혔다).
+_src_all = None
+
+
+def _main_src():
+    """`main` 모듈 원문 — 소스 수준 회귀 검사 공용. 한 번만 읽는다."""
+    global _src_all
+    if _src_all is None:
+        _src_all = inspect.getsource(main)
+    return _src_all
+
+
 # ── T1. 거부가 TRADE 채널에 남는다 (F-19) ────────────────────────────────────
 
-spy = _LogSpy().install()
-try:
-    s = _StubSelf()
-    _reject(s)
-    _hits = [m for m in spy.trade if m.startswith("[주문실패]")]
-    check("T1 거부가 TRADE에 `[주문실패]`로 남는다", len(_hits) == 1, spy.trade)
-    check("T1b 거부 사유 원문이 실려 있다",
-          bool(_hits) and "94025" in _hits[0], _hits)
-    check("T1c ret 의미가 병기된다",
-          bool(_hits) and "브로커 거부" in _hits[0], _hits)
-    check("T1d 청산가능수량이 '미측정'으로 표기된다(0으로 위장하지 않는다)",
-          bool(_hits) and "청산가능=미측정" in _hits[0], _hits)
-finally:
-    spy.restore()
+def _t1():
+
+    spy = _LogSpy().install()
+    try:
+        s = _StubSelf()
+        _reject(s)
+        _hits = [m for m in spy.trade if m.startswith("[주문실패]")]
+        check("T1 거부가 TRADE에 `[주문실패]`로 남는다", len(_hits) == 1, spy.trade)
+        check("T1b 거부 사유 원문이 실려 있다",
+              bool(_hits) and "94025" in _hits[0], _hits)
+        check("T1c ret 의미가 병기된다",
+              bool(_hits) and "브로커 거부" in _hits[0], _hits)
+        check("T1d 청산가능수량이 '미측정'으로 표기된다(0으로 위장하지 않는다)",
+              bool(_hits) and "청산가능=미측정" in _hits[0], _hits)
+    finally:
+        spy.restore()
+
+
+
+def test_T1_reject_is_logged_to_trade_channel():
+    """거부가 TRADE 채널에 남는가 (F-19)."""
+    _assert_group(_t1)
+
 
 # ── T2. 백오프 — 늘어나되 상한이 있고 영구 차단은 없다 (F-21) ────────────────
 
-spy = _LogSpy().install()
-try:
-    s = _StubSelf()
-    _seen = []
-    for _ in range(len(main.EXIT_REJECT_BACKOFF_SEC) + 3):
-        _reject(s)
-        _seen.append(round(main._ts_exit_retry_block_remaining(s), 1))
-    check("T2 연속 거부가 카운트된다",
-          s._exit_reject_streak == len(main.EXIT_REJECT_BACKOFF_SEC) + 3,
-          s._exit_reject_streak)
-    check("T2b 백오프가 단조 증가하다 상한에서 멈춘다",
-          _seen == sorted(_seen) and max(_seen) <= max(main.EXIT_REJECT_BACKOFF_SEC),
-          _seen)
-    check("T2c 영구 차단이 아니다 — 상한이 유한하다",
-          max(main.EXIT_REJECT_BACKOFF_SEC) <= 30.0,
-          main.EXIT_REJECT_BACKOFF_SEC)
-    # 시간이 지나면 스스로 풀린다
-    s._exit_retry_block_until = datetime.datetime.now() - datetime.timedelta(seconds=1)
-    check("T2d 만료되면 0을 돌려준다", main._ts_exit_retry_block_remaining(s) == 0.0)
-finally:
-    spy.restore()
+def _t2():
+
+    spy = _LogSpy().install()
+    try:
+        s = _StubSelf()
+        _seen = []
+        for _ in range(len(main.EXIT_REJECT_BACKOFF_SEC) + 3):
+            _reject(s)
+            _seen.append(round(main._ts_exit_retry_block_remaining(s), 1))
+        check("T2 연속 거부가 카운트된다",
+              s._exit_reject_streak == len(main.EXIT_REJECT_BACKOFF_SEC) + 3,
+              s._exit_reject_streak)
+        check("T2b 백오프가 단조 증가하다 상한에서 멈춘다",
+              _seen == sorted(_seen) and max(_seen) <= max(main.EXIT_REJECT_BACKOFF_SEC),
+              _seen)
+        check("T2c 영구 차단이 아니다 — 상한이 유한하다",
+              max(main.EXIT_REJECT_BACKOFF_SEC) <= 30.0,
+              main.EXIT_REJECT_BACKOFF_SEC)
+        # 시간이 지나면 스스로 풀린다
+        s._exit_retry_block_until = datetime.datetime.now() - datetime.timedelta(seconds=1)
+        check("T2d 만료되면 0을 돌려준다", main._ts_exit_retry_block_remaining(s) == 0.0)
+    finally:
+        spy.restore()
+
+
+
+def test_T2_backoff_grows_and_is_capped():
+    """백오프가 늘어나되 상한이 있고 영구 차단은 없는가 (F-21)."""
+    _assert_group(_t2)
+
 
 # ── T3. 자체 보류(-98)는 거부로 세지 않는다 ──────────────────────────────────
 
-spy = _LogSpy().install()
-try:
-    s = _StubSelf()
-    _reject(s, ret=main.EXIT_RET_THROTTLED)
-    check("T3 자체 보류는 연속 카운터를 올리지 않는다", s._exit_reject_streak == 0)
-    check("T3b 자체 보류는 TRADE에 중복 기록하지 않는다",
-          not [m for m in spy.trade if m.startswith("[주문실패]")], spy.trade)
-finally:
-    spy.restore()
+def _t3():
+
+    spy = _LogSpy().install()
+    try:
+        s = _StubSelf()
+        _reject(s, ret=main.EXIT_RET_THROTTLED)
+        check("T3 자체 보류는 연속 카운터를 올리지 않는다", s._exit_reject_streak == 0)
+        check("T3b 자체 보류는 TRADE에 중복 기록하지 않는다",
+              not [m for m in spy.trade if m.startswith("[주문실패]")], spy.trade)
+    finally:
+        spy.restore()
+
+
+
+def test_T3_self_hold_is_not_counted_as_reject():
+    """자체 보류(-98)는 거부로 세지 않는가."""
+    _assert_group(_t3)
+
 
 # ── T4. 경보는 정확히 1회 ────────────────────────────────────────────────────
 
-spy = _LogSpy().install()
-try:
-    s = _StubSelf()
-    for _ in range(main.EXIT_REJECT_ALERT_STREAK + 5):
-        _reject(s)
-    _alerts = [m for lv, m in spy.system if m.startswith("[ExitRejectAlert]")]
-    check("T4 연속 상한 도달 시 경보 1회", len(_alerts) == 1, len(_alerts))
-    check("T4b 경보가 ERROR 레벨이다",
-          any(lv == "ERROR" and m.startswith("[ExitRejectAlert]")
-              for lv, m in spy.system))
-    check("T4c 경보가 15:10 강제청산 위험을 명시한다",
-          bool(_alerts) and "15:10" in _alerts[0], _alerts)
-    check("T4d TRADE에도 사람이 볼 경보가 간다",
-          len([m for m in spy.trade if m.startswith("[청산경보]")]) == 1, spy.trade)
-    # 섀도는 에피소드당 1줄 — WARNING이면 exceptions_10m을 밀어 올려
-    # 헬스 degraded를 자체 유발한다(오늘 09시대에 실제로 그 경로로 19분 차단).
-    _shadow = [(lv, m) for lv, m in spy.system if m.startswith("[ExitRejectShadow]")]
-    check("T4e 수량축소 섀도는 에피소드당 1줄", len(_shadow) == 1, len(_shadow))
-    check("T4f 섀도는 INFO — exceptions_10m을 밀어 올리지 않는다",
-          bool(_shadow) and _shadow[0][0] == "INFO", _shadow)
-finally:
-    spy.restore()
+def _t4():
+
+    spy = _LogSpy().install()
+    try:
+        s = _StubSelf()
+        for _ in range(main.EXIT_REJECT_ALERT_STREAK + 5):
+            _reject(s)
+        _alerts = [m for lv, m in spy.system if m.startswith("[ExitRejectAlert]")]
+        check("T4 연속 상한 도달 시 경보 1회", len(_alerts) == 1, len(_alerts))
+        check("T4b 경보가 ERROR 레벨이다",
+              any(lv == "ERROR" and m.startswith("[ExitRejectAlert]")
+                  for lv, m in spy.system))
+        check("T4c 경보가 15:10 강제청산 위험을 명시한다",
+              bool(_alerts) and "15:10" in _alerts[0], _alerts)
+        check("T4d TRADE에도 사람이 볼 경보가 간다",
+              len([m for m in spy.trade if m.startswith("[청산경보]")]) == 1, spy.trade)
+        # 섀도는 에피소드당 1줄 — WARNING이면 exceptions_10m을 밀어 올려
+        # 헬스 degraded를 자체 유발한다(오늘 09시대에 실제로 그 경로로 19분 차단).
+        _shadow = [(lv, m) for lv, m in spy.system if m.startswith("[ExitRejectShadow]")]
+        check("T4e 수량축소 섀도는 에피소드당 1줄", len(_shadow) == 1, len(_shadow))
+        check("T4f 섀도는 INFO — exceptions_10m을 밀어 올리지 않는다",
+              bool(_shadow) and _shadow[0][0] == "INFO", _shadow)
+    finally:
+        spy.restore()
+
+
+
+def test_T4_alert_fires_exactly_once():
+    """경보가 정확히 1회인가."""
+    _assert_group(_t4)
+
 
 # ── T5. 창을 넘긴 조용한 시간 뒤에는 카운터가 리셋된다 ──────────────────────
 
-spy = _LogSpy().install()
-try:
-    s = _StubSelf()
-    _reject(s); _reject(s)
-    s._exit_reject_last_at = (
-        datetime.datetime.now()
-        - datetime.timedelta(seconds=main.EXIT_REJECT_WINDOW_SEC + 5)
-    )
-    _reject(s)
-    check("T5 창 경과 후 연속 카운터 리셋", s._exit_reject_streak == 1,
-          s._exit_reject_streak)
-    check("T5b 리셋되면 경보도 다시 무장된다", s._exit_reject_alerted is False)
-finally:
-    spy.restore()
+def _t5():
 
-# 다른 종류의 청산이 오면 그 연쇄는 별개다
-spy = _LogSpy().install()
-try:
-    s = _StubSelf()
-    _reject(s, kind="하드스톱(틱)"); _reject(s, kind="하드스톱(틱)")
-    _reject(s, kind="15:10 강제청산")
-    check("T5c 청산 종류가 바뀌면 연쇄가 새로 시작된다", s._exit_reject_streak == 1,
-          s._exit_reject_streak)
-finally:
-    spy.restore()
+    spy = _LogSpy().install()
+    try:
+        s = _StubSelf()
+        _reject(s); _reject(s)
+        s._exit_reject_last_at = (
+            datetime.datetime.now()
+            - datetime.timedelta(seconds=main.EXIT_REJECT_WINDOW_SEC + 5)
+        )
+        _reject(s)
+        check("T5 창 경과 후 연속 카운터 리셋", s._exit_reject_streak == 1,
+              s._exit_reject_streak)
+        check("T5b 리셋되면 경보도 다시 무장된다", s._exit_reject_alerted is False)
+    finally:
+        spy.restore()
+
+    # 다른 종류의 청산이 오면 그 연쇄는 별개다
+    spy = _LogSpy().install()
+    try:
+        s = _StubSelf()
+        _reject(s, kind="하드스톱(틱)"); _reject(s, kind="하드스톱(틱)")
+        _reject(s, kind="15:10 강제청산")
+        check("T5c 청산 종류가 바뀌면 연쇄가 새로 시작된다", s._exit_reject_streak == 1,
+              s._exit_reject_streak)
+    finally:
+        spy.restore()
+
+
+
+def test_T5_counter_resets_after_quiet_window():
+    """창을 넘긴 조용한 시간 뒤 카운터가 리셋되는가."""
+    _assert_group(_t5)
+
 
 # ── T6. 정상 전송 1회로 연쇄가 끊긴다 ────────────────────────────────────────
 
-spy = _LogSpy().install()
-try:
-    s = _StubSelf()
-    for _ in range(4):
-        _reject(s)
-    main._ts_reset_exit_reject_state(s, reason="테스트")
-    check("T6 정상 전송이 연속 카운터를 0으로 되돌린다", s._exit_reject_streak == 0)
-    check("T6b 백오프도 함께 해제된다", s._exit_retry_block_until is None)
-    check("T6c 회복 사실이 TRADE에 남는다",
-          any(m.startswith("[주문실패복구]") for m in spy.trade), spy.trade)
-    # 회복 로그는 거부가 있었을 때만 — 평시 성공마다 찍으면 소음이 된다
-    spy.trade[:] = []
-    main._ts_reset_exit_reject_state(s)
-    check("T6d 거부가 없었으면 회복 로그를 찍지 않는다", not spy.trade, spy.trade)
-finally:
-    spy.restore()
+def _t6():
+
+    spy = _LogSpy().install()
+    try:
+        s = _StubSelf()
+        for _ in range(4):
+            _reject(s)
+        main._ts_reset_exit_reject_state(s, reason="테스트")
+        check("T6 정상 전송이 연속 카운터를 0으로 되돌린다", s._exit_reject_streak == 0)
+        check("T6b 백오프도 함께 해제된다", s._exit_retry_block_until is None)
+        check("T6c 회복 사실이 TRADE에 남는다",
+              any(m.startswith("[주문실패복구]") for m in spy.trade), spy.trade)
+        # 회복 로그는 거부가 있었을 때만 — 평시 성공마다 찍으면 소음이 된다
+        spy.trade[:] = []
+        main._ts_reset_exit_reject_state(s)
+        check("T6d 거부가 없었으면 회복 로그를 찍지 않는다", not spy.trade, spy.trade)
+    finally:
+        spy.restore()
+
+
+
+def test_T6_successful_send_breaks_the_chain():
+    """정상 전송 1회로 연쇄가 끊기는가."""
+    _assert_group(_t6)
+
 
 # ── T7. closable_qty — "미측정"과 "0"을 구분한다 (계측 4원칙 ② · G-6) ────────
 
-s = _StubSelf()
-check("T7 미측정이면 (None, None)", main._ts_closable_qty_snapshot(s) == (None, None))
+def _t7():
 
-s._broker_closable_qty = 0
-s._broker_closable_qty_at = datetime.datetime.now()
-_q, _age = main._ts_closable_qty_snapshot(s)
-check("T7b 0은 0으로 보고된다 (미측정과 다르다)", _q == 0, _q)
+    s = _StubSelf()
+    check("T7 미측정이면 (None, None)", main._ts_closable_qty_snapshot(s) == (None, None))
 
-s._broker_closable_qty = 2
-s._broker_closable_qty_at = (
-    datetime.datetime.now()
-    - datetime.timedelta(seconds=main.EXIT_CLOSABLE_QTY_FRESH_SEC + 5)
-)
-_q, _age = main._ts_closable_qty_snapshot(s)
-check("T7c 낡은 값은 미측정으로 떨어진다", _q is None, _q)
-check("T7d 낡음은 경과시간을 함께 보고한다", _age is not None and _age > 0, _age)
+    s._broker_closable_qty = 0
+    s._broker_closable_qty_at = datetime.datetime.now()
+    _q, _age = main._ts_closable_qty_snapshot(s)
+    check("T7b 0은 0으로 보고된다 (미측정과 다르다)", _q == 0, _q)
+
+    s._broker_closable_qty = 2
+    s._broker_closable_qty_at = (
+        datetime.datetime.now()
+        - datetime.timedelta(seconds=main.EXIT_CLOSABLE_QTY_FRESH_SEC + 5)
+    )
+    _q, _age = main._ts_closable_qty_snapshot(s)
+    check("T7c 낡은 값은 미측정으로 떨어진다", _q is None, _q)
+    check("T7d 낡음은 경과시간을 함께 보고한다", _age is not None and _age > 0, _age)
+
+
+
+def test_T7_closable_qty_unmeasured_vs_zero():
+    """`closable_qty` 가 "미측정"과 "0"을 구분하는가 (계측 4원칙 ② · G-6)."""
+    _assert_group(_t7)
+
 
 # ── T8. ret 의미 매핑은 로그 전용이고 미검증 표기가 있다 (F-22) ──────────────
 
-check("T8 저장소가 정의한 음수 코드는 확정 표기",
-      "⚠미검증" not in main.EXIT_ORDER_RET_MEANING[-1]
-      and "⚠미검증" not in main.EXIT_ORDER_RET_MEANING[-99])
-check("T8b 근거 없는 양수 코드(1~4)에는 ⚠미검증이 붙어 있다",
-      all("⚠미검증" in main.EXIT_ORDER_RET_MEANING[c] for c in (1, 2, 3, 4)),
-      {c: main.EXIT_ORDER_RET_MEANING[c] for c in (1, 2, 3, 4)})
-_src_all = inspect.getsource(main)
-check("T8c ret 의미 매핑이 제어 흐름에 쓰이지 않는다 (로그 전용)",
-      len(re.findall(r"EXIT_ORDER_RET_MEANING", _src_all)) == 2,
-      re.findall(r".*EXIT_ORDER_RET_MEANING.*", _src_all))
+def _t8():
+
+    check("T8 저장소가 정의한 음수 코드는 확정 표기",
+          "⚠미검증" not in main.EXIT_ORDER_RET_MEANING[-1]
+          and "⚠미검증" not in main.EXIT_ORDER_RET_MEANING[-99])
+    check("T8b 근거 없는 양수 코드(1~4)에는 ⚠미검증이 붙어 있다",
+          all("⚠미검증" in main.EXIT_ORDER_RET_MEANING[c] for c in (1, 2, 3, 4)),
+          {c: main.EXIT_ORDER_RET_MEANING[c] for c in (1, 2, 3, 4)})
+    _src_all = _main_src()
+    check("T8c ret 의미 매핑이 제어 흐름에 쓰이지 않는다 (로그 전용)",
+          len(re.findall(r"EXIT_ORDER_RET_MEANING", _src_all)) == 2,
+          re.findall(r".*EXIT_ORDER_RET_MEANING.*", _src_all))
+
+
+
+def test_T8_ret_mapping_is_log_only_and_marked():
+    """`ret` 의미 매핑이 로그 전용이고 미검증 표기가 있는가 (F-22)."""
+    _assert_group(_t8)
+
 
 # ── T9~T12. 소스 수준 회귀 — 훅 없는 청산 경로가 새로 생기는 것을 막는다 ────
 
-_send_src = inspect.getsource(main.TradingSystem._send_broker_exit_order)
-check("T9 _send_broker_exit_order에 throttle 스위치가 있다",
-      "throttle: bool = True" in _send_src, _send_src[:200])
-check("T9b 보류 시 브로커로 나가지 않고 -98을 돌려준다",
-      "return EXIT_RET_THROTTLED" in _send_src)
-check("T9c 정상 전송이 거부 상태를 리셋한다",
-      "_ts_reset_exit_reject_state" in _send_src)
+def _t9_t12():
+    _src_all = _main_src()
 
-_tick_src = inspect.getsource(main.TradingSystem._process_tick_stop)
-_gate_at = _tick_src.find("_ts_exit_retry_block_remaining")
-_pend_at = _tick_src.find("_set_pending_order")
-check("T10 틱 하드스톱에 백오프 게이트가 있다", _gate_at >= 0)
-check("T10b 게이트가 pending 등록보다 **앞**이다 "
-      "(뒤면 호출자 ERROR가 exceptions_10m을 밀어 올린다)",
-      0 <= _gate_at < _pend_at, (_gate_at, _pend_at))
+    _send_src = inspect.getsource(main.TradingSystem._send_broker_exit_order)
+    check("T9 _send_broker_exit_order에 throttle 스위치가 있다",
+          "throttle: bool = True" in _send_src, _send_src[:200])
+    check("T9b 보류 시 브로커로 나가지 않고 -98을 돌려준다",
+          "return EXIT_RET_THROTTLED" in _send_src)
+    check("T9c 정상 전송이 거부 상태를 리셋한다",
+          "_ts_reset_exit_reject_state" in _send_src)
 
-_force_src = inspect.getsource(main._ts_check_exit_triggers)
-check("T11 15:10 시간청산은 자체 백오프를 **면제**받는다 (절대원칙 §1)",
-      "self._send_broker_exit_order(_force_qty, throttle=False)" in _force_src)
-check("T11b 시간청산 실패도 거부 훅을 탄다",
-      'kind="15:10 강제청산"' in _force_src)
+    _tick_src = inspect.getsource(main.TradingSystem._process_tick_stop)
+    _gate_at = _tick_src.find("_ts_exit_retry_block_remaining")
+    _pend_at = _tick_src.find("_set_pending_order")
+    check("T10 틱 하드스톱에 백오프 게이트가 있다", _gate_at >= 0)
+    check("T10b 게이트가 pending 등록보다 **앞**이다 "
+          "(뒤면 호출자 ERROR가 exceptions_10m을 밀어 올린다)",
+          0 <= _gate_at < _pend_at, (_gate_at, _pend_at))
 
-# 실패를 SYSTEM에만 남기고 TRADE에 안 남기던 것이 이 사건의 핵심 결손이었다.
-# 청산 주문 실패를 로깅하는 모든 지점이 거부 훅을 함께 부르는지 소스로 못 박는다.
-_fail_sites = re.findall(
-    r"log_manager\.system\(\s*\n?\s*f?\"\[(?:Exit|ManualExit)\][^\"]*주문 실패[^\"]*\"",
-    _src_all,
-)
-_hook_calls = len(re.findall(r"_ts_on_exit_order_reject\(\s*\n?\s*self,", _src_all))
-check("T12 청산 실패 로깅 지점이 7곳 그대로다 (새 경로가 생기면 이 테스트가 깨진다)",
-      len(_fail_sites) == 7, len(_fail_sites))
-check("T12b 거부 훅 호출이 그 이상이다 (BrokerDirectExit 포함 8곳)",
-      _hook_calls >= 8, _hook_calls)
+    _force_src = inspect.getsource(main._ts_check_exit_triggers)
+    check("T11 15:10 시간청산은 자체 백오프를 **면제**받는다 (절대원칙 §1)",
+          "self._send_broker_exit_order(_force_qty, throttle=False)" in _force_src)
+    check("T11b 시간청산 실패도 거부 훅을 탄다",
+          'kind="15:10 강제청산"' in _force_src)
+
+    # 실패를 SYSTEM에만 남기고 TRADE에 안 남기던 것이 이 사건의 핵심 결손이었다.
+    # 청산 주문 실패를 로깅하는 모든 지점이 거부 훅을 함께 부르는지 소스로 못 박는다.
+    _fail_sites = re.findall(
+        r"log_manager\.system\(\s*\n?\s*f?\"\[(?:Exit|ManualExit)\][^\"]*주문 실패[^\"]*\"",
+        _src_all,
+    )
+    _hook_calls = len(re.findall(r"_ts_on_exit_order_reject\(\s*\n?\s*self,", _src_all))
+    check("T12 청산 실패 로깅 지점이 7곳 그대로다 (새 경로가 생기면 이 테스트가 깨진다)",
+          len(_fail_sites) == 7, len(_fail_sites))
+    check("T12b 거부 훅 호출이 그 이상이다 (BrokerDirectExit 포함 8곳)",
+          _hook_calls >= 8, _hook_calls)
+
+
+
+def test_T9_T12_source_level_hook_coverage():
+    """훅 없는 청산 경로가 새로 생기는 것을 소스로 막는가."""
+    _assert_group(_t9_t12)
+
 
 # ── T13. 런타임 스모크 — 모듈 전역 조회가 실제로 걸린다 ──────────────────────
 # T9~T12는 소스 문자열만 본다. 헬퍼가 클래스 정의보다 **뒤에** 있으므로
@@ -323,21 +430,44 @@ class _SmokeSelf(_StubSelf):
         self._set_pending_called.append(kw)
 
 
-_sm = _SmokeSelf()
-_sm._exit_retry_block_until = datetime.datetime.now() + datetime.timedelta(seconds=5)
-try:
-    main.TradingSystem._process_tick_stop(_sm)
-    _smoke_ok, _smoke_err = True, ""
-except Exception as _e:                       # NameError 등
-    _smoke_ok, _smoke_err = False, repr(_e)
-check("T13 백오프 중 틱 하드스톱이 예외 없이 보류된다", _smoke_ok, _smoke_err)
-check("T13b 보류 시 pending을 등록하지 않는다 (주문이 나가지 않는다)",
-      _sm._set_pending_called == [], _sm._set_pending_called)
-check("T13c 보류해도 트리거 플래그는 해제된다 (멱등 계약 유지)",
-      _sm._tick_stop_triggered is False)
 
-print("")
-if FAILURES:
-    print("FAILED %d: %s" % (len(FAILURES), FAILURES))
-    sys.exit(1)
-print("ALL PASS (%s)" % os.path.basename(__file__))
+def _t13():
+    _sm = _SmokeSelf()
+    _sm._exit_retry_block_until = datetime.datetime.now() + datetime.timedelta(seconds=5)
+    try:
+        main.TradingSystem._process_tick_stop(_sm)
+        _smoke_ok, _smoke_err = True, ""
+    except Exception as _e:                       # NameError 등
+        _smoke_ok, _smoke_err = False, repr(_e)
+    check("T13 백오프 중 틱 하드스톱이 예외 없이 보류된다", _smoke_ok, _smoke_err)
+    check("T13b 보류 시 pending을 등록하지 않는다 (주문이 나가지 않는다)",
+          _sm._set_pending_called == [], _sm._set_pending_called)
+    check("T13c 보류해도 트리거 플래그는 해제된다 (멱등 계약 유지)",
+          _sm._tick_stop_triggered is False)
+
+
+def test_T13_runtime_smoke_backoff_gate():
+    """백오프 게이트가 런타임에 실제로 걸리는가 — 소스 검사로는 못 잡는 NameError."""
+    _assert_group(_t13)
+
+
+if __name__ == "__main__":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace",
+                               line_buffering=True)
+    except Exception:
+        pass
+    fns = [(n, f) for n, f in sorted(globals().items())
+           if n.startswith("test_") and callable(f)]
+    ok = fail = 0
+    for name, fn in fns:
+        try:
+            fn()
+            print("  PASS %s" % name)
+            ok += 1
+        except Exception as e:
+            print("  FAIL %s -> %s: %s" % (name, type(e).__name__, e))
+            fail += 1
+    print("")
+    print("%d passed, %d failed (of %d)" % (ok, fail, len(fns)))
+    sys.exit(1 if fail else 0)
