@@ -171,7 +171,57 @@ def test_6_check_is_wired_into_report_generation():
     assert "assert_channel_numbers_unique()" in src, (
         "build_report 가 유일성 검사를 부르지 않는다 — 검사가 테스트 안에서만 "
         "살아 있으면 스위트가 죽는 순간 다시 안 들린다(O-77 이 그랬다)")
+    assert "assert_channel_registry_consistent()" in src, (
+        "build_report 가 레지스트리 대조를 부르지 않는다 — 등록 누락과 렌더 사각이 "
+        "리포트로 그대로 나간다")
     body = [l for l in src.splitlines()[1:] if l.strip()
             and not l.strip().startswith("#")]
     assert body and "assert_channel_numbers_unique()" in body[0], (
         "검사가 build_report 진입부가 아니다 — 실제 첫 문장: %r" % (body[:1],))
+
+
+
+def test_7_registry_matches_source():
+    """레지스트리(선언) == 소스(실제) — R3.
+
+    `test_1` 이 "겹쳤는가"를 본다면 이쪽은 **"빠졌는가"** 를 본다. 두 방향 모두
+    막는다: 등록 없이 채널을 추가하면 소스에만 있고, 렌더 관용구를 바꿔 정규식이
+    못 보게 되면 레지스트리에만 있다. **후자가 더 위험하다** — 유일성 검사가
+    조용히 눈을 감는 것이라 아무 경보도 울리지 않는다.
+    """
+    R = _R()
+    try:
+        R.assert_channel_registry_consistent()
+    except R.ChannelRegistryMismatch as e:
+        raise AssertionError(str(e))
+
+
+def test_8_registry_cannot_swallow_duplicates():
+    """레지스트리가 **dict 가 아니라 튜플의 튜플**인가 — 설계 불변식.
+
+    dict 로 두면 같은 번호를 두 번 적어도 파이썬이 조용히 뒤엣것으로 덮는다
+    (예외·경고 없음). 인벤토리가 중복을 삼키면 R3 이 R2 를 무력화한다.
+    """
+    reg = _R().CHANNEL_REGISTRY
+    assert isinstance(reg, tuple), (
+        "CHANNEL_REGISTRY 가 tuple 이 아니다(%s) — dict 면 중복 번호를 조용히 "
+        "삼킨다" % type(reg).__name__)
+    nums = [n for n, _ in reg]
+    assert len(nums) == len(set(nums)), (
+        "레지스트리에 중복 번호: %s" % sorted({n for n in nums if nums.count(n) > 1}))
+
+
+def test_9_registry_check_is_not_vacuous():
+    """대조가 **실제로 양방향을 잡는가** — 느슨해져도 초록불이 되는 것을 막는다."""
+    R = _R()
+    nl = chr(10)
+    cases = {
+        "등록 누락(소스에만)": (chr(39).join(["L.append(", "| [62] 새 채널 |", ")"])) + nl,
+        "렌더 사각(레지스트리에만)": (chr(39).join(["L.append(", "| [0] x |", ")"])) + nl,
+    }
+    for label, src in sorted(cases.items()):
+        try:
+            R.assert_channel_registry_consistent(src)
+        except R.ChannelRegistryMismatch:
+            continue
+        raise AssertionError("%s 을 잡지 못했다 — 레지스트리 대조가 무력화됐다" % label)

@@ -9125,6 +9125,116 @@ _CH_NUM_PATTERNS = (
 )
 
 
+# ── [MW0602 564차 후속5 / R3] 채널 번호 레지스트리 — 배정 인벤토리 ─────────────
+#
+# R2 는 "겹쳤는가"를 본다. R3 은 **"소스와 선언이 일치하는가"** 를 본다.
+# 둘은 다른 것을 막는다:
+#   · 번호를 등록하지 않고 채널을 추가하면      → 소스에만 있다  → FAIL
+#   · 렌더 관용구를 바꿔 정규식이 못 보게 되면   → 레지스트리에만 있다 → FAIL
+#
+# 두 번째가 R3 의 진짜 이유다. 2026-09-13 실측으로 정규식 사각지대는 **0** 이었지만
+# (소스 59 = 렌더 59), 번호가 문자열 리터럴 54곳에 흩어져 있어 **누가 렌더 방식을
+# 바꾸는 순간 조용히 사각이 생긴다.** 그때 이 대조가 깨져 알려준다.
+#
+# ⚠ **dict 가 아니라 튜플의 튜플이다.** `{58: "a", 58: "b"}` 는 파이썬이 조용히
+#   뒤엣것으로 덮는다(예외·경고 없음). 인벤토리가 중복을 삼키면 안 된다.
+#
+# 라벨은 **문서용**이다(포맷 지정자는 … 로 정규화). 판정에 쓰지 않는다 — 대조는
+# 번호 집합으로만 한다. 제목을 바꿨다고 EOD 가 멈추면 안 되기 때문이다.
+#
+# 🔴 새 채널을 만들 때: CLAUDE.md 「캠페인 채널 번호 — PC별 대역 분할」 표에서
+#    자기 PC 대역의 미사용 번호를 고르고 **여기 한 줄을 추가**한다. 빠뜨리면
+#    `build_report()` 가 리포트를 만들기 전에 멈춘다.
+CHANNEL_REGISTRY = (
+    (0, "표본 기아 경보"),
+    (1, "Triple-Barrier"),
+    (2, "Meta-Gate"),
+    (3, "분위 회귀"),
+    (4, "신호소멸청산"),
+    (5, "레짐 ATR 배수"),
+    (6, "Hurst 게이트 counterfactual"),
+    (7, "JointGateBlock counterfactual"),
+    (8, "KellyAdvisedSkip×C등급"),
+    (9, "OPEN_VOLATILE 시가이격 counterfactual"),
+    (10, "TP2 홀드 counterfactual (qty=2 재배분 A/B)"),
+    (11, "qty=1 손실1차 조기청산 counterfactual"),
+    (12, "qty=1 TP1 이후 트레일 폭 counterfactual"),
+    (13, "등급별 순EV 역전 감시"),
+    (14, "Tier1 잔여계약 2단계 조기청산 counterfactual"),
+    (15, "급행 풀스톱(TP1 미도달) 관찰"),
+    (16, "chase+foreign 조합 관찰"),
+    (17, "청산 체결 슬리피지"),
+    (18, "RegimeExhaustionGate(탈진반전)"),
+    (19, "ToxicityGate block counterfactual"),
+    (20, "BAR_ONLY_RELAX 수용/롤백"),
+    (21, "방향별 순EV (SYSTEM_AUTO)"),
+    (22, "MFE 캡처율 관찰"),
+    (23, "EOD 모델가드 판정 괴리"),
+    (24, "TP1 보호전환 반납 관찰"),
+    (25, "TP1 보호전환 offset A/B"),
+    (26, "거래불능(가격상한 고착) 구간"),
+    (27, "counterfactual 도달불가 목표가"),
+    (28, "사이징 역예측 감시…"),
+    (29, "mean-revert 레짐 사이즈"),
+    (30, "toxicity 재보정 밴드분포"),
+    (31, "tox reduce 연속배수 섀도"),
+    (34, "meta size0 무시"),
+    (35, "유령 하드스톱 결함/알파…"),
+    (36, "체크리스트 승격 경로"),
+    (37, "mean-revert 일자단위 재검정"),
+    (38, "ProfitGuard-L1 피크 트레일링"),
+    (39, "confidence 판별력"),
+    (40, "방향 선택의 가치"),
+    (41, "청산 측 학습기 게이지"),
+    (42, "타점의 가치"),
+    (43, "변동성 추정량 교체"),
+    (44, "DynMC 붕괴행 잠식"),
+    (45, "축퇴 가드 플래핑 (게이지)"),
+    (46, "Hurst 임계 위치 A/B"),
+    (48, "봉중 하드스톱 경로 건전성…"),
+    (49, "페이오프 기하 상시 감시"),
+    (50, "방향 편향 상시 감시"),
+    (51, "저변동성 이익기하 붕괴"),
+    (52, "준붕괴(유효가중합 저) 진입"),
+    (53, "진입금지 존 위반 코호트…"),
+    (54, "ConstOut 호라이즌 건강도 (구 [51])"),
+    (55, "09:20~09:29 A등급게이트 counterfactual"),
+    (56, "CB② 복원 반사실"),
+    (57, "te 진입 게이트 (섀도)"),
+    (58, "13:00~13:30 진입 금지 (섀도) — 판정창 …~"),
+    (59, "소진 피처 live 조건ⓐ (mode=… · 판정창 …~)"),
+    (60, "GP 교차 x 고변동 (좁은)"),
+    (61, "GP 교차 x 고변동 (순수·대조)"),
+)
+
+
+class ChannelRegistryMismatch(RuntimeError):
+    """레지스트리와 소스의 채널 번호 집합이 어긋났다 — 리포트를 만들지 않는다."""
+
+
+def assert_channel_registry_consistent(src=None):
+    """레지스트리 == 소스. 어긋나면 `ChannelRegistryMismatch`.
+
+    반환은 `{번호: 라벨}` — R4(인용은 번호가 아니라 이름으로)의 발판이다.
+    """
+    nums = [n for n, _ in CHANNEL_REGISTRY]
+    dup = sorted({n for n in nums if nums.count(n) > 1})
+    if dup:
+        raise ChannelRegistryMismatch(
+            "레지스트리 자체에 중복 번호가 있다: %s" % dup)
+    declared = set(nums)
+    actual = set(int(n) for n in channel_numbers(src))
+    only_src = sorted(actual - declared)
+    only_reg = sorted(declared - actual)
+    if only_src or only_reg:
+        raise ChannelRegistryMismatch(
+            "레지스트리와 소스가 어긋났다 — 소스에만 %s / 레지스트리에만 %s. "
+            "전자는 **등록을 빠뜨린 새 채널**이고, 후자는 **렌더 관용구가 바뀌어 "
+            "유일성 검사가 못 보게 된 채널**이다(후자가 더 위험하다)."
+            % (only_src, only_reg))
+    return dict(CHANNEL_REGISTRY)
+
+
 class ChannelNumberCollision(RuntimeError):
     """요약표 채널 번호가 겹쳤다 — 리포트를 만들지 않고 멈춘다."""
 
@@ -9162,6 +9272,8 @@ def assert_channel_numbers_unique(src=None):
 def build_report(days: int) -> tuple:
     # [564차 후속4 / R2] 번호가 겹치면 여기서 멈춘다 — 오염된 리포트를 쓰지 않는다.
     assert_channel_numbers_unique()
+    # [564차 후속5 / R3] 레지스트리와 소스가 어긋나도 멈춘다 — 등록 누락 · 렌더 사각.
+    assert_channel_registry_consistent()
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     # [MW0602 468차 G-3] 청산 2축 컬럼 보강 — main.py 기동 마이그레이션의 백스톱.
     # 리포트가 앱 재기동보다 먼저 도는 PC/백업 DB에서 채널이 조용히 죽는 것을 막는다.
