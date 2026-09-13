@@ -270,7 +270,12 @@ def test_next_todo_registers_the_collection_check():
     src = _read(os.path.join(_ROOT, "dev_memory", "NEXT_TODO.md"))
     assert "defect3_collection_check.py" in src, (
         "다음 장 수집 확인이 NEXT_TODO 에 없다 — 이 프로젝트가 반복해서 밟은 함정이다")
-    assert "559-1" in src
+    # 항목 번호는 브랜치마다 다르다(v9-dev 559-1 / dev 559-D0) — 번호가 아니라
+    # **항목이 있는가**를 본다. 461차 `mdd_pct` 교훈과 같다: 번호는 표기층이다.
+    import re as _re
+    assert _re.search(r"559-\w+", src), "559차 확인 항목이 등록돼 있지 않다"
+    assert "앵커·섀도" in src, (
+        "앵커·섀도 적재율 확인이 빠졌다 — unk_vol 만 보면 시그니처 회귀를 놓친다")
 
 
 # ─────────────────────────── P1-4 리포트 항등식 ───────────────────────────
