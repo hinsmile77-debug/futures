@@ -242,6 +242,42 @@ def test_p1p_2_unit_mismatch_wired_into_production_path():
     assert i_filter < i_x, "단위 불일치 제외가 X_hz 구성보다 뒤에 있다"
 
 
+# ─────────────────────────── 다음 장 점검기 ───────────────────────────
+def test_collection_check_covers_all_three_defects():
+    """결함 3건 수집 점검기가 셋 모두를 보고, 배포 이전 날을 FAIL 로 오판하지 않는다."""
+    path = os.path.join(_ROOT, "scripts", "defect3_collection_check.py")
+    assert os.path.exists(path), "다음 장 점검기가 없다 — 손으로 보면 항목을 빠뜨린다"
+    src = _read(path)
+    # 세 결함을 각각 보는 함수가 있어야 한다
+    for fn in ("def check_flow", "def check_investor", "def check_book"):
+        assert fn in src, "%s 가 없다" % fn
+    # ① 이 앵커·섀도까지 본다 — unk_vol 만 보면 시그니처 회귀를 놓친다
+    for key in ("anchor_buy IS NOT NULL", "buy_vol_flag IS NOT NULL", "unk_vol IS NOT NULL"):
+        assert key in src, "① 점검이 %s 를 안 본다" % key
+    # ② 상수·단위·플래그 3축
+    for key in ("distinct", "INV_ABS_MAX", "foreign_futures_net_measured"):
+        assert key in src, "② 점검이 %s 를 안 본다" % key
+    # ③ 적재율·깊이비·적립
+    for key in ("book_bid_tot", "BOOK_DEPTH_RATIO_MIN", "BOOK_TARGET_DAYS"):
+        assert key in src, "③ 점검이 %s 를 안 본다" % key
+    # 배포 이전 날은 미측정(n/a)이지 FAIL 이 아니다 — 계측 4원칙 ②
+    assert "DEPLOY_DATE" in src
+    assert "장 마감 후" in src or "guard_intraday" in src, "장중 차단 규약(456차) 누락"
+
+
+def test_next_todo_registers_the_collection_check():
+    """다음 거래일 확인이 NEXT_TODO 에 실제로 등록돼 있는가."""
+    src = _read(os.path.join(_ROOT, "dev_memory", "NEXT_TODO.md"))
+    assert "defect3_collection_check.py" in src, (
+        "다음 장 수집 확인이 NEXT_TODO 에 없다 — 이 프로젝트가 반복해서 밟은 함정이다")
+    # 항목 번호는 브랜치마다 다르다(v9-dev 559-1 / dev 559-D0) — 번호가 아니라
+    # **항목이 있는가**를 본다. 461차 `mdd_pct` 교훈과 같다: 번호는 표기층이다.
+    import re as _re
+    assert _re.search(r"559-\w+", src), "559차 확인 항목이 등록돼 있지 않다"
+    assert "앵커·섀도" in src, (
+        "앵커·섀도 적재율 확인이 빠졌다 — unk_vol 만 보면 시그니처 회귀를 놓친다")
+
+
 # ─────────────────────────── P1-4 리포트 항등식 ───────────────────────────
 def test_p1_4_identity_i4_in_anchor_report():
     src = _read(os.path.join(_ROOT, "scripts", "generate_cvd_anchor_report.py"))
