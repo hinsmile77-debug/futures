@@ -20634,14 +20634,29 @@ P0 0건 · 신규 P1 0건 · P2 0건(기존 2건 지속) · 이월 미처분 0�
         않으므로 허용(`cybos_autologin._TeeStream(sys.stdout, ...)`).
       · 회귀 가드 `tests/test_564_stdout_rebind_guard.py` — tests/·scripts/ 전수 AST.
         손 목록 없음(537차 규약). 근거: `DECISION_LOG` 2026-09-13 564차
-- [ ] **`O-77-C`** 스크립트형 6파일을 **진짜 pytest 테스트로 전환** —
-      `test_455_multi_hz_feature_eval` · `test_511_exit_order_reject` ·
-      `test_500_constructive_dup` · `test_500_cvd_ofi_live_defects` ·
-      `test_500_stage3_decisions` · `test_500_warmup_measured`.
-      `def test_` 가 0개라 `collect_ignore` 로 막아둔 상태이며, **그 검사들은
-      스위트에서 한 건도 돌지 않는다.** 전환 전까지는 직접 실행만이 유일한 경로다
-      (`python tests/test_500_warmup_measured.py`). 전환 시 `collect_ignore` 에서
-      빼는 것을 잊으면 `test_564` 의 규칙 B 가 잡아준다
+- [ ] **`O-77-C`** 스크립트형 6파일 **pytest 전환 — 1/6 완료(564차 후속3)**
+      `def test_` 가 0개라 `collect_ignore` 로 막혀 있고, **그 검사들은 스위트에서
+      한 건도 돌지 않는다.** 실측 6파일 1,324줄 · 약 140검사 · 51그룹 · 단독실행 9초
+      (6/6 통과 · 쓰기 부작용 0 · DB 접근은 `mode=ro` 1건뿐).
+      | 단계 | 파일 | 그룹 | 상태 |
+      |---|---|---|---|
+      | 0 | `test_500_warmup_measured` | 5 | **[x] 완료** |
+      | 1 | `test_500_constructive_dup` | C1~C7 | [ ] |
+      | 2 | `test_500_stage3_decisions` | S1~S7 | [ ] |
+      | 3 | `test_455_multi_hz_feature_eval` | T1~T11 | [ ] |
+      | 4 | `test_500_cvd_ofi_live_defects` | T1~T6 | [ ] **DB 의존** — 부재 시 skip |
+      | 5 | `test_511_exit_order_reject` | T1~T13 | [ ] 최대 343줄 |
+      🔴 **레시피 — `check()` 를 `assert` 로 다시 쓰지 말 것.** 검사 140개를 옮겨
+      적는 과정에서 조건이 조용히 뒤집히는 것이 이 작업의 유일한 실질 위험이다.
+      블록을 함수로 **감싸기만** 하고 `_assert_group()` 으로 그룹 경계를 잡는다
+      (0단계 실적: diff 가 사실상 들여쓰기뿐, check 블록 10개 내용 완전 동일).
+      ⚠ 그룹 경계는 **기존 주석**(`# ── W3·W5 ──`)을 따른다 — 블록 간 상태 의존이
+      있다(W5 는 W3 이 만든 객체를 본다). 그래서 **한 번에 한 파일**씩 한다.
+      ⚠ 계산을 모듈 최상위에 남기면 `O-77` 2차층이 재발한다(수집 중 예외=Interrupted).
+      ⚠ 직접 실행 경로(`__main__` 러너)를 없애지 말 것 — py37_32 에 pytest 가 없다.
+      **검증 기준(단계마다)**: ① 검사 이름 집합 before==after ② 직접 실행 rc=0
+      ③ pytest 수집수 == 그룹수 ④ 전체 스위트 EXIT=0 이고 통과수가 그룹수만큼 증가
+      ⑤ py37_32 컴파일. 근거: `DECISION_LOG` 2026-09-13 564차 후속3
 - [ ] **0909 R-1 나머지 절반(C등급, 미구현)** — 방향 불일치를 **진입 전 등급 하락
       요인**으로 추가하는 안. **매매 정책 변경**이라 손대지 않았다. R-1 자신이
       표본 상태를 「313차 가드 통과 못함(판정 보류)」로 적었다. `O-76` 표본이

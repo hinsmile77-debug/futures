@@ -60,12 +60,12 @@ enable_test_mode()
 
 # ── [MW0602 564차 / `O-77` 2차층] 스크립트형 파일 수집 제외 ──────────────────
 #
-# 아래 6개는 `def test_` 가 하나도 없다. 모듈 최상위에서 검사 본문을 통째로
+# 아래 5개는 `def test_` 가 하나도 없다. 모듈 최상위에서 검사 본문을 통째로
 # 실행한 뒤 `sys.exit(0|1)` 을 부른다. pytest 가 임포트하는 순간 `SystemExit`
-# 가 올라오고 **수집 전체가 `Interrupted` 로 중단**된다 — 이 6개 때문에
+# 가 올라오고 **수집 전체가 `Interrupted` 로 중단**된다 — 이 5개 때문에
 # 나머지 파일까지 함께 죽었다.
 #
-# 🔴 **"돌던 것을 뺀 것"이 아니다.** 이 6개는 지금도 pytest 에서 한 건도 돌지
+# 🔴 **"돌던 것을 뺀 것"이 아니다.** 이 5개는 지금도 pytest 에서 한 건도 돌지
 #    않는다(수집 단계에서 죽으므로). 바뀐 것은 *우연한 누락*이 *명시적 제외*가
 #    된 것뿐이다 — 계측 4원칙 ③(탈락 가시화).
 #
@@ -77,6 +77,5 @@ collect_ignore = [
     "test_500_constructive_dup.py",
     "test_500_cvd_ofi_live_defects.py",
     "test_500_stage3_decisions.py",
-    "test_500_warmup_measured.py",
     "test_511_exit_order_reject.py",
 ]
