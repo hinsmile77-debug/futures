@@ -74,3 +74,48 @@ def test_3_f8b_branch_gating_wired():
     assert src.count("_branch_unavailable(") >= 3, "정의 1 + [50]/[51] 호출 2가 있어야 한다"
     assert '_has_module("scripts.direction_bias_watch")' in src, "[50] 생산부 감지 배선 소실"
     assert "_has_const_out_column()" in src, "[51] 생산부(컬럼) 감지 배선 소실"
+
+
+# ── 4. PC 대역 [2026-09-13 564차 후속2] ──────────────────────────────────────
+#
+# 단일 출처 — CLAUDE.md 「캠페인 채널 번호 — PC별 대역 분할」 표와 같은 값이어야 한다.
+# 한쪽만 고치면 규약과 코드가 갈린다(461차 `mdd_pct` 계열).
+_CHANNEL_BANDS = {
+    "MW0602": (62, 79),
+    "MW0601": (80, 159),
+}
+_LEGACY_MAX = 61          # 채택 시점(2026-09-13) 양 브랜치가 이미 소진한 구간
+
+
+def test_4_channel_numbers_respect_pc_bands():
+    """새 채널 번호가 **선언된 대역 안**에 있는가.
+
+    2026-09-07 에 두 PC 가 각자 「다음 빈 번호」를 뽑아 `[58]`·`[59]` 가 겹쳤다.
+    대역을 나누면 그 충돌이 **애초에 생기지 않는다** — 상대를 보지 않아도 된다.
+
+    ⚠ **한계**: 이 검사는 누가 배정했는지 모른다. 상대 대역을 침범한 배정은 그
+    브랜치에서는 통과하고, 합류 시점에 `test_1` 이 중복으로 잡는다.
+    발생 억제(대역) + 사후 탐지(중복)의 조합이지 완전한 차단이 아니다.
+    """
+    src = _src()
+    nums = set(int(n) for n in re.findall(r'L\.append\("\| \[(\d+)\]', src))
+    nums |= set(int(n) for n in re.findall(r"_row_462\((\d+),", src))
+    assert nums, "채널 번호를 하나도 못 읽었다 — 정규식이 생성기와 어긋났다"
+
+    lo = min(b[0] for b in _CHANNEL_BANDS.values())
+    assert lo == _LEGACY_MAX + 1, (
+        "레거시 상한과 대역 시작 사이에 빈 구간이 있다 — 그 구간 번호는 아무도 "
+        "책임지지 않는다: legacy<=%d, 최저 대역 시작=%d" % (_LEGACY_MAX, lo))
+
+    spans = sorted(_CHANNEL_BANDS.items(), key=lambda kv: kv[1])
+    for (n1, (a1, b1)), (n2, (a2, _)) in zip(spans, spans[1:]):
+        assert b1 < a2, "대역이 겹친다: %s%s vs %s%s" % (n1, (a1, b1), n2, (a2, _))
+
+    hi = max(b[1] for b in _CHANNEL_BANDS.values())
+    stray = sorted(n for n in nums
+                   if n > _LEGACY_MAX
+                   and not any(a <= n <= b for a, b in _CHANNEL_BANDS.values()))
+    assert not stray, (
+        "선언된 대역 밖의 채널 번호: %s (레거시<=%d · 대역 %s · 상한 %d). "
+        "CLAUDE.md 「캠페인 채널 번호 — PC별 대역 분할」 표를 먼저 고치고 커밋할 것"
+        % (stray, _LEGACY_MAX, dict(_CHANNEL_BANDS), hi))
