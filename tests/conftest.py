@@ -93,3 +93,28 @@ def _isolate_position_state(tmp_path, monkeypatch):
     monkeypatch.setattr(
         _pt, "_STATE_FILE", str(tmp_path / "position_state.json"), raising=False,
     )
+
+
+# -- [MW0602 564차 / `O-77` 2차층] 스크립트형 파일 수집 제외 ----------------------
+#
+# `def test_` 없이 모듈 최상위에서 검사를 돌리고 `sys.exit()` 하는 파일이 `tests/` 에
+# 있으면, pytest 가 임포트하는 순간 `SystemExit` 로 **수집 전체가 `Interrupted`** 된다.
+# 한 파일이 나머지 전부를 죽인다. 그런 파일은 여기 **명시적으로** 올려 격리한다.
+#
+# 🔴 **"돌던 것을 뺀 것"이 아니다.** 이 파일들은 지금도 pytest 에서 한 건도 돌지
+#    않는다(수집 단계에서 죽으므로). 바뀐 것은 *우연한 누락*이 *명시적 제외*가 된
+#    것뿐이다 — 계측 4원칙 ③(탈락 가시화).
+#
+# 직접 실행 경로는 그대로다: `python tests/test_500_stage3_decisions.py`
+#
+# ⚠ dev 에서는 같은 계열 6파일을 **전부 pytest 테스트로 전환**해 이 목록이 비었다
+#   (`O-77-C`). 이 브랜치는 3파일(`test_455` · `test_500_cvd_ofi_live_defects` ·
+#   `test_500_warmup_measured`)만 dev 변환본을 그대로 가져왔고, 아래 4개는 **검사
+#   내용 자체가 dev 와 달라**(CORE 정의 갈래) 복사할 수 없어 전환을 남겼다.
+#   목록을 늘리기 전에 먼저 물을 것 — **왜 이 파일은 테스트 함수가 없는가.**
+collect_ignore = [
+    "test_500_constructive_dup.py",
+    "test_500_known_unresolved_visible.py",
+    "test_500_stage3_decisions.py",
+    "test_511_exit_order_reject.py",
+]

@@ -24,9 +24,9 @@ from typing import Any, Dict, List, Optional
 
 # Windows cp949 터미널에서 한글 깨짐 방지
 if sys.stdout.encoding and sys.stdout.encoding.lower() in ("cp949", "mbcs"):
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 if sys.stderr.encoding and sys.stderr.encoding.lower() in ("cp949", "mbcs"):
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 # 32-bit 체크 — CpSysDib.* / Dscbo1.* 은 32-bit COM 전용
 import struct as _struct
