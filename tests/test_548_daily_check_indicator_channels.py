@@ -41,10 +41,12 @@ from utils.runtime_mode import enable_test_mode  # noqa: E402
 enable_test_mode()
 
 # 🔴 이 파일은 `sys.stdout` 을 다시 묶지 않는다 — 의도된 것이다.
-#    28개 테스트 파일이 import 시점에 `sys.stdout = io.TextIOWrapper(...)` 로
-#    pytest 의 캡처 스트림을 감싸고 있고, 그 탓에 **전체 스위트 실행이 통째로
-#    불가능**하다(`ValueError: I/O operation on closed file` — 한 파일씩은 통과).
-#    새 파일이 그 관행을 따라가면 안 된다. 상세는 0909 자동조치 보고 `O-77`.
+#    [MW0602 564차] `O-77` 해소됨. 종전 기록의 「28개 파일」은 이 브랜치 실측과
+#    달랐다 — tests/ **6개**(461·462·463·464·465·511) + scripts/ 7개였고, 전부
+#    `sys.stdout.reconfigure(...)` 로 교체했다. 기전은 재바인딩 자체가 아니라
+#    **버려진 래퍼의 소멸자가 하부 buffer(=pytest 캡처 파일)를 닫는 것**이다.
+#    이제 `tests/test_564_stdout_rebind_guard.py` 가 tests/·scripts/ 를 전수
+#    검사하므로 이 주석에 기대지 않아도 된다. 새 파일이 그 관행을 따라가면 안 된다.
 
 _SCRIPT = os.path.join(_ROOT, ".claude", "skills", "mireuk-daily-check",
                        "scripts", "collect_evidence.py")

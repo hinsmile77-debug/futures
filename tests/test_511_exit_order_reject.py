@@ -44,9 +44,7 @@ import sys
 # 콘솔 코드페이지(cp949)에서 판정 문구의 U+2014 등이 UnicodeEncodeError를 내
 # 통과한 검사에서도 죽는다 — 판정과 무관한 출력 문제이므로 여기서 못 박는다.
 try:
-    sys.stdout = _io.TextIOWrapper(
-        sys.stdout.buffer, encoding="utf-8", errors="backslashreplace", line_buffering=True
-    )
+    sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace", line_buffering=True)
 except Exception:
     pass
 

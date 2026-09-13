@@ -218,11 +218,7 @@ def _make_stdout_utf8_safe():
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")   # py3.7+
     except Exception:
-        try:
-            sys.stdout = io.TextIOWrapper(
-                sys.stdout.buffer, encoding="utf-8", errors="replace")
-        except Exception:
-            pass          # 최후에도 실패하면 그냥 진행 — 진단을 막지는 않는다
+        pass          # 실패해도 그냥 진행 — 진단을 막지는 않는다
 
 def _live_guard_present():
     """[MW0601 552-10] **라이브 저장 경로**의 가드가 재시작을 견디는가.

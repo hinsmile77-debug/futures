@@ -22,9 +22,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ["MIREUK_TEST_MODE"] = "1"  # [422차] 프로덕션 로그·Slack 오염 차단
 
 # py37_32 콘솔은 cp949라 em-dash(U+2014)에서 UnicodeEncodeError가 난다.
-# (py37에는 sys.stdout.reconfigure가 없어 TextIOWrapper로 감싼다.)
+# [MW0602 564차 / O-77] 종전 주석의 「py37 에는 reconfigure 가 없다」는 **사실이 아니었다**
+# (3.7 에 추가됐고 py37_32=3.7.13 에도 있다). 그 오해로 `sys.stdout` 을 새 래퍼로
+# 갈아끼웠는데, 버려진 래퍼가 GC 될 때 하부 buffer(=pytest 캡처 파일)를 닫아
+# 전체 스위트가 죽었다. reconfigure 는 제자리 변경이라 고아가 생기지 않는다.
 try:
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
     pass
 

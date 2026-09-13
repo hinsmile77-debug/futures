@@ -5,7 +5,7 @@ from __future__ import annotations
 import io, sys, time
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() in ("cp949", "mbcs"):
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 import struct
 if struct.calcsize("P") * 8 != 32:

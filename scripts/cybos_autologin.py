@@ -25,9 +25,9 @@ import ctypes.wintypes
 # CP949 터미널에서 em-dash 등 특수문자 인코딩 오류 방지
 # CREON_PLUS.bat에 PYTHONIOENCODING=utf-8이 있지만 직접 실행 시 보장
 if hasattr(sys.stdout, "buffer") and getattr(sys.stdout, "encoding", "").lower() not in ("utf-8", "utf-8-sig"):
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 if hasattr(sys.stderr, "buffer") and getattr(sys.stderr, "encoding", "").lower() not in ("utf-8", "utf-8-sig"):
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 
 class _TeeStream(object):
