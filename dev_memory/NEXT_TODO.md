@@ -2,6 +2,29 @@
 
 > 검증 필요 항목, 예정된 작업, 알려진 잠재 이슈.
 
+### 559차 — 데이터 결함 3건 P0·P1·P1' (MW0601, 2026-09-13, **v9-dev 체리픽 `857c71d`**)
+
+근거: `dev_memory/DECISION_LOG.md` 2026-09-13(559차) ·
+`docs/Spec for feature/Feature integrity/데이터결함3건_상태파악_및_수집구현계획_MW0601-20260913.md`
+
+> ⚠ **실측 수치는 전부 MW0601 것이다.** 이 브랜치는 별개 계좌·별개 DB다.
+
+- [ ] **559-D1 (다음 거래일 장후)** EOD 로그에 `[FeatureEpoch]` · `[InvestorMeasured]` ·
+      `[UnitMismatch]` 3종이 찍히는가. 🔴 `[UnitMismatch]` 제외 행수가 **0 이면 정상**이다
+      (MW0601 과 반대 — 그쪽은 >0 이어야 정상). 0 이 아니면 이 브랜치 DB 에도 압축 이전
+      단위 행이 있다는 뜻이므로 날짜를 확인할 것.
+- [ ] **559-D2** `unk_vol` 첫 적재 확인 — `raw_candles`·`session_bars` 양쪽.
+      앵커 리포트 **I4** 행이 「0봉」에서 실수치로 바뀌는가.
+      ⚠ 452차 섀도가 「죽은 섀도」로 방치됐던 것과 같은 자리다.
+- [ ] **559-D3** 수급 `*_measured` 3종이 프리장 **0.0** → 09:00 이후 **1.0** 인가.
+- [ ] **559-D4** 이 브랜치에도 418차 백필 오염행이 있는지 확인 —
+      `feature_quality_score == 0.3` 카운트. 418차 판정 당시 MW0602 는 **0일**이었다.
+      0 이면 `[BackfillFilter]` 로그가 안 뜨는 것이 정상이다.
+
+**소비 0 유지 확인** — `CVD_FLOW_SOURCE_MODE="legacy"` · `FEATURE_EPOCH_MASK_ENABLED=False` ·
+`INVESTOR_UNMEASURED_SCALER_EXCLUDE_ENABLED=False`. 기본 활성은
+`INVESTOR_UNIT_MISMATCH_EXCLUDE_ENABLED=True` 하나뿐이다.
+
 ### 557차 — GP 수익 패널 별도집계 대안 (MW0602, 2026-09-10)
 
 근거: `docs/정기점검/GP수익_수익패널_별도집계_대안검토_20260910.md` ·

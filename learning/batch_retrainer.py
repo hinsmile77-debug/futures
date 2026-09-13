@@ -1750,6 +1750,14 @@ class BatchRetrainer:
             # raw_features_horizon의 cvd_direction/atr 등은 build_for_horizon에서
             # N분봉 완성봉 기반으로 재계산되어 저장되므로 (127차~) 자동 반영됨.
             use_feat_names = _existing_feat_names if _existing_feat_names else feat_names
+            # [MW0601 559차 / P1'-2] 압축 이전 단위 거래일 제외 — X 를 만들기 **전에**.
+            # 이 4일을 넣으면 수급 8키 스케일러 std 가 0.88 → 5.0e+04 로 뛴다(실측 5.7만 배).
+            try:
+                from learning.feature_epoch_mask import filter_unit_mismatch_rows as _fum
+                records = _fum(records, ts_getter=lambda r: r[0], tag="Retrain-P2 %s" % hz)
+            except Exception:
+                logger.debug("[UnitMismatch] 제외 실패 — 학습은 계속한다", exc_info=True)
+
             X_hz = np.array(
                 [[rec[1].get(f, 0.0) for f in use_feat_names] for rec in records],
                 dtype=np.float32,
@@ -1764,6 +1772,24 @@ class BatchRetrainer:
                     hz, _nonzero, len(records),
                     100.0 * _nonzero / max(len(records), 1),
                 )
+            # [MW0601 559차 / P1-6 · P1'-1] 세대·측정 관측 (변경 없음 — 세기만 한다).
+            # 이 로그가 「세대 분리를 켜면 표본이 얼마나 줄어드는가」의 유일한 실측
+            # 근거다. Phase 3 승인 판단이 여기 쌓이는 숫자 위에서 이뤄진다.
+            try:
+                from learning.feature_epoch_mask import (
+                    report_epoch_loss as _rep_epoch, report_unmeasured as _rep_unmeas,
+                    apply_epoch_window as _apply_epoch,
+                )
+                _ts_list = [r[0] for r in records]
+                _rep_epoch(_ts_list, use_feat_names, tag=hz)
+                _rep_unmeas([r[1] for r in records], tag=hz)
+                _keep_idx, _applied = _apply_epoch(_ts_list, use_feat_names)
+                if _applied and len(_keep_idx) < len(records):
+                    records = [records[i] for i in _keep_idx]
+                    X_hz = X_hz[_keep_idx, :]
+            except Exception:
+                logger.debug("[FeatureEpoch] 관측 실패 — 학습은 계속한다", exc_info=True)
+
             X_hz = apply_robust_preprocess(X_hz, use_feat_names)
 
             # y 레이블 (Phase 2는 고정 임계값 사용)
@@ -2099,6 +2125,14 @@ class BatchRetrainer:
                     "SELECT ts, features FROM raw_features WHERE ts >= ? ORDER BY ts",
                     (cutoff,),
                 ).fetchall()
+                # [MW0601 559차 / P1'-3] 418차 결정 1 을 여기에도 건다.
+                # 종전에는 섀도 TB 폴백(위 2190행대)에만 걸려 있어서, 26주 창을 쓰는
+                # 이 경로는 2026-06-09~07-13 오염 25거래일을 그대로 학습했다.
+                from learning.feature_epoch_mask import (
+                    filter_backfill_rows, filter_unit_mismatch_rows,
+                )
+                feat_rows = filter_backfill_rows(feat_rows, json_mod=_json, tag="Phase1")
+                feat_rows = filter_unit_mismatch_rows(feat_rows, tag="Phase1")
 
                 candle_rows = conn.execute(
                     "SELECT ts, close FROM raw_candles WHERE ts >= ? ORDER BY ts",

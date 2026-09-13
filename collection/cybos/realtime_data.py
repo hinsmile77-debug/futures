@@ -329,9 +329,13 @@ class CybosRealtimeData:
         anchor_d_buy = None
         anchor_d_sell = None
         shadow_side = None
+        # [MW0601 559차 / P1-4] 체결구분 판독을 **시도했는가**. 시도조차 못 한 봉
+        # (예외)과 "시도했는데 판정 불가"는 다르다 — 전자는 NULL, 후자는 unk_vol 이다.
+        shadow_attempted = False
         try:
             anchor_d_buy, anchor_d_sell = self._read_trade_anchor(obj)
             shadow_side = decode_trade_side(obj.GetHeaderValue(24))
+            shadow_attempted = True
             if shadow_side is None:
                 self._flag_unknown_ticks += 1
             else:
@@ -458,6 +462,7 @@ class CybosRealtimeData:
             anchor_d_buy=anchor_d_buy,
             anchor_d_sell=anchor_d_sell,
             shadow_side=shadow_side,
+            shadow_attempted=shadow_attempted,
             auction_code=auction_code,
         )
 
@@ -620,6 +625,9 @@ class CybosRealtimeData:
         anchor_d_buy: Optional[int] = None,
         anchor_d_sell: Optional[int] = None,
         shadow_side: Optional[str] = None,
+        # [MW0601 559차 / P1-4] 체결구분 판독을 **시도했는가**. 시도조차 못 한 봉
+        # (예외)과 "시도했는데 판정 불가"는 다르다 — 전자는 NULL, 후자는 unk_vol 이다.
+        shadow_attempted: bool = False,
         auction_code: Optional[int] = None,
     ) -> None:
         if self._current_min is not None and bar_min != self._current_min:
@@ -661,6 +669,10 @@ class CybosRealtimeData:
                 "anchor_sell": None,
                 "buy_vol_flag": None,
                 "sell_vol_flag": None,
+                # [MW0601 559차 / P1-4] 미분류 버킷. 체결구분을 못 읽은 틱의 거래량이
+                # 여기 쌓인다. **매수로 폴백하지 않는다** — 그 폴백이 발견 A 의 원인이다.
+                # None = 이 봉에서 판독을 한 번도 시도 못 함(NULL). 0 = 시도했고 전량 분류됨.
+                "unk_vol": None,
                 # [533차] 헤더 28 체결유형코드. None=이 봉에서 한 번도 못 받음(NULL),
                 # 0=받았고 전부 연속매매, 10/11/20/30=단일가 체결 포함(마지막 비영 값).
                 "auction_code": None,
@@ -705,6 +717,11 @@ class CybosRealtimeData:
             # 반대편도 0으로 확정한다 — 이 봉은 "체결구분을 받았다"는 상태이므로
             # 한쪽만 NULL로 남으면 판독 시 미계측으로 오독된다.
             _bar[_other] = _bar.get(_other) or 0
+        # [MW0601 559차 / P1-4] 판독을 시도한 틱은 결과와 무관하게 미분류 버킷을 확정한다.
+        # 이로써 봉 단위 항등식이 성립한다 — `buy_vol_flag + sell_vol_flag + unk_vol == volume`.
+        # 종전에는 판정 불가 볼륨이 **어디에도 안 실려** 잔차가 보이지 않았다(계측 4원칙 ③).
+        if shadow_attempted:
+            _bar["unk_vol"] = (_bar.get("unk_vol") or 0) + (volume if shadow_side is None else 0)
         # [533차] 체결유형코드 봉 누적 — 받은 적이 있으면 0이라도 기록(미수신과 구분).
         if auction_code is not None:
             if _bar.get("auction_code") is None:

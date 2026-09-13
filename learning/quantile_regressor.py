@@ -58,11 +58,17 @@ def _load_records(hz: str, h_min: int, weeks_back: int):
             "SELECT ts, features FROM raw_features_horizon WHERE horizon=? AND ts>=? ORDER BY ts",
             (hz, cutoff),
         ).fetchall()
+        # [MW0601 559차 / P1'-2] 압축 이전 단위 4거래일 제외 (horizon 테이블에도 1,069행 있다)
+        from learning.feature_epoch_mask import filter_unit_mismatch_rows
+        rows = filter_unit_mismatch_rows(rows, tag="Quantile-%s" % hz)
         if len(rows) < MIN_ROWS_PER_HORIZON:
             rows = conn.execute(
                 "SELECT ts, features FROM raw_features WHERE ts>=? ORDER BY ts",
                 (cutoff,),
             ).fetchall()
+            # [MW0601 559차 / P1'-3] 418차 백필 오염행 제외 — 26주 창 안에 있다.
+            from learning.feature_epoch_mask import filter_backfill_rows
+            rows = filter_backfill_rows(rows, tag="Quantile-%s" % hz)
         candle_rows = conn.execute(
             "SELECT ts, close FROM raw_candles WHERE ts>=? ORDER BY ts",
             (cutoff,),
