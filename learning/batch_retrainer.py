@@ -2211,10 +2211,23 @@ class BatchRetrainer:
                 )
 
             # P2: MIN_TRAIN_BARS 체크를 미래가격 제거 후 실제 행 수 기준으로 수행
-            if len(records) < MIN_TRAIN_BARS:
+            #
+            # 🔴 [MW0601 559차 후속3] **장중 여부를 검사에 전달한다** — 임계를 낮추는 게 아니다.
+            # 장중 경로는 `retrain_now`가 아래에서 최근 `MAX_TRAIN_BARS_INTRADAY`(4,800)봉만
+            # 쓰는데, 이 검사는 그 절단 **전에** 26주 전량 기준(15,000)을 요구해 왔다.
+            # 404차 주석(`retrain_now`의 `_min_required`)이 그 불일치를 이미 적어 뒀지만
+            # "로더가 절단 전에 검사하므로"라며 로더 쪽은 그대로 뒀다 — 그때는 풀이
+            # 45,612행이라 15,000에 걸릴 일이 없었기 때문이다.
+            #
+            # 559차 필터 2종(백필 오염행·압축 이전 단위)이 풀을 16,104행으로 줄이면서
+            # 그 잠재 불일치가 발현했다 — 2026-09-14 09:36 장중 재학습이
+            # **14,222 < 15,000** 으로 실패했고(09-11 까지는 6회 전부 성공), 그날 3m
+            # 상수출력 교정이 스케일러만 갱신되고 트리는 옛것으로 남았다.
+            _min_rows = MAX_TRAIN_BARS_INTRADAY if intraday else MIN_TRAIN_BARS
+            if len(records) < _min_rows:
                 logger.warning(
-                    "[Retrain] 학습 데이터 부족 (미래가격 제거 후 %d < %d)",
-                    len(records), MIN_TRAIN_BARS,
+                    "[Retrain] 학습 데이터 부족 (미래가격 제거 후 %d < %d, intraday=%s)",
+                    len(records), _min_rows, intraday,
                 )
                 return None, None, None
 
