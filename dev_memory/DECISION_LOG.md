@@ -3,6 +3,32 @@
 
 ---
 
+## 2026-09-14 (MW0601 565차 체리픽 — 풀타임 수집 Phase 3: 차트 TR 보충 + 로그 소급, Phase 2 폐기) — **매매 정책 무변경**
+
+> 원 커밋 `8fe2316` · 원 PC MW0601(`v9-dev`) · 가져온 이유: 사용자 지시 「dev에 배포해」(2026-09-14).
+> **코드·테스트·문서만** 가져왔다. `dev_memory` 는 dev 판을 유지하고 이 항목만 추가.
+> 설계 전문: `docs/미륵이고도화3/풀타임수집_검토및구현계획_2026-09-06.md` 상단 565차 · MW0602 주의는
+> `docs/미륵이고도화3/풀타임수집_MW0602_적용가이드_2026-09-06.md` §8.
+
+### 무엇이 바뀌나 — 533·550차 체리픽 위에 얹히는 Phase 3
+- `CpSysDib.FutOptChart` 가 **15:45 마감 체결**(라벨 `1545` 단독 봉)과 **개장 체결**(08:45 봉 시가·거래량)을
+  준다는 것이 MW0601 실측으로 확정됐다. 봉 라벨은 **종료 시각**(846 = 08:45 봉). 실시간 봉은 차트와 정확히 일치.
+  ⇒ 프로세스 수명 +6분(Phase 2)·프로브 P0-1/P0-2 는 **폐기**.
+- `collection/cybos/chart_backfill.py` + `main._scheduler_tick` **08:41~08:44 1회** 전 거래일 보충
+  (`source='chart_backfill'`, 기존 행 덮지 않음, 08:45 봉만 O/H/L/V 보정 → `rt_chart_open`).
+- 만기 지난 월물은 조회 거부 → 차트 소급 불가. 과거는 `scripts/session_bars_from_logs.py`(SYSTEM 로그
+  `[BAR-CLOSE][CYBOS]`) 로 15:09~15:33 만 복구 가능(`log_recovered`).
+- `scripts/session_bars_recon.py` 만기일·source 인지.
+
+### 🔴 이 PC(MW0602)에서 확인해야 확정되는 것 — 자동으로 「같다」고 보지 말 것
+1. **CREON 채널의 `FutOptChart` 라벨 규약** — 첫 실행은 장후 `--dry-run`:
+   `conda run -n py37_32 python scripts/session_bars_chart_backfill.py --date <전 거래일> --dry-run`.
+   `mismatch` 가 08:45 봉 외 0~4(장중 open 1~2틱 차이는 정상 범위)면 같은 규약. 대량 불일치면 라벨이 시작
+   시각일 수 있다 — `chart_backfill.chart_rows_to_bars` 의 −1분을 재검토.
+2. **종목 코드** — `mini_code_for_date` 는 A05 계열 가정. 이 PC 도 미니선물이면 그대로, 아니면 `--code`.
+3. **8월 소급은 이 PC 로그로만** — `logs/2026MM_SYSTEM.zip` 의 `[BAR-CLOSE][CYBOS]` 포맷이 같은지 먼저 grep.
+4. 09-15 08:41 로그 `[SessionBackfill] … inserted=1 open_fixed=1` 확인(만기일 다음날은 「건너뜀」 정상).
+
 ## 2026-09-14 (MW0601 561차 체리픽 — 호가깊이 판정기가 점표본을 읽고 있었다) — **매매 정책 무변경**
 
 > 원 커밋 `fdbbf2a` · 원 PC MW0601(`v9-dev`) · 가져온 이유: 사용자 지시

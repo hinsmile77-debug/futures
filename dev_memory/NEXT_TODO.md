@@ -45,6 +45,16 @@
 
 근거: `docs/미륵이고도화3/호가깊이/호가잔량_유효성_딥다이브_MW0601-20260914.md`
 
+### 565차 체리픽 (2026-09-14, 원 커밋 `8fe2316` / v9-dev) — 풀타임 수집 Phase 3 차트 보충
+
+- [ ] **첫 dry-run(장후)** `conda run -n py37_32 python scripts/session_bars_chart_backfill.py --date <전 거래일> --dry-run`
+      → CREON 채널 `FutOptChart` 라벨 규약 확인(mismatch 08:45 외 0~4 이면 동일). 확인 뒤 `--dry-run` 없이 1회.
+- [ ] **09-15 08:41** `[SessionBackfill]` 로그 1줄 확인 · 장후 `python scripts/session_bars_recon.py` →
+      Phase 1 PASS + `CLOSE_FILL 기대 1 실측 1`.
+- [ ] **8월 소급(선택)** `python scripts/session_bars_from_logs.py --from 2026-08-01 --to 2026-09-06 --dry-run` 로
+      이 PC 로그 포맷·행수 확인 후 실행. 15:45 체결·15:34 봉은 원리상 없다.
+- [ ] Phase 2(수명 +6분)·프로브 P0-1/P0-2 는 폐기 — 551차 O-항목 중 해당분 정리.
+
 ### 561차 체리픽 (2026-09-14, 원 커밋 `fdbbf2a` / v9-dev) — 호가깊이 추정량 개정
 
 근거: `dev_memory/DECISION_LOG.md` 2026-09-14(561차 체리픽).
