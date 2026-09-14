@@ -8770,7 +8770,7 @@ _STATE_KO = {"BUY_MECH": "기계적 매수", "BUY_STACK": "상방 쌓기",
              "SELL_STACK": "하방 쌓기", "SELL_MECH": "기계적 매도"}
 # [오버레이 P7] 가격 아래 보조 패널 — 전환 레인 + 원계열 히스토그램 2단
 _FLOW_LANE_H = 15    # 전환 마커 레인
-_FLOW_HIST_H = 30    # 공격자 · ΔOI 각각
+_FLOW_HIST_H = 34    # 공격자 · ΔOI 각각
 _FLOW_GAP    = 5
 _LEGEND_H    = 22
 _DIR_BAR_COLOR = {
@@ -8961,6 +8961,11 @@ class MinuteChartCanvas(QWidget):
         #   결과일 뿐이라 크기 정보가 사라진다. 히스토그램은 원계열이 필요하다.
         self._aggr_map = {}   # {ts: 공격자불균형(당일 중앙값 차감)}
         self._doi_map = {}    # {ts: ΔOI(30분)}
+        # 활성 문턱(당일 50% 분위). 화면에 **선으로** 그린다 — 막대가 이 선을
+        #   넘었는지가 곧 "상태가 붙을 자격"이라, 안 보이면 히스토그램과
+        #   상태 레인이 서로 모순돼 보인다(실측: 사용자가 "매도공격이 없었나"고 물었다).
+        self._thr_a = None
+        self._thr_o = None
         # [오버레이 P3] 장전 레벨. None 은 「미조회」다 — 빈 dict(「그날 없음」)와 다르다.
         # [오버레이 P8] 이번 paint 에서 이미 칩이 차지한 사각형들.
         #   레이어마다 따로 피하면 **레이어끼리는 계속 겹친다** — 실측으로 확인했다.
@@ -10018,9 +10023,14 @@ class MinuteChartCanvas(QWidget):
                 painter.drawPolygon(_tri)
 
             # ② 공격자 때린 쪽 · ③ ΔOI 30분
-            for _r, _src, _pos, _neg, _tag in (
-                    (_h1, self._aggr_map, "#3FB950", "#F85149", "공격자 때린 쪽"),
-                    (_h2, self._doi_map, "#58A6FF", "#D29922", "ΔOI 30분  신규/청산")):
+            # 🔴 라벨을 정확히 쓴다. 원시 거래량은 당일 매수 1.7:1 우세라
+            #   "매도가 절대적으로 많았다"가 **아니다** — 당일 자기 기준선 대비다.
+            #   그 구분이 안 보이면 막대를 절대량으로 오독한다(실측).
+            for _r, _src, _pos, _neg, _tag, _thr in (
+                    (_h1, self._aggr_map, "#3FB950", "#F85149",
+                     "공격자 때린 쪽  (당일 중앙값 대비)", self._thr_a),
+                    (_h2, self._doi_map, "#58A6FF", "#D29922",
+                     "ΔOI 30분  신규/청산", self._thr_o)):
                 if not _src:
                     continue
                 _vals = [abs(v) for v in _src.values() if v is not None]
@@ -10041,6 +10051,28 @@ class MinuteChartCanvas(QWidget):
                     painter.setBrush(col)
                     x = _r.left() + step * idx
                     painter.drawRect(QRectF(x, _mid - _hh if v >= 0 else _mid, _w, _hh))
+                # 활성 문턱 — 이 안쪽 막대는 **상태가 붙을 자격이 없다**.
+                # 🔴 선만 그었더니 안 읽혔다(실측: 문턱이 반쪽 높이의 31%·24% 라
+                #   30px 패널에서 중앙선과 4px 차이였다). **띠로 깔아** 안/밖을 가른다.
+                # 🔴 넘었다고 신호가 아니다. 검증된 문장은 「BUY_MECH 구간 롱 금지」
+                #   하나뿐이고 그건 빗금이 말한다. 여기서는 자격선일 뿐이다.
+                #   두 칸 **모두** 넘어야 상태가 붙는다 — 한쪽만으로는 안 된다.
+                if _thr and _thr > 0 and _thr <= _mx:
+                    _ty = (_thr / _mx) * (_r.height() / 2 - 1)
+                    _band = QColor(C["text2"]); _band.setAlpha(30)
+                    painter.setPen(Qt.NoPen); painter.setBrush(_band)
+                    painter.drawRect(QRectF(_r.left() + 1, _mid - _ty,
+                                            _r.width() - 2, _ty * 2))
+                    _tp = QPen(QColor(C["text2"])); _tp.setWidth(1); _tp.setStyle(Qt.DotLine)
+                    painter.setPen(_tp); painter.setBrush(Qt.NoBrush)
+                    for _sy in (_mid - _ty, _mid + _ty):
+                        painter.drawLine(QPointF(_r.left(), _sy), QPointF(_r.right(), _sy))
+                    painter.setFont(QFont("Malgun Gothic", 7))
+                    painter.setPen(QColor(C["text2"]))
+                    _ql = "회색 띠 안 = 활성 문턱(50%) 미달 — 상태 안 붙음"
+                    _qw = painter.fontMetrics().horizontalAdvance(_ql)
+                    painter.drawText(QPointF(_r.right() - _qw - S.p(4),
+                                             _r.bottom() - S.p(3)), _ql)
                 painter.setFont(QFont("Malgun Gothic", 7))
                 painter.setPen(QColor(C["text2"]))
                 painter.drawText(QPointF(_r.left() + S.p(4), _r.top() + S.p(10)), _tag)
@@ -10875,6 +10907,8 @@ class MinuteChartCanvas(QWidget):
         self._state_map = {}
         self._aggr_map = {}
         self._doi_map = {}
+        self._thr_a = None
+        self._thr_o = None
         self._state_provisional = not self._state_is_past_session()
         # 🔴 사전등록 구현은 `m = m[m.oi.fillna(0) > 0]` 로 **OI 결측 봉을 버린 뒤**
         #   창을 센다. 남겨두면 30봉 창이 그만큼 밀려 판정이 달라진다
@@ -10917,6 +10951,7 @@ class MinuteChartCanvas(QWidget):
         thrO = self._quantile(sorted(abs(v) for v in d_oi if v is not None), self.STATE_ACTIVE_Q)
         if thrA is None or thrO is None:
             return
+        self._thr_a, self._thr_o = thrA, thrO
         # ④ 상태 + 원계열 보관
         for i, row in enumerate(rows):
             a, o = imb[i], d_oi[i]
