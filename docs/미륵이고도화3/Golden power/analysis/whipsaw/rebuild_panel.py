@@ -4,6 +4,8 @@
 산출: panel.pkl / signals.pkl / fwd.npy — 전부 런타임 산출물(커밋 금지).
 라이브 DB는 read-only 로만 연다. 장 마감 후 실행(456차).
 """
+# [566차 T-BOOK-1c] book_*_tot(점표본) 은 폐기 예정이다 —
+# 봉 대표값은 _avg, 봉내 극단은 _max. rho(tot,avg)=+0.288 로 다른 계열처럼 움직인다.
 import os, sys, json, sqlite3, time
 import numpy as np, pandas as pd
 
@@ -22,7 +24,7 @@ INV = ['foreign_futures_net', 'retail_futures_net', 'institution_futures_net',
 t0 = time.time()
 con = sqlite3.connect('file:' + RAW + '?mode=ro', uri=True)
 c = pd.read_sql_query('SELECT ts,open,high,low,close,volume,buy_vol,sell_vol,oi,'
-                      'bar_recovered,book_bid_tot,book_ask_tot FROM raw_candles ORDER BY ts', con)
+                      'bar_recovered,book_bid_avg,book_ask_avg,book_bid_max,book_ask_max FROM raw_candles ORDER BY ts', con)
 print('[db] raw_candles %d  %s ~ %s  %.1fs' % (len(c), c.ts.iloc[0], c.ts.iloc[-1], time.time() - t0))
 
 KEYS = INV + ['quality_investor_supported', 'atr', 'rsi', 'gp_buy_20', 'gp_sell_20', 'ma20_cont', 'ma60_cont']

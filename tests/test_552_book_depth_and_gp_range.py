@@ -92,6 +92,7 @@ def _make_rt():
     rt._rt_code = "TEST"
     rt._on_hoga = None
     rt._current_bar = {"book_bid_tot": None, "book_ask_tot": None,
+                       "book_bid_max": None, "book_ask_max": None,   # [566차]
                        "book_snaps": 0, "_book_bid_sum": 0, "_book_ask_sum": 0}
     return rt
 
@@ -109,13 +110,16 @@ def test_handle_hoga_sums_five_levels():
     assert b["book_ask_tot"] == 15 and b["book_bid_tot"] == 15   # 마지막 스냅샷
     assert b["book_snaps"] == 2
     assert b["_book_bid_sum"] == 170 and b["_book_ask_sum"] == 165
+    # [566차 / T-BOOK-1a] `_max` 는 **떨어지지 않는다** — 두 번째 스냅샷이 훨씬
+    # 작아도 첫 스냅샷의 값을 유지한다. `_tot` 이 15 로 덮인 바로 그 자리다.
+    assert b["book_bid_max"] == 155 and b["book_ask_max"] == 150
 
 
 def test_book_depth_cols_null_when_never_received():
-    """호가를 한 번도 못 받은 봉은 4열 NULL · snaps=0 — 0 으로 위장하지 않는다."""
+    """호가를 한 번도 못 받은 봉은 값열 전부 NULL · snaps=0 — 0 으로 위장하지 않는다."""
     from utils.db_utils import _book_depth_cols
-    assert _book_depth_cols({"book_snaps": 0}) == (None, None, None, None, 0)
-    assert _book_depth_cols({}) == (None, None, None, None, 0)
+    assert _book_depth_cols({"book_snaps": 0}) == (None, None, None, None, None, None, 0)
+    assert _book_depth_cols({}) == (None, None, None, None, None, None, 0)
 
 
 def test_book_depth_cols_average():
@@ -126,11 +130,13 @@ def test_book_depth_cols_average():
                             "book_snaps": 3})
     assert got[0] == 120 and got[1] == 80
     assert abs(got[2] - 100.0) < 1e-9 and abs(got[3] - (200 / 3.0)) < 1e-9
-    assert got[4] == 3
+    # [566차] 4·5 는 신설 `_max` 2열 — 이 봉은 `_max` 를 안 들고 왔으므로 NULL 이다.
+    assert got[4] is None and got[5] is None
+    assert got[6] == 3
 
 
 def test_schema_has_book_columns_and_roundtrip():
-    """두 테이블 모두 5열을 갖고, 저장→조회 왕복에서 NULL 규약이 유지된다."""
+    """두 테이블 모두 깊이 7열을 갖고, 저장→조회 왕복에서 NULL 규약이 유지된다."""
     import utils.db_utils as D
     tmp = tempfile.mkdtemp()
     orig = D.RAW_DATA_DB
@@ -140,6 +146,7 @@ def test_schema_has_book_columns_and_roundtrip():
         base = dict(ts="2026-09-10 09:00:00", open=100.0, high=101.0,
                     low=99.0, close=100.5, volume=10)
         hit = dict(base, book_bid_tot=120, book_ask_tot=80,
+                   book_bid_max=210, book_ask_max=140,       # [566차]
                    _book_bid_sum=300, _book_ask_sum=200, book_snaps=3)
         miss = dict(base, ts="2026-09-10 09:01:00", book_snaps=0)
         D.save_candle(hit); D.save_candle(miss)
@@ -149,12 +156,15 @@ def test_schema_has_book_columns_and_roundtrip():
         for t in ("raw_candles", "session_bars"):
             cols = [r[1] for r in con.execute("PRAGMA table_info(%s)" % t)]
             for c in ("book_bid_tot", "book_ask_tot", "book_bid_avg",
-                      "book_ask_avg", "book_snaps"):
+                      "book_ask_avg", "book_bid_max", "book_ask_max",
+                      "book_snaps"):
                 assert c in cols, "%s 에 %s 없음" % (t, c)
             q = ("SELECT book_bid_tot,book_ask_tot,book_bid_avg,book_ask_avg,"
-                 "book_snaps FROM %s WHERE ts=?" % t)
-            assert con.execute(q, (hit["ts"],)).fetchone() == (120, 80, 100.0, 200 / 3.0, 3)
-            assert con.execute(q, (miss["ts"],)).fetchone() == (None, None, None, None, 0)
+                 "book_bid_max,book_ask_max,book_snaps FROM %s WHERE ts=?" % t)
+            assert con.execute(q, (hit["ts"],)).fetchone() == (
+                120, 80, 100.0, 200 / 3.0, 210, 140, 3)
+            assert con.execute(q, (miss["ts"],)).fetchone() == (
+                None, None, None, None, None, None, 0)
         con.close()
     finally:
         D.RAW_DATA_DB = orig
@@ -219,7 +229,7 @@ def test_production_write_path_persists_book_depth():
 
 
 def test_every_raw_candles_writer_includes_book_columns():
-    """[552차 후속 / 결함1] `raw_candles` 로 가는 **모든** INSERT 가 5열을 싣는다.
+    """[552차 후속 / 결함1] `raw_candles` 로 가는 **모든** INSERT 가 깊이 7열을 싣는다.
 
     이 테스트가 막는 것은 오타가 아니라 **경로 추가**다. 초판의 실패는 쓰기
     함수가 둘인데 하나만 고친 것이었다. 세 번째가 생겨도 여기서 걸린다.
@@ -234,7 +244,8 @@ def test_every_raw_candles_writer_includes_book_columns():
     assert stmts, "raw_candles INSERT 문을 찾지 못했다 — 이 가드가 무력화됐다"
     for i, body in enumerate(stmts):
         for col in ("book_bid_tot", "book_ask_tot", "book_bid_avg",
-                    "book_ask_avg", "book_snaps"):
+                    "book_ask_avg", "book_bid_max", "book_ask_max",   # [566차]
+                    "book_snaps"):
             assert col in body, "raw_candles INSERT #%d 에 %s 누락" % (i + 1, col)
 
 
@@ -249,7 +260,10 @@ def test_recovered_bar_roundtrip_preserves_avg():
     from utils.db_utils import _book_depth_cols
     recovered = {"book_bid_tot": 155, "book_ask_tot": 150,
                  "book_bid_avg": 155.0, "book_ask_avg": 150.0, "book_snaps": 2}
-    assert _book_depth_cols(recovered) == (155, 150, 155.0, 150.0, 2)
+    assert _book_depth_cols(recovered) == (155, 150, 155.0, 150.0, None, None, 2)
+    # [566차] 566차 이전 행에는 `_max` 가 없다 — **NULL 이지 0 이 아니다**(계측 4원칙 ②).
+    assert _book_depth_cols(dict(recovered, book_bid_max=200, book_ask_max=190)) == (
+        155, 150, 155.0, 150.0, 200, 190, 2)
     # 사설키가 있으면 그쪽이 우선(라이브 봉)
     live = dict(recovered, _book_bid_sum=400, _book_ask_sum=300)
     assert _book_depth_cols(live)[2] == 200.0

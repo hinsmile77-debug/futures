@@ -307,6 +307,16 @@ DYNAMIC_FEATURES_POOL = [
     #       비율이 담지 못하는 축이다).
     #    · 어느 쪽이든 **`_avg` 로 만들 것.** `_tot` 으로 만든 축은 잡음이 신호로 보인다.
     #    근거: docs/미륵이고도화3/호가깊이/호가잔량_유효성_딥다이브_MW0601-20260914.md
+    #
+    # 🔴 [566차 / T-BOOK-1] `book_*_tot` 2종은 **폐기 예정**이다 — 신규 소비 금지.
+    # 561차는 주석으로 경고만 했는데, 경고가 있는 채로 밟혔다. 이름이 「합계」로
+    # 읽히는 한 다음 사람도 밟는다. 그래서 열을 바꿨다:
+    #     `book_bid_avg`/`book_ask_avg` — 봉 **대표값**(전 스냅샷 평균). 파생·판정은 이것.
+    #     `book_bid_max`/`book_ask_max` — 봉내 **최댓값**(566차 신설). 「얼마까지 갔나」.
+    #     `book_bid_tot`/`book_ask_tot` — 마지막 1스냅샷. **읽지 말 것.**
+    # ⚠ `_max` 는 **566차 이후 행에만** 있다. 그 이전은 NULL 이며 **미측정**이지
+    #   「깊이 0」이 아니다(계측 4원칙 ②). 백필로 지어내지 말 것 — 원천이 없다.
+    # ⚠ `min` 은 신설하지 않았다 — 5단 합의 하한이 5 에 붙어 있어 사실상 상수다.
     # v6.5 추가
     "multi_timeframe_5m",  # 324차: features/technical/multi_timeframe.py 배선 완료
                            # (feature_builder.py:multi_timeframe — push_1m_candle()의
