@@ -43,6 +43,10 @@ from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
 
 from config.settings import PREDICTIONS_DB, RAW_DATA_DB
+from dashboard.panels.mid_status_row import (
+    MidStatusRow, draw_position_levels, fetch_day_state,
+    publish_position, read_position,
+)
 
 _HORIZONS = ["1m", "3m", "5m", "10m", "15m", "30m"]
 
@@ -76,6 +80,10 @@ _MR_COLOR: Dict[str, str] = {
 }
 _LANE_EMPTY = "#1c1c1c"   # 데이터 없는 칸 (어두운 배경)
 
+# 포지션 스냅샷·상태 조회는 `mid_status_row` 로 이사했다.
+# `publish_position` 은 `main_dashboard` 가 여기서 import 하므로 재노출한다.
+__all__ = ["CandleChartDialog", "publish_position", "read_position"]
+
 
 def _today_range(today: str):
     """오늘 날짜의 ts 범위 반환 — substr() 대신 range로 idx_ts 인덱스 활용."""
@@ -86,8 +94,8 @@ def _today_range(today: str):
 class _FetchWorker(QThread):
     """DB 조회를 백그라운드 스레드에서 실행 — Qt 메인스레드 블로킹 방지."""
 
-    # candles, ensemble, hz_dirs, candle_decisions
-    done = pyqtSignal(list, object, dict, dict)
+    # candles, ensemble, hz_dirs, candle_decisions, state
+    done = pyqtSignal(list, object, dict, dict, object)
 
     def __init__(self, n_candles: int):
         super().__init__()
@@ -100,7 +108,11 @@ class _FetchWorker(QThread):
         ensemble         = self._fetch_ensemble(ts_from, ts_to)
         hz_dirs          = self._fetch_hz_dirs(ts_from, ts_to)
         candle_decisions = self._fetch_candle_decisions(ts_from, ts_to)
-        self.done.emit(candles, ensemble, hz_dirs, candle_decisions)
+        state            = self._fetch_state(ts_from, ts_to)
+        self.done.emit(candles, ensemble, hz_dirs, candle_decisions, state)
+
+    def _fetch_state(self, ts_from: str, ts_to: str) -> Optional[dict]:
+        return fetch_day_state(ts_from, ts_to)
 
     def _fetch_candles(self, ts_from: str, ts_to: str) -> List[dict]:
         try:
@@ -248,28 +260,35 @@ class CandleChartDialog(QDialog):
         )
         root.addWidget(self._banner)
 
-        # conf 인디케이터 (배너 ↔ 캔버스 사이)
-        conf_frame = QFrame()
-        conf_frame.setStyleSheet(
+        # ── 좌측 중단 — 상태 / 현재가 / 포지션 (공용 위젯) ──────
+        self._mid = MidStatusRow("최근 %d봉" % self.N_CANDLES)
+        root.addWidget(self._mid)
+
+        mid_frame = QFrame()
+        mid_frame.setStyleSheet(
             "QFrame { background:#161b22; border-bottom:1px solid #30363d; }"
         )
-        conf_lay = QVBoxLayout(conf_frame)
-        conf_lay.setContentsMargins(12, 5, 12, 5)
-        conf_lay.setSpacing(3)
+        mid_lay = QVBoxLayout(mid_frame)
+        mid_lay.setContentsMargins(12, 2, 12, 4)
+        mid_lay.setSpacing(4)
 
+        # conf 인디케이터 — 값은 배너에 있고, 여기엔 막대와 mc 만 남긴다
+        conf_row = QHBoxLayout()
+        conf_row.setSpacing(8)
         self._conf_bar = QProgressBar()
-        self._conf_bar.setFixedHeight(8)
+        self._conf_bar.setFixedHeight(5)
         self._conf_bar.setTextVisible(False)
         self._conf_bar.setRange(0, 1000)
         self._conf_bar.setStyleSheet(_STYLE_BAR.format(color=_MUTED))
-        conf_lay.addWidget(self._conf_bar)
+        conf_row.addWidget(self._conf_bar, 1)
 
         self._lbl_conf_text = QLabel("conf —  mc —  ±—")
-        self._lbl_conf_text.setFont(QFont("Consolas", 9))
+        self._lbl_conf_text.setFont(QFont("Consolas", 8))
         self._lbl_conf_text.setStyleSheet("color:%s;" % _MUTED)
-        conf_lay.addWidget(self._lbl_conf_text)
+        conf_row.addWidget(self._lbl_conf_text, 0)
+        mid_lay.addLayout(conf_row)
 
-        root.addWidget(conf_frame)
+        root.addWidget(mid_frame)
 
         # matplotlib 캔버스 — 캔들 + 방향예측 레인 + 레짐 레인 3단 구성
         #
@@ -293,66 +312,65 @@ class CandleChartDialog(QDialog):
 
         self._canvas = FigureCanvasQTAgg(self._fig)
         self._canvas.setMinimumHeight(270)
-        root.addWidget(self._canvas)
+        root.addWidget(self._canvas, 1)   # 남는 세로는 전부 차트로
 
         # 하단 호라이즌 스트립
         root.addWidget(self._build_hz_strip())
 
     def _build_hz_strip(self) -> QWidget:
+        """호라이즌 + 합의 — **한 줄**. (577차, 방향 인디케이터와 같은 형태)"""
         frame = QFrame()
         frame.setStyleSheet(
             "QFrame { background:#161b22; border-top:1px solid #30363d; }"
         )
-        lay = QVBoxLayout(frame)
-        lay.setSpacing(3)
-        lay.setContentsMargins(12, 5, 12, 6)
+        lay = QHBoxLayout(frame)
+        lay.setSpacing(0)
+        lay.setContentsMargins(12, 4, 12, 4)
 
-        icon_row = QHBoxLayout()
-        icon_row.setSpacing(0)
         self._hz_icons: Dict[str, QLabel] = {}
-
+        hz_box = QHBoxLayout()
+        hz_box.setSpacing(0)
         for h in _HORIZONS:
-            col = QVBoxLayout()
-            col.setSpacing(0)
             lbl_h = QLabel(h)
-            lbl_h.setFont(QFont("Arial", 8))
+            lbl_h.setFont(QFont("Arial", 9))
             lbl_h.setStyleSheet("color:%s;" % _MUTED)
-            lbl_h.setAlignment(Qt.AlignCenter)
+
             lbl_icon = QLabel("—")
-            lbl_icon.setFont(QFont("Arial", 16, QFont.Bold))
-            lbl_icon.setAlignment(Qt.AlignCenter)
-            lbl_icon.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            col.addWidget(lbl_h)
-            col.addWidget(lbl_icon)
-            icon_row.addLayout(col)
+            lbl_icon.setFont(QFont("Arial", 13, QFont.Bold))
+            lbl_icon.setMinimumWidth(14)
+
+            cell = QHBoxLayout()
+            cell.setSpacing(4)
+            cell.addWidget(lbl_h)
+            cell.addWidget(lbl_icon)
+
+            hz_box.addLayout(cell)
+            hz_box.addStretch(1)
             self._hz_icons[h] = lbl_icon
+        lay.addLayout(hz_box, 5)
+        lay.addStretch(1)
 
-        lay.addLayout(icon_row)
-
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet("color:#30363d; margin:1px 0;")
-        lay.addWidget(sep)
-
-        cns_row = QHBoxLayout()
-        cns_row.setSpacing(6)
         lbl_c = QLabel("합의")
-        lbl_c.setFont(QFont("Arial", 8))
+        lbl_c.setFont(QFont("Arial", 9))
         lbl_c.setStyleSheet("color:%s;" % _MUTED)
-        lbl_c.setFixedWidth(28)
-        cns_row.addWidget(lbl_c)
+        lay.addWidget(lbl_c)
+        lay.addSpacing(6)
+
         self._cns_bar = QProgressBar()
-        self._cns_bar.setFixedHeight(5)
+        self._cns_bar.setFixedHeight(8)
+        self._cns_bar.setFixedWidth(110)
         self._cns_bar.setTextVisible(False)
         self._cns_bar.setRange(0, 6)
-        cns_row.addWidget(self._cns_bar)
-        self._lbl_cns = QLabel("0/6")
-        self._lbl_cns.setFont(QFont("Consolas", 8))
-        self._lbl_cns.setStyleSheet("color:%s;" % _MUTED)
-        self._lbl_cns.setFixedWidth(26)
-        cns_row.addWidget(self._lbl_cns)
-        lay.addLayout(cns_row)
+        lay.addWidget(self._cns_bar)
+        lay.addSpacing(6)
 
+        self._lbl_cns = QLabel("0/6")
+        self._lbl_cns.setFont(QFont("Consolas", 9))
+        self._lbl_cns.setStyleSheet("color:%s;" % _MUTED)
+        self._lbl_cns.setMinimumWidth(30)
+        lay.addWidget(self._lbl_cns)
+
+        frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         return frame
 
     # ── 갱신 (비동기) ─────────────────────────────────────────────
@@ -371,6 +389,7 @@ class CandleChartDialog(QDialog):
         ensemble:         Optional[dict],
         hz_dirs:          Dict[str, int],
         candle_decisions: Dict[str, dict],
+        state:            Optional[dict] = None,
     ):
         d     = int(ensemble["direction"])         if ensemble else 0
         conf  = float(ensemble["confidence"])      if ensemble else 0.0
@@ -403,6 +422,13 @@ class CandleChartDialog(QDialog):
         self._lbl_conf_text.setText(
             "conf %.3f  mc %.3f  %+.3f" % (conf, mc, delta)
         )
+
+        # ── 좌측 중단 (상태 · 현재가 · 포지션) ────────────────────
+        try:
+            self._mid.update_row(candles, state)
+        except Exception:
+            # 배너 한 줄 때문에 차트를 죽이지 않는다
+            pass
 
         # ── 봉차트 + 인디케이터 레인 그리기 ──────────────────────
         self._draw_chart(candles, d, fg, candle_decisions)
@@ -534,8 +560,26 @@ class CandleChartDialog(QDialog):
             )
 
         ax.set_xlim(*xlim)
+
+        # ── [MW0601 579차] 보유 중 레벨선 — 진입·하드스톱·TP1/2/3·트레일링 ──
+        _lv = []
+        try:
+            _lv = draw_position_levels(ax, xlim[1] - 0.2)
+        except Exception:
+            pass
+
         y_lo = min(prices_lo) - p_range * 0.04
         y_hi = max(prices_hi) + p_range * 0.08
+        # 레벨선이 축 밖이면 안 보인다 — 넓히되 캔들이 납작해지지 않게 3배까지만.
+        if _lv:
+            _cap = (y_hi - y_lo) * 3.0
+            _lo2 = min([y_lo] + _lv) - p_range * 0.04
+            _hi2 = max([y_hi] + _lv) + p_range * 0.08
+            if (_hi2 - _lo2) <= _cap:
+                y_lo, y_hi = _lo2, _hi2
+            else:
+                _mid = (max(prices_hi) + min(prices_lo)) / 2.0
+                y_lo, y_hi = _mid - _cap / 2.0, _mid + _cap / 2.0
         ax.set_ylim(y_lo, y_hi)
 
         # ── 방향예측 레인 ────────────────────────────────────────

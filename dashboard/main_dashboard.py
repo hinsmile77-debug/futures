@@ -12603,7 +12603,11 @@ class MireukDashboard(QMainWindow):
             left_split.addWidget(self._conf_trend_card)
             # 340차: 호라이즌 on/off 체크박스 그리드 제거로 pred_panel 하단 여백이
             # 늘어난 만큼 진입단계 카드 쪽으로 배분 (500→420, 280→360)
-            left_split.setSizes([200, 420, 360])
+            # 577차: 진입단계 표를 10행으로 고정했으므로 남는 세로를
+            #        pred_panel(방향 인디케이터 캔들차트)로 돌린다.
+            #        카드 높이 = 표 289(실측: 10행×25 + 크롬 39) + 요약행·여백 ≈ 330.
+            #        360→330 과 호라이즌 스트립 77→31 을 합쳐 캔들차트가 ~76px 늘어난다.
+            left_split.setSizes([200, 450, 330])
         except Exception as _cte:
             logger.warning("[Dashboard] ConfTrendCard 로드 실패: %s", _cte)
             left_split.setSizes([200, 740])
@@ -14130,6 +14134,14 @@ class DashboardAdapter:
     def update_position(self, pos_data: dict):
         """청산 패널 포지션 데이터 업데이트"""
         self._win.exit_panel.update_data(pos_data)
+        # [MW0601 575차] 보조 모니터 배너 두 곳에 포지션을 떨군다.
+        # 포지션은 DB에 없다 — 이 호출이 유일한 경로다. 단방향·읽기 전용이며
+        # 실패해도 청산 패널 갱신을 막지 않는다.
+        try:
+            from dashboard.panels.mid_status_row import publish_position
+            publish_position(pos_data)
+        except Exception:
+            pass
         # 헤더 포지션 배지 갱신
         lbl = getattr(self._win, "lbl_pos", None)
         if lbl is None:

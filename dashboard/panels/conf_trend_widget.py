@@ -19,6 +19,7 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -75,6 +76,13 @@ class ConfTrendWidget(QWidget):
 
     REFRESH_MS = 30_000
     MAX_ROWS   = 30   # 최근 N봉만 표시 — 전체 표시 시 3310 setItem × setStyleSheet = 73초 블로킹
+    # [MW0601 577차] 보이는 행을 10행으로 고정한다.
+    #   종전에는 부모 스플리터가 높이를 정해 15행이 보였다. 되찾은 세로는
+    #   위쪽 방향 인디케이터 캔들차트로 간다.
+    #   ⚠ MAX_ROWS(조회 30행)는 그대로다 — 스크롤하면 나머지도 볼 수 있다.
+    #     보이는 창만 줄인 것이지 데이터를 버린 게 아니다.
+    VISIBLE_ROWS = 10
+    ROW_H        = 22
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -103,12 +111,19 @@ class ConfTrendWidget(QWidget):
     def _build_ui(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(4)
+        root.setSpacing(2)
 
         self._lbl_today_avg = QLabel("오늘 conf 평균: --")
         self._lbl_today_avg.setStyleSheet("font-size:11px; color:%s;" % _COL["text"])
         self._lbl_today_pass = QLabel("통과율: --")
         self._lbl_today_pass.setStyleSheet("font-size:11px; color:%s;" % _COL["green"])
+
+        # 🔴 [577차 후속] 라벨을 세로로 **못 자라게** 묶는다.
+        #   표를 고정높이로 만든 순간 레이아웃의 남는 세로가 갈 곳을 잃고
+        #   이 라벨로 몰렸다 — 글자는 12px 인데 실측 **181px** 까지 부풀어
+        #   제목과 표 사이가 텅 비었다.
+        for _lb in (self._lbl_today_avg, self._lbl_today_pass):
+            _lb.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
 
         sumrow = QHBoxLayout()
         sumrow.addWidget(self._lbl_today_avg)
@@ -127,8 +142,9 @@ class ConfTrendWidget(QWidget):
         hdr.setSectionResizeMode(7, QHeaderView.Stretch)
         hdr.setSectionResizeMode(8, QHeaderView.Stretch)
         hdr.setSectionResizeMode(9, QHeaderView.Stretch)
-        self._table.setMinimumHeight(200)
-        self._table.setMaximumHeight(16777215)  # 제한 없음 — 부모 레이아웃이 높이 결정
+        # 높이는 showEvent 에서 **실측**해서 맞춘다 — 헤더+프레임 크롬을
+        # 상수로 찍으면 빗나간다(실측 39px, 눈대중 28px → 9.5행만 보였다).
+        self._fit_table_rows()
         self._table.setAlternatingRowColors(False)
         self._table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -143,7 +159,58 @@ class ConfTrendWidget(QWidget):
 
     # ── 데이터 갱신 ──────────────────────────────────────────────
 
-    def refresh(self):
+    def _fit_table_rows(self):
+        """표를 정확히 VISIBLE_ROWS 행 높이로 고정한다.
+
+        🔴 행 높이도 크롬도 **재서** 쓴다. 눈대중으로 찍으면 빗나간다 —
+          `setDefaultSectionSize(22)` 를 해뒀지만 실제 행은 **25px** 이다
+          (스타일시트 셀 패딩이 덮는다). 22 로 계산했더니 10행이 아니라
+          8행만 온전히 보였다.
+        크롬(헤더+프레임)도 스타일시트·DPI 에 따라 달라진다.
+        """
+        t = self._table
+        row_h = t.rowHeight(0) if t.rowCount() > 0 else 0
+        if row_h <= 0:
+            row_h = max(self.ROW_H, t.verticalHeader().defaultSectionSize())
+        chrome = t.height() - t.viewport().height()
+        if chrome <= 0:
+            chrome = t.horizontalHeader().sizeHint().height() + 2 * t.frameWidth()
+        h = self.VISIBLE_ROWS * row_h + chrome
+        if t.maximumHeight() != h:
+            t.setMinimumHeight(h)
+            t.setMaximumHeight(h)
+        self._cap_card()
+
+    def _cap_card(self):
+        """위젯과 카드(GroupBox)를 **내용 높이로 잠근다**.
+
+        표를 고정하면 스플리터가 여전히 이 칸에 넉넉히 배분하고, 그 잉여가
+        칸 안에서 빈 공간으로 남는다. 상한을 걸어야 스플리터가 잉여를
+        **위 칸(방향 인디케이터 캔들차트)** 으로 보낸다.
+        GroupBox 크롬(제목·테두리·패딩)은 상수로 찍지 않고 **재서** 뺀다.
+        """
+        content = self.sizeHint().height()
+        if content <= 0:
+            return
+        self.setMaximumHeight(content)
+        box = self.parentWidget()
+        if box is None or box.layout() is None:
+            return
+        # 🔴 크롬을 `box.height() - self.height()` 로 재면 **안 된다** —
+        #   지금 배분된 잉여가 그대로 섞여 들어와 상한이 잉여만큼 커진다
+        #   (실측: 500 짜리 칸에서 상한이 500 으로 잡혀 아무것도 막지 못했다).
+        #   sizeHint 끼리 빼면 배분과 무관한 순수 크롬이 나온다.
+        chrome = box.sizeHint().height() - self.sizeHint().height()
+        if chrome <= 0:
+            _m = box.layout().contentsMargins()
+            chrome = _m.top() + _m.bottom() + 14   # 제목 줄 어림
+        box.setMaximumHeight(content + chrome)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._fit_table_rows()
+
+    def refresh(self):
         import time as _t, logging as _log
         _t0 = _t.monotonic()
         try:
@@ -274,6 +341,9 @@ class ConfTrendWidget(QWidget):
         _steps.append(("row_calc", self._last_row_calc_ms))
         _steps.append(("tooltip_calc", self._last_tooltip_calc_ms))
         _steps.append(("qt_apply", self._last_qt_apply_ms))
+
+        # [577차] 행이 생긴 뒤 실측 행높이로 창을 다시 맞춘다 (변화 없으면 무동작)
+        self._fit_table_rows()
 
         # 최신 행(맨 아래)이 항상 보이도록 스크롤
         _s = _t2.monotonic()
@@ -653,11 +723,13 @@ def make_conf_trend_card(parent=None) -> QGroupBox:
     box.setStyleSheet(
         "QGroupBox { font-size:11px; font-weight:bold; color:#8b949e;"
         " border:1px solid #30363d; border-radius:4px;"
-        " margin-top:6px; padding:4px; }"
+        # margin-top 은 **제목 줄 자리**다 — 줄이면 제목이 요약행에 가린다
+        # (4px 로 조였다가 실제로 가려서 되돌렸다). 좌우·아래만 조인다.
+        " margin-top:6px; padding:2px; }"
         "QGroupBox::title { subcontrol-origin:margin; left:8px; padding:0 4px; }"
     )
     lay = QVBoxLayout(box)
-    lay.setContentsMargins(4, 6, 4, 4)
+    lay.setContentsMargins(3, 6, 3, 3)
     widget = ConfTrendWidget(parent)
     lay.addWidget(widget)
     return box
