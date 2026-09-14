@@ -9455,9 +9455,10 @@ class MinuteChartCanvas(QWidget):
             if _n:
                 # 이모지(⛔)는 QPainter 에서 폰트에 없으면 **두부 박스**로 떨어진다.
                 # 실측으로 확인했다 — 기본 글리프만 쓴다.
-                _txt = "■ 롱 금지 — 기계적 매수 구간"
+                # 구간이 여럿인데 라벨이 하나면 "한 군데뿐"으로 읽힌다. 개수를 적는다.
+                _txt = "■ 롱 금지 — 기계적 매수 %d구간" % _n
                 if self._state_provisional:
-                    _txt += " (잠정 · 당일 기준 미확정)"
+                    _txt += " (잠정 · 장중이라 당일 기준 미확정)"
                 painter.setFont(QFont("Malgun Gothic", 8, QFont.Bold))
                 painter.setPen(QColor("#D29922"))
                 painter.drawText(QPointF(plot.left() + S.p(6), plot.top() + S.p(12)), _txt)
@@ -10136,6 +10137,10 @@ class MinuteChartCanvas(QWidget):
     #   아니다.** 그래서 `provisional=True` 로 표시하고 화면이 채도를 낮춘다.
     STATE_W = 30              # 관측창(분) — 사전등록값. 바꾸지 않는다
     STATE_ACTIVE_Q = 0.50     # 활성 분위 — 사전등록값
+    # 이 시각 봉까지 왔으면 그날 중앙값·분위수는 더 움직이지 않는다.
+    # `raw_candles` 는 설계상 15:08 에서 끊기고(settings.py:441), 마감구간을
+    # 붙이면 15:34/15:45 다 — 어느 쪽이든 이 문턱을 넘는다.
+    STATE_FINAL_HM = "15:08"
 
     @staticmethod
     def _quantile(sorted_vals, q):
@@ -10210,12 +10215,20 @@ class MinuteChartCanvas(QWidget):
             self._state_map[row["ts"]] = st
 
     def _state_is_past_session(self):
-        """이 세션이 **끝난 하루**인가 — 중앙값·분위수가 확정됐는가."""
+        """이 세션의 당일 중앙값·분위수가 **확정됐는가**.
+
+        🔴 「과거 날짜인가」가 아니다. **장이 끝난 당일도 확정이다.**
+          날짜만 보면 마감 후에도 하루 종일 「잠정」이 붙는다 —
+          실측으로 확인했다(KST 18:27, 마감 3시간 뒤, 마감구간 27봉까지 적재된
+          2026-09-14 가 「잠정」으로 표시됐다).
+        """
         try:
             if not self._closed_candles:
                 return False
-            _d = self._closed_candles[-1]["ts"][:10]
-            return _d != datetime.now().date().isoformat()
+            _last = self._closed_candles[-1]["ts"]
+            if _last[:10] != datetime.now().date().isoformat():
+                return True                      # 과거 날짜 — 확정
+            return _last[11:16] >= self.STATE_FINAL_HM
         except Exception:
             return False
 
