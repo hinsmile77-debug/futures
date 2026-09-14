@@ -28,6 +28,7 @@ docs/260705_OFFENSE_READINESS_AUDIT_AND_NEXT_PHASE.md §3의 사전 등록 합�
 --out-dir로 출력 폴더를 덮어쓸 수 있으나 재현·검증용이며 주간 산출물은 기본 경로를 쓸 것.
 """
 import argparse
+import codecs
 import datetime
 import json
 import os
@@ -8089,7 +8090,210 @@ def _fmt_channel_verdict(out: dict) -> str:
     return _fmt_verdict(out.get("verdict", ""))
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# [MW0602 564차 후속4 / R2] 채널 번호 유일성 — **리포트를 만들기 전에** 멈춘다
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# 2026-09-07 에 `[58]`·`[59]` 가 서로 다른 두 채널에 붙었다. 가드(`test_487`)는
+# 설계대로 그날 울렸지만 `O-77` 로 테스트 스위트가 죽어 있어 **6일간 아무도 듣지
+# 못했고**, 그 사이 주간 리포트 한 부가 오염된 채 커밋됐다.
+#
+# 이 저장소의 반복 실패는 「가드가 없다」가 아니라 **「가드가 들리지 않는다」** 다
+# (FP-CRITICAL 2개월 PSI=0.0 · TOX 죽은 섀도 한 달 · `test_479` 낡은 손 목록 14일).
+# 그래서 검사를 테스트 스위트 밖으로 꺼낸다 — EOD 체인이 리포트를 **쓰기 전에**
+# 실패하므로, 스위트가 살아 있든 죽어 있든 그날 드러나고 오염 산출물이 커밋되는
+# 경로 자체가 막힌다.
+#
+# 🔴 **임포트 시점에 부르지 않는다.** 모듈 임포트 중 예외는 pytest 수집을 통째로
+#    `Interrupted` 시킨다 — `O-77` 2차층이 정확히 그것이었다(스크립트형 6파일의
+#    모듈 최상위 `sys.exit()`). `build_report()` 진입 시 부른다.
+#
+# ⚠ 레지스트리를 만들어도 이 검사는 여전히 필요하다 — `{58: "a", 58: "b"}` 는
+#   파이썬이 **조용히 뒤엣것으로 덮는다**(예외·경고 없음). 자료구조는 중복을
+#   막지 못한다. 막는 것은 검사이고, 이 함수가 그 단일 출처다.
+
+_CH_NUM_PATTERNS = (
+    r'L\.append\("\| \[(\d+)\]',      # 요약표 직접 렌더
+    r"_row_462\((\d+),",                # 462차 헬퍼 경유
+)
+
+
+# ── [MW0602 564차 후속5 / R3] 채널 번호 레지스트리 — 배정 인벤토리 ─────────────
+#
+# R2 는 "겹쳤는가"를 본다. R3 은 **"소스와 선언이 일치하는가"** 를 본다.
+# 둘은 다른 것을 막는다:
+#   · 번호를 등록하지 않고 채널을 추가하면      → 소스에만 있다  → FAIL
+#   · 렌더 관용구를 바꿔 정규식이 못 보게 되면   → 레지스트리에만 있다 → FAIL
+#
+# 두 번째가 R3 의 진짜 이유다. 2026-09-13 실측으로 정규식 사각지대는 **0** 이었지만
+# (소스 59 = 렌더 59), 번호가 문자열 리터럴 54곳에 흩어져 있어 **누가 렌더 방식을
+# 바꾸는 순간 조용히 사각이 생긴다.** 그때 이 대조가 깨져 알려준다.
+#
+# ⚠ **dict 가 아니라 튜플의 튜플이다.** `{58: "a", 58: "b"}` 는 파이썬이 조용히
+#   뒤엣것으로 덮는다(예외·경고 없음). 인벤토리가 중복을 삼키면 안 된다.
+#
+# 라벨은 **문서용**이다(포맷 지정자는 … 로 정규화). 판정에 쓰지 않는다 — 대조는
+# 번호 집합으로만 한다. 제목을 바꿨다고 EOD 가 멈추면 안 되기 때문이다.
+#
+# 🔴 새 채널을 만들 때: CLAUDE.md 「캠페인 채널 번호 — PC별 대역 분할」 표에서
+#    자기 PC 대역의 미사용 번호를 고르고 **여기 한 줄을 추가**한다. 빠뜨리면
+#    `build_report()` 가 리포트를 만들기 전에 멈춘다.
+#
+# [564차 후속6 / R4] **키 열 추가** — 인용은 번호가 아니라 키로 한다.
+# 번호는 렌더링 산물이고 브랜치마다 다를 수 있다(사용자 결정: v9-dev GP 는
+# [58]/[59], dev 는 [60]/[61] 로 독립). 키는 그 채널의 정체성이다.
+#
+# 🔴 **키가 None 인 것은 '키가 없다'가 아니라 '아직 확인되지 않았다'** 이다
+#    (계측 4원칙 ② 미측정 ≠ 0). 채운 22개는 두 독립 경로로 확인했다:
+#      · 작성자가 소스에 명시한 키(`_dm("…")` · `_row_462(…, key)`)
+#      · 그 키가 `VALIDATION_CAMPAIGN` 에 실재하는지 기계 확인
+#    ⚠ `metrics` dict 경유 자동 추정(49개)은 **채우지 않았다** — [18] 에서
+#      `regime_exhaustion_watch` vs `regime_exhaustion_shadow` 로 갈렸다.
+#      틀린 매핑은 없는 것보다 나쁘다(엉뚱한 채널을 인용하게 된다).
+#    나머지는 그 채널을 손댈 때 **확인한 사람이** 채운다.
+CHANNEL_REGISTRY = (
+    (0, None, "표본 기아 경보"),
+    (1, None, "Triple-Barrier"),
+    (2, "meta_gate", "Meta-Gate"),
+    (3, None, "분위 회귀"),
+    (4, "signal_decay", "신호소멸청산"),
+    (5, "hurst_regime", "레짐 ATR 배수"),
+    (6, "hurst_gate_shadow", "Hurst 게이트 counterfactual"),
+    (7, None, "JointGateBlock counterfactual"),
+    (8, "kelly_skip", "KellyAdvisedSkip×C등급"),
+    (9, None, "OPEN_VOLATILE 시가이격 counterfactual"),
+    (10, None, "TP2 홀드 counterfactual (qty=2 재배분 A/B)"),
+    (11, None, "qty=1 손실1차 조기청산 counterfactual"),
+    (12, None, "qty=1 TP1 이후 트레일 폭 counterfactual"),
+    (13, "grade_ev_inversion", "등급별 순EV 역전 감시"),
+    (14, None, "Tier1 잔여계약 2단계 조기청산 counterfactual"),
+    (15, None, "급행 풀스톱(TP1 미도달) 관찰"),
+    (16, "chase_foreign_combo_watch", "chase+foreign 조합 관찰"),
+    (17, None, "청산 체결 슬리피지"),
+    (18, None, "RegimeExhaustionGate(탈진반전)"),
+    (19, None, "ToxicityGate block counterfactual"),
+    (20, None, "BAR_ONLY_RELAX 수용/롤백"),
+    (21, "direction_ev_watch", "방향별 순EV (SYSTEM_AUTO)"),
+    (22, None, "MFE 캡처율 관찰"),
+    (23, None, "EOD 모델가드 판정 괴리"),
+    (24, None, "TP1 보호전환 반납 관찰"),
+    (25, "tp1_protect_offset_shadow", "TP1 보호전환 offset A/B"),
+    (26, None, "거래불능(가격상한 고착) 구간"),
+    (27, None, "counterfactual 도달불가 목표가"),
+    (28, None, "사이징 역예측 감시…"),
+    (29, None, "mean-revert 레짐 사이즈"),
+    (30, None, "toxicity 재보정 밴드분포"),
+    (31, None, "tox reduce 연속배수 섀도"),
+    (34, None, "meta size0 무시"),
+    (35, None, "유령 하드스톱 결함/알파…"),
+    (36, None, "체크리스트 승격 경로"),
+    (37, None, "mean-revert 일자단위 재검정"),
+    (38, None, "ProfitGuard-L1 피크 트레일링"),
+    (39, None, "confidence 판별력"),
+    (40, None, "방향 선택의 가치"),
+    (41, None, "청산 측 학습기 게이지"),
+    (42, "entry_timing_value_watch", "타점의 가치"),
+    (43, None, "변동성 추정량 교체"),
+    (44, None, "DynMC 붕괴행 잠식"),
+    (45, "cal_guard_flap_watch", "축퇴 가드 플래핑 (게이지)"),
+    (46, None, "Hurst 임계 위치 A/B"),
+    (47, None, "진입 맥락별 손익"),
+    (48, None, "봉중 하드스톱 경로 건전성…"),
+    (49, None, "페이오프 기하 상시 감시"),
+    (50, None, "방향 편향 상시 감시"),
+    (51, None, "ConstOut 호라이즌 건강도"),
+    (57, "trend_efficiency_entry_gate", "te 진입 게이트 (섀도)"),
+    (58, "gp_cross_highvol_watch", "GP 교차 x 고변동 (좁은)"),
+    (59, "gp_cross_any_watch", "GP 교차 x 고변동 (순수·대조)"),
+)
+
+
+class ChannelRegistryMismatch(RuntimeError):
+    """레지스트리와 소스의 채널 번호 집합이 어긋났다 — 리포트를 만들지 않는다."""
+
+
+def assert_channel_registry_consistent(src=None):
+    """레지스트리 == 소스. 어긋나면 `ChannelRegistryMismatch`.
+
+    반환은 `{번호: 라벨}` — R4(인용은 번호가 아니라 이름으로)의 발판이다.
+    """
+    nums = [n for n, _k, _l in CHANNEL_REGISTRY]
+    dup = sorted({n for n in nums if nums.count(n) > 1})
+    if dup:
+        raise ChannelRegistryMismatch(
+            "레지스트리 자체에 중복 번호가 있다: %s" % dup)
+    declared = set(nums)
+    actual = set(int(n) for n in channel_numbers(src))
+    only_src = sorted(actual - declared)
+    only_reg = sorted(declared - actual)
+    if only_src or only_reg:
+        raise ChannelRegistryMismatch(
+            "레지스트리와 소스가 어긋났다 — 소스에만 %s / 레지스트리에만 %s. "
+            "전자는 **등록을 빠뜨린 새 채널**이고, 후자는 **렌더 관용구가 바뀌어 "
+            "유일성 검사가 못 보게 된 채널**이다(후자가 더 위험하다)."
+            % (only_src, only_reg))
+    return dict((n, lab) for n, _k, lab in CHANNEL_REGISTRY)
+
+
+def channel_key(num):
+    """번호 → 캠페인 키. 아직 확인되지 않았으면 (≠ 키가 없다)."""
+    for n, key, _lab in CHANNEL_REGISTRY:
+        if n == int(num):
+            return key
+    raise KeyError("등록되지 않은 채널 번호: %r" % (num,))
+
+
+def channel_number(key):
+    """캠페인 키 → 이 브랜치에서의 번호. 미확인 키면 .
+
+    ⚠ **브랜치마다 다를 수 있다.** PC 간 비교는 이 함수로 번호를 각자 풀어서
+    맞추거나, 아예 키로 짝지어야 한다 — 번호를 직접 비교하면 안 된다.
+    """
+    for n, k, _lab in CHANNEL_REGISTRY:
+        if k == key:
+            return n
+    return None
+
+
+class ChannelNumberCollision(RuntimeError):
+    """요약표 채널 번호가 겹쳤다 — 리포트를 만들지 않고 멈춘다."""
+
+
+def channel_numbers(src=None):
+    """이 생성기가 배정한 채널 번호 목록(등장 순). `src` 를 주면 그 소스를 본다."""
+    if src is None:
+        _self = os.path.abspath(__file__)
+        if _self.endswith(".pyc"):          # __pycache__ 경유 실행 대비
+            _self = _self[:-1]
+        with codecs.open(_self, encoding="utf-8") as _f:
+            src = _f.read()
+    out = []
+    for pat in _CH_NUM_PATTERNS:
+        out.extend(re.findall(pat, src))
+    return out
+
+
+def assert_channel_numbers_unique(src=None):
+    """번호가 겹치면 `ChannelNumberCollision`. 겹치지 않으면 번호 집합을 돌려준다.
+
+    `test_487` 이 같은 함수를 부른다 — 런타임과 테스트가 **같은 정의**를 보게 해
+    한쪽만 느슨해지는 일을 막는다.
+    """
+    nums = channel_numbers(src)
+    dupes = sorted({n for n in nums if nums.count(n) > 1}, key=int)
+    if dupes:
+        raise ChannelNumberCollision(
+            "요약표 채널 번호 중복: %s — 리포트를 만들지 않는다. "
+            "CLAUDE.md 「캠페인 채널 번호 — PC별 대역 분할」 표에서 자기 PC 대역의 "
+            "미사용 번호를 쓸 것(빈 번호 재사용 금지)." % dupes)
+    return sorted(set(nums), key=int)
+
+
 def build_report(days: int) -> tuple:
+    # [564차 후속4 / R2] 번호가 겹치면 여기서 멈춘다 — 오염된 리포트를 쓰지 않는다.
+    assert_channel_numbers_unique()
+    # [564차 후속5 / R3] 레지스트리와 소스가 어긋나도 멈춘다 — 등록 누락 · 렌더 사각.
+    assert_channel_registry_consistent()
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     ss = eval_sample_starvation()
     tb = eval_tb_channel(days)
@@ -12133,6 +12337,34 @@ def build_report(days: int) -> tuple:
     L.append("> 이고 실제 집행은 0.4%다. 확증 필터가 아니라 **별도 관측 채널**이다.")
     L.append("> 근거: `docs/미륵이고도화3/Golden power/GP교차신호_검증_MW0601-20260907.md`")
     L.append("")
+
+    # -- [MW0602 564차 후속6 / R4] 채널 사전 — 번호가 아니라 **키**로 인용하라 --
+    #
+    # 번호는 렌더링 산물이고 **브랜치마다 다르다**(사용자 결정: v9-dev GP 는
+    # [58]/[59], dev 는 [60]/[61]). 키가 그 채널의 정체성이다.
+    # 이 표가 있으면 cmp_summary.py 가 번호가 아니라 키로 짝지을 수 있다.
+    L.append("")
+    L.append("---")
+    L.append("")
+    L.append("## 부록. 채널 사전 (번호 ↔ 캠페인 키)")
+    L.append("")
+    L.append("> 🔴 **인용은 번호가 아니라 키로 한다.** 번호는 브랜치마다 다를 수 있다")
+    L.append("> — 같은 채널이 dev 와 v9-dev 에서 다른 번호를 쓴다")
+    L.append("> (2026-09-13 사용자 결정: 맞추지 않고 독립으로 간다).")
+    L.append("> ")
+    L.append("> `_미확인_` 은 **키가 없다는 뜻이 아니라 아직 확인되지 않았다**는 뜻이다")
+    L.append("> (계측 4원칙 ② 미측정 ≠ 0). 틀린 키를 채우면 엉뚱한 채널을 인용하게 되므로")
+    L.append("> 확인된 것만 채운다 — 그 채널을 손대는 사람이 하나씩 채우면 된다.")
+    L.append("")
+    L.append("| 번호 | 캠페인 키 | 채널 |")
+    L.append("|---|---|---|")
+    for _n, _k, _lab in CHANNEL_REGISTRY:
+    # ⚠ 번호를 백틱으로 감싼다 — cmp_summary 의 요약행 정규식(^| [NN] …)에 걸리면
+    #   부록이 "중복 채널"로 오인돼 가짜 경보가 난다. 전용 패턴으로 읽게 한다.
+        L.append("| `[%d]` | `%s` | %s |" % (_n, _k if _k else "아직 미확인", _lab))
+    _known = sum(1 for _n, _k, _lab in CHANNEL_REGISTRY if _k)
+    L.append("")
+    L.append("키 확인 %d / %d 채널" % (_known, len(CHANNEL_REGISTRY)))
 
     return "\n".join(L), metrics
 

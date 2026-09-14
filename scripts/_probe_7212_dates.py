@@ -6,7 +6,7 @@ from __future__ import annotations
 import io, sys, time, datetime
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() in ("cp949", "mbcs"):
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 PROGID = "CpSysDib.CpSvrNew7212"
 TODAY_8 = datetime.date.today().strftime("%Y%m%d")   # "20260511"

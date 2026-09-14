@@ -37,17 +37,31 @@ def _src():
         return f.read()
 
 
+def _R():
+    """리포트 생성기 모듈 — 유일성 검사의 **단일 출처**를 여기서 가져온다."""
+    import sys
+    if _ROOT not in sys.path:
+        sys.path.insert(0, _ROOT)
+    import scripts.generate_validation_campaign_report as R
+    return R
+
+
 def test_1_summary_channel_numbers_unique():
     """요약표에서 같은 채널 번호가 두 행에 붙으면 안 된다 (0821 1-18의 재발 방지).
 
-    수집 대상: ① `L.append("| [NN] …` 리터럴 행 ② `_row_462(NN, …)` 포맷 행.
-    [47-B]류 접미 라벨은 별개 채널이라 숫자 패턴에 안 걸린다(의도된 제외).
+    🔴 [MW0602 564차 후속4 / R2] 검사를 **생성기의 함수로 일원화**했다.
+    종전에는 이 테스트가 자체 정규식을 들고 있었다. 그러면 런타임(리포트 생성)과
+    테스트가 서로 다른 정의를 보게 되어 한쪽만 느슨해질 수 있다.
+
+    ⚠ **이 테스트는 더 이상 유일한 경보가 아니다.** 같은 함수를 `build_report()`
+    진입부가 부르므로, 스위트가 죽어 있어도 EOD 체인이 리포트를 **쓰기 전에**
+    멈춘다 — 2026-09-07 충돌이 6일간 묻힌 경로를 막은 것이 그 변경의 요점이다.
     """
-    src = _src()
-    nums = re.findall(r'L\.append\("\| \[(\d+)\]', src)
-    nums += re.findall(r"_row_462\((\d+),", src)
-    dupes = sorted({n for n in nums if nums.count(n) > 1})
-    assert not dupes, "요약표 채널 번호 중복: %s — 새 채널 등록 시 번호를 확인하라" % dupes
+    R = _R()
+    try:
+        R.assert_channel_numbers_unique()
+    except R.ChannelNumberCollision as e:
+        raise AssertionError(str(e))
 
 
 def test_2_constout_stays_at_51():
@@ -74,3 +88,228 @@ def test_3_f8b_branch_gating_wired():
     assert src.count("_branch_unavailable(") >= 3, "정의 1 + [50]/[51] 호출 2가 있어야 한다"
     assert '_has_module("scripts.direction_bias_watch")' in src, "[50] 생산부 감지 배선 소실"
     assert "_has_const_out_column()" in src, "[51] 생산부(컬럼) 감지 배선 소실"
+
+
+# ── 4. PC 대역 [2026-09-13 564차 후속2] ──────────────────────────────────────
+#
+# 단일 출처 — CLAUDE.md 「캠페인 채널 번호 — PC별 대역 분할」 표와 같은 값이어야 한다.
+# 한쪽만 고치면 규약과 코드가 갈린다(461차 `mdd_pct` 계열).
+_CHANNEL_BANDS = {
+    "MW0602": (62, 79),
+    "MW0601": (80, 159),
+}
+_LEGACY_MAX = 61          # 채택 시점(2026-09-13) 양 브랜치가 이미 소진한 구간
+
+
+def test_4_channel_numbers_respect_pc_bands():
+    """새 채널 번호가 **선언된 대역 안**에 있는가.
+
+    2026-09-07 에 두 PC 가 각자 「다음 빈 번호」를 뽑아 `[58]`·`[59]` 가 겹쳤다.
+    대역을 나누면 그 충돌이 **애초에 생기지 않는다** — 상대를 보지 않아도 된다.
+
+    ⚠ **한계**: 이 검사는 누가 배정했는지 모른다. 상대 대역을 침범한 배정은 그
+    브랜치에서는 통과하고, 합류 시점에 `test_1` 이 중복으로 잡는다.
+    발생 억제(대역) + 사후 탐지(중복)의 조합이지 완전한 차단이 아니다.
+    """
+    nums = set(int(n) for n in _R().channel_numbers())
+    assert nums, "채널 번호를 하나도 못 읽었다 — 정규식이 생성기와 어긋났다"
+
+    lo = min(b[0] for b in _CHANNEL_BANDS.values())
+    assert lo == _LEGACY_MAX + 1, (
+        "레거시 상한과 대역 시작 사이에 빈 구간이 있다 — 그 구간 번호는 아무도 "
+        "책임지지 않는다: legacy<=%d, 최저 대역 시작=%d" % (_LEGACY_MAX, lo))
+
+    spans = sorted(_CHANNEL_BANDS.items(), key=lambda kv: kv[1])
+    for (n1, (a1, b1)), (n2, (a2, _)) in zip(spans, spans[1:]):
+        assert b1 < a2, "대역이 겹친다: %s%s vs %s%s" % (n1, (a1, b1), n2, (a2, _))
+
+    hi = max(b[1] for b in _CHANNEL_BANDS.values())
+    stray = sorted(n for n in nums
+                   if n > _LEGACY_MAX
+                   and not any(a <= n <= b for a, b in _CHANNEL_BANDS.values()))
+    assert not stray, (
+        "선언된 대역 밖의 채널 번호: %s (레거시<=%d · 대역 %s · 상한 %d). "
+        "CLAUDE.md 「캠페인 채널 번호 — PC별 대역 분할」 표를 먼저 고치고 커밋할 것"
+        % (stray, _LEGACY_MAX, dict(_CHANNEL_BANDS), hi))
+
+
+def test_5_collision_check_is_not_vacuous():
+    """검사가 **실제로 중복을 잡는가** — 단일 출처가 조용히 느슨해지는 것을 막는다.
+
+    `test_1` 은 "지금 중복이 없다"만 말한다. 검사 자체가 망가져 아무것도 못 잡게
+    되어도 `test_1` 은 그대로 초록이다 — 488차가 잡아낸 *"지킨다고 믿는 초록불"* 이
+    정확히 그 형태다. 그래서 인공 충돌을 먹여 **예외가 나는지** 본다.
+
+    두 등록 관용구(직접 렌더 · `_row_462` 헬퍼)를 각각 시험한다 — 한쪽 패턴만
+    살아 있어도 나머지는 사각지대가 된다.
+    """
+    R = _R()
+    nl = chr(10)
+    cases = {
+        "직접 렌더": nl.join(['L.append("| [58] A |")', 'L.append("| [58] B |")']),
+        "_row_462 헬퍼": nl.join(["_row_462(59, x)", "_row_462(59, y)"]),
+    }
+    for label, src in sorted(cases.items()):
+        try:
+            R.assert_channel_numbers_unique(src)
+        except R.ChannelNumberCollision:
+            continue
+        raise AssertionError(
+            "%s 관용구의 인공 중복을 잡지 못했다 — 유일성 검사가 무력화됐다" % label)
+
+    # 과탐도 막는다 — 정상 소스에서 멈추면 EOD 체인이 매번 죽는다.
+    ok_src = nl.join(['L.append("| [62] A |")', "_row_462(63, x)"])
+    R.assert_channel_numbers_unique(ok_src)
+
+
+def test_6_check_is_wired_into_report_generation():
+    """검사가 **리포트 생성 경로에 실제로 걸려 있는가** — R2 의 요점.
+
+    함수가 옳게 동작해도(`test_5`) 아무도 부르지 않으면 의미가 없다. 이 저장소가
+    반복해서 당한 형태가 정확히 그것이다 — FP-CRITICAL 은 학습분포 저장 함수가
+    프로덕션에서 호출된 적이 없어 2개월간 PSI=0.0 이었고, TOX 섀도는 계산만 하고
+    아무도 소비하지 않아 한 달 넘게 죽어 있었다.
+
+    ⚠ 호출 위치는 `build_report()` **진입부**여야 한다. 뒤에 있으면 이미 무거운
+    집계가 끝난 뒤이고, 더 뒤면 오염된 리포트가 이미 파일로 나간다.
+    """
+    import inspect
+    src = inspect.getsource(_R().build_report)
+    assert "assert_channel_numbers_unique()" in src, (
+        "build_report 가 유일성 검사를 부르지 않는다 — 검사가 테스트 안에서만 "
+        "살아 있으면 스위트가 죽는 순간 다시 안 들린다(O-77 이 그랬다)")
+    assert "assert_channel_registry_consistent()" in src, (
+        "build_report 가 레지스트리 대조를 부르지 않는다 — 등록 누락과 렌더 사각이 "
+        "리포트로 그대로 나간다")
+    body = [l for l in src.splitlines()[1:] if l.strip()
+            and not l.strip().startswith("#")]
+    assert body and "assert_channel_numbers_unique()" in body[0], (
+        "검사가 build_report 진입부가 아니다 — 실제 첫 문장: %r" % (body[:1],))
+
+
+
+def test_7_registry_matches_source():
+    """레지스트리(선언) == 소스(실제) — R3.
+
+    `test_1` 이 "겹쳤는가"를 본다면 이쪽은 **"빠졌는가"** 를 본다. 두 방향 모두
+    막는다: 등록 없이 채널을 추가하면 소스에만 있고, 렌더 관용구를 바꿔 정규식이
+    못 보게 되면 레지스트리에만 있다. **후자가 더 위험하다** — 유일성 검사가
+    조용히 눈을 감는 것이라 아무 경보도 울리지 않는다.
+    """
+    R = _R()
+    try:
+        R.assert_channel_registry_consistent()
+    except R.ChannelRegistryMismatch as e:
+        raise AssertionError(str(e))
+
+
+def test_8_registry_cannot_swallow_duplicates():
+    """레지스트리가 **dict 가 아니라 튜플의 튜플**인가 — 설계 불변식.
+
+    dict 로 두면 같은 번호를 두 번 적어도 파이썬이 조용히 뒤엣것으로 덮는다
+    (예외·경고 없음). 인벤토리가 중복을 삼키면 R3 이 R2 를 무력화한다.
+    """
+    reg = _R().CHANNEL_REGISTRY
+    assert isinstance(reg, tuple), (
+        "CHANNEL_REGISTRY 가 tuple 이 아니다(%s) — dict 면 중복 번호를 조용히 "
+        "삼킨다" % type(reg).__name__)
+    nums = [n for n, _k, _lab in reg]
+    assert len(nums) == len(set(nums)), (
+        "레지스트리에 중복 번호: %s" % sorted({n for n in nums if nums.count(n) > 1}))
+
+
+def test_9_registry_check_is_not_vacuous():
+    """대조가 **실제로 양방향을 잡는가** — 느슨해져도 초록불이 되는 것을 막는다."""
+    R = _R()
+    nl = chr(10)
+    cases = {
+        "등록 누락(소스에만)": (chr(39).join(["L.append(", "| [62] 새 채널 |", ")"])) + nl,
+        "렌더 사각(레지스트리에만)": (chr(39).join(["L.append(", "| [0] x |", ")"])) + nl,
+    }
+    for label, src in sorted(cases.items()):
+        try:
+            R.assert_channel_registry_consistent(src)
+        except R.ChannelRegistryMismatch:
+            continue
+        raise AssertionError("%s 을 잡지 못했다 — 레지스트리 대조가 무력화됐다" % label)
+
+
+
+def test_10_registry_keys_are_real_campaign_keys():
+    """[R4] 채운 키는 **실재하는 캠페인 키**여야 한다.
+
+    번호는 렌더링 산물이고 브랜치마다 다를 수 있다(사용자 결정: v9-dev GP 는
+    `[58]`·`[59]`, dev 는 `[60]`·`[61]`). 키가 그 채널의 정체성이므로, 키가
+    틀리면 **엉뚱한 채널을 인용**하게 된다 — 번호가 틀린 것보다 나쁘다.
+
+    ⚠ `None` 은 "키가 없다"가 아니라 **"아직 확인되지 않았다"** 이다
+    (계측 4원칙 ② 미측정 ≠ 0). 그래서 미확인 자체는 실패로 세지 않는다 —
+    틀린 값을 채우는 것보다 비워두는 편이 낫다는 것이 이 설계의 요점이다.
+    """
+    import sys
+    if _ROOT not in sys.path:
+        sys.path.insert(0, _ROOT)
+    from config.settings import VALIDATION_CAMPAIGN as V
+    reg = _R().CHANNEL_REGISTRY
+    bad = [(n, k) for n, k, _lab in reg if k is not None and k not in V]
+    assert not bad, (
+        "VALIDATION_CAMPAIGN 에 없는 키가 레지스트리에 있다: %s — 오타이거나 "
+        "캠페인에서 사라진 채널이다" % bad)
+    keys = [k for _n, k, _lab in reg if k is not None]
+    assert len(keys) == len(set(keys)), (
+        "한 키가 두 번호에 붙었다: %s" % sorted({k for k in keys if keys.count(k) > 1}))
+
+
+def test_11_key_lookup_helpers_round_trip():
+    """[R4] `channel_key` ↔ `channel_number` 왕복 — PC 간 비교의 발판."""
+    R = _R()
+    for num, key, _lab in R.CHANNEL_REGISTRY:
+        assert R.channel_key(num) == key
+        if key is not None:
+            assert R.channel_number(key) == num
+    assert R.channel_number("존재하지_않는_키") is None
+    try:
+        R.channel_key(99999)
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("등록되지 않은 번호인데 조용히 통과했다")
+
+
+def test_12_cmp_summary_pairs_by_key_not_number():
+    """[R4] PC 대조가 **번호가 아니라 키**로 짝짓는가.
+
+    2026-09-13 사용자 결정으로 같은 채널이 브랜치마다 다른 번호를 쓴다
+    (v9-dev GP `[58]`/`[59]` vs dev `[60]`/`[61]`). 번호로 짝지으면 그 둘은
+    **양쪽 「only」 줄에 각각 떠서 비교 자체가 안 된다.**
+
+    ⚠ 한쪽 리포트에 부록이 없으면(구 세대) 종전대로 번호로 짝짓는다 — 퇴화하지
+    않게 하는 것이 조건이다. 그것도 함께 확인한다.
+    """
+    import sys
+    if _ROOT not in sys.path:
+        sys.path.insert(0, _ROOT)
+    import tempfile
+    from scripts.cmp_summary import rows
+    nl = chr(10)
+    body = [
+        "| [60] GP 좁은 | PASS | x |",
+        "",
+        "## 부록. 채널 사전",
+        "| 번호 | 캠페인 키 | 채널 |",
+        "|---|---|---|",
+        "| " + "`" + "[60]" + "`" + " | " + "`" + "gp_cross_highvol_watch" + "`" + " | GP 좁은 |",
+        "| " + "`" + "[0]" + "`" + " | " + "`" + "아직 미확인" + "`" + " | 표본 기아 |",
+    ]
+    fd, path = tempfile.mkstemp(suffix=".md")
+    os.close(fd)
+    with io.open(path, "w", encoding="utf-8") as f:
+        f.write(nl.join(body))
+    try:
+        d, order, dups, keymap = rows(path)
+    finally:
+        os.remove(path)
+    assert keymap.get("[60]") == "gp_cross_highvol_watch", keymap
+    assert "[0]" not in keymap, (
+        "「아직 미확인」을 키로 취급했다 — 미확인끼리 잘못 짝지어진다(계측 4원칙 ②)")
+    assert not dups, "부록 행이 요약행 중복으로 오인됐다: %s" % (dups,)

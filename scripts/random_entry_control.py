@@ -380,8 +380,7 @@ def _binom_two_sided(k, n):
 def _utf8_stdout():
     """cp949 콘솔에서 em-dash 등이 UnicodeEncodeError를 내는 것을 막는다."""
     try:
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8",
-                                      errors="replace")
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
 
