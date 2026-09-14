@@ -242,6 +242,56 @@ def test_p1p_2_unit_mismatch_wired_into_production_path():
     assert i_filter < i_x, "단위 불일치 제외가 X_hz 구성보다 뒤에 있다"
 
 
+# ─────────────────── 559차 후속3: 장중 최소표본 불일치 ───────────────────
+def test_intraday_loader_uses_intraday_minimum():
+    """장중 로더가 26주 전량 기준(15,000)을 요구하면 안 된다.
+
+    장중 경로는 `retrain_now` 가 최근 `MAX_TRAIN_BARS_INTRADAY`(4,800)봉만 쓰는데,
+    `_load_from_db` 는 그 절단 **전에** `MIN_TRAIN_BARS`(15,000)를 요구해 왔다.
+    404차가 `retrain_now` 쪽만 고치고 로더는 "풀이 크니까" 두었는데, 559차 필터 2종이
+    풀을 16,104행으로 줄이자 **2026-09-14 09:36 장중 재학습이 14,222 < 15,000 으로
+    실패**했다(09-11 까지 6회 전부 성공). 잠재 불일치가 발현한 것이다.
+
+    ⚠ 임계를 낮추는 수정이 아니다 — **장중이라는 사실을 검사에 전달**하는 것이다.
+       EOD 경로 판정은 그대로 15,000 이어야 한다.
+    """
+    import ast
+    path = os.path.join(_ROOT, "learning", "batch_retrainer.py")
+    src = _read(path)
+    tree = ast.parse(src)
+
+    fn = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_load_from_db":
+            fn = node
+    assert fn is not None, "_load_from_db 가 사라졌다"
+    assert "intraday" in [a.arg for a in fn.args.args], "intraday 인자가 없다"
+
+    lines = src.splitlines()
+    end = max(getattr(n, "lineno", fn.lineno) for n in ast.walk(fn))
+    body = chr(10).join(lines[fn.lineno - 1:end])
+    assert "MAX_TRAIN_BARS_INTRADAY if intraday else MIN_TRAIN_BARS" in body, (
+        "장중 로더가 다시 MIN_TRAIN_BARS 를 무조건 요구한다 — "
+        "2026-09-14 장중 재학습 전량 실패가 재발한다")
+
+    # 상수 관계가 뒤집히면 위 수정이 무의미해진다
+    ns = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1                 and isinstance(node.targets[0], ast.Name):
+            try:
+                ns[node.targets[0].id] = ast.literal_eval(node.value)
+            except Exception:
+                pass
+    assert ns["MAX_TRAIN_BARS_INTRADAY"] < ns["MIN_TRAIN_BARS"]
+
+    # 판정 시뮬 — 그날 실측값으로 고정
+    def gate(n, intraday):
+        return n >= (ns["MAX_TRAIN_BARS_INTRADAY"] if intraday else ns["MIN_TRAIN_BARS"])
+    assert gate(14222, True) is True, "장중 경로가 여전히 막힌다"
+    assert gate(14222, False) is False, "EOD 판정이 함께 느슨해졌다 — 의도 밖이다"
+    assert gate(4799, True) is False, "장중 하한 자체가 사라졌다"
+
+
 # ─────────────────────────── 다음 장 점검기 ───────────────────────────
 def test_collection_check_covers_all_three_defects():
     """결함 3건 수집 점검기가 셋 모두를 보고, 배포 이전 날을 FAIL 로 오판하지 않는다."""
