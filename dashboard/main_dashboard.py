@@ -8305,7 +8305,7 @@ _STATE_KO = {"BUY_MECH": "기계적 매수", "BUY_STACK": "상방 쌓기",
              "SELL_STACK": "하방 쌓기", "SELL_MECH": "기계적 매도"}
 # [오버레이 P7] 가격 아래 보조 패널 — 전환 레인 + 원계열 히스토그램 2단
 _FLOW_LANE_H = 15    # 전환 마커 레인
-_FLOW_HIST_H = 30    # 공격자 · ΔOI 각각
+_FLOW_HIST_H = 34    # 공격자 · ΔOI 각각
 _FLOW_GAP    = 5
 _LEGEND_H    = 22
 _DIR_BAR_COLOR = {
@@ -8487,6 +8487,11 @@ class MinuteChartCanvas(QWidget):
         #   결과일 뿐이라 크기 정보가 사라진다. 히스토그램은 원계열이 필요하다.
         self._aggr_map = {}   # {ts: 공격자불균형(당일 중앙값 차감)}
         self._doi_map = {}    # {ts: ΔOI(30분)}
+        # 활성 문턱(당일 50% 분위). 화면에 **선으로** 그린다 — 막대가 이 선을
+        #   넘었는지가 곧 "상태가 붙을 자격"이라, 안 보이면 히스토그램과
+        #   상태 레인이 서로 모순돼 보인다(실측: 사용자가 "매도공격이 없었나"고 물었다).
+        self._thr_a = None
+        self._thr_o = None
         # [오버레이 P3] 장전 레벨. None 은 「미조회」다 — 빈 dict(「그날 없음」)와 다르다.
         # [오버레이 P8] 이번 paint 에서 이미 칩이 차지한 사각형들.
         #   레이어마다 따로 피하면 **레이어끼리는 계속 겹친다** — 실측으로 확인했다.
@@ -8806,7 +8811,6 @@ class MinuteChartCanvas(QWidget):
         #   이미 그리므로 그 줄은 가져오지 않는다 — 없는 메서드를 부르면 매 프레임
         #   AttributeError 로 차트가 통째로 빈다.
         _t_markers = _t2.monotonic(); self._draw_markers(painter, plot, candles, index_map, lo, hi, padded_count)
-        self._draw_trade_summary(painter, plot)
         # 보조 패널 · 레전드 — x축 라벨은 패널 **아래**에 와야 한다
         _axis_bottom = plot.bottom()
         if _flow_h:
@@ -9549,9 +9553,14 @@ class MinuteChartCanvas(QWidget):
                 painter.drawPolygon(_tri)
 
             # ② 공격자 때린 쪽 · ③ ΔOI 30분
-            for _r, _src, _pos, _neg, _tag in (
-                    (_h1, self._aggr_map, "#3FB950", "#F85149", "공격자 때린 쪽"),
-                    (_h2, self._doi_map, "#58A6FF", "#D29922", "ΔOI 30분  신규/청산")):
+            # 🔴 라벨을 정확히 쓴다. 원시 거래량은 당일 매수 1.7:1 우세라
+            #   "매도가 절대적으로 많았다"가 **아니다** — 당일 자기 기준선 대비다.
+            #   그 구분이 안 보이면 막대를 절대량으로 오독한다(실측).
+            for _r, _src, _pos, _neg, _tag, _thr in (
+                    (_h1, self._aggr_map, "#3FB950", "#F85149",
+                     "공격자 때린 쪽  (당일 중앙값 대비)", self._thr_a),
+                    (_h2, self._doi_map, "#58A6FF", "#D29922",
+                     "ΔOI 30분  신규/청산", self._thr_o)):
                 if not _src:
                     continue
                 _vals = [abs(v) for v in _src.values() if v is not None]
@@ -9572,6 +9581,24 @@ class MinuteChartCanvas(QWidget):
                     painter.setBrush(col)
                     x = _r.left() + step * idx
                     painter.drawRect(QRectF(x, _mid - _hh if v >= 0 else _mid, _w, _hh))
+                # 활성 문턱 — 이 안쪽 막대는 **상태가 붙을 자격이 없다**.
+                # 🔴 선만 그었더니 안 읽혔다(실측: 문턱이 반쪽 높이의 31%·24% 라
+                #   30px 패널에서 중앙선과 4px 차이였다). **띠로 깔아** 안/밖을 가른다.
+                # 🔴 넘었다고 신호가 아니다. 검증된 문장은 「BUY_MECH 구간 롱 금지」
+                #   하나뿐이고 그건 빗금이 말한다. 여기서는 자격선일 뿐이다.
+                #   두 칸 **모두** 넘어야 상태가 붙는다 — 한쪽만으로는 안 된다.
+                if _thr and _thr > 0 and _thr <= _mx:
+                    _ty = (_thr / _mx) * (_r.height() / 2 - 1)
+                    _band = QColor(C["text2"]); _band.setAlpha(30)
+                    painter.setPen(Qt.NoPen); painter.setBrush(_band)
+                    painter.drawRect(QRectF(_r.left() + 1, _mid - _ty,
+                                            _r.width() - 2, _ty * 2))
+                    _tp = QPen(QColor(C["text2"])); _tp.setWidth(1); _tp.setStyle(Qt.DotLine)
+                    painter.setPen(_tp); painter.setBrush(Qt.NoBrush)
+                    for _sy in (_mid - _ty, _mid + _ty):
+                        painter.drawLine(QPointF(_r.left(), _sy), QPointF(_r.right(), _sy))
+                    # 설명은 **레전드에 한 번만** 쓴다. 패널마다 찍었더니 막대 위에
+                    #   겹쳐 안 읽혔다(실측) — 같은 말을 두 번 하면서 둘 다 못 읽게 됐다.
                 painter.setFont(QFont("Malgun Gothic", 7))
                 painter.setPen(QColor(C["text2"]))
                 painter.drawText(QPointF(_r.left() + S.p(4), _r.top() + S.p(10)), _tag)
@@ -9590,6 +9617,7 @@ class MinuteChartCanvas(QWidget):
         ("#3FB950", "매수 공격 / 목표"), ("#F85149", "매도 공격 / 손절"),
         ("#58A6FF", "ΔOI 신규"), ("#D29922", "ΔOI 청산 · 롱 금지"),
         ("#C2CCD6", "구조모델"), ("#BC8CFF", "피터맥점"), ("#39C5CF", "가격모델 밴드"),
+        ("#8B949E", "회색 띠 = 활성 문턱 미달(상태 안 붙음)"),
     )
 
     def _draw_legend(self, painter: QPainter, rect: QRectF):
@@ -9619,25 +9647,10 @@ class MinuteChartCanvas(QWidget):
         finally:
             painter.restore()
 
-    def _draw_trade_summary(self, painter: QPainter, plot: QRectF):
-        """우상단 한 줄 — 색·농도·선종이 무엇을 뜻하는지 한 번에 말한다."""
-        _n = len(self._completed_trades) + len(self._peter_trades if
-                                               self._ov.get("trade_peter") else [])
-        if _n <= 0:
-            return
-        try:
-            painter.save()
-            painter.setFont(QFont("Malgun Gothic", 7))
-            painter.setPen(QColor(C["text2"]))
-            _t = ("● 거래 %d건 — 녹 수익 · 적 손실 │ 진한 면 확정 · 옅은 면 미결"
-                  " │ 실선 미륵이 · 점선 피터리(사료)" % _n)
-            _fm = painter.fontMetrics()
-            painter.drawText(QPointF(plot.right() - _fm.horizontalAdvance(_t) - S.p(6),
-                                     plot.top() + S.p(11)), _t)
-        except Exception as _e:
-            logger.debug("[ChartDBG] _draw_trade_summary 예외: %s", _e)
-        finally:
-            painter.restore()
+    # [P13] 우상단 요약 줄은 **제거했다.**
+    #   같은 자리에 「수집 절단 → 마감구간」 라벨이 이미 있어 겹쳤고(실측),
+    #   내용도 중복이었다 — 색·선종은 레전드가, 건수는 툴바 배지가 말한다.
+    #   겹쳐서 둘 다 못 읽느니 하나를 버린다(원칙 6 — 빼는 것도 설계다).
 
     # ── [dev 이식 / 569차] 축 밖 판정 2종은 555차 후속2 의 것이지만 569차의
     #   `_draw_struct_model` 이 **직접 호출**하므로 최소 선행분으로 함께 가져온다.
@@ -10400,6 +10413,8 @@ class MinuteChartCanvas(QWidget):
         self._state_map = {}
         self._aggr_map = {}
         self._doi_map = {}
+        self._thr_a = None
+        self._thr_o = None
         self._state_provisional = not self._state_is_past_session()
         # 🔴 사전등록 구현은 `m = m[m.oi.fillna(0) > 0]` 로 **OI 결측 봉을 버린 뒤**
         #   창을 센다. 남겨두면 30봉 창이 그만큼 밀려 판정이 달라진다
@@ -10442,6 +10457,7 @@ class MinuteChartCanvas(QWidget):
         thrO = self._quantile(sorted(abs(v) for v in d_oi if v is not None), self.STATE_ACTIVE_Q)
         if thrA is None or thrO is None:
             return
+        self._thr_a, self._thr_o = thrA, thrO
         # ④ 상태 + 원계열 보관
         for i, row in enumerate(rows):
             a, o = imb[i], d_oi[i]
