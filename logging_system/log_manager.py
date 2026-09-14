@@ -169,23 +169,75 @@ class LogManager:
             pass
 
     # ── 편의 메서드 ────────────────────────────────────────────
-    def system(self, msg: str, level: str = "INFO", **_kwargs):
+    #
+    # 🔴 [MW0601 564차] 이 메서드들은 **stdlib logger 가 아니다** — 지연 포매팅
+    # (`log.info(fmt, a, b)`)을 지원하지 않고 **완성된 문자열 하나**를 받는다.
+    # 그런데 생긴 게 logger 와 똑같아서 호출부가 printf 관행대로 부르기 쉽다.
+    #
+    # 2026-09-14 14:25 실측: `main.py` 의 conf_floor 분기가
+    #   `log_manager.signal("...%.1f%%...", a, b, c)` 로 불러
+    #   `TypeError: signal() takes from 2 to 3 positional arguments but 5 were given`
+    # → **minute_pipeline 이 통째로 죽고** ERR-FATAL 핸들러가 자동진입을 15분 껐다.
+    #   자동진입 **하나**를 끄려던 분기가 **전부**를 껐다.
+    #
+    # 5/22 에 이미 `**_kwargs` 로 **키워드** 인자는 막아 뒀다. 막지 못한 것은
+    # **위치** 인자였다. 아래 `*_fmt_args` 가 그 구멍을 닫는다:
+    #   · 인자가 없으면 **기존 경로 그대로**(동작 무변경)
+    #   · 있으면 `%` 로 조립하고 **오용 사실을 한 번 경고**한다 — 삼키지 않는다.
+    # ⚠ 이건 호출부를 고치지 않아도 된다는 뜻이 아니다. 파이프라인이 로그 한 줄
+    #   때문에 죽지 않게 하는 **안전망**이고, 경고가 호출부 수정을 유도한다.
+    _lazy_fmt_warned: set = set()
+
+    def _coerce(self, ch: str, msg, level, fmt_args):
+        """지연 포매팅 오용을 살려낸다. 인자 없으면 아무것도 하지 않는다."""
+        if not fmt_args:
+            return msg, level
+        _LEVELS = ("INFO", "WARNING", "ERROR", "DEBUG", "CRITICAL")
+        if isinstance(level, str) and level.upper() in _LEVELS:
+            args, lvl = tuple(fmt_args), level        # (msg, level, *args) 혼합형
+        else:
+            args, lvl = (level,) + tuple(fmt_args), "INFO"   # level 자리가 사실 포맷 인자
+        try:
+            out = str(msg) % args
+        except Exception:
+            out = "%s | %r" % (msg, args)             # 포맷조차 실패해도 죽지 않는다
+        key = (ch, str(msg)[:60])
+        if key not in LogManager._lazy_fmt_warned:
+            LogManager._lazy_fmt_warned.add(key)
+            try:
+                self.log("SYSTEM",
+                         "[LogFmt] %s() 를 지연 포매팅으로 호출했다 — 이 로거는 완성된 "
+                         "문자열 하나만 받는다. 살려서 기록했으나 **호출부를 고칠 것**. "
+                         "(564차) msg=%r" % (ch.lower(), str(msg)[:80]),
+                         "WARNING")
+            except Exception:
+                pass
+        return out, lvl
+
+    def system(self, msg: str, level: str = "INFO", *_fmt_args, **_kwargs):
+        msg, level = self._coerce("SYSTEM", msg, level, _fmt_args)
         self.log("SYSTEM", msg, level)
 
-    def signal(self, msg: str, level: str = "INFO", **_kwargs):
+    def signal(self, msg: str, level: str = "INFO", *_fmt_args, **_kwargs):
         # **_kwargs: 인자 추가 시 TypeError 방지 가드 (5/22 재발 방지)
+        # *_fmt_args: 위치 인자 지연 포매팅 가드 (564차 — 5/22 가 못 막은 구멍)
+        msg, level = self._coerce("SIGNAL", msg, level, _fmt_args)
         self.log("SIGNAL", msg, level)
 
-    def trade(self, msg: str, level: str = "INFO", **_kwargs):
+    def trade(self, msg: str, level: str = "INFO", *_fmt_args, **_kwargs):
+        msg, level = self._coerce("TRADE", msg, level, _fmt_args)
         self.log("TRADE", msg, level)
 
-    def learning(self, msg: str):
+    def learning(self, msg: str, *_fmt_args):
+        msg, _ = self._coerce("LEARNING", msg, "INFO", _fmt_args)
         self.log("LEARNING", msg)
 
-    def debug(self, msg: str):
+    def debug(self, msg: str, *_fmt_args):
+        msg, _ = self._coerce("DEBUG", msg, "INFO", _fmt_args)
         self.log("DEBUG", msg)
 
-    def health(self, msg: str, level: str = "INFO"):
+    def health(self, msg: str, level: str = "INFO", *_fmt_args):
+        msg, level = self._coerce("HEALTH", msg, level, _fmt_args)
         self.log("HEALTH", msg, level)
 
     # ── 콜백 등록 (대시보드에서 사용) ─────────────────────────
