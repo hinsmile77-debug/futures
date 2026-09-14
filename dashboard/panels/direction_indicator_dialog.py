@@ -28,6 +28,7 @@ from PyQt5.QtWidgets import (
 )
 
 from config.settings import PREDICTIONS_DB, RAW_DATA_DB
+from dashboard.panels.mid_status_row import MidStatusRow
 
 _HORIZONS = ["1m", "3m", "5m", "10m", "15m", "30m"]
 _N_CANDLES = 40
@@ -82,6 +83,9 @@ class DirectionIndicatorWidget(QWidget):
         root.setSpacing(0)
         root.setContentsMargins(0, 0, 0, 0)
         root.addWidget(self._build_lamp())
+        # [MW0601 575차] 시안 좌측 중단 — 상태 · 현재가 · 포지션
+        self._mid = MidStatusRow("최근 %d봉" % _N_CANDLES)
+        root.addWidget(self._mid)
         root.addWidget(self._build_chart())
         root.addWidget(self._build_hz_strip())
 
@@ -291,6 +295,13 @@ class DirectionIndicatorWidget(QWidget):
         ensemble = self._fetch_latest_ensemble(today)
         hz_dirs  = self._fetch_latest_hz_dirs(today)
         self._apply(ensemble, hz_dirs, candles)
+        # 좌측 중단 — 배너 한 줄 때문에 차트를 죽이지 않는다.
+        # 상태 계산(실측 37ms)은 워커 스레드로 빠지고, 분이 바뀔 때만 돈다
+        # (폴링 10초 · 봉 1분).
+        try:
+            self._mid.tick(candles, today, today + "Z")
+        except Exception:
+            pass
 
     def push_live(self, decision: dict, ts: str) -> None:
         """파이프라인에서 직접 앙상블 결과 주입 — DB 폴링 지연 없이 즉시 램프 갱신.
