@@ -56,6 +56,8 @@
 
 ### 565차 — 풀타임 수집 Phase 3 후속 (MW0601, 2026-09-14) — **매매 정책 무변경**
 
+- [x] **dev 이식 완료** `[DONE 2026-09-14]` — `origin/dev` `6e20c37`(원 커밋 `8fe2316`). dev_memory 는 dev 판 유지 + 체리픽 기록. MW0602 확인 항목은 dev DECISION_LOG 565차 체리픽 항목.
+
 - [ ] **09-15 08:41 첫 자동 보충 확인** — SYSTEM 로그 `[SessionBackfill] 2026-09-14 차트 보충 — chart=411 existing=411
       inserted=0 open_fixed=0 mismatch=…`(09-14 는 이미 수동 보충됨 → inserted 0 정상). 09-16 부터는 `inserted=1`(15:45)·`open_fixed=1`.
       장후 `python scripts/session_bars_recon.py --date 2026-09-15` → Phase 1 PASS + `CLOSE_FILL 기대 1 실측 1`.
