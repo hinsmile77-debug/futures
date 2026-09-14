@@ -13120,7 +13120,11 @@ class MireukDashboard(QMainWindow):
             left_split.addWidget(self._conf_trend_card)
             # 340차: 호라이즌 on/off 체크박스 그리드 제거로 pred_panel 하단 여백이
             # 늘어난 만큼 진입단계 카드 쪽으로 배분 (500→420, 280→360)
-            left_split.setSizes([200, 420, 360])
+            # 577차: 진입단계 표를 10행으로 고정했으므로 남는 세로를
+            #        pred_panel(방향 인디케이터 캔들차트)로 돌린다.
+            #        카드 높이 = 표 289(실측: 10행×25 + 크롬 39) + 요약행·여백 ≈ 330.
+            #        360→330 과 호라이즌 스트립 77→31 을 합쳐 캔들차트가 ~76px 늘어난다.
+            left_split.setSizes([200, 450, 330])
         except Exception as _cte:
             logger.warning("[Dashboard] ConfTrendCard 로드 실패: %s", _cte)
             left_split.setSizes([200, 740])

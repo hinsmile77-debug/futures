@@ -86,7 +86,7 @@ class DirectionIndicatorWidget(QWidget):
         # [MW0601 575차] 시안 좌측 중단 — 상태 · 현재가 · 포지션
         self._mid = MidStatusRow("최근 %d봉" % _N_CANDLES)
         root.addWidget(self._mid)
-        root.addWidget(self._build_chart())
+        root.addWidget(self._build_chart(), 1)   # 남는 세로는 전부 차트로
         root.addWidget(self._build_hz_strip())
 
     def _build_lamp(self) -> QFrame:
@@ -167,67 +167,62 @@ class DirectionIndicatorWidget(QWidget):
             return placeholder
 
     def _build_hz_strip(self) -> QFrame:
+        """호라이즌 + 합의 — **한 줄**.
+
+        [MW0601 577차] 종전 3단(레이블 행 / 아이콘 행 / 구분선 / 합의 행)에서
+        한 줄로 줄였다. 세로 ~77px → ~28px. 판독에 필요한 정보는 그대로고,
+        줄어든 50px 은 전부 캔들차트로 간다 — **빼는 것도 설계다**.
+        """
         frame = QFrame()
         frame.setStyleSheet(_STYLE_HZ)
-        lay = QVBoxLayout(frame)
-        lay.setSpacing(4)
-        lay.setContentsMargins(12, 8, 12, 8)
+        lay = QHBoxLayout(frame)
+        lay.setSpacing(0)
+        lay.setContentsMargins(12, 4, 12, 4)
 
-        icon_row = QHBoxLayout()
-        icon_row.setSpacing(0)
         self._hz_icons: Dict[str, QLabel] = {}
-
+        hz_box = QHBoxLayout()
+        hz_box.setSpacing(0)
         for h in _HORIZONS:
-            col = QVBoxLayout()
-            col.setSpacing(1)
-
             lbl_h = QLabel(h)
-            lbl_h.setFont(QFont("Arial", 8))
+            lbl_h.setFont(QFont("Arial", 9))
             lbl_h.setStyleSheet("color:#8b949e;")
-            lbl_h.setAlignment(Qt.AlignCenter)
 
             lbl_icon = QLabel("—")
-            lbl_icon.setFont(QFont("Arial", 20, QFont.Bold))
-            lbl_icon.setAlignment(Qt.AlignCenter)
-            lbl_icon.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            lbl_icon.setFont(QFont("Arial", 13, QFont.Bold))
+            lbl_icon.setMinimumWidth(14)
 
-            col.addWidget(lbl_h)
-            col.addWidget(lbl_icon)
-            icon_row.addLayout(col)
+            cell = QHBoxLayout()
+            cell.setSpacing(4)
+            cell.addWidget(lbl_h)
+            cell.addWidget(lbl_icon)
+
+            hz_box.addLayout(cell)
+            hz_box.addStretch(1)
             self._hz_icons[h] = lbl_icon
-
-        lay.addLayout(icon_row)
-
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet("color:#30363d; margin:2px 0;")
-        lay.addWidget(sep)
-
-        consensus_row = QHBoxLayout()
-        consensus_row.setSpacing(6)
+        lay.addLayout(hz_box, 5)
+        lay.addStretch(1)
 
         lbl_c = QLabel("합의")
         lbl_c.setFont(QFont("Arial", 9))
         lbl_c.setStyleSheet("color:#8b949e;")
-        lbl_c.setMinimumWidth(36)
-        lbl_c.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
-        consensus_row.addWidget(lbl_c)
+        lay.addWidget(lbl_c)
+        lay.addSpacing(6)
 
         self._consensus_bar = QProgressBar()
-        self._consensus_bar.setFixedHeight(6)
+        self._consensus_bar.setFixedHeight(8)
+        self._consensus_bar.setFixedWidth(110)
         self._consensus_bar.setTextVisible(False)
         self._consensus_bar.setRange(0, 6)
-        self._consensus_bar.setMinimumWidth(40)
-        consensus_row.addWidget(self._consensus_bar, 1)
+        lay.addWidget(self._consensus_bar)
+        lay.addSpacing(6)
 
         self._lbl_consensus = QLabel("0/6")
         self._lbl_consensus.setFont(QFont("Consolas", 9))
         self._lbl_consensus.setStyleSheet("color:#8b949e;")
-        self._lbl_consensus.setMinimumWidth(38)
-        self._lbl_consensus.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
-        consensus_row.addWidget(self._lbl_consensus)
+        self._lbl_consensus.setMinimumWidth(30)
+        lay.addWidget(self._lbl_consensus)
 
-        lay.addLayout(consensus_row)
+        frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         return frame
 
     # ── 데이터 조회 ──────────────────────────────────────────────

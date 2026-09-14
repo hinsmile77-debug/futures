@@ -75,6 +75,13 @@ class ConfTrendWidget(QWidget):
 
     REFRESH_MS = 30_000
     MAX_ROWS   = 30   # 최근 N봉만 표시 — 전체 표시 시 3310 setItem × setStyleSheet = 73초 블로킹
+    # [MW0601 577차] 보이는 행을 10행으로 고정한다.
+    #   종전에는 부모 스플리터가 높이를 정해 15행이 보였다. 되찾은 세로는
+    #   위쪽 방향 인디케이터 캔들차트로 간다.
+    #   ⚠ MAX_ROWS(조회 30행)는 그대로다 — 스크롤하면 나머지도 볼 수 있다.
+    #     보이는 창만 줄인 것이지 데이터를 버린 게 아니다.
+    VISIBLE_ROWS = 10
+    ROW_H        = 22
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -127,8 +134,9 @@ class ConfTrendWidget(QWidget):
         hdr.setSectionResizeMode(7, QHeaderView.Stretch)
         hdr.setSectionResizeMode(8, QHeaderView.Stretch)
         hdr.setSectionResizeMode(9, QHeaderView.Stretch)
-        self._table.setMinimumHeight(200)
-        self._table.setMaximumHeight(16777215)  # 제한 없음 — 부모 레이아웃이 높이 결정
+        # 높이는 showEvent 에서 **실측**해서 맞춘다 — 헤더+프레임 크롬을
+        # 상수로 찍으면 빗나간다(실측 39px, 눈대중 28px → 9.5행만 보였다).
+        self._fit_table_rows()
         self._table.setAlternatingRowColors(False)
         self._table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -143,7 +151,33 @@ class ConfTrendWidget(QWidget):
 
     # ── 데이터 갱신 ──────────────────────────────────────────────
 
-    def refresh(self):
+    def _fit_table_rows(self):
+        """표를 정확히 VISIBLE_ROWS 행 높이로 고정한다.
+
+        🔴 행 높이도 크롬도 **재서** 쓴다. 눈대중으로 찍으면 빗나간다 —
+          `setDefaultSectionSize(22)` 를 해뒀지만 실제 행은 **25px** 이다
+          (스타일시트 셀 패딩이 덮는다). 22 로 계산했더니 10행이 아니라
+          8행만 온전히 보였다.
+        크롬(헤더+프레임)도 스타일시트·DPI 에 따라 달라진다.
+        """
+        t = self._table
+        row_h = t.rowHeight(0) if t.rowCount() > 0 else 0
+        if row_h <= 0:
+            row_h = max(self.ROW_H, t.verticalHeader().defaultSectionSize())
+        chrome = t.height() - t.viewport().height()
+        if chrome <= 0:
+            chrome = t.horizontalHeader().sizeHint().height() + 2 * t.frameWidth()
+        h = self.VISIBLE_ROWS * row_h + chrome
+        if t.maximumHeight() == h:
+            return                       # 매 갱신마다 레이아웃을 흔들지 않는다
+        t.setMinimumHeight(h)
+        t.setMaximumHeight(h)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._fit_table_rows()
+
+    def refresh(self):
         import time as _t, logging as _log
         _t0 = _t.monotonic()
         try:
@@ -274,6 +308,9 @@ class ConfTrendWidget(QWidget):
         _steps.append(("row_calc", self._last_row_calc_ms))
         _steps.append(("tooltip_calc", self._last_tooltip_calc_ms))
         _steps.append(("qt_apply", self._last_qt_apply_ms))
+
+        # [577차] 행이 생긴 뒤 실측 행높이로 창을 다시 맞춘다 (변화 없으면 무동작)
+        self._fit_table_rows()
 
         # 최신 행(맨 아래)이 항상 보이도록 스크롤
         _s = _t2.monotonic()

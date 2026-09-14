@@ -311,66 +311,65 @@ class CandleChartDialog(QDialog):
 
         self._canvas = FigureCanvasQTAgg(self._fig)
         self._canvas.setMinimumHeight(270)
-        root.addWidget(self._canvas)
+        root.addWidget(self._canvas, 1)   # 남는 세로는 전부 차트로
 
         # 하단 호라이즌 스트립
         root.addWidget(self._build_hz_strip())
 
     def _build_hz_strip(self) -> QWidget:
+        """호라이즌 + 합의 — **한 줄**. (577차, 방향 인디케이터와 같은 형태)"""
         frame = QFrame()
         frame.setStyleSheet(
             "QFrame { background:#161b22; border-top:1px solid #30363d; }"
         )
-        lay = QVBoxLayout(frame)
-        lay.setSpacing(3)
-        lay.setContentsMargins(12, 5, 12, 6)
+        lay = QHBoxLayout(frame)
+        lay.setSpacing(0)
+        lay.setContentsMargins(12, 4, 12, 4)
 
-        icon_row = QHBoxLayout()
-        icon_row.setSpacing(0)
         self._hz_icons: Dict[str, QLabel] = {}
-
+        hz_box = QHBoxLayout()
+        hz_box.setSpacing(0)
         for h in _HORIZONS:
-            col = QVBoxLayout()
-            col.setSpacing(0)
             lbl_h = QLabel(h)
-            lbl_h.setFont(QFont("Arial", 8))
+            lbl_h.setFont(QFont("Arial", 9))
             lbl_h.setStyleSheet("color:%s;" % _MUTED)
-            lbl_h.setAlignment(Qt.AlignCenter)
+
             lbl_icon = QLabel("—")
-            lbl_icon.setFont(QFont("Arial", 16, QFont.Bold))
-            lbl_icon.setAlignment(Qt.AlignCenter)
-            lbl_icon.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            col.addWidget(lbl_h)
-            col.addWidget(lbl_icon)
-            icon_row.addLayout(col)
+            lbl_icon.setFont(QFont("Arial", 13, QFont.Bold))
+            lbl_icon.setMinimumWidth(14)
+
+            cell = QHBoxLayout()
+            cell.setSpacing(4)
+            cell.addWidget(lbl_h)
+            cell.addWidget(lbl_icon)
+
+            hz_box.addLayout(cell)
+            hz_box.addStretch(1)
             self._hz_icons[h] = lbl_icon
+        lay.addLayout(hz_box, 5)
+        lay.addStretch(1)
 
-        lay.addLayout(icon_row)
-
-        sep = QFrame()
-        sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet("color:#30363d; margin:1px 0;")
-        lay.addWidget(sep)
-
-        cns_row = QHBoxLayout()
-        cns_row.setSpacing(6)
         lbl_c = QLabel("합의")
-        lbl_c.setFont(QFont("Arial", 8))
+        lbl_c.setFont(QFont("Arial", 9))
         lbl_c.setStyleSheet("color:%s;" % _MUTED)
-        lbl_c.setFixedWidth(28)
-        cns_row.addWidget(lbl_c)
+        lay.addWidget(lbl_c)
+        lay.addSpacing(6)
+
         self._cns_bar = QProgressBar()
-        self._cns_bar.setFixedHeight(5)
+        self._cns_bar.setFixedHeight(8)
+        self._cns_bar.setFixedWidth(110)
         self._cns_bar.setTextVisible(False)
         self._cns_bar.setRange(0, 6)
-        cns_row.addWidget(self._cns_bar)
-        self._lbl_cns = QLabel("0/6")
-        self._lbl_cns.setFont(QFont("Consolas", 8))
-        self._lbl_cns.setStyleSheet("color:%s;" % _MUTED)
-        self._lbl_cns.setFixedWidth(26)
-        cns_row.addWidget(self._lbl_cns)
-        lay.addLayout(cns_row)
+        lay.addWidget(self._cns_bar)
+        lay.addSpacing(6)
 
+        self._lbl_cns = QLabel("0/6")
+        self._lbl_cns.setFont(QFont("Consolas", 9))
+        self._lbl_cns.setStyleSheet("color:%s;" % _MUTED)
+        self._lbl_cns.setMinimumWidth(30)
+        lay.addWidget(self._lbl_cns)
+
+        frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         return frame
 
     # ── 갱신 (비동기) ─────────────────────────────────────────────
