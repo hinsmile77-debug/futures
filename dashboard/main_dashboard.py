@@ -8756,12 +8756,31 @@ _REGIME_BAR_COLOR = {
 }
 _REGIME_BAR_H = 4   # x축 라인 위 레짐 바 높이(px)
 _DIR_BAR_H    = 4   # 레짐 바 바로 위 방향예측 바 높이(px)
+_STATE_BAR_H  = 4   # 방향 바 바로 위 4상태 레인 높이(px)
+# [오버레이 P2] 4상태 색 — 금지(BUY_MECH)만 정채도, 나머지는 저채도다.
+#   워크포워드를 통과한 문장이 **하나뿐**이라 화면도 비대칭이어야 한다.
+_STATE_BAR_COLOR = {
+    "BUY_MECH":   ("#D29922", 225),   # ⭐ 롱 금지 — 유일하게 검증됨
+    "BUY_STACK":  ("#3FB950",  90),
+    "SELL_STACK": ("#F85149",  90),
+    "SELL_MECH":  ("#8B949E",  90),
+}
+_STATE_KO = {"BUY_MECH": "기계적 매수", "BUY_STACK": "상방 쌓기",
+             "SELL_STACK": "하방 쌓기", "SELL_MECH": "기계적 매도"}
 _DIR_BAR_COLOR = {
     1:  "#3fb950",   # UP   (녹색)
     -1: "#f85149",   # DOWN (적색)
     0:  "#444c56",   # FLAT (회색)
 }
 
+
+
+def _as_num(v):
+    """숫자면 float, 아니면 None. **0 으로 채우지 않는다** — 결측은 결측이다."""
+    try:
+        return None if v is None else float(v)
+    except (TypeError, ValueError):
+        return None
 
 class MinuteChartCanvas(QWidget):
     RIGHT_PADDING_BARS = 10
@@ -8795,6 +8814,9 @@ class MinuteChartCanvas(QWidget):
         self._last_step_px = 0.0
         self._last_plot_rect = QRectF()
         self._instrument_code = ""   # 현재 표시 중인 종목코드
+        # [오버레이 P1] 봉별 4상태. 빈 dict 는 「미산출」이다 — 「상태 없음」과 다르다.
+        self._state_map = {}
+        self._state_provisional = True   # 라이브면 중앙값이 확정 전이다
         self._regime_map = {}        # {ts_key: regime_str} 봉별 레짐 히스토리
         self._dir_map    = {}        # {ts_key: direction_int} 봉별 방향예측 히스토리
         self._last_tick_update_ms: float = 0.0   # update() throttle용 타임스탬프
@@ -8830,6 +8852,7 @@ class MinuteChartCanvas(QWidget):
         self._dragging = False
         self._regime_map.clear()
         self._dir_map.clear()
+        self._compute_states()      # [오버레이 P1] 매 paint 가 아니라 여기서 1회
         self.update()
 
     def set_regime_at(self, ts_key: str, regime: str):
@@ -9067,12 +9090,15 @@ class MinuteChartCanvas(QWidget):
         import time as _t2
         _t_grid = _t2.monotonic(); self._draw_grid(painter, plot, lo, hi)
         self._draw_session_tail(painter, plot, candles, padded_count)
+        # [오버레이 P2] 금지 빗금은 **캔들 뒤**라야 판독을 가리지 않는다
+        self._draw_state_overlay(painter, plot, candles, padded_count)
         _t_spans = _t2.monotonic()
         index_map = {c["ts"]: i for i, c in enumerate(candles)}
         self._draw_trade_spans(painter, plot, candles, index_map, lo, hi, padded_count)
         _t_candles = _t2.monotonic(); self._draw_candles(painter, plot, candles, lo, hi, padded_count)
         _t_dir    = _t2.monotonic();  self._draw_direction_bar(painter, plot, candles, padded_count)
         _t_regime = _t2.monotonic();  self._draw_regime_bar(painter, plot, candles, padded_count)
+        self._draw_state_lane(painter, plot, candles, padded_count)
         # GP 섀도는 실측 마커보다 **먼저**(=아래에) 그린다 — 겹치면 실측이 이긴다.
         self._draw_gp_layer(painter, plot, candles, index_map, lo, hi, padded_count)
         _t_markers = _t2.monotonic(); self._draw_markers(painter, plot, candles, index_map, lo, hi, padded_count)
@@ -9379,6 +9405,93 @@ class MinuteChartCanvas(QWidget):
                 prev_color  = col
             x = plot.left() + step * idx
             painter.drawRect(QRectF(x, bar_y, step - 1, _REGIME_BAR_H))
+
+    # ── [오버레이 P2] 4상태 표시 ──────────────────────────────────────
+    def _state_runs(self, candles, want=None):
+        """연속 구간을 (시작idx, 끝idx+1, 상태) 로 묶는다.
+
+        봉마다 따로 칠하면 경계마다 반투명이 겹쳐 줄이 생긴다.
+        """
+        runs, i0, cur = [], None, None
+        for idx, candle in enumerate(candles):
+            st = self._state_map.get(candle["ts"])
+            if want is not None and st != want:
+                st = None
+            if st != cur:
+                if cur is not None:
+                    runs.append((i0, idx, cur))
+                i0, cur = idx, st
+        if cur is not None:
+            runs.append((i0, len(candles), cur))
+        return runs
+
+    def _draw_state_overlay(self, painter: QPainter, plot: QRectF, candles, padded_count: int):
+        """⭐ BUY_MECH 구간 = **롱 금지**. 이 화면에서 유일하게 검증된 문장이다.
+
+        표본밖 −13.5bp · 95%CI [−18.6,−9.0] 전구간 음수 · P=0.000 · 4폴드 일관 ·
+        배리어 폭 5종에 둔감. 나머지 3상태는 워크포워드를 통과하지 못했다
+        (매수 +7.0%p, P=0.77). 그래서 **이것만** 배경으로 크게 그린다 —
+        대칭으로 그리면 "사라"도 같은 무게로 검증된 줄 안다(계측 4원칙 ④).
+
+        🔴 `_state_provisional` 이면 채도를 절반으로 떨어뜨린다. 라이브에서는
+          당일 중앙값·분위수가 아직 확정 전이라 **검증된 수치가 아니다.**
+        """
+        if not self._state_map:
+            return
+        try:
+            count = max(padded_count, 1)
+            step = plot.width() / count
+            col = QColor("#D29922")
+            # 잠정은 약해야 하지만 **안 보이면 정보가 0** 이다. 실측으로 조정.
+            col.setAlpha(28 if self._state_provisional else 44)
+            painter.save()
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(col, Qt.BDiagPattern))
+            _n = 0
+            for i0, i1, _st in self._state_runs(candles, want="BUY_MECH"):
+                painter.drawRect(QRectF(plot.left() + step * i0, plot.top(),
+                                        step * (i1 - i0), plot.height()))
+                _n += 1
+            if _n:
+                # 이모지(⛔)는 QPainter 에서 폰트에 없으면 **두부 박스**로 떨어진다.
+                # 실측으로 확인했다 — 기본 글리프만 쓴다.
+                _txt = "■ 롱 금지 — 기계적 매수 구간"
+                if self._state_provisional:
+                    _txt += " (잠정 · 당일 기준 미확정)"
+                painter.setFont(QFont("Malgun Gothic", 8, QFont.Bold))
+                painter.setPen(QColor("#D29922"))
+                painter.drawText(QPointF(plot.left() + S.p(6), plot.top() + S.p(12)), _txt)
+            painter.restore()
+        except Exception as _e:
+            logger.debug("[ChartDBG] _draw_state_overlay 예외: %s", _e)
+
+    def _draw_state_lane(self, painter: QPainter, plot: QRectF, candles, padded_count: int):
+        """방향 바 바로 위 4상태 레인. 상태가 **없는** 봉은 비워 둔다.
+
+        🔴 회색으로도 칠하지 않는다 — 「비활성(상태 없음)」과 「미산출(워밍업·결측)」과
+          「측정된 중립」이 같은 픽셀이 되면 안 된다(계측 4원칙 ②).
+        """
+        if not self._state_map:
+            return
+        try:
+            count = max(padded_count, 1)
+            step = plot.width() / count
+            bar_y = plot.bottom() - _REGIME_BAR_H - _DIR_BAR_H - _STATE_BAR_H
+            painter.save()
+            painter.setPen(Qt.NoPen)
+            _dim = 0.62 if self._state_provisional else 1.0
+            for i0, i1, st in self._state_runs(candles):
+                _c = _STATE_BAR_COLOR.get(st)
+                if not _c:
+                    continue
+                col = QColor(_c[0])
+                col.setAlpha(int(_c[1] * _dim))
+                painter.setBrush(col)
+                painter.drawRect(QRectF(plot.left() + step * i0, bar_y,
+                                        step * (i1 - i0) - 1, _STATE_BAR_H))
+            painter.restore()
+        except Exception as _e:
+            logger.debug("[ChartDBG] _draw_state_lane 예외: %s", _e)
 
     def _is_off_axis(self, price: float) -> bool:
         """[555차 후속2 / P1] 가격이 이번 paint 의 Y축 밖인가.
@@ -10008,6 +10121,104 @@ class MinuteChartCanvas(QWidget):
             text = dt.strftime("%H:%M")
             painter.drawText(QRectF(x - 24, plot.bottom() + 6, 48, 18), Qt.AlignHCenter | Qt.AlignTop, text)
 
+    # ── [오버레이 P1] 4상태 계산 ──────────────────────────────────────
+    #
+    # `stack_features.build()` 를 pandas 없이 그대로 옮긴 것이다.
+    #   ΔOI(W)      = oi[i] - oi[i-W]                      (일중 한정)
+    #   공격자불균형 = (Σbuy - Σsell)/Σvol  − **당일 중앙값**
+    #   활성        = |둘 다| ≥ 당일 50% 분위
+    #   상태        = sign(공격자) × sign(ΔOI)
+    #
+    # 🔴 원시 buy:sell 은 전 구간 1.70:1 로 매수 편향돼 있다(검증보고서 §3-2).
+    #   중앙값을 안 빼면 「매도가 때린 구간」이 **0개**가 된다.
+    # 🔴 중앙값·분위수는 **하루가 끝나야 확정된다.** 라이브에서는 그 시점까지의
+    #   누적값이라 장중 내내 움직인다 — look-ahead 는 아니지만 **검증된 수치가
+    #   아니다.** 그래서 `provisional=True` 로 표시하고 화면이 채도를 낮춘다.
+    STATE_W = 30              # 관측창(분) — 사전등록값. 바꾸지 않는다
+    STATE_ACTIVE_Q = 0.50     # 활성 분위 — 사전등록값
+
+    @staticmethod
+    def _quantile(sorted_vals, q):
+        if not sorted_vals:
+            return None
+        if len(sorted_vals) == 1:
+            return sorted_vals[0]
+        pos = (len(sorted_vals) - 1) * q
+        lo = int(pos)
+        hi = min(lo + 1, len(sorted_vals) - 1)
+        return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * (pos - lo)
+
+    def _compute_states(self):
+        """`_closed_candles` 에서 봉별 4상태를 만들어 `_state_map` 에 채운다.
+
+        `reset_session` 에서 **1회만** 부른다 — paintEvent 는 30ms 경보선이 있다.
+        """
+        self._state_map = {}
+        self._state_provisional = not self._state_is_past_session()
+        # 🔴 사전등록 구현은 `m = m[m.oi.fillna(0) > 0]` 로 **OI 결측 봉을 버린 뒤**
+        #   창을 센다. 남겨두면 30봉 창이 그만큼 밀려 판정이 달라진다
+        #   (실측 2026-08-04: OI NULL 15봉 → 남겨두면 98봉, 버리면 95봉).
+        #   버린 봉은 캔들로는 그대로 그린다 — 상태만 없는 것이다.
+        rows = [r for r in self._closed_candles if (r.get("oi") or 0) > 0]
+        W = self.STATE_W
+        if len(rows) <= W:
+            return                       # 워밍업 미달 — **무표시**. 회색으로도 그리지 않는다
+        # ① ΔOI · 공격자 원시비율
+        d_oi, raw = [None] * len(rows), [None] * len(rows)
+        # 🔴 창 경계를 사전등록 구현(`stack_features.build`)과 **정확히** 맞춘다.
+        #   pandas 기준: `rolling(W).sum()` 은 i=W-1 에서 첫 값, `diff(W)` 는 i=W.
+        #   여기서 한 칸만 어긋나도 당일 분위 문턱이 밀려 경계 봉의 판정이 뒤집힌다
+        #   (실측: i>=W 로 맞췄을 때 9/11·9/14 각 1봉 불일치).
+        for i in range(len(rows)):
+            if i >= W:
+                a, b = rows[i].get("oi"), rows[i - W].get("oi")
+                if a is not None and b is not None and a > 0 and b > 0:
+                    d_oi[i] = a - b
+            if i >= W - 1:
+                bv = sv = vv = 0.0
+                ok = True
+                for j in range(i - W + 1, i + 1):
+                    _b, _s, _v = rows[j].get("buy_vol"), rows[j].get("sell_vol"), rows[j].get("volume")
+                    if _b is None or _s is None:
+                        ok = False
+                        break
+                    bv += _b; sv += _s; vv += (_v or 0)
+                if ok and vv > 0 and (bv + sv) > 0:
+                    raw[i] = (bv - sv) / vv
+        # ② 당일 중앙값 디바이어스
+        vals = sorted(v for v in raw if v is not None)
+        if not vals:
+            return
+        med = self._quantile(vals, 0.50)
+        imb = [None if v is None else v - med for v in raw]
+        # ③ 활성 문턱 — 절대값의 50% 분위
+        thrA = self._quantile(sorted(abs(v) for v in imb if v is not None), self.STATE_ACTIVE_Q)
+        thrO = self._quantile(sorted(abs(v) for v in d_oi if v is not None), self.STATE_ACTIVE_Q)
+        if thrA is None or thrO is None:
+            return
+        # ④ 상태
+        for i, row in enumerate(rows):
+            a, o = imb[i], d_oi[i]
+            if a is None or o is None:
+                continue
+            if abs(a) < thrA or abs(o) < thrO:
+                continue                 # 비활성 — 상태 없음(NA). 그리지 않는다
+            if a < 0:
+                st = "SELL_STACK" if o > 0 else "SELL_MECH"
+            else:
+                st = "BUY_STACK" if o > 0 else "BUY_MECH"
+            self._state_map[row["ts"]] = st
+
+    def _state_is_past_session(self):
+        """이 세션이 **끝난 하루**인가 — 중앙값·분위수가 확정됐는가."""
+        try:
+            if not self._closed_candles:
+                return False
+            _d = self._closed_candles[-1]["ts"][:10]
+            return _d != datetime.now().date().isoformat()
+        except Exception:
+            return False
+
     def _normalize_candle(self, candle):
         if not candle:
             return None
@@ -10026,6 +10237,11 @@ class MinuteChartCanvas(QWidget):
                 #   같은 픽셀로 그려 "조용히 그럴듯한 값"이 된다(계측 4원칙 ④).
                 "tail": 1 if candle.get("tail") else 0,
                 "session": str(candle.get("session") or ""),
+                # [오버레이 P1] 4상태 계산 재료. 여기서 버리면 캔버스가 상태를
+                #   못 만든다. None 은 **0 이 아니다** — 결측은 결측으로 둔다.
+                "oi": _as_num(candle.get("oi")),
+                "buy_vol": _as_num(candle.get("buy_vol")),
+                "sell_vol": _as_num(candle.get("sell_vol")),
             }
         except Exception:
             return None
@@ -10700,7 +10916,7 @@ class MinuteChartDialog(QDialog):
         self._set_session_date(session_date or datetime.now().date().isoformat())
         candle_rows = fetchall(
             RAW_DATA_DB,
-            """SELECT ts, open, high, low, close, volume
+            """SELECT ts, open, high, low, close, volume, oi, buy_vol, sell_vol
                FROM raw_candles
                WHERE ts LIKE ?
                ORDER BY ts ASC""",
@@ -10804,7 +11020,8 @@ class MinuteChartDialog(QDialog):
             _t1 = _t.monotonic()
             candle_rows = fetchall(
                 RAW_DATA_DB,
-                "SELECT ts, open, high, low, close, volume FROM raw_candles WHERE ts LIKE ? ORDER BY ts ASC",
+                "SELECT ts, open, high, low, close, volume, oi, buy_vol, sell_vol"
+                " FROM raw_candles WHERE ts LIKE ? ORDER BY ts ASC",
                 (f"{self._session_date}%",),
             )
             _t2 = _t.monotonic()
