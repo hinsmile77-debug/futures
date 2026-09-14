@@ -132,10 +132,15 @@ def test_panel_prefers_display_key_offscreen():
     p.update_summary({"실현손익": "446000",
                       "금일손익_표시": "+429,636 (g +446,000)",
                       "추정자산": "437000"})
-    assert p._summary_values["실현손익"].text() == "+429,636 (g +446,000)", \
-        "표시 키가 무시됐다: %r" % p._summary_values["실현손익"].text()
-    got_prev = p._summary_values["추정자산"].text()
-    assert "437" in got_prev.replace(",", ""), "폴백(원본 키) 경로가 죽었다: %r" % got_prev
+    # [580차] 배지가 2행 리치텍스트로 바뀌어 text()는 태그를 돌려준다 —
+    # 원문은 property("raw_text")에 보존되며 그쪽이 "무엇을 소비했나"의 정본이다.
+    _raw = p._summary_values["실현손익"].property("raw_text")
+    assert _raw == "+429,636 (g +446,000)", "표시 키가 무시됐다: %r" % _raw
+    _rendered = p._summary_values["실현손익"].text()
+    assert "+429,636" in _rendered and "+446,000" in _rendered, \
+        "2행 렌더가 net/gross 중 하나를 잃었다: %r" % _rendered
+    got_prev = p._summary_values["추정자산"].property("raw_text")
+    assert "437" in str(got_prev).replace(",", ""), "폴백(원본 키) 경로가 죽었다: %r" % got_prev
     src = _read("dashboard/main_dashboard.py")
     assert '"수익율(net%)"' in src, "수익율 라벨 축 표기가 사라졌다"
 

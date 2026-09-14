@@ -1457,6 +1457,11 @@ class AccountInfoPanel(QWidget):
         # [MW0602 497차 / P1] 라벨 축 명시 — 금일/전일손익은 main이 조립한
         # "net (g gross)" 문자열이 오면 그대로, 없으면 원본(gross) 폴백.
         # 수익율은 원래부터 예탁현금 차(net) 기반이라 라벨만 정합화한다.
+        # [MW0601 580차] 배지 세로폭을 2행으로 고정한다 — 종전에는 QLabel이
+        # Preferred 세로 정책이라 스플리터 여유 높이를 전부 빨아들여 한 줄짜리
+        # 값이 70px 넘게 늘어났다(중단 캔들차트가 그만큼 좁아졌다).
+        # 1행=net · 2행=gross 로 나눠 찍되 축 표기("gross"·"g")는 그대로 둔다
+        # (계측 4원칙 ④ — 폴백으로 gross를 보여주는 중이면 그 사실이 화면에 남아야 한다).
         for key, title in [
             ("실현손익", "금일손익"),
             ("총평가",   "수익율(net%)"),
@@ -1466,14 +1471,14 @@ class AccountInfoPanel(QWidget):
             cell.setContentsMargins(0, 0, 0, 0)
             cell.setSpacing(S.p(5))
             lbl = mk_label(f"{title}:", C['text2'], 9, True)
-            value = mk_label("", C['text2'], 11, align=Qt.AlignLeft)
+            value = mk_label("", C['text2'], 10, align=Qt.AlignLeft)
             value.setMinimumWidth(S.p(80))
-            value.setStyleSheet(
-                f"font-size:{S.f(11)}px;color:{C['text2']};"
-                f"padding:{S.p(3)}px {S.p(6)}px;"
-                f"background:{C['bg3']};border:1px solid {C['border']};"
-                f"border-radius:{S.p(3)}px;"
-            )
+            value.setTextFormat(Qt.RichText)
+            value.setWordWrap(False)
+            value.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            value.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            value.setStyleSheet(self._VALUE_BADGE_CSS())
+            value.setFixedHeight(self._VALUE_BADGE_H())
             cell.addWidget(lbl)
             cell.addWidget(value, 1)
             strip.addLayout(cell)
@@ -1602,6 +1607,49 @@ class AccountInfoPanel(QWidget):
             return None
 
     @staticmethod
+    def _VALUE_BADGE_CSS():
+        return (
+            f"font-size:{S.f(10)}px;color:{C['text2']};"
+            f"padding:{S.p(1)}px {S.p(6)}px;"
+            f"background:{C['bg3']};border:1px solid {C['border']};"
+            f"border-radius:{S.p(3)}px;"
+        )
+
+    @staticmethod
+    def _VALUE_BADGE_H():
+        """2행 배지의 고정 높이 — 공식이 아니라 실제 렌더 높이를 잰다.
+
+        S.f()/S.p()로 어림하면 UI 스케일(0.80~2.20)에 따라 낮은 쪽에서 2px
+        잘리고 높은 쪽에서 9px 남았다. 같은 CSS·같은 마크업의 프로브를 재면
+        전 스케일에서 정확히 2행이 된다.
+        """
+        probe = QLabel()
+        probe.setTextFormat(Qt.RichText)
+        probe.setWordWrap(False)
+        probe.setStyleSheet(AccountInfoPanel._VALUE_BADGE_CSS())
+        probe.setText(AccountInfoPanel._two_line_html("+0 (g +0)"))
+        return probe.sizeHint().height()
+
+    @staticmethod
+    def _two_line_html(text):
+        """'net (g gross)' → 1행 net · 2행 gross 로 분해해 리치텍스트로 만든다.
+
+        괄호가 없으면(수익율 등) 1행만 채우고 2행은 비운다 — 높이는 항상 2행이라
+        세 배지의 첫 행이 같은 선에 놓인다.
+        """
+        s = str(text or "").strip()
+        head, tail = s, ""
+        if s.endswith(")") and " (" in s:
+            i = s.rindex(" (")
+            head, tail = s[:i].strip(), s[i + 2:-1].strip()
+        # 2행이 비면 Qt가 그 줄 높이를 기본 폰트(10px)로 잡아 고정높이를 2px 넘긴다
+        # — 작은 폰트 span 안에 &nbsp;를 넣어 줄 높이를 8px로 묶는다.
+        return (
+            f"<span style='font-size:{S.f(10)}px;color:{C['text2']};'>{head}</span><br/>"
+            f"<span style='font-size:{S.f(8)}px;color:{C['text2']};'>{tail or '&nbsp;'}</span>"
+        )
+
+    @staticmethod
     def _format_value(value, is_percent=False):
         if value is None or str(value).strip() == "":
             return ""
@@ -1624,9 +1672,18 @@ class AccountInfoPanel(QWidget):
             _pref_key = _display_pref.get(key)
             _pref_val = str(summary.get(_pref_key) or "").strip() if _pref_key else ""
             if _pref_val:
-                label.setText(_pref_val)
+                _txt = _pref_val
             else:
-                label.setText(self._format_value(summary.get(key), is_percent=(key == "총평가")))
+                _txt = self._format_value(summary.get(key), is_percent=(key == "총평가"))
+            # [580차] 2행 배지 — 더미 레이블(제거된 필드)은 리치텍스트가 아니다.
+            if key in ("실현손익", "총평가", "추정자산"):
+                # 원문은 property·툴팁으로 보존한다 — 리치텍스트로 감싸면
+                # text()가 태그를 돌려줘 회귀 테스트·디버깅이 값을 못 읽는다.
+                label.setProperty("raw_text", _txt)
+                label.setToolTip(_txt)
+                label.setText(self._two_line_html(_txt))
+            else:
+                label.setText(_txt)
 
     def update_rows(self, rows):
         rows = list(rows or [])
@@ -13124,10 +13181,12 @@ class MireukDashboard(QMainWindow):
             #        pred_panel(방향 인디케이터 캔들차트)로 돌린다.
             #        카드 높이 = 표 289(실측: 10행×25 + 크롬 39) + 요약행·여백 ≈ 330.
             #        360→330 과 호라이즌 스트립 77→31 을 합쳐 캔들차트가 ~76px 늘어난다.
-            left_split.setSizes([200, 450, 330])
+            # 580차: 잔고 배지를 2행 고정높이로 묶어 잔고 카드가 여유 세로를
+            #        빨아들이지 않게 했다 — 그만큼(200→160) 캔들차트로 넘긴다.
+            left_split.setSizes([160, 490, 330])
         except Exception as _cte:
             logger.warning("[Dashboard] ConfTrendCard 로드 실패: %s", _cte)
-            left_split.setSizes([200, 740])
+            left_split.setSizes([160, 780])
 
         ll.addWidget(left_split, 1)
 
