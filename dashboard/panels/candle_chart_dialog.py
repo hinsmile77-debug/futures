@@ -43,6 +43,9 @@ from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
 
 from config.settings import PREDICTIONS_DB, RAW_DATA_DB
+from dashboard.stack_state import (
+    compute_states, STATE_KO, STATE_COLOR, STATE_NA_KO, STATE_NA_COLOR, STATE_W,
+)
 
 _HORIZONS = ["1m", "3m", "5m", "10m", "15m", "30m"]
 
@@ -76,6 +79,37 @@ _MR_COLOR: Dict[str, str] = {
 }
 _LANE_EMPTY = "#1c1c1c"   # 데이터 없는 칸 (어두운 배경)
 
+# ── 포지션 스냅샷 ────────────────────────────────────────────
+# 포지션은 **DB에 없다** — main.py → DashboardAPI.update_position 으로만 흐른다.
+# 배너는 별도 프로세스가 아니라 같은 프로세스의 다이얼로그이므로,
+# 그 흐름을 여기에 한 번 떨궈두고 읽는다(단방향·읽기 전용).
+#
+# 🔴 계측 4원칙 ② — **미측정 ≠ 0건**.
+#   스냅샷이 한 번도 안 왔으면 「무포지션」이 아니라 「포지션 미연결」이다.
+#   왔다가 끊기면 「갱신 끊김」이다. 둘 다 FLAT 으로 뭉개지 않는다.
+_POS_STALE_SEC = 60.0
+_POS_SNAPSHOT: Dict[str, object] = {"data": None, "mono": 0.0}
+
+
+def publish_position(pos_data: Optional[dict]) -> None:
+    """대시보드가 받은 포지션을 배너가 읽을 수 있게 떨군다. 부작용 없음."""
+    import time as _t
+    _POS_SNAPSHOT["data"] = dict(pos_data) if pos_data else None
+    _POS_SNAPSHOT["mono"] = _t.monotonic()
+
+
+def read_position() -> tuple:
+    """반환: (상태문자열, pos_data|None)
+      "none"  — 스냅샷 한 번도 없음 (미연결)
+      "stale" — 왔지만 60초 넘게 갱신 없음
+      "live"  — 유효
+    """
+    import time as _t
+    if not _POS_SNAPSHOT["mono"]:
+        return "none", None
+    age = _t.monotonic() - float(_POS_SNAPSHOT["mono"])
+    return ("stale" if age > _POS_STALE_SEC else "live"), _POS_SNAPSHOT["data"]
+
 
 def _today_range(today: str):
     """오늘 날짜의 ts 범위 반환 — substr() 대신 range로 idx_ts 인덱스 활용."""
@@ -86,8 +120,8 @@ def _today_range(today: str):
 class _FetchWorker(QThread):
     """DB 조회를 백그라운드 스레드에서 실행 — Qt 메인스레드 블로킹 방지."""
 
-    # candles, ensemble, hz_dirs, candle_decisions
-    done = pyqtSignal(list, object, dict, dict)
+    # candles, ensemble, hz_dirs, candle_decisions, state
+    done = pyqtSignal(list, object, dict, dict, object)
 
     def __init__(self, n_candles: int):
         super().__init__()
@@ -100,7 +134,39 @@ class _FetchWorker(QThread):
         ensemble         = self._fetch_ensemble(ts_from, ts_to)
         hz_dirs          = self._fetch_hz_dirs(ts_from, ts_to)
         candle_decisions = self._fetch_candle_decisions(ts_from, ts_to)
-        self.done.emit(candles, ensemble, hz_dirs, candle_decisions)
+        state            = self._fetch_state(ts_from, ts_to)
+        self.done.emit(candles, ensemble, hz_dirs, candle_decisions, state)
+
+    def _fetch_state(self, ts_from: str, ts_to: str) -> Optional[dict]:
+        """현재 봉의 4상태 — **당일 전체**를 읽어야 한다.
+
+        당일 중앙값 디바이어스와 50% 분위 문턱이 하루 전체를 쓰기 때문에,
+        차트에 보이는 최근 N봉만으로는 계산할 수 없다(§3-2).
+        반환: {"state": STATE|None, "ts": 마지막 봉 ts, "n": 사용 봉수}
+        """
+        try:
+            uri = "file:" + RAW_DATA_DB.replace("\\", "/") + "?mode=ro"
+            conn = sqlite3.connect(uri, uri=True, timeout=3)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT ts, buy_vol, sell_vol, volume, oi FROM raw_candles "
+                "WHERE ts >= ? AND ts < ? ORDER BY ts",
+                (ts_from, ts_to),
+            ).fetchall()
+            conn.close()
+            bars = [dict(r) for r in rows]
+            if not bars:
+                return None
+            res = compute_states(bars)
+            last_ts = bars[-1]["ts"]
+            return {
+                "state": res["state_map"].get(last_ts),
+                "ts":    last_ts,
+                "close": None,
+                "n":     len([b for b in bars if (b.get("oi") or 0) > 0]),
+            }
+        except Exception:
+            return None
 
     def _fetch_candles(self, ts_from: str, ts_to: str) -> List[dict]:
         try:
@@ -248,28 +314,103 @@ class CandleChartDialog(QDialog):
         )
         root.addWidget(self._banner)
 
-        # conf 인디케이터 (배너 ↔ 캔버스 사이)
-        conf_frame = QFrame()
-        conf_frame.setStyleSheet(
+        # ── 좌측 중단 — 상태 / 현재가 / 포지션 (배너 ↔ 캔버스 사이) ──
+        # 시안 의도: **보유 여부에 따라 답하는 질문이 바뀐다.**
+        #   무포지션 → 「들어가도 되나」  → 상태 배지가 답한다
+        #   보유 중  → 「손절이 어디고 얼마 벌고 있나」 → 손절·미실현이 답한다
+        # 같은 자리, 같은 높이. 눈이 옮겨 다닐 필요가 없다.
+        mid_frame = QFrame()
+        mid_frame.setStyleSheet(
             "QFrame { background:#161b22; border-bottom:1px solid #30363d; }"
         )
-        conf_lay = QVBoxLayout(conf_frame)
-        conf_lay.setContentsMargins(12, 5, 12, 5)
-        conf_lay.setSpacing(3)
+        mid_lay = QVBoxLayout(mid_frame)
+        mid_lay.setContentsMargins(12, 5, 12, 4)
+        mid_lay.setSpacing(4)
 
+        row = QHBoxLayout()
+        row.setSpacing(10)
+
+        # ① 4상태 배지 — 「상방 쌓기」 등
+        self._lbl_state = QLabel("상태 —")
+        self._lbl_state.setFont(QFont("Arial", 10, QFont.Bold))
+        self._lbl_state.setAlignment(Qt.AlignCenter)
+        self._lbl_state.setMinimumWidth(88)
+        self._style_state_badge(STATE_NA_COLOR, "상태 —")
+        self._lbl_state.setToolTip(
+            "봉별 4상태 — 공격자 방향 × ΔOI 부호 (30봉 창, 당일 중앙값 디바이어스)\n"
+            "  상방 쌓기   : 매수가 때리며 미결제 증가 (신규 롱)\n"
+            "  기계적 매수 : 매수가 때리며 미결제 감소 (숏커버)\n"
+            "  하방 쌓기   : 매도가 때리며 미결제 증가 (신규 숏)\n"
+            "  기계적 매도 : 매도가 때리며 미결제 감소 (롱커버)\n"
+            "  문턱 미달   : 활성 문턱(|공격자| · |ΔOI| 각각 당일 50%분위) 미달 — 「중립」이 아니다\n"
+            "  상태 —      : 30봉 워밍업 미달 또는 원천 미수집\n\n"
+            "⭐ 검증된 진술은 하나다 — 「기계적 매수 구간에서 롱을 잡지 마라」\n"
+            "   (OOS −13.5bp, 95%CI [−18.6,−9.0], P=0.000, 4/4 fold)\n"
+            "   나머지 3상태는 워크포워드를 통과하지 못했다 — 표시만 한다."
+        )
+        row.addWidget(self._lbl_state, 0, Qt.AlignVCenter)
+
+        # ② 현재가 — 화면에서 가장 큼
+        self._lbl_price = QLabel("————")
+        self._lbl_price.setFont(QFont("Consolas", 21, QFont.Bold))
+        self._lbl_price.setStyleSheet("color:#e6edf3;")
+        row.addWidget(self._lbl_price, 0, Qt.AlignVCenter)
+
+        self._lbl_price_src = QLabel("")
+        self._lbl_price_src.setFont(QFont("Arial", 8))
+        self._lbl_price_src.setStyleSheet("color:%s;" % _MUTED)
+        row.addWidget(self._lbl_price_src, 0, Qt.AlignBottom)
+
+        # ③ 포지션 — 무포지션 / 보유 중에 따라 내용이 바뀐다
+        self._lbl_pos = QLabel("포지션 미연결")
+        self._lbl_pos.setFont(QFont("Consolas", 11, QFont.Bold))
+        self._lbl_pos.setStyleSheet("color:%s;" % _MUTED)
+        row.addWidget(self._lbl_pos, 0, Qt.AlignVCenter)
+
+        # 🔴 손절과 손익을 **한 라벨에 섞지 않는다**.
+        #   손익 부호로 전체를 칠하면 「손절 1044.00」이 초록으로 찍혀
+        #   안심 신호처럼 읽힌다 — 손절은 언제나 손절 색이다.
+        self._lbl_stop = QLabel("")
+        self._lbl_stop.setFont(QFont("Consolas", 11, QFont.Bold))
+        self._lbl_stop.setStyleSheet("color:%s;" % _FG["dn"])
+        row.addWidget(self._lbl_stop, 0, Qt.AlignVCenter)
+
+        self._lbl_pnl = QLabel("")
+        self._lbl_pnl.setFont(QFont("Consolas", 13, QFont.Bold))
+        self._lbl_pnl.setStyleSheet("color:%s;" % _MUTED)
+        row.addWidget(self._lbl_pnl, 0, Qt.AlignVCenter)
+
+        self._lbl_pos_q = QLabel("")
+        self._lbl_pos_q.setFont(QFont("Arial", 8))
+        self._lbl_pos_q.setStyleSheet("color:#586069;")
+        row.addWidget(self._lbl_pos_q, 0, Qt.AlignVCenter)
+
+        row.addStretch(1)
+
+        self._lbl_span = QLabel("최근 %d봉" % self.N_CANDLES)
+        self._lbl_span.setFont(QFont("Arial", 9))
+        self._lbl_span.setStyleSheet("color:%s;" % _MUTED)
+        row.addWidget(self._lbl_span, 0, Qt.AlignVCenter)
+
+        mid_lay.addLayout(row)
+
+        # conf 인디케이터 — 값은 배너에 있고, 여기엔 막대와 mc 만 남긴다
+        conf_row = QHBoxLayout()
+        conf_row.setSpacing(8)
         self._conf_bar = QProgressBar()
-        self._conf_bar.setFixedHeight(8)
+        self._conf_bar.setFixedHeight(5)
         self._conf_bar.setTextVisible(False)
         self._conf_bar.setRange(0, 1000)
         self._conf_bar.setStyleSheet(_STYLE_BAR.format(color=_MUTED))
-        conf_lay.addWidget(self._conf_bar)
+        conf_row.addWidget(self._conf_bar, 1)
 
         self._lbl_conf_text = QLabel("conf —  mc —  ±—")
-        self._lbl_conf_text.setFont(QFont("Consolas", 9))
+        self._lbl_conf_text.setFont(QFont("Consolas", 8))
         self._lbl_conf_text.setStyleSheet("color:%s;" % _MUTED)
-        conf_lay.addWidget(self._lbl_conf_text)
+        conf_row.addWidget(self._lbl_conf_text, 0)
+        mid_lay.addLayout(conf_row)
 
-        root.addWidget(conf_frame)
+        root.addWidget(mid_frame)
 
         # matplotlib 캔버스 — 캔들 + 방향예측 레인 + 레짐 레인 3단 구성
         #
@@ -365,12 +506,155 @@ class CandleChartDialog(QDialog):
         self._worker.done.connect(self._apply)
         self._worker.start()
 
+    # ── 좌측 중단 ────────────────────────────────────────────────
+
+    def _style_state_badge(self, color: str, text: str):
+        self._lbl_state.setText(text)
+        self._lbl_state.setStyleSheet(
+            "background:%s; color:#0d1117; border-radius:3px;"
+            " padding:2px 8px; font-weight:bold;" % color
+        )
+
+    def _update_mid_row(self, candles: List[dict], state: Optional[dict]):
+        """상태 배지 · 현재가 · 포지션 — 시안 좌측 중단.
+
+        🔴 계측 4원칙 ②·④ — 없는 값을 그럴듯하게 채우지 않는다.
+          포지션 스냅샷이 없으면 「무포지션」이 아니라 「포지션 미연결」,
+          상태가 안 붙었으면 「중립」이 아니라 「문턱 미달」이다.
+        """
+        # ① 상태 배지
+        if state is None:
+            self._style_state_badge(STATE_NA_COLOR, "상태 —")
+        elif state.get("n", 0) <= STATE_W:
+            self._style_state_badge(STATE_NA_COLOR, "워밍업 %d/%d"
+                                    % (state.get("n", 0), STATE_W + 1))
+        else:
+            st = state.get("state")
+            if st:
+                self._style_state_badge(STATE_COLOR[st], STATE_KO[st])
+            else:
+                self._style_state_badge(STATE_NA_COLOR, STATE_NA_KO)
+
+        # ② 포지션 — 현재가 출처도 여기서 갈린다
+        pos_state, pos = read_position()
+        bar_close = None
+        if candles:
+            try:
+                bar_close = float(candles[-1]["close"])
+            except (TypeError, ValueError, KeyError):
+                bar_close = None
+
+        status = ""
+        if pos_state == "live" and pos:
+            status = str(pos.get("status", "") or "").strip().upper()
+
+        live_px = None
+        if pos_state == "live" and pos:
+            try:
+                _c = float(pos.get("current") or 0.0)
+                live_px = _c if _c > 0 else None
+            except (TypeError, ValueError):
+                live_px = None
+
+        px = live_px if live_px is not None else bar_close
+        if px is None:
+            self._lbl_price.setText("————")
+            self._lbl_price.setStyleSheet("color:%s;" % _MUTED)
+            self._lbl_price_src.setText("미수집")
+        else:
+            self._lbl_price.setText("%.2f" % px)
+            self._lbl_price.setStyleSheet("color:#e6edf3;")
+            self._lbl_price_src.setText("실시간" if live_px is not None else "종가")
+
+        self._lbl_stop.setText("")
+        self._lbl_pnl.setText("")
+
+        if pos_state == "none":
+            # 한 번도 안 왔다 — 「무포지션」과 다르다
+            self._lbl_pos.setText("포지션 미연결")
+            self._lbl_pos.setStyleSheet("color:%s;" % _MUTED)
+            self._lbl_pos.setToolTip(
+                "포지션은 DB에 없다 — main.py 의 실시간 흐름에서만 온다.\n"
+                "이 배너를 대시보드 없이 단독으로 띄웠거나, 아직 첫 갱신 전이다.\n"
+                "「무포지션」이라는 뜻이 **아니다**."
+            )
+            self._lbl_pos_q.setText("")
+            return
+        if pos_state == "stale":
+            self._lbl_pos.setText("포지션 갱신 끊김")
+            self._lbl_pos.setStyleSheet("color:#D29922;")
+            self._lbl_pos.setToolTip(
+                "마지막 포지션 갱신이 %d초를 넘었다 — 지금 상태를 모른다.\n"
+                "표시된 값은 마지막으로 받은 값이다." % int(_POS_STALE_SEC)
+            )
+            self._lbl_pos_q.setText("")
+            return
+
+        if status in ("LONG", "SHORT"):
+            mult = 1 if status == "LONG" else -1
+            side = "L" if status == "LONG" else "S"
+            try:
+                entry = float(pos.get("entry") or 0.0)
+            except (TypeError, ValueError):
+                entry = 0.0
+            try:
+                stop = float(pos.get("stop") or 0.0)
+            except (TypeError, ValueError):
+                stop = 0.0
+            try:
+                qty = int(float(pos.get("qty") or 0))
+            except (TypeError, ValueError):
+                qty = 0
+            cur = px if px is not None else entry
+            pnl = (cur - entry) * mult if entry > 0 and cur is not None else None
+
+            self._lbl_pos.setText(
+                "%s  진입 %s" % ("%s×%d" % (side, qty) if qty else side,
+                                 "%.2f" % entry if entry > 0 else "——")
+            )
+            self._lbl_pos.setStyleSheet("color:#e6edf3;")
+            self._lbl_pos.setToolTip(
+                "보유 중 — 이 줄이 답하는 질문은 「손절이 어디고 얼마 벌고 있나」다.\n"
+                "손절은 현재 트레일링 스톱(PositionTracker.stop_price)이다.\n"
+                "손익은 미실현 포인트 — 수수료 전이다."
+            )
+            # 손절 — 부호와 무관하게 항상 손절 색
+            self._lbl_stop.setText("손절 %s" % ("%.2f" % stop if stop > 0 else "——"))
+            self._lbl_stop.setToolTip(
+                "현재 트레일링 스톱. 진입 시 고정값이 아니라 **움직인다**."
+            )
+            # 손익 — 여기만 부호로 칠한다
+            if pnl is None:
+                self._lbl_pnl.setText("손익 ——")
+                self._lbl_pnl.setStyleSheet("color:%s;" % _MUTED)
+            else:
+                self._lbl_pnl.setText("%+.2fp" % pnl)
+                self._lbl_pnl.setStyleSheet(
+                    "color:%s;" % (_FG["up"] if pnl > 0 else
+                                   _FG["dn"] if pnl < 0 else _MUTED)
+                )
+                self._lbl_pnl.setToolTip("미실현 포인트 — 수수료 전이다.")
+            self._lbl_pos_q.setText("")
+        elif status == "FLAT":
+            self._lbl_pos.setText("무포지션")
+            self._lbl_pos.setStyleSheet("color:%s;" % _MUTED)
+            self._lbl_pos.setToolTip(
+                "측정된 무포지션이다 — 갱신이 살아 있고 status=FLAT 이다.\n"
+                "이 줄이 답하는 질문은 「들어가도 되나」다 — 왼쪽 상태 배지를 본다."
+            )
+            self._lbl_pos_q.setText("· 들어가도 되나")
+        else:
+            self._lbl_pos.setText("포지션 %s" % (status or "—"))
+            self._lbl_pos.setStyleSheet("color:%s;" % _MUTED)
+            self._lbl_pos_q.setText("")
+
     def _apply(
         self,
         candles:          List[dict],
         ensemble:         Optional[dict],
         hz_dirs:          Dict[str, int],
         candle_decisions: Dict[str, dict],
+        state:            Optional[dict] = None,
     ):
         d     = int(ensemble["direction"])         if ensemble else 0
         conf  = float(ensemble["confidence"])      if ensemble else 0.0
@@ -403,6 +687,17 @@ class CandleChartDialog(QDialog):
         self._lbl_conf_text.setText(
             "conf %.3f  mc %.3f  %+.3f" % (conf, mc, delta)
         )
+
+        # ── 좌측 중단 (상태 · 현재가 · 포지션) ────────────────────
+        try:
+            self._update_mid_row(candles, state)
+            # 빈 라벨은 간격만 먹는다 — 숨긴다
+            for _w in (self._lbl_stop, self._lbl_pnl,
+                       self._lbl_pos_q, self._lbl_price_src):
+                _w.setVisible(bool(_w.text()))
+        except Exception:
+            # 배너 한 줄 때문에 차트를 죽이지 않는다
+            pass
 
         # ── 봉차트 + 인디케이터 레인 그리기 ──────────────────────
         self._draw_chart(candles, d, fg, candle_decisions)

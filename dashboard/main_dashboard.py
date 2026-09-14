@@ -14685,6 +14685,14 @@ class DashboardAdapter:
     def update_position(self, pos_data: dict):
         """청산 패널 포지션 데이터 업데이트"""
         self._win.exit_panel.update_data(pos_data)
+        # [MW0601 575차] 보조 모니터 배너에 포지션을 떨군다.
+        # 포지션은 DB에 없다 — 이 호출이 유일한 경로다. 단방향·읽기 전용이며
+        # 실패해도 청산 패널 갱신을 막지 않는다.
+        try:
+            from dashboard.panels.candle_chart_dialog import publish_position
+            publish_position(pos_data)
+        except Exception:
+            pass
         # 헤더 포지션 배지 갱신
         lbl = getattr(self._win, "lbl_pos", None)
         if lbl is None:
