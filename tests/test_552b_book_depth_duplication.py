@@ -207,14 +207,18 @@ def test_collect_excludes_unmeasured_depth_bias_zero():
     tmp = tempfile.mkdtemp()
     db = os.path.join(tmp, "raw.db")
     con = sqlite3.connect(db)
+    # [561차] 판정기 입력이 `_tot`(점표본) → `_avg`(봉평균) 으로 개정됐다.
+    # 픽스처도 두 계열을 다 갖춘다 — 의도(제외 규칙 검증)는 그대로다.
     con.execute("CREATE TABLE raw_candles (ts TEXT PRIMARY KEY, book_bid_tot INTEGER,"
-                " book_ask_tot INTEGER, book_snaps INTEGER)")
+                " book_ask_tot INTEGER, book_snaps INTEGER,"
+                " book_bid_avg REAL, book_ask_avg REAL)")
     con.execute("CREATE TABLE raw_features (ts TEXT PRIMARY KEY, features TEXT)")
     rows = [("2026-09-10 09:00:00", 120, 80, 2, 0.30),    # 유효
             ("2026-09-10 09:01:00", 100, 100, 2, 0.0),    # depth_bias 미측정 -> 제외
             ("2026-09-10 09:02:00", None, None, 0, 0.25)] # book 미수신 -> 제외
     for ts, b, a, n, v in rows:
-        con.execute("INSERT INTO raw_candles VALUES (?,?,?,?)", (ts, b, a, n))
+        con.execute("INSERT INTO raw_candles VALUES (?,?,?,?,?,?)",
+                    (ts, b, a, n, b, a))     # avg = tot 로 둬 기존 기대값 유지
         con.execute("INSERT INTO raw_features VALUES (?,?)",
                     (ts, json.dumps({"microprice_depth_bias": v})))
     con.commit()

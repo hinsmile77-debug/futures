@@ -60,6 +60,11 @@ INV_ABS_MAX = 10.0         # 수급 압축값 정상 상한 — 넘으면 단위
 BOOK_DEPTH_RATIO_MIN = 1.05        # 5단 총잔량 ÷ 1단 잔량. 1.0 이면 2~5단이 비었다
 BOOK_TARGET_DAYS = 60      # Phase 3-0/3 판정에 필요한 적립 거래일
 
+# [561차] `book_*_tot` 은 봉당 수백 스냅샷 중 **1개**라 봉을 대표하지 못한다.
+# 그 사실을 매일 숫자로 남긴다 — 판정이 아니라 관측이다(WARN 까지만).
+# 실측 기준선(2026-09-10~14, 958봉): |tot-avg|/avg 중앙 0.144 · 2배 이상 1.1%.
+BOOK_TOT_DEV_WARN = 0.50   # 중앙 괴리가 이보다 크면 tot 이 유난히 더 튀는 날이다
+
 # 559차 배포일. 이 날 **이전** 거래일에는 `unk_vol`·`*_measured` 가 존재하지 않는다 —
 # 그 날을 점검하면 FAIL 이 아니라 **미측정(n/a)** 이다(계측 4원칙 ②).
 # 배포일이 밀리면 여기만 고친다.
@@ -230,6 +235,20 @@ def check_book(con, day, rows):
              _OK if ratio >= BOOK_DEPTH_RATIO_MIN else _FAIL,
              "평균 %.2f (하한 %.2f) · 비<=1.0 인 봉 %d — 1.0 이면 2~5단이 비었거나 파싱 어긋남"
              % (ratio, BOOK_DEPTH_RATIO_MIN, sb[3] or 0))
+
+    # [561차] 대표성 — `_tot`(점표본) 이 `_avg`(봉평균) 에서 얼마나 벗어나는가.
+    dev = con.execute(
+        "SELECT book_bid_tot, book_bid_avg FROM raw_candles"
+        " WHERE ts >= ? AND ts < ? AND book_bid_avg IS NOT NULL AND book_bid_avg > 0",
+        (day, day + "~")).fetchall()
+    if dev:
+        r = sorted(abs(t - a) / a for t, a in dev if t is not None)
+        if r:
+            med = r[len(r) // 2]
+            big = sum(1 for x in r if x >= 1.0)
+            _add(rows, "③", "tot 대표성", _OK if med < BOOK_TOT_DEV_WARN else _WARN,
+                 "|tot-avg|/avg 중앙 %.3f · 2배이상 %d/%d봉 — 판정·피처는 `_avg` 를 쓸 것"
+                 % (med, big, len(r)))
 
     days = con.execute(
         "SELECT COUNT(DISTINCT substr(ts,1,10)) FROM raw_candles"
