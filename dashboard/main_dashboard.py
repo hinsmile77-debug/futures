@@ -8303,6 +8303,11 @@ _STATE_BAR_COLOR = {
 }
 _STATE_KO = {"BUY_MECH": "기계적 매수", "BUY_STACK": "상방 쌓기",
              "SELL_STACK": "하방 쌓기", "SELL_MECH": "기계적 매도"}
+# [오버레이 P7] 가격 아래 보조 패널 — 전환 레인 + 원계열 히스토그램 2단
+_FLOW_LANE_H = 15    # 전환 마커 레인
+_FLOW_HIST_H = 30    # 공격자 · ΔOI 각각
+_FLOW_GAP    = 5
+_LEGEND_H    = 22
 _DIR_BAR_COLOR = {
     1:  "#3fb950",   # UP   (녹색)
     -1: "#f85149",   # DOWN (적색)
@@ -8478,7 +8483,15 @@ class MinuteChartCanvas(QWidget):
         # [오버레이 P1] 봉별 4상태. 빈 dict 는 「미산출」이다 — 「상태 없음」과 다르다.
         self._state_map = {}
         self._state_provisional = True   # 라이브면 중앙값이 확정 전이다
+        # [오버레이 P7] 상태의 **재료** 자체를 남긴다 — 상태는 부호 둘로 압축한
+        #   결과일 뿐이라 크기 정보가 사라진다. 히스토그램은 원계열이 필요하다.
+        self._aggr_map = {}   # {ts: 공격자불균형(당일 중앙값 차감)}
+        self._doi_map = {}    # {ts: ΔOI(30분)}
         # [오버레이 P3] 장전 레벨. None 은 「미조회」다 — 빈 dict(「그날 없음」)와 다르다.
+        # [오버레이 P8] 이번 paint 에서 이미 칩이 차지한 사각형들.
+        #   레이어마다 따로 피하면 **레이어끼리는 계속 겹친다** — 실측으로 확인했다.
+        #   paintEvent 시작에서 비우고 모든 칩이 같은 목록을 본다.
+        self._chip_rects = []
         self._pre_levels = None
         # 레이어 토글. 기본은 **전부 꺼짐** — 화면은 빼는 것도 설계다(원칙 6).
         # 거래 스팬은 **기본 켜짐** — 567차 이전부터 그리던 것이라 끄면 퇴행이다.
@@ -8731,7 +8744,13 @@ class MinuteChartCanvas(QWidget):
         top = S.p(22)
         right = S.p(18)
         bottom = S.p(34)
-        plot = QRectF(left, top, max(10, self.width() - left - right), max(10, self.height() - top - bottom))
+        # [오버레이 P7] 가격 아래에 보조 패널 2단 + 전환 레인, 맨 아래 레전드.
+        #   자리를 먼저 떼고 남은 높이를 가격에 준다 — 안 그러면 패널이 x축 위로 겹친다.
+        _flow_h = self._flow_panel_height()
+        _leg_h = _LEGEND_H if _flow_h else 0
+        _reserve = (_flow_h + _FLOW_GAP if _flow_h else 0) + _leg_h
+        plot = QRectF(left, top, max(10, self.width() - left - right),
+                      max(10, self.height() - top - bottom - _reserve))
         self._last_plot_rect = plot
 
         prices = []
@@ -8761,14 +8780,18 @@ class MinuteChartCanvas(QWidget):
         self._axis_lo, self._axis_hi = lo, hi
 
         import time as _t2
+        self._chip_rects = []        # [P8] 이번 paint 의 칩 자리 — 레이어가 공유한다
         _t_grid = _t2.monotonic(); self._draw_grid(painter, plot, lo, hi)
         self._draw_session_tail(painter, plot, candles, padded_count)
-        # [오버레이 P3] 면 → 선 → 빗금 순. 면이 위로 오면 선을 덮는다
+        # [오버레이 P2] 금지 빗금이 가장 아래 — 캔들 판독을 가리지 않는다.
+        # 🔴 레벨 레이어보다 **먼저** 부른다. 그래야 「롱 금지」 라벨이 칩 자리를
+        #   먼저 예약하고, 뒤에 오는 구조/맥점 칩이 그 자리를 피한다(실측 결함).
+        self._draw_state_overlay(painter, plot, candles, padded_count)
+        self._draw_state_vlines(painter, plot, candles, padded_count)
+        # [오버레이 P3] 면 → 선 순. 면이 위로 오면 선을 덮는다
         self._draw_price_model(painter, plot, lo, hi)
         self._draw_struct_model(painter, plot, lo, hi)
         self._draw_peter_levels(painter, plot, lo, hi)
-        # [오버레이 P2] 금지 빗금은 **캔들 뒤**라야 판독을 가리지 않는다
-        self._draw_state_overlay(painter, plot, candles, padded_count)
         _t_spans = _t2.monotonic()
         index_map = {c["ts"]: i for i, c in enumerate(candles)}
         self._draw_trade_spans(painter, plot, candles, index_map, lo, hi, padded_count)
@@ -8783,7 +8806,19 @@ class MinuteChartCanvas(QWidget):
         #   이미 그리므로 그 줄은 가져오지 않는다 — 없는 메서드를 부르면 매 프레임
         #   AttributeError 로 차트가 통째로 빈다.
         _t_markers = _t2.monotonic(); self._draw_markers(painter, plot, candles, index_map, lo, hi, padded_count)
-        _t_axes = _t2.monotonic();   self._draw_axes(painter, plot, candles, lo, hi, padded_count)
+        self._draw_trade_summary(painter, plot)
+        # 보조 패널 · 레전드 — x축 라벨은 패널 **아래**에 와야 한다
+        _axis_bottom = plot.bottom()
+        if _flow_h:
+            _pr = QRectF(plot.left(), plot.bottom() + _FLOW_GAP, plot.width(), _flow_h)
+            self._draw_flow_panels(painter, _pr, candles, padded_count)
+            _axis_bottom = _pr.bottom()
+            self._draw_legend(painter, QRectF(plot.left(), self.height() - _leg_h,
+                                              plot.width(), _leg_h))
+        _t_axes = _t2.monotonic()
+        self._draw_axes(painter, QRectF(plot.left(), plot.top(), plot.width(),
+                                        _axis_bottom - plot.top()),
+                        candles, lo, hi, padded_count)
         _t_cross = _t2.monotonic();  self._draw_crosshair_and_tooltip(painter, plot, candles, lo, hi)
         _t_end = _t2.monotonic()
 
@@ -8980,6 +9015,7 @@ class MinuteChartCanvas(QWidget):
                 _tx = max(plot.left() + S.p(4), _x0 - S.p(5) - _w)
             painter.setPen(QColor("#58A6FF"))
             painter.drawText(QPointF(_tx, plot.top() + S.p(12)), _txt)
+            self._reserve_text(painter, _tx, plot.top() + S.p(12), _txt)
         except Exception as _e:
             logger.debug("[ChartDBG] _draw_session_tail 예외: %s", _e)
         finally:
@@ -9372,8 +9408,61 @@ class MinuteChartCanvas(QWidget):
                 painter.setFont(QFont("Malgun Gothic", 8, QFont.Bold))
                 painter.setPen(QColor("#D29922"))
                 painter.drawText(QPointF(plot.left() + S.p(6), plot.top() + S.p(12)), _txt)
+                self._reserve_text(painter, plot.left() + S.p(6), plot.top() + S.p(12), _txt)
         except Exception as _e:
             logger.debug("[ChartDBG] _draw_state_overlay 예외: %s", _e)
+        finally:
+            painter.restore()
+
+    # 하루 전환 횟수 실측(2026-06-01~09-14, 73거래일): 중앙 5 · 평균 4.8 · **최대 11**.
+    #   40건 거래 때처럼 화면을 덮을 위험이 없어 전체 높이로 긋는다.
+    #   이 값을 넘으면 안 긋는다 — 표본 밖 상황에서 화면이 먼저 망가지지 않게.
+    STATE_VLINE_MAX = 30
+
+    def _state_transitions(self, candles):
+        """상태가 **바뀌는** 봉의 (idx, 새 상태). 값이 없는 봉은 전환이 아니다."""
+        out, prev = [], None
+        for idx, candle in enumerate(candles):
+            _st = self._state_map.get(candle["ts"])
+            if _st and _st != prev:
+                out.append((idx, _st))
+            if _st:
+                prev = _st
+        return out
+
+    def _draw_state_vlines(self, painter: QPainter, plot: QRectF, candles, padded_count: int):
+        """전환 지점 세로선. 가격 영역을 가로질러 아래 전환 레인과 **눈으로 이어준다**.
+
+        🔴 색은 **바뀐 뒤** 상태다 — "여기서부터 저 상태"라는 뜻이지
+          "여기까지 그랬다"가 아니다.
+        🔴 점선 + 저채도로만 긋는다. 이건 경계 표시이지 신호가 아니다 —
+          검증된 문장은 「BUY_MECH 구간 롱 금지」 하나뿐이고 그건 빗금이 말한다.
+        """
+        if not self._state_map:
+            return
+        _tr = self._state_transitions(candles)
+        if not _tr or len(_tr) > self.STATE_VLINE_MAX:
+            return
+        try:
+            painter.save()
+        except Exception:
+            return
+        try:
+            count = max(padded_count, 1)
+            step = plot.width() / count
+            _dim = 0.55 if self._state_provisional else 1.0
+            for idx, _st in _tr:
+                _c = _STATE_BAR_COLOR.get(_st)
+                if not _c:
+                    continue
+                col = QColor(_c[0])
+                col.setAlpha(int(110 * _dim))
+                _p = QPen(col); _p.setWidth(1); _p.setStyle(Qt.DotLine)
+                painter.setPen(_p)
+                x = plot.left() + step * idx
+                painter.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()))
+        except Exception as _e:
+            logger.debug("[ChartDBG] _draw_state_vlines 예외: %s", _e)
         finally:
             painter.restore()
 
@@ -9410,6 +9499,146 @@ class MinuteChartCanvas(QWidget):
         finally:
             painter.restore()
 
+    # ── [오버레이 P7] 가격 아래 보조 패널 ─────────────────────────────
+    #
+    # 🔴 4상태는 부호 둘로 **압축한 결과**다 — 얼마나 세게 때렸는지, ΔOI 가 얼마나
+    #   움직였는지는 거기서 사라진다. 상태만 보면 「활성 문턱을 간신히 넘은 봉」과
+    #   「압도적인 봉」이 같은 색이 된다. 그래서 원계열을 따로 그린다.
+    # 🔴 두 히스토그램은 **각자 자기 최대값으로 정규화**한다. 단위가 다르다
+    #   (공격자 = 비율, ΔOI = 계약수) — 같은 축에 얹으면 한쪽이 안 보인다.
+    def _flow_panel_height(self):
+        if not (self._aggr_map or self._doi_map):
+            return 0
+        return _FLOW_LANE_H + _FLOW_GAP + _FLOW_HIST_H + _FLOW_GAP + _FLOW_HIST_H
+
+    def _draw_flow_panels(self, painter: QPainter, rect: QRectF, candles, padded_count: int):
+        if rect.height() <= 0 or not candles:
+            return
+        try:
+            painter.save()
+        except Exception:
+            return
+        try:
+            count = max(padded_count, 1)
+            step = rect.width() / count
+            _lane = QRectF(rect.left(), rect.top(), rect.width(), _FLOW_LANE_H)
+            _h1 = QRectF(rect.left(), _lane.bottom() + _FLOW_GAP, rect.width(), _FLOW_HIST_H)
+            _h2 = QRectF(rect.left(), _h1.bottom() + _FLOW_GAP, rect.width(), _FLOW_HIST_H)
+            _bd = QColor(C["border"]); _bd.setAlpha(120)
+            for _r in (_lane, _h1, _h2):
+                painter.setPen(QPen(_bd)); painter.setBrush(Qt.NoBrush)
+                painter.drawRect(_r)
+
+            # ① 전환 레인 — 상태가 **바뀌는 봉**만 찍는다. 구간 전체를 칠하면
+            #   레인이 상태바와 중복되고, 전환 시점이라는 정보가 묻힌다.
+            #   🔴 세로선(_draw_state_vlines)과 **같은 헬퍼**를 쓴다 — 두 곳이
+            #     따로 세면 마커와 선이 어긋난 자리에 찍힌다.
+            painter.setPen(Qt.NoPen)
+            for idx, _st in self._state_transitions(candles):
+                _c = _STATE_BAR_COLOR.get(_st)
+                if not _c:
+                    continue
+                col = QColor(_c[0]); col.setAlpha(230)
+                painter.setBrush(col)
+                x = _lane.left() + step * (idx + 0.5)
+                y = _lane.center().y()
+                _up = _st.startswith("BUY")
+                _tri = QPolygonF([QPointF(x, y - 5 if _up else y + 5),
+                                  QPointF(x - 4.5, y + 4 if _up else y - 4),
+                                  QPointF(x + 4.5, y + 4 if _up else y - 4)])
+                painter.drawPolygon(_tri)
+
+            # ② 공격자 때린 쪽 · ③ ΔOI 30분
+            for _r, _src, _pos, _neg, _tag in (
+                    (_h1, self._aggr_map, "#3FB950", "#F85149", "공격자 때린 쪽"),
+                    (_h2, self._doi_map, "#58A6FF", "#D29922", "ΔOI 30분  신규/청산")):
+                if not _src:
+                    continue
+                _vals = [abs(v) for v in _src.values() if v is not None]
+                _mx = max(_vals) if _vals else 0.0
+                if _mx <= 0:
+                    continue
+                _mid = _r.center().y()
+                painter.setPen(QPen(QColor(C["border"])))
+                painter.drawLine(QPointF(_r.left(), _mid), QPointF(_r.right(), _mid))
+                painter.setPen(Qt.NoPen)
+                _w = max(1.0, step * 0.8)
+                for idx, candle in enumerate(candles):
+                    v = _src.get(candle["ts"])
+                    if v is None:
+                        continue
+                    _hh = (abs(v) / _mx) * (_r.height() / 2 - 1)
+                    col = QColor(_pos if v >= 0 else _neg); col.setAlpha(205)
+                    painter.setBrush(col)
+                    x = _r.left() + step * idx
+                    painter.drawRect(QRectF(x, _mid - _hh if v >= 0 else _mid, _w, _hh))
+                painter.setFont(QFont("Malgun Gothic", 7))
+                painter.setPen(QColor(C["text2"]))
+                painter.drawText(QPointF(_r.left() + S.p(4), _r.top() + S.p(10)), _tag)
+            painter.setFont(QFont("Malgun Gothic", 7))
+            painter.setPen(QColor(C["text2"]))
+            painter.drawText(QPointF(_lane.left() + S.p(4), _lane.top() + S.p(11)), "전환")
+        except Exception as _e:
+            logger.debug("[ChartDBG] _draw_flow_panels 예외: %s", _e)
+        finally:
+            painter.restore()
+
+    # ── [오버레이 P7] 레전드 ──────────────────────────────────────────
+    #
+    # 🔴 색이 아홉 가지가 됐다. 범례 없이 색으로만 말하면 **읽는 사람이 외워야** 한다.
+    _LEGEND_SPEC = (
+        ("#3FB950", "매수 공격 / 목표"), ("#F85149", "매도 공격 / 손절"),
+        ("#58A6FF", "ΔOI 신규"), ("#D29922", "ΔOI 청산 · 롱 금지"),
+        ("#C2CCD6", "구조모델"), ("#BC8CFF", "피터맥점"), ("#39C5CF", "가격모델 밴드"),
+    )
+
+    def _draw_legend(self, painter: QPainter, rect: QRectF):
+        if rect.height() <= 0:
+            return
+        try:
+            painter.save()
+        except Exception:
+            return
+        try:
+            painter.setFont(QFont("Malgun Gothic", 7))
+            _fm = painter.fontMetrics()
+            x = rect.left() + S.p(2)
+            y = rect.center().y()
+            for _c, _t in self._LEGEND_SPEC:
+                painter.setPen(Qt.NoPen); painter.setBrush(QColor(_c))
+                painter.drawRect(QRectF(x, y - 4, 8, 8))
+                painter.setPen(QColor(C["text2"]))
+                painter.drawText(QPointF(x + 12, y + 4), _t)
+                x += 12 + _fm.horizontalAdvance(_t) + S.p(14)
+                if x > rect.right() - S.p(120):
+                    break
+            painter.setPen(QColor(C["text2"]))
+            painter.drawText(QPointF(x, y + 4), "실선 미륵이 · 점선 피터리(사료)")
+        except Exception as _e:
+            logger.debug("[ChartDBG] _draw_legend 예외: %s", _e)
+        finally:
+            painter.restore()
+
+    def _draw_trade_summary(self, painter: QPainter, plot: QRectF):
+        """우상단 한 줄 — 색·농도·선종이 무엇을 뜻하는지 한 번에 말한다."""
+        _n = len(self._completed_trades) + len(self._peter_trades if
+                                               self._ov.get("trade_peter") else [])
+        if _n <= 0:
+            return
+        try:
+            painter.save()
+            painter.setFont(QFont("Malgun Gothic", 7))
+            painter.setPen(QColor(C["text2"]))
+            _t = ("● 거래 %d건 — 녹 수익 · 적 손실 │ 진한 면 확정 · 옅은 면 미결"
+                  " │ 실선 미륵이 · 점선 피터리(사료)" % _n)
+            _fm = painter.fontMetrics()
+            painter.drawText(QPointF(plot.right() - _fm.horizontalAdvance(_t) - S.p(6),
+                                     plot.top() + S.p(11)), _t)
+        except Exception as _e:
+            logger.debug("[ChartDBG] _draw_trade_summary 예외: %s", _e)
+        finally:
+            painter.restore()
+
     # ── [dev 이식 / 569차] 축 밖 판정 2종은 555차 후속2 의 것이지만 569차의
     #   `_draw_struct_model` 이 **직접 호출**하므로 최소 선행분으로 함께 가져온다.
     #   dev 의 다른 그리기 경로는 이것을 부르지 않는다 — 동작 변화 없음.
@@ -9443,6 +9672,8 @@ class MinuteChartCanvas(QWidget):
         painter.drawPolygon(poly)
         painter.setBrush(Qt.NoBrush)
 
+    TRADE_CHIP_MAX = 10       # 이보다 많으면 칩을 안 찍는다 — 서로를 덮는다
+
     def _draw_trade_span_area(self, painter: QPainter, x1: float, y1: float,
                               x2: float, y2: float, color: QColor, step: float,
                               plot: QRectF):
@@ -9462,8 +9693,9 @@ class MinuteChartCanvas(QWidget):
         except Exception:
             return
         try:
-            # 면 — 아주 옅게. 캔들 판독을 가리지 않는다
-            _f = QColor(color); _f.setAlpha(30)
+            # 면 — 시안 수준으로 올린다. α30 은 캔들 위에서 사실상 안 보였다(실측).
+            # 그래도 캔들 **뒤**에 깔리므로 판독을 가리지 않는다.
+            _f = QColor(color); _f.setAlpha(64)
             painter.setPen(Qt.NoPen); painter.setBrush(_f)
             painter.drawRect(QRectF(xa, ya, w, h))
             # 진입·청산 세로 경계 — 면이 납작해도 **구간**은 이 두 선으로 읽힌다.
@@ -9506,14 +9738,30 @@ class MinuteChartCanvas(QWidget):
                 pen = QPen(QColor("#FF5D73"))
             else:
                 pen = QPen(QColor("#8B949E"))
-            # [오버레이 P4a / dev 이식] 면 + 세로 경계를 먼저 깔고 그 위에 기존 선.
-            # ⚠ v9-dev 는 여기서 대각 연결선(_draw_link_line, 555차 후속2)으로
-            #   바꾸지만 dev 는 진입가 수평선이다. 그 시각 변경은 555차 몫이라
-            #   가져오지 않고, **569차가 더한 면·경계만** 얹는다.
+            # [오버레이 P4a·P7 / dev 이식] 면 + 세로 경계 + 칩을 깔고 그 위에 기존 선.
+            # ⚠ v9-dev 는 여기서 대각 연결선(_draw_link_line, 555차 후속2)으로 바꾸지만
+            #   dev 는 진입가 수평선이다. 그 시각 변경은 555차 몫이라 가져오지 않고,
+            #   569·571차가 더한 **면·경계·칩만** 얹는다. 축밖 캐럿도 555차 몫이라 제외.
+            _col = QColor(pen.color())
             _ep = float(trade.get("exit_price") or 0.0)
             _y2 = self._price_to_y(_ep, plot, lo, hi) if _ep > 0 else y
-            self._draw_trade_span_area(painter, x1, y, x2, _y2,
-                                       QColor(pen.color()), step, plot)
+            self._draw_trade_span_area(painter, x1, y, x2, _y2, _col, step, plot)
+            # 🔴 칩은 **건수가 적을 때만**. 40건인 날(실측 09-01)에 전부 찍으면
+            #   서로를 덮어 둘 다 못 읽는다(원칙 6 — 빼는 것도 설계다).
+            if len(self._completed_trades) <= self.TRADE_CHIP_MAX:
+                try:
+                    painter.setFont(QFont("Consolas", 8))
+                    _pl = "%+.2fp 미륵이" % pnl_pts
+                    self._draw_label_chip(painter, min(x1, x2), min(y, _y2) - S.p(20),
+                                          _pl, QColor(13, 17, 23, 225), _col, True)
+                    _wh = "%s %s→%s · %s" % (
+                        str(trade.get("direction") or ""), entry_dt.strftime("%H:%M"),
+                        exit_dt.strftime("%H:%M"), str(trade.get("exit_reason") or "")[:14])
+                    painter.setFont(QFont("Consolas", 7))
+                    self._draw_label_chip(painter, min(x1, x2), max(y, _y2) + S.p(4),
+                                          _wh, QColor(13, 17, 23, 205), _col, False)
+                except Exception as _e:
+                    logger.debug("[ChartDBG] 거래 칩 실패: %s", _e)
             pen.setWidth(2)
             pen.setStyle(Qt.DashLine)
             painter.setPen(pen)
@@ -9952,6 +10200,36 @@ class MinuteChartCanvas(QWidget):
         painter.setPen(QColor("#F9FAFB"))
         painter.drawText(QRectF(x - 5.5, y - 4.5, 11.0, 9.0), Qt.AlignCenter, "P")
 
+    def _reserve_text(self, painter: QPainter, x: float, y: float, text: str):
+        """`drawText` 로 찍는 라벨도 **자리를 잡아둔다.**
+
+        🔴 칩끼리만 피하게 하면 drawText 라벨과는 계속 겹친다 — 실측으로 확인했다
+          (「롱 금지」 문구 위에 구조모델 칩이 얹혔다).
+        """
+        try:
+            _w = painter.fontMetrics().horizontalAdvance(text)
+            _h = painter.fontMetrics().height()
+            self._chip_rects.append(QRectF(x, y - _h, _w, _h + S.p(3)))
+        except Exception:
+            pass
+
+    def _place_chip(self, rect: QRectF, limit: QRectF = None):
+        """이미 찍힌 칩과 안 겹치도록 **아래로** 밀어 자리를 잡는다.
+
+        🔴 겹친 칩 둘은 둘 다 못 읽는다. 하나를 포기하는 게 낫지만, 밀어서
+          둘 다 살릴 수 있으면 그게 낫다. 한계까지 밀어도 자리가 없으면 **안 그린다**.
+        """
+        _step = S.p(19)
+        _r = QRectF(rect)
+        for _ in range(12):
+            if not any(_r.intersects(_u) for _u in self._chip_rects):
+                self._chip_rects.append(QRectF(_r))
+                return _r
+            _r.moveTop(_r.top() + _step)
+            if limit is not None and _r.bottom() > limit.bottom():
+                return None
+        return None
+
     def _draw_label_chip(
         self,
         painter: QPainter,
@@ -9965,10 +10243,13 @@ class MinuteChartCanvas(QWidget):
         metrics = painter.fontMetrics()
         width = max(S.p(84), metrics.horizontalAdvance(text) + S.p(12))
         height = S.p(18)
-        rect = QRectF(x, y, width, height)
+        rect = self._place_chip(QRectF(x, y, width, height), self._last_plot_rect)
+        if rect is None:
+            return                    # 자리가 없다 — 겹쳐 찍느니 안 그린다
 
         bg = QColor(fill)
-        bg.setAlpha(205)
+        # 🔴 칩은 **읽히라고** 있는 것이다. 반투명이면 캔들이 비쳐 글자가 깨진다.
+        bg.setAlpha(240)
         painter.setPen(QPen(stroke, 1.2))
         painter.setBrush(bg)
         painter.drawRoundedRect(rect, 6, 6)
@@ -10117,6 +10398,8 @@ class MinuteChartCanvas(QWidget):
         `reset_session` 에서 **1회만** 부른다 — paintEvent 는 30ms 경보선이 있다.
         """
         self._state_map = {}
+        self._aggr_map = {}
+        self._doi_map = {}
         self._state_provisional = not self._state_is_past_session()
         # 🔴 사전등록 구현은 `m = m[m.oi.fillna(0) > 0]` 로 **OI 결측 봉을 버린 뒤**
         #   창을 센다. 남겨두면 30봉 창이 그만큼 밀려 판정이 달라진다
@@ -10159,9 +10442,13 @@ class MinuteChartCanvas(QWidget):
         thrO = self._quantile(sorted(abs(v) for v in d_oi if v is not None), self.STATE_ACTIVE_Q)
         if thrA is None or thrO is None:
             return
-        # ④ 상태
+        # ④ 상태 + 원계열 보관
         for i, row in enumerate(rows):
             a, o = imb[i], d_oi[i]
+            if a is not None:
+                self._aggr_map[row["ts"]] = a
+            if o is not None:
+                self._doi_map[row["ts"]] = o
             if a is None or o is None:
                 continue
             if abs(a) < thrA or abs(o) < thrO:
