@@ -14,7 +14,8 @@
 -----------
 552차 초판 Phase 3 은 신규 파생으로 다음을 등록했다:
 
-    book_net_ratio = (book_bid_tot - book_ask_tot) / (book_bid_tot + book_ask_tot)
+    book_net_ratio = (book_bid_avg - book_ask_avg) / (book_bid_avg + book_ask_avg)
+    # ⚠ 561차 개정 — 종전엔 _tot(점표본)이었다. 아래 「사전등록 개정」 절 참조.
 
 그런데 같은 정의의 축이 **이미 라이브**다 —
 `features/technical/microprice.py:MicropriceCalculator(max_levels=5)` 가 매 호가
@@ -34,6 +35,35 @@
 500차 OFI 3종(`ofi_imbalance = ofi_norm/3` · `ofi_pressure = sign(ofi_norm)`)을
 독립 신호 3개로 세면 Bonferroni 분모가 틀리고 계열 검정의 유효 자유도가 무너지는
 것과 **같은 계열**이다.
+
+🔴 사전등록 개정 [MW0601 561차 · 2026-09-14] — 입력 추정량 tot → avg
+-----------------------------------------------------------------
+**임계(0.90/0.70)와 판정문·min_days 는 무변경이다.** 바뀐 것은 `book_net_ratio` 를
+어느 컬럼으로 만드는가 하나다.
+
+    (before) book_bid_tot , book_ask_tot    — 봉의 **마지막 스냅샷 1개**
+    (after)  book_bid_avg , book_ask_avg    — 봉내 전 스냅샷 **평균**(중앙 494개)
+
+왜 바꾸는가 — **결과가 아니라 계측 품질 때문이다.**
+`_tot` 은 봉당 수백 개 스냅샷 중 1개만 쓰는 점표본이고, 봉 전환이 체결 틱으로
+일어나므로 그 1개는 「봉 마감 시점」조차 아니다. 실측(2026-09-10~09-14, 958봉):
+
+    같은 양을 재는 두 추정량의 상관   rho(tot, avg) = +0.288
+    |tot-avg|/avg                     중앙 0.144 · p99 1.045 · max 4.554
+    2배 이상 어긋난 봉                11/958 (1.1%)
+    tot >= 40 인 봉 1·6·3 (일자별)  vs  avg >= 40 인 봉 0·0·0
+
+즉 `tot` 의 「스파이크」는 시장이 아니라 표집이 만든다. 그 잡음이 상관을 0 쪽으로
+끌어내려 **중복을 독립으로 오판**시킨다.
+
+⚠ **정직하게 밝힌다 — 우리는 이 개정 전에 3거래일 참고치를 이미 봤다.**
+(분봉 rho: tot 기반 +0.177 / avg 기반 +0.902). 그러므로 이 변경은 「결과를 모르는
+상태의 사전등록」이 아니다. 그럼에도 정당한 이유는 **판단 근거가 결과와 독립**이기
+때문이다 — 위 rho(tot,avg)=+0.288 은 원축(`microprice_depth_bias`)을 보지 않고도
+성립하며, 1점 표본이 494점 평균보다 나쁘다는 것은 판정 결과와 무관한 사실이다.
+⚠ 임계를 결과에 맞춰 움직이는 것(458차 D6)과 혼동하지 말 것 — 임계는 손대지 않았다.
+
+근거: `docs/미륵이고도화3/호가깊이/호가잔량_유효성_딥다이브_MW0601-20260914.md`
 
 방법론
 ------
@@ -143,19 +173,26 @@ def collect(table="raw_candles", db_path=None):
         if "book_snaps" not in cols:
             return None, "테이블 %s 에 book_* 열이 없다 — 552차 마이그레이션 미적용" % table
         rows = con.execute(
-            "SELECT ts, book_bid_tot, book_ask_tot FROM %s "
+            "SELECT ts, book_bid_avg, book_ask_avg, book_bid_tot, book_ask_tot FROM %s "
             "WHERE book_snaps IS NOT NULL AND book_snaps > 0 "
-            "  AND book_bid_tot IS NOT NULL AND book_ask_tot IS NOT NULL "
+            "  AND book_bid_avg IS NOT NULL AND book_ask_avg IS NOT NULL "
             "ORDER BY ts" % table
         ).fetchall()
         if not rows:
             return [], None
         book = {}
-        for ts, b, a in rows:
-            tot = float(b) + float(a)
-            if tot <= 0:
+        book_tot = {}
+        for ts, bavg, aavg, btot, atot in rows:
+            den = float(bavg) + float(aavg)
+            if den <= 0:
                 continue                      # 정의되지 않는다 — 0 으로 채우지 않는다
-            book[str(ts)] = (float(b) - float(a)) / tot
+            book[str(ts)] = (float(bavg) - float(aavg)) / den
+            # [561차] 참고용 tot 계열 — 판정에 쓰지 않는다. 두 값을 나란히 찍어
+            # "추정량을 바꾸면 판정이 뒤집힌다"는 사실이 리포트에 남게 한다.
+            if btot is not None and atot is not None:
+                dt = float(btot) + float(atot)
+                if dt > 0:
+                    book_tot[str(ts)] = (float(btot) - float(atot)) / dt
         if not book:
             return [], None
         lo, hi = min(book), max(book)
@@ -175,7 +212,7 @@ def collect(table="raw_candles", db_path=None):
                 continue
             if v is None or float(v) == 0.0:
                 continue
-            out.append((ts, book[ts], float(v)))
+            out.append((ts, book[ts], float(v), book_tot.get(ts)))
         return out, None
     finally:
         try:
@@ -187,7 +224,8 @@ def collect(table="raw_candles", db_path=None):
 def _daily(pairs):
     """거래일 평균으로 접는다 — 1차 판정 단위(372차 교훈)."""
     acc = defaultdict(lambda: [0.0, 0.0, 0])
-    for ts, bn, db in pairs:
+    for row in pairs:
+        ts, bn, db = row[0], row[1], row[2]
         a = acc[ts[:10]]
         a[0] += bn
         a[1] += db
@@ -196,6 +234,15 @@ def _daily(pairs):
     return (days,
             [acc[d][0] / acc[d][2] for d in days],
             [acc[d][1] / acc[d][2] for d in days])
+
+
+def _tot_ref(pairs, other_idx):
+    """[561차] 참고용 tot 계열 상관. 4번째 원소가 없는 호출부면 None."""
+    xs = [p[3] for p in pairs if len(p) > 3 and p[3] is not None]
+    ys = [p[other_idx] for p in pairs if len(p) > 3 and p[3] is not None]
+    if len(xs) < 3:
+        return None
+    return _spearman(xs, ys)
 
 
 def judge(pairs):
@@ -211,6 +258,12 @@ def judge(pairs):
         "rho_daily": None,
         "pearson_daily": None,
         "rho_bar_reference_only": _spearman([p[1] for p in pairs], [p[2] for p in pairs]),
+        # [561차] 같은 봉을 **점표본(tot)** 으로 재면 얼마가 나오는가 — 판정 미사용.
+        # 이 줄이 있어야 "추정량을 바꾸면 판정이 뒤집힌다"는 사실이 리포트에 남는다.
+        # ⚠ 4번째 원소(tot 기반 비율)는 **선택**이다 — 3-튜플만 주는 호출부·픽스처가
+        #   있어 그쪽에서는 None 으로 남는다(판정에 영향 없음).
+        "rho_bar_tot_estimator": _tot_ref(pairs, 2),
+        "rho_bar_tot_vs_avg": _tot_ref(pairs, 1),
         "rho_first_half": None,
         "rho_second_half": None,
         "sign_consistent": None,
@@ -307,6 +360,14 @@ def main():
     print("pearson (거래일)        : %s" % _f(res["pearson_daily"]))
     print("rho  (분봉)             : %s   <- 참고용, 판정 미사용(372차)"
           % _f(res["rho_bar_reference_only"]))
+    print("-" * 72)
+    print("[561차] 추정량 대조 — **왜 avg 로 재는가**")
+    print("  분봉 rho | 판정축 avg(봉평균) : %s" % _f(res["rho_bar_reference_only"]))
+    print("           | 점표본 tot(1스냅샷): %s   <- 판정에 쓰지 않는다"
+          % _f(res["rho_bar_tot_estimator"]))
+    print("  같은 양의 두 추정량 상관     : %s   <- 1 에 가까워야 정상"
+          % _f(res["rho_bar_tot_vs_avg"]))
+    print("  ⚠ 둘이 크게 갈리면 tot 의 잡음이다(봉당 스냅샷 수백 개 중 1개).")
     print("전반 / 후반             : %s / %s  (부호일치=%s)"
           % (_f(res["rho_first_half"]), _f(res["rho_second_half"]),
              res["sign_consistent"]))

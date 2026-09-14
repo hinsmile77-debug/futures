@@ -581,6 +581,13 @@ class CybosRealtimeData:
             self._current_bar["ask_qty"] = self._last_ask_qty
             # [552차] 봉내 호가 깊이 — 마지막 스냅샷 + 평균용 누적. 스냅샷을 한 번도
             # 못 받은 봉은 book_snaps=0 이고 나머지는 None 으로 남아 NULL 이 된다.
+            #
+            # 🔴 [561차] 아래 `book_bid_tot` 대입은 **덮어쓰기**다 — 봉이 끝날 때
+            # 남는 값은 마지막 호가 이벤트 하나뿐이다. 즉 `_tot` 은 **점표본(1스냅샷)**
+            # 이고 봉당 중앙 494건 중 1건이다. 게다가 봉 전환은 체결 틱이 일으키므로
+            # 그 1건은 「봉 마감 시점」조차 아니다(다음 분 첫 호가가 이 봉에 실린다).
+            # 「봉의 깊이」를 뜻하지 않으므로 소비처는 `book_*_avg` 를 쓸 것.
+            # 실측: rho(tot, avg)=+0.288 · tot 만 40계약 초과 스파이크를 만든다.
             if _book_ok:
                 self._current_bar["book_bid_tot"] = _bid_tot
                 self._current_bar["book_ask_tot"] = _ask_tot

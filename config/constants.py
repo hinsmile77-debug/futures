@@ -291,6 +291,22 @@ DYNAMIC_FEATURES_POOL = [
     # `scripts/book_depth_duplication_check.py`(Phase 3-0)로 신설했고, 이 주석이
     # 지워지지 않는지는 `tests/test_552b_book_depth_duplication.py` 가 고정한다.
     # ⇒ **호가 잔량 불균형 계열 축을 새로 만들기 전에 반드시 이 문단을 읽을 것.**
+    #
+    # 🔴 [561차] **그 판정기가 잘못된 컬럼을 읽고 있었다 — 중복을 독립으로 오판한다.**
+    # Phase 3-0 판정기는 `book_bid_tot`(봉 **마지막 1스냅샷**)로 비율을 만들고 있었다.
+    # 같은 958봉을 추정량만 바꿔 재면 판정이 뒤집힌다:
+    #     tot(점표본) vs depth_bias : rho = +0.178  → INDEPENDENT 로 읽힌다
+    #     avg(봉평균) vs depth_bias : rho = **+0.902** → DUPLICATE
+    # 낮은 상관은 새 정보가 아니라 **표집 잡음**이다(rho(tot,avg)=+0.288 — 같은 양의
+    # 두 추정량이 그만큼밖에 안 맞는다). 561차가 판정기 입력을 `_avg` 로 개정했다.
+    #
+    # ⇒ **신규 파생 지침 (561차)**
+    #    · **불균형 축은 만들지 말 것** — `microprice_depth_bias` 가 이미 그 양이다.
+    #    · 새로 만들 여지가 있는 것은 **절대 깊이**뿐이다
+    #      (`book_bid_avg + book_ask_avg`. depth_bias 와 rho=+0.068 로 독립 — 척도 없는
+    #       비율이 담지 못하는 축이다).
+    #    · 어느 쪽이든 **`_avg` 로 만들 것.** `_tot` 으로 만든 축은 잡음이 신호로 보인다.
+    #    근거: docs/미륵이고도화3/호가깊이/호가잔량_유효성_딥다이브_MW0601-20260914.md
     # v6.5 추가
     "multi_timeframe_5m",  # 324차: features/technical/multi_timeframe.py 배선 완료
                            # (feature_builder.py:multi_timeframe — push_1m_candle()의

@@ -1796,11 +1796,20 @@ def init_raw_data_db():
             -- 🔴 DEFAULT 없음. 452차 앵커 4열과 동일 규약 — 미계측은 NULL 이다.
             -- book_snaps=0 이면 그 봉은 호가 스냅샷을 한 번도 못 받았다는 뜻이고
             -- book_* 4열은 전부 NULL 이다. 0 과 구분되어야 한다.
-            book_bid_tot  INTEGER,   -- 봉 마지막 스냅샷 5단 매수잔량 합
-            book_ask_tot  INTEGER,   -- 〃 매도잔량 합
-            book_bid_avg  REAL,      -- 봉내 스냅샷 평균 매수잔량 합
-            book_ask_avg  REAL,      -- 〃 매도
-            book_snaps    INTEGER,   -- 봉내 호가 스냅샷 수 (0=미수신)
+            -- 🔴 [561차] `_tot` 은 **1점 표본**이다 — 「봉 전체의 합계」가 아니다.
+            --    봉당 스냅샷 중앙 494개(47~1,074) 중 **마지막 1개**의 5단 합이며,
+            --    봉 전환은 체결 틱이 일으키므로 그 1개는 「봉 마감 시점」조차 아니다
+            --    (다음 분 첫 호가가 이 봉에 실릴 수 있다).
+            --    실측(958봉): rho(tot, avg)=+0.288 · |tot-avg|/avg 중앙 0.144 max 4.55 ·
+            --    2배 이상 어긋난 봉 1.1% · `tot>=40` 봉 10개인데 `avg>=40` 봉은 0개.
+            --    ⇒ **집계·판정·피처에는 `_avg` 를 쓸 것.** `_tot` 은 순간 스파이크
+            --      관측용으로만 남긴다(단위는 같은 계약 수).
+            --    근거: docs/미륵이고도화3/호가깊이/호가잔량_유효성_딥다이브_MW0601-20260914.md
+            book_bid_tot  INTEGER,   -- 봉 **마지막 1스냅샷**의 5단 매수잔량 합 (계약, 점표본)
+            book_ask_tot  INTEGER,   -- 〃 매도잔량 합 (계약, 점표본)
+            book_bid_avg  REAL,      -- 봉내 전 스냅샷 5단 매수잔량 합의 **평균** (계약) ← 대표값
+            book_ask_avg  REAL,      -- 〃 매도 (계약) ← 대표값
+            book_snaps    INTEGER,   -- 봉내 **양변 유효** 스냅샷 수 (0=미수신. 호가 이벤트 수가 아니다)
             created_at TEXT DEFAULT (datetime('now', 'localtime'))
         )
     """)
@@ -2014,6 +2023,11 @@ def save_triple_barrier_labels(horizon: str, labels: list, stop_mult: float, pro
 
 def _book_depth_cols(candle: dict):
     """[MW0601 552차] 호가 깊이 5열을 봉 dict 에서 뽑는다.
+
+    🔴 [561차] `_tot` 과 `_avg` 는 **같은 양의 서로 다른 추정량**이다 —
+    `_tot` 은 마지막 1스냅샷, `_avg` 는 봉내 전 스냅샷 평균(중앙 494개).
+    실측 rho(tot, avg)=+0.288 로 둘은 사실상 다른 계열처럼 움직인다.
+    소비처는 `_avg` 를 쓸 것(스키마 주석 참조).
 
     스냅샷을 한 번도 못 받은 봉(`book_snaps` 0/None)은 **5열 전부 None** 이다.
     평균을 0 으로 채우면 "잔량이 0이었다"와 "호가를 못 받았다"가 같아 보인다 —
