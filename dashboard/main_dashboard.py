@@ -9280,7 +9280,6 @@ class MinuteChartCanvas(QWidget):
         # GP 섀도는 실측 마커보다 **먼저**(=아래에) 그린다 — 겹치면 실측이 이긴다.
         self._draw_gp_layer(painter, plot, candles, index_map, lo, hi, padded_count)
         _t_markers = _t2.monotonic(); self._draw_markers(painter, plot, candles, index_map, lo, hi, padded_count)
-        self._draw_trade_summary(painter, plot)
         # 보조 패널 · 레전드 — x축 라벨은 패널 **아래**에 와야 한다
         _axis_bottom = plot.bottom()
         if _flow_h:
@@ -10067,12 +10066,8 @@ class MinuteChartCanvas(QWidget):
                     painter.setPen(_tp); painter.setBrush(Qt.NoBrush)
                     for _sy in (_mid - _ty, _mid + _ty):
                         painter.drawLine(QPointF(_r.left(), _sy), QPointF(_r.right(), _sy))
-                    painter.setFont(QFont("Malgun Gothic", 7))
-                    painter.setPen(QColor(C["text2"]))
-                    _ql = "회색 띠 안 = 활성 문턱(50%) 미달 — 상태 안 붙음"
-                    _qw = painter.fontMetrics().horizontalAdvance(_ql)
-                    painter.drawText(QPointF(_r.right() - _qw - S.p(4),
-                                             _r.bottom() - S.p(3)), _ql)
+                    # 설명은 **레전드에 한 번만** 쓴다. 패널마다 찍었더니 막대 위에
+                    #   겹쳐 안 읽혔다(실측) — 같은 말을 두 번 하면서 둘 다 못 읽게 됐다.
                 painter.setFont(QFont("Malgun Gothic", 7))
                 painter.setPen(QColor(C["text2"]))
                 painter.drawText(QPointF(_r.left() + S.p(4), _r.top() + S.p(10)), _tag)
@@ -10091,6 +10086,7 @@ class MinuteChartCanvas(QWidget):
         ("#3FB950", "매수 공격 / 목표"), ("#F85149", "매도 공격 / 손절"),
         ("#58A6FF", "ΔOI 신규"), ("#D29922", "ΔOI 청산 · 롱 금지"),
         ("#C2CCD6", "구조모델"), ("#BC8CFF", "피터맥점"), ("#39C5CF", "가격모델 밴드"),
+        ("#8B949E", "회색 띠 = 활성 문턱 미달(상태 안 붙음)"),
     )
 
     def _draw_legend(self, painter: QPainter, rect: QRectF):
@@ -10120,25 +10116,10 @@ class MinuteChartCanvas(QWidget):
         finally:
             painter.restore()
 
-    def _draw_trade_summary(self, painter: QPainter, plot: QRectF):
-        """우상단 한 줄 — 색·농도·선종이 무엇을 뜻하는지 한 번에 말한다."""
-        _n = len(self._completed_trades) + len(self._peter_trades if
-                                               self._ov.get("trade_peter") else [])
-        if _n <= 0:
-            return
-        try:
-            painter.save()
-            painter.setFont(QFont("Malgun Gothic", 7))
-            painter.setPen(QColor(C["text2"]))
-            _t = ("● 거래 %d건 — 녹 수익 · 적 손실 │ 진한 면 확정 · 옅은 면 미결"
-                  " │ 실선 미륵이 · 점선 피터리(사료)" % _n)
-            _fm = painter.fontMetrics()
-            painter.drawText(QPointF(plot.right() - _fm.horizontalAdvance(_t) - S.p(6),
-                                     plot.top() + S.p(11)), _t)
-        except Exception as _e:
-            logger.debug("[ChartDBG] _draw_trade_summary 예외: %s", _e)
-        finally:
-            painter.restore()
+    # [P13] 우상단 요약 줄은 **제거했다.**
+    #   같은 자리에 「수집 절단 → 마감구간」 라벨이 이미 있어 겹쳤고(실측),
+    #   내용도 중복이었다 — 색·선종은 레전드가, 건수는 툴바 배지가 말한다.
+    #   겹쳐서 둘 다 못 읽느니 하나를 버린다(원칙 6 — 빼는 것도 설계다).
 
     def _is_off_axis(self, price: float) -> bool:
         """[555차 후속2 / P1] 가격이 이번 paint 의 Y축 밖인가.
