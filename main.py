@@ -1080,6 +1080,13 @@ class TradingSystem:
         self._retrain_subproc = None                     # subprocess.Popen handle
         self._retrain_subproc_is_warmup: bool = False
         self._retrain_subproc_result_path: str = ""
+        # [MW0601 564차 / P0-3] 이번 재학습이 **어떤 호라이즌을 교체했는가**.
+        # 457차가 학습 스코프는 좁혔는데(CONST_OUT_RETRAIN_SCOPED) 완료 후
+        # BiasReset 상태 초기화는 전역으로 남아, 3m 전용 재학습이 1m·15m 쿨다운까지
+        # 지웠다(2026-09-14 11:17 실측). 그 초기화를 scope 안으로 가두려면 완료
+        # 시점에 스코프를 알아야 한다 — 종전엔 로그에만 있었다.
+        # 빈 리스트 = 전 호라이즌(457차 이전 동작).
+        self._retrain_subproc_scope: list = []
         # [267차] 서브프로세스 stderr 파일 핸들 — py310 경고·오류 캡처 (DEVNULL 대체)
         self._retrain_subproc_stderr_fh = None           # open() handle, 완료 후 닫힘
         # [228차] 시작 시 이전 세션의 잔류 결과 JSON 정리 — 이중 인스턴스 경합 잔류 파일 방지
@@ -1236,6 +1243,13 @@ class TradingSystem:
         # conf가 N분 연속 동일값일 때 WARN 로그로 GBM/SGD 분해값을 기록
         self._conf_prev: dict = {}      # {h_name: float} 직전 틱 blended conf
         self._conf_stuck: dict = {h: 0 for h in HORIZONS}  # 연속 동일 카운터
+        # [MW0601 564차 / P2-1] 보정·블렌드 **이전** GBM conf — ConstOut 로그 병기용.
+        # ConstOut 은 GBM 붕괴를 진단한다고 선언하지만 실제로 읽는 값은
+        # SGD/RF 블렌드 → BAR_CACHE_DECAY → bias fallback → Platt 을 모두 통과한
+        # 뒤의 값이다. 둘을 같이 찍어야 "GBM 이 상수인가, 뒷단이 상수인가"를
+        # 로그만으로 가를 수 있다(계측 4원칙 ④ 폴백 가시화).
+        # ⚠ 진단 전용 — 판정에 쓰지 않는다.
+        self._gbm_raw_conf_last: dict = {h: None for h in HORIZONS}
 
         # ── [P1] SGD 학습 호라이즌별 봉단위 dedup ───────────────────────────
         # 검증은 매분 발생하지만 같은 N분봉에서 파생된 예측은 (N-1)/N이 동일 정보의
@@ -1407,6 +1421,14 @@ class TradingSystem:
         self._mh_const_out_events: int = 0           # 비활성→활성 전이 수
         self._mh_const_out_by_hz: dict = {}          # {hz: {"events":n,"minutes":m}}
         self._mh_const_out_active: set = set()       # 전이 판정용 직전 상태
+        # ── [MW0601 564차 / P0-1] BiasReset 구간 억제분 ──────────────────────
+        # ConstOut 을 **억제해도 그 사실은 센다**(계측 4원칙 ③ 탈락 가시화).
+        # 억제분을 위 `_mh_const_out_*` 에 합산하면 P0-1 전후 시계열이 이어지는
+        # 것처럼 보여 오히려 나쁘다 — 별도 축으로 둔다.
+        self._mh_const_out_suppressed_events: int = 0
+        self._mh_const_out_suppressed_minutes: int = 0
+        self._mh_const_out_suppressed_by_hz: dict = {}
+        self._mh_const_out_suppressed_active: set = set()
         self._mh_weight_collapse_minutes: int = 0
         self._mh_intraday_retrain_count: int = 0
         # [MW0601 482차 / G-1] CB③ 판정 가능 분 수. 절대원칙 §2의 CB③이 하루 중
@@ -1822,6 +1844,7 @@ class TradingSystem:
         self._retrain_subproc_is_warmup   = is_warmup
         self._retrain_subproc_result_path = _rpath
         self._retrain_subproc_stderr_fh   = _stderr_fh
+        self._retrain_subproc_scope       = [str(h) for h in (horizons or [])]  # [564차 P0-3]
         self.circuit_breaker.set_gbm_retrain_active(True)
         log_manager.learning(
             f"[GBM-64] 64비트 서브프로세스 재학습 시작 "
@@ -2783,6 +2806,13 @@ class TradingSystem:
             "const_out_events":        int(self._mh_const_out_events),
             "const_out_minutes":       int(self._mh_const_out_minutes),
             "const_out_by_horizon":    dict(self._mh_const_out_by_hz),
+            # [MW0601 564차 / P0-1] 위 3키의 **부분집합** — BiasReset uniform
+            # fallback 구간이라 재학습 트리거를 억제한 몫. `const_out_events` 에서
+            # 이 값을 빼면 "GBM 을 실제로 의심할 만했던" 사건 수가 된다.
+            # ⚠ 로그·리포트 전용 — `insert_daily()` 는 읽지 않는다(DB 컬럼 무증설).
+            "const_out_suppressed_events":  int(self._mh_const_out_suppressed_events),
+            "const_out_suppressed_minutes": int(self._mh_const_out_suppressed_minutes),
+            "const_out_suppressed_by_horizon": dict(self._mh_const_out_suppressed_by_hz),
             "weight_collapse_minutes": int(self._mh_weight_collapse_minutes),
             "intraday_retrain_count":  int(self._mh_intraday_retrain_count),
             # [MW0601 482차 / G-1·G-2] CB③ 가용성. `cb3_ready_minutes` 는 매분
@@ -2813,6 +2843,10 @@ class TradingSystem:
         self._mh_const_out_events = 0
         self._mh_const_out_by_hz = {}
         self._mh_const_out_active = set()
+        self._mh_const_out_suppressed_events = 0      # [MW0601 564차 / P0-1]
+        self._mh_const_out_suppressed_minutes = 0
+        self._mh_const_out_suppressed_by_hz = {}
+        self._mh_const_out_suppressed_active = set()
         self._mh_weight_collapse_minutes = 0
         self._mh_intraday_retrain_count = 0
         self._mh_cb3_ready_minutes = 0   # [MW0601 482차 / G-1]
@@ -5742,10 +5776,22 @@ class TradingSystem:
             # 새 GBM 기준으로 BiasReset 상태만 초기화
             # 구 GBM 편향 판정(bias_override_horizons, bias_fl_streak, bias_buf)이
             # 새 모델에 그대로 남으면 uniform fallback 고착 + SGD 대항력 약화 지속
-            self._bias_override_horizons.clear()
-            self._bias_fl_streak = {h: 0 for h in HORIZONS}
-            self._bias_override_timer = {h: 0 for h in HORIZONS}
-            for _bh in HORIZONS:
+            #
+            # ── [MW0601 564차 / P0-3] 초기화를 **교체된 호라이즌만으로 제한** ────
+            # 위 논리("새 GBM 기준")는 모델이 실제로 바뀐 호라이즌에만 성립한다.
+            # 457차가 학습 스코프를 좁힌 뒤에도(CONST_OUT_RETRAIN_SCOPED=True,
+            # 실측 로그 `교체 스코프 제한: ['3m'] 만 재학습`) 이 초기화만 전역으로
+            # 남아, **GBM 이 바뀌지도 않은 호라이즌의 20분 쿨다운을 지웠다.**
+            # 실측 2026-09-14: 11:17 의 3m 전용 재학습이 1m(11:01 발동, ~11:21) ·
+            # 15m(11:09 발동, ~11:29) 쿨다운을 동시에 소거 → 1m 은 23분 뒤 11:40 재발동.
+            # 457차 조치의 누락분이다.
+            # ⚠ 스코프가 비면 전 호라이즌(= 457차 이전 동작 · EOD 전체 재학습).
+            _bias_scope = self._retrain_subproc_scope or list(HORIZONS)
+            _bias_scope = [h for h in _bias_scope if h in HORIZONS]
+            for _bh in _bias_scope:
+                self._bias_override_horizons.discard(_bh)
+                self._bias_fl_streak[_bh] = 0
+                self._bias_override_timer[_bh] = 0
                 self._bias_buf[_bh].clear()
             # [P0] online_learner.reset_daily() 호출 제거 (288차)
             # 장중 GBM 재학습(수십 회/일)마다 SGD acc_buf·가중치·표본카운트가 매번
@@ -5753,7 +5799,9 @@ class TradingSystem:
             # 영구 콜드스타트 루프 유발 — DriftAdjuster도 매번 "표본부족→스킵" 고착.
             # SGD 일간 리셋은 하루 1회 EOD 마감(daily_close 루틴, self.online_learner.reset_daily() 호출부)에서만 수행.
             log_manager.learning(
-                "[GBM] 재학습 완료 → BiasReset 상태 초기화 (SGD 누적 학습은 유지)"
+                "[GBM] 재학습 완료 → BiasReset 상태 초기화 scope=%s"
+                " (SGD 누적 학습은 유지)"
+                % (",".join(_bias_scope) if self._retrain_subproc_scope else "ALL")
             )
 
             # ── ConstOut 원인 CB③ HALT 해제 시도 ──────────────────────────
@@ -7458,6 +7506,8 @@ class TradingSystem:
                 _sgd_h_idx  = self._sgd_feat_indices.get(h_name)
                 _sgd_fv     = _sgd_fv_raw[_sgd_h_idx] if _sgd_h_idx is not None else _sgd_fv_raw
                 _gbm_raw_conf = horizon_proba[h_name].get("confidence", 0.0)  # P2: blend 전 GBM conf
+                # [MW0601 564차 / P2-1] ConstOut 로그 병기용 보관 (진단 전용)
+                self._gbm_raw_conf_last[h_name] = float(_gbm_raw_conf)
                 sgd_p   = self.online_learner.predict_proba(h_name, _sgd_fv)
                 blended = self.online_learner.blend_with_gbm(horizon_proba[h_name], sgd_p, h_name)
                 # P6c: RF 블렌딩 — OOB 기반 동적 가중치
@@ -8006,6 +8056,53 @@ class TradingSystem:
                 _slot["events"] += 1
                 self._mh_const_out_events += 1
         self._mh_const_out_active = _co_now
+
+        # ── [MW0601 564차 / P0-1] BiasReset uniform fallback 아티팩트 분리 ────
+        #
+        # **ConstOut 은 GBM 을 진단하는 장치인데, BiasReset 구간에서는 GBM 출력을
+        # 보고 있지 않다.** `_bias_override_horizons` 에 든 호라이즌은 예측이
+        # `{1/3,1/3,1/3}` 상수로 **덮어써지고**(아래 predict 루프), 그 상수가
+        # `_apply_horizon_calibration()` 의 동률 tie-break 를 타고 매분 완전히
+        # 동일한 `(dir=+1, conf=0.3333)` 으로 나온다. ConstOut 은 그 상수를 읽고
+        # "스케일러 노후로 모든 입력이 같은 리프에 도달" 로 오진한다.
+        #
+        # 실측(2026-09-14 딥다이브, 10거래일): ConstOut 58건 중 **57건(98.3%)이
+        # `range=0.0000`** — 살아 있는 GBM 이 낼 수 없는 값이다. 그 57건 전부
+        # `[BiasReset]` 이 6~12분 앞서 있었다. 나머지 1건만 진성(`range=0.0040`).
+        # 그 오진이 부른 재학습은 ① 40,818행 CV 검증본을 4,800행 무검증본으로
+        # 바꾸고 ② CB③ 표본을 버리고 ③ BiasReset 20분 쿨다운을 6~8분에 끊었다.
+        #
+        # ⚠ **앙상블 제외 자체는 막지 않는다** — 위 `_mh_const_out_*` 계측도
+        #   그대로 센다. 편향 호라이즌이 앙상블에서 빠지는 것은 BiasReset 의
+        #   의도이고, 여기서 되돌리면 안 된다. 막는 것은 **재학습 트리거뿐**이다.
+        # ⚠ 억제분은 버리지 않고 별도 축으로 센다(계측 4원칙 ③ 탈락 가시화).
+        # 근거: docs/정기점검/매일점검/MW0601-20260914-3m호라이즌_ConstOut루프-딥다이브.md
+        _co_bias_hz = sorted(h for h in _co_now if h in self._bias_override_horizons)
+        _co_sup_now = set(_co_bias_hz)
+        for _hz in _co_sup_now:
+            _sslot = self._mh_const_out_suppressed_by_hz.setdefault(
+                _hz, {"events": 0, "minutes": 0}
+            )
+            _sslot["minutes"] += 1
+            self._mh_const_out_suppressed_minutes += 1
+            if _hz not in self._mh_const_out_suppressed_active:
+                _sslot["events"] += 1
+                self._mh_const_out_suppressed_events += 1
+                log_manager.system(
+                    "[ConstOut] %s 재학습 트리거 억제 — BiasReset uniform fallback "
+                    "구간이라 GBM 출력이 아니다 (gbm_raw=%s) | 앙상블 제외는 유지"
+                    % (
+                        _hz,
+                        ("%.4f" % self._gbm_raw_conf_last[_hz])
+                        if self._gbm_raw_conf_last.get(_hz) is not None
+                        else "미측정",
+                    ),
+                    "INFO",
+                )
+        self._mh_const_out_suppressed_active = _co_sup_now
+        if _co_bias_hz:
+            _const_hz = [h for h in _const_hz if h not in self._bias_override_horizons]
+
         if decision.get("weight_collapsed"):
             self._mh_weight_collapse_minutes += 1
         # [MW0601 482차 / G-1] CB③ 가용성 — 분모(_mh_pipeline_minutes)와 같은 자리에서
@@ -8041,8 +8138,21 @@ class TradingSystem:
                 )
                 self._start_const_out_heavy_cooldown(_now_dt, reason="const_output")
                 self._scaler_refresh_running = True  # 스레드 시작 전 선점 — 이중 트리거 방지
+                # [MW0601 564차 / P2-1] gbm_raw 병기 — 이 줄만으로 "GBM 이 상수인가,
+                # 뒷단(블렌드·감쇠·폴백·보정)이 상수인가"를 가를 수 있어야 한다.
+                # 2026-09-14 딥다이브가 이 정보가 없어 코드 역추적으로만 판별됐다.
+                _co_raw = ", ".join(
+                    "%s=%s" % (
+                        _h_raw,
+                        ("%.4f" % self._gbm_raw_conf_last[_h_raw])
+                        if self._gbm_raw_conf_last.get(_h_raw) is not None
+                        else "미측정",
+                    )
+                    for _h_raw in _const_hz
+                )
                 log_manager.system(
-                    f"[ConstOut] {_const_hz} 상수 출력 확정 → 스케일러 재적합 시작",
+                    f"[ConstOut] {_const_hz} 상수 출력 확정 → 스케일러 재적합 시작"
+                    f" | bias_override=N gbm_raw({_co_raw})",
                     "WARNING",
                 )
                 def _const_out_refit_worker(_hz=_const_hz, _tts=ts):
