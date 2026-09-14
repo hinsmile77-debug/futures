@@ -15,6 +15,7 @@ main.py 종료 후 독립 프로세스로 full 재학습 수행.
 import sys
 import os
 import gc
+import io
 import time
 import datetime
 import json
@@ -274,10 +275,26 @@ def _run_campaign_steps():
 def main():
     _check_env()
 
-    # 중복 실행 방지: 완료 마커가 이미 존재하면 스킵
+    # 중복 실행 방지: 완료 마커가 이미 **온전히** 존재하면 스킵
+    #
+    # 🔴 [MW0601 563차 후속] 종전엔 `os.path.exists()` 만 봤다 — **파일이 있으면 성공**이었다.
+    # 2026-09-14 17:10 실측: 마커를 "w" 로 열어 truncate 한 직후 f-string 이
+    # AttributeError 로 죽어 **0바이트 마커**가 남았고, 다음 실행이 그걸 「완료」로 읽고
+    # 조기 종료했다. 정상 마커는 133~209바이트다.
+    # 내일 아침 `main.py:6125` 가 전날 마커를 보고 08:55 PreRetrain 을 건너뛰는 경로도
+    # 같은 파일을 읽으므로, 크래시가 조용히 「어제 EOD 성공」으로 둔갑한다.
     if os.path.exists(_MARKER_PATH):
-        log.info("완료 마커 존재 — 오늘 재학습 이미 완료됨. 종료.")
-        sys.exit(0)
+        try:
+            _mk = io.open(_MARKER_PATH, encoding="utf-8").read()
+        except Exception:
+            _mk = ""
+        if "completed:" in _mk:
+            log.info("완료 마커 존재 — 오늘 재학습 이미 완료됨. 종료.")
+            sys.exit(0)
+        log.warning(
+            "[EODMarker] 손상 마커 발견(%d바이트, 'completed:' 없음) — 실패한 실행의 "
+            "흔적이다. 무시하고 재학습을 진행한다. (563차 후속)", len(_mk)
+        )
 
     # daily_close() 완료 대기 — STEP 3 장중 GBM 재학습과 pkl 경합 방지
     # _exit_normally 파일(daily_close 마지막에 기록)의 오늘 날짜를 확인.
@@ -311,13 +328,35 @@ def main():
         X, y_dict, feature_names = retrainer._load_from_db(RETRAIN_WEEKS_BACK)
         t_load = time.perf_counter() - t1
 
-        if X is None:
-            raise RuntimeError("DB 데이터 없음 — raw_data.db 확인 필요")
-
-        log.info(
-            "데이터 로드 완료: %d행 × %d열  (%.1fs)",
-            X.shape[0], X.shape[1], t_load,
-        )
+        # 🔴 [MW0601 563차 후속] Phase 1 이 짧으면 **죽지 말고 Phase 2 로 내려간다.**
+        #
+        # `_load_from_db` 는 `MIN_TRAIN_BARS`(15,000) 단일 게이트를 쓴다. 그 값은
+        # 백필 오염행이 섞인 풀 크기에서 유래해 **쓸 수 있는 행을 재는 기준이었던
+        # 적이 없다**(구 weeks_back=10 풀 ~15,750봉).
+        #
+        # 559차 필터 2종이 오염행을 걷어내자 그 게이트가 처음 구속했다 —
+        # 2026-09-14 15:50 EOD 실측:
+        #     45,601 → 백필 -27,718(60.8%!) → 17,883 → 단위 -1,446 → 16,437
+        #            → 미래가격 -1,882 → **14,555 < 15,000** → None → RuntimeError
+        # 그날 밤 **모델이 한 개도 갱신되지 않았다.**
+        #
+        # ⚠ 임계를 낮추지 않는다(458차 D6). Phase 1 은 전 호라이즌이 같은 X 를 쓰는
+        #   전부-아니면-전무 경로라 15,000 은 실제로 1m 이 요구하는 값이다. 낮추면
+        #   1m 을 제 최소표본 미만으로 학습시킨다.
+        # ⇒ 대신 **호라이즌별 게이트를 가진 Phase 2**(`MIN_TRAIN_BARS_PER_HORIZON`)로
+        #   내려간다. 쓸 수 있는 호라이즌만 갱신되고 나머지는 구모델이 유지된다.
+        #   `EOD_RETRAIN.bat` 이 이미 쓰는 정규 경로다(`--phase2`).
+        _phase2_fallback = X is None
+        if _phase2_fallback:
+            log.warning(
+                "[EODFallback] Phase 1 로드 미달(MIN_TRAIN_BARS) — Phase 2(호라이즌별 "
+                "게이트)로 전환한다. 임계를 낮춘 것이 아니라 경로를 바꾼 것이다. (563차 후속)"
+            )
+        else:
+            log.info(
+                "데이터 로드 완료: %d행 × %d열  (%.1fs)",
+                X.shape[0], X.shape[1], t_load,
+            )
 
         gc.collect()
         # [346차] force=True → False. 기존엔 CV acc가 구모델보다 크게 나빠져도
@@ -330,14 +369,23 @@ def main():
             "(절단 없음, 300그루, 3-fold CV)"
         )
         t2 = time.perf_counter()
-        result = retrainer.retrain_now(
-            X=X,
-            y_dict=y_dict,
-            feature_names=feature_names,
-            force=False,
-            intraday=False,
-            full_cv=True,
-        )
+        if _phase2_fallback:
+            result = retrainer.retrain_now(      # X 를 넘기지 않는다 — Phase 2 가 직접 읽는다
+                weeks_back=RETRAIN_WEEKS_BACK,
+                force=False,
+                intraday=False,
+                full_cv=True,
+                use_horizon_features=True,
+            )
+        else:
+            result = retrainer.retrain_now(
+                X=X,
+                y_dict=y_dict,
+                feature_names=feature_names,
+                force=False,
+                intraday=False,
+                full_cv=True,
+            )
         t_retrain = time.perf_counter() - t2
         t_total   = time.perf_counter() - t_start
 
@@ -401,19 +449,28 @@ def main():
             log.warning("[SelfCheck] label_state %s", _sc_line)
 
         # 완료 마커 기록
-        with open(_MARKER_PATH, "w", encoding="utf-8") as f:
-            f.write(
+        # [563차 후속] **먼저 문자열을 완성한 뒤** tmp 에 쓰고 교체한다.
+        # 종전엔 열자마자 f-string 을 평가해, 그 안에서 죽으면 0바이트 마커가 남았다.
+        # (`multi_horizon_model` 스케일러 저장이 쓰는 tmp+os.replace 와 같은 관례)
+        _marker_body = (
                 f"completed: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"rows: {X.shape[0]}\n"
-                f"cols: {X.shape[1]}\n"
+                # [563차 후속] 폴백이면 X 가 없다. 0 으로 적지 않는다 — 「행이 0」과
+                # 「Phase 2 로 갔다」가 같아 보이면 안 된다(계측 4원칙 ②).
+                f"rows: {'n/a(phase2_fallback)' if _phase2_fallback else X.shape[0]}\n"
+                f"cols: {'n/a(phase2_fallback)' if _phase2_fallback else X.shape[1]}\n"
+                f"phase2_fallback: {'true' if _phase2_fallback else 'false'}\n"
                 f"horizons_replaced: {horizons_ok}/{len(result.get('horizons', {}))}\n"
                 f"t_load_s: {t_load:.1f}\n"
                 f"t_retrain_s: {t_retrain:.1f}\n"
                 f"t_total_s: {t_total:.1f}\n"
                 # [488차 계획 C] 로그를 안 열어도 마커만 보면 알게 한다 — 수집기·다음 세션용.
                 f"selfcheck_label_state: {_sc_line}\n"
-            )
-        log.info("완료 마커 저장: %s", _MARKER_PATH)
+        )
+        _mk_tmp = _MARKER_PATH + ".tmp"
+        with io.open(_mk_tmp, "w", encoding="utf-8") as f:
+            f.write(_marker_body)
+        os.replace(_mk_tmp, _MARKER_PATH)
+        log.info("완료 마커 저장: %s (%d바이트)", _MARKER_PATH, len(_marker_body))
 
         # RegimeFingerprint 학습분포 갱신 — 이번 EOD(26주) 재학습에 실제 사용된
         # CORE 3피처(cvd_divergence/vwap_position/ofi_norm) 분포를 PSI 기준선으로 저장.
@@ -446,6 +503,14 @@ def main():
         #   최소 0.46 떨어져 있어 오분류 여지가 없다.
         _BACKFILL_MARKER_TOL = 1e-6
         try:
+            if _phase2_fallback:
+                # [563차 후속] Phase 2 폴백에는 전역 X 가 없다. 그냥 두면 아래 except 가
+                # AttributeError 를 「무해」로 삼켜 **갱신 안 된 사실이 안 보인다**.
+                # 사유를 명시해 남긴다(계측 4원칙 ③·④).
+                raise RuntimeError(
+                    "Phase 2 폴백 — 전역 X 없음. FP-CRITICAL 은 현재 섀도라 매매 영향은 "
+                    "없으나 PSI 기준선이 그날치만큼 낡는다. Phase 1 복구 시 자동 재개"
+                )
             from strategy.regime_fingerprint import (
                 get_fingerprint, _CORE_FEATURES, _N_BINS,
             )
