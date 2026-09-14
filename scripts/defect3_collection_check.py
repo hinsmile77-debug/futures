@@ -204,8 +204,11 @@ def check_investor(con, day, rows):
 
 def check_book(con, day, rows):
     """③ 호가잔량 — 적재가 이어지는가, 5단이 실제로 차 있는가, 적립은 몇 일인가."""
+    # [566차 / T-BOOK-1c] 적재 센서를 `_tot`(폐기 예정) 에서 `_avg`(대표값) 로 옮겼다.
+    # 같은 봉에서 둘은 항상 함께 채워지므로 **적재율 수치는 바뀌지 않는다** —
+    # 바뀐 것은 「무엇을 정상성의 기준으로 삼는가」뿐이다.
     q = con.execute(
-        "SELECT COUNT(*), SUM(book_bid_tot IS NOT NULL), SUM(COALESCE(book_snaps,0)>0),"
+        "SELECT COUNT(*), SUM(book_bid_avg IS NOT NULL), SUM(COALESCE(book_snaps,0)>0),"
         " AVG(book_snaps) FROM raw_candles WHERE substr(ts,1,10)=?", (day,)).fetchone()
     n = q[0] or 0
     if not n:
@@ -217,6 +220,10 @@ def check_book(con, day, rows):
     _add(rows, "③", "스냅샷 수신 봉", _OK if (q[2] or 0) / float(n) >= FILL_MIN else _WARN,
          "%d/%d · 봉당 평균 %.0f회" % (q[2] or 0, n, q[3] or 0))
 
+    # ⚠ 아래 「5단 ÷ 1단」은 **의도적으로 `_tot`** 이다 — `bid_qty` 도 같은 마지막
+    #   스냅샷의 1단 잔량이라, 같은 시점끼리 짝지어야 「5단합 ≥ 1단」 불변식이 성립한다.
+    #   여기서 `_avg` 를 쓰면 서로 다른 추정량을 비교하게 돼 검사 자체가 무의미해진다.
+    #   T-BOOK-1d 로 `_tot` 을 제거할 때 이 항목은 `bid_qty` 쪽 대응을 먼저 정해야 한다.
     sb = con.execute(
         "SELECT COUNT(*), SUM(book_bid_tot IS NOT NULL),"
         " AVG(CASE WHEN bid_qty>0 AND book_bid_tot IS NOT NULL"
@@ -250,9 +257,34 @@ def check_book(con, day, rows):
                  "|tot-avg|/avg 중앙 %.3f · 2배이상 %d/%d봉 — 판정·피처는 `_avg` 를 쓸 것"
                  % (med, big, len(r)))
 
+    # [566차 / T-BOOK-1a 인수조건] `_max` 적재 + 불변식 2종.
+    # 🔴 566차 이전 행에는 `_max` 가 NULL 이다 — 그 날은 FAIL 이 아니라 **미측정**이다
+    #    (계측 4원칙 ②). 0 으로 채우지도, 통과로 위장하지도 않는다.
+    mx = con.execute(
+        "SELECT COUNT(*), SUM(book_bid_max IS NOT NULL),"
+        " SUM(CASE WHEN book_bid_max IS NOT NULL AND book_bid_tot > book_bid_max"
+        "      THEN 1 ELSE 0 END),"
+        " SUM(CASE WHEN book_bid_max IS NOT NULL AND book_bid_avg > book_bid_max + 1e-6"
+        "      THEN 1 ELSE 0 END),"
+        " MAX(book_bid_max)"
+        " FROM raw_candles WHERE substr(ts,1,10)=? AND book_snaps > 0", (day,)).fetchone()
+    if not (mx and mx[0]):
+        _add(rows, "③", "book_*_max 적재", _NA, "스냅샷 봉이 없다")
+    elif not (mx[1] or 0):
+        _add(rows, "③", "book_*_max 적재", _NA,
+             "%s 는 566차 배포 이전 거래일 — `_max` **미측정**(NULL). 0 이 아니다." % day)
+    else:
+        rm = (mx[1] or 0) / float(mx[0])
+        _add(rows, "③", "book_*_max 적재율", _OK if rm >= FILL_MIN else _FAIL,
+             "%d/%d (%.1f%%) · 당일 최대 깊이 %s계약" % (mx[1] or 0, mx[0], rm * 100, mx[4]))
+        _add(rows, "③", "불변식 tot<=max", _OK if not (mx[2] or 0) else _FAIL,
+             "위반 %d봉 — 위반이면 max 누적이 틀렸다" % (mx[2] or 0))
+        _add(rows, "③", "불변식 avg<=max", _OK if not (mx[3] or 0) else _FAIL,
+             "위반 %d봉" % (mx[3] or 0))
+
     days = con.execute(
         "SELECT COUNT(DISTINCT substr(ts,1,10)) FROM raw_candles"
-        " WHERE book_bid_tot IS NOT NULL").fetchone()[0]
+        " WHERE book_bid_avg IS NOT NULL").fetchone()[0]
     _add(rows, "③", "적립 진척", _OK,
          "%d/%d 거래일 (Phase 3-0 판정 %d일)" % (days, BOOK_TARGET_DAYS, 20))
 

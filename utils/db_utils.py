@@ -1828,7 +1828,7 @@ def init_raw_data_db():
             -- ── [MW0601 552차] 호가 5단 총잔량 (소비 0, 적재 전용) ──
             -- 🔴 DEFAULT 없음. 452차 앵커 4열과 동일 규약 — 미계측은 NULL 이다.
             -- book_snaps=0 이면 그 봉은 호가 스냅샷을 한 번도 못 받았다는 뜻이고
-            -- book_* 4열은 전부 NULL 이다. 0 과 구분되어야 한다.
+            -- book_* 값열은 전부 NULL 이다. 0 과 구분되어야 한다.
             -- 🔴 [561차] `_tot` 은 **1점 표본**이다 — 「봉 전체의 합계」가 아니다.
             --    봉당 스냅샷 중앙 494개(47~1,074) 중 **마지막 1개**의 5단 합이며,
             --    봉 전환은 체결 틱이 일으키므로 그 1개는 「봉 마감 시점」조차 아니다
@@ -1838,10 +1838,17 @@ def init_raw_data_db():
             --    ⇒ **집계·판정·피처에는 `_avg` 를 쓸 것.** `_tot` 은 순간 스파이크
             --      관측용으로만 남긴다(단위는 같은 계약 수).
             --    근거: docs/미륵이고도화3/호가깊이/호가잔량_유효성_딥다이브_MW0601-20260914.md
+            -- 🔴 [566차 / T-BOOK-1b] `_tot` 2종은 **폐기 예정**이다 — 신규 소비 금지.
+            -- 이름이 「합계」로 읽혀 오용을 부른다(561차에 실제로 밟았다). 봉의 깊이가
+            -- 필요하면 `_avg`, 봉내 극단이 필요하면 `_max` 를 쓸 것. 지금 지우지 않는
+            -- 이유는 하나뿐이다 — 552~566차 사이 행에는 `_max` 가 NULL 이라 그 구간의
+            -- 극단값을 볼 수단이 `_tot` 뿐이다. 그 구간이 분석에서 빠지면 제거한다.
             book_bid_tot  INTEGER,   -- 봉 **마지막 1스냅샷**의 5단 매수잔량 합 (계약, 점표본)
             book_ask_tot  INTEGER,   -- 〃 매도잔량 합 (계약, 점표본)
             book_bid_avg  REAL,      -- 봉내 전 스냅샷 5단 매수잔량 합의 **평균** (계약) ← 대표값
             book_ask_avg  REAL,      -- 〃 매도 (계약) ← 대표값
+            book_bid_max  INTEGER,   -- [566차] 봉내 5단 매수잔량 합의 **최댓값** (계약)
+            book_ask_max  INTEGER,   -- 〃 매도 (계약)
             book_snaps    INTEGER,   -- 봉내 **양변 유효** 스냅샷 수 (0=미수신. 호가 이벤트 수가 아니다)
             created_at TEXT DEFAULT (datetime('now', 'localtime'))
         )
@@ -1856,6 +1863,7 @@ def init_raw_data_db():
                         # [552차] 기존 96,903행은 NULL 이 된다(정상).
                         ("book_bid_tot", "INTEGER"), ("book_ask_tot", "INTEGER"),
                         ("book_bid_avg", "REAL"), ("book_ask_avg", "REAL"),
+                        ("book_bid_max", "INTEGER"), ("book_ask_max", "INTEGER"),
                         ("book_snaps", "INTEGER")]:
         try:
             execute(RAW_DATA_DB, "ALTER TABLE raw_candles ADD COLUMN {} {}".format(_col, _type))
@@ -1940,6 +1948,8 @@ def init_raw_data_db():
             book_ask_tot  INTEGER,
             book_bid_avg  REAL,
             book_ask_avg  REAL,
+            book_bid_max  INTEGER,   -- [566차] 봉내 최댓값 (계약)
+            book_ask_max  INTEGER,
             book_snaps    INTEGER,
             source        TEXT NOT NULL,
             created_at    TEXT DEFAULT (datetime('now', 'localtime'))
@@ -1949,6 +1959,7 @@ def init_raw_data_db():
     for _col, _type in [("unk_vol", "INTEGER"),      # [559차 P1-4]
                         ("book_bid_tot", "INTEGER"), ("book_ask_tot", "INTEGER"),
                         ("book_bid_avg", "REAL"), ("book_ask_avg", "REAL"),
+                        ("book_bid_max", "INTEGER"), ("book_ask_max", "INTEGER"),
                         ("book_snaps", "INTEGER")]:
         try:
             execute(RAW_DATA_DB, "ALTER TABLE session_bars ADD COLUMN {} {}".format(_col, _type))
@@ -2055,14 +2066,14 @@ def save_triple_barrier_labels(horizon: str, labels: list, stop_mult: float, pro
 
 
 def _book_depth_cols(candle: dict):
-    """[MW0601 552차] 호가 깊이 5열을 봉 dict 에서 뽑는다.
+    """[MW0601 552차] 호가 깊이 열을 봉 dict 에서 뽑는다 (566차부터 7열).
 
     🔴 [561차] `_tot` 과 `_avg` 는 **같은 양의 서로 다른 추정량**이다 —
     `_tot` 은 마지막 1스냅샷, `_avg` 는 봉내 전 스냅샷 평균(중앙 494개).
     실측 rho(tot, avg)=+0.288 로 둘은 사실상 다른 계열처럼 움직인다.
     소비처는 `_avg` 를 쓸 것(스키마 주석 참조).
 
-    스냅샷을 한 번도 못 받은 봉(`book_snaps` 0/None)은 **5열 전부 None** 이다.
+    스냅샷을 한 번도 못 받은 봉(`book_snaps` 0/None)은 **깊이 열 전부 None** 이다.
     평균을 0 으로 채우면 "잔량이 0이었다"와 "호가를 못 받았다"가 같아 보인다 —
     452차 앵커 4열·451차 program_* 유령 피처와 같은 함정이라 반복하지 않는다.
 
@@ -2076,17 +2087,24 @@ def _book_depth_cols(candle: dict):
     """
     _n = candle.get("book_snaps") or 0
     if _n <= 0:
-        return (None, None, None, None, 0)
+        return (None, None, None, None, None, None, 0)
     _bs = candle.get("_book_bid_sum")
     _as = candle.get("_book_ask_sum")
     # 사설 누적키 우선(라이브) → 없으면 이미 계산돼 저장된 평균 컬럼(복구봉)
     _bavg = (float(_bs) / _n) if _bs is not None else candle.get("book_bid_avg")
     _aavg = (float(_as) / _n) if _as is not None else candle.get("book_ask_avg")
+    # [566차 / T-BOOK-1a] `_max` 는 **공개 컬럼명 그대로** 누적하므로 라이브·복구봉이
+    # 같은 키를 쓴다(`_avg` 의 왕복 비대칭 문제가 여기엔 없다). 566차 이전 행에는
+    # 이 값이 없어 NULL 이 된다 — **0 으로 채우지 말 것**(계측 4원칙 ②).
+    _bmax = candle.get("book_bid_max")
+    _amax = candle.get("book_ask_max")
     return (
         candle.get("book_bid_tot"),
         candle.get("book_ask_tot"),
         None if _bavg is None else float(_bavg),
         None if _aavg is None else float(_aavg),
+        None if _bmax is None else int(_bmax),
+        None if _amax is None else int(_amax),
         int(_n),
     )
 
@@ -2100,8 +2118,10 @@ def save_candle(candle: dict) -> None:
         """INSERT OR REPLACE INTO raw_candles
            (ts, open, high, low, close, volume, bid1, ask1, oi, buy_vol, sell_vol,
             anchor_buy, anchor_sell, buy_vol_flag, sell_vol_flag, unk_vol, bar_recovered,
-            book_bid_tot, book_ask_tot, book_bid_avg, book_ask_avg, book_snaps)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            book_bid_tot, book_ask_tot, book_bid_avg, book_ask_avg,
+            book_bid_max, book_ask_max, book_snaps)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             ts,
             candle.get("open",     0.0),
@@ -2126,7 +2146,7 @@ def save_candle(candle: dict) -> None:
             candle.get("unk_vol"),          # [559차 P1-4] 없으면 NULL
             # [452차 Phase 1] 내력 플래그 — 기록자가 항상 아는 값이라 0/1로 확정한다.
             1 if candle.get("bar_recovered") else 0,
-        ) + _book_depth_cols(candle),   # [552차] 호가 깊이 5열
+        ) + _book_depth_cols(candle),   # [552·566차] 호가 깊이 7열
     )
 
 
@@ -2173,8 +2193,10 @@ def save_candle_and_features(candle: dict, ts: str, features: dict) -> None:
                 """INSERT OR REPLACE INTO raw_candles
                    (ts, open, high, low, close, volume, bid1, ask1, oi, buy_vol, sell_vol,
                     anchor_buy, anchor_sell, buy_vol_flag, sell_vol_flag, unk_vol, bar_recovered,
-                    book_bid_tot, book_ask_tot, book_bid_avg, book_ask_avg, book_snaps)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    book_bid_tot, book_ask_tot, book_bid_avg, book_ask_avg,
+                    book_bid_max, book_ask_max, book_snaps)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     candle_ts,
                     candle.get("open",     0.0),
@@ -2194,7 +2216,7 @@ def save_candle_and_features(candle: dict, ts: str, features: dict) -> None:
                     candle.get("sell_vol_flag"),
                     candle.get("unk_vol"),          # [559차 P1-4] 없으면 NULL — 0 으로 지어내지 않는다
                     1 if candle.get("bar_recovered") else 0,
-                ) + _book_depth_cols(candle),   # [552차] 호가 깊이 5열
+                ) + _book_depth_cols(candle),   # [552·566차] 호가 깊이 7열
             )
             conn.execute(
                 "INSERT OR REPLACE INTO raw_features (ts, features) VALUES (?, ?)",
@@ -2277,10 +2299,11 @@ def save_session_bar(candle: dict, session: str, source: str = "rt") -> None:
                    (ts, session, open, high, low, close, volume, buy_vol, sell_vol,
                     anchor_buy, anchor_sell, unk_vol, bid1, ask1, bid_qty, ask_qty, oi,
                     tick_count, auction_code, auction_ticks,
-                    book_bid_tot, book_ask_tot, book_bid_avg, book_ask_avg, book_snaps,
+                    book_bid_tot, book_ask_tot, book_bid_avg, book_ask_avg,
+                    book_bid_max, book_ask_max, book_snaps,
                     source)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                           ?, ?, ?, ?, ?, ?)""",
+                           ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     candle_ts_str(candle),
                     session,
@@ -2302,7 +2325,7 @@ def save_session_bar(candle: dict, session: str, source: str = "rt") -> None:
                     candle.get("tick_count"),
                     candle.get("auction_code"),
                     candle.get("auction_ticks"),
-                ) + _book_depth_cols(candle) + (   # [552차] 호가 깊이 5열
+                ) + _book_depth_cols(candle) + (   # [552·566차] 호가 깊이 7열
                     source,
                 ),
             )

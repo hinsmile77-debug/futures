@@ -591,6 +591,18 @@ class CybosRealtimeData:
             if _book_ok:
                 self._current_bar["book_bid_tot"] = _bid_tot
                 self._current_bar["book_ask_tot"] = _ask_tot
+                # [MW0601 566차 / T-BOOK-1a] 봉내 **최댓값**. `_avg` 는 봉 전체를
+                # 뭉개고 `_tot` 은 임의의 1스냅샷이라, 둘 다 「이 봉에서 깊이가
+                # 얼마까지 갔나」에 답하지 못한다. 그 질문에 답하는 열이다.
+                # ⚠ **min 은 신설하지 않는다** — 5단 합의 하한이 5 에 붙어 있어
+                #   (실측 min=5 · 중앙 8) 사실상 상수다. 범위를 넓히지 말 것.
+                # None 시작 = 미계측(NULL). 0 으로 초기화하면 "깊이 0" 과 같아진다.
+                _pb = self._current_bar.get("book_bid_max")
+                _pa = self._current_bar.get("book_ask_max")
+                self._current_bar["book_bid_max"] = (
+                    _bid_tot if _pb is None else max(_pb, _bid_tot))
+                self._current_bar["book_ask_max"] = (
+                    _ask_tot if _pa is None else max(_pa, _ask_tot))
                 self._current_bar["_book_bid_sum"] = (
                     self._current_bar.get("_book_bid_sum") or 0) + _bid_tot
                 self._current_bar["_book_ask_sum"] = (
@@ -688,6 +700,9 @@ class CybosRealtimeData:
                 # 한 번도 못 받았다(NULL). 0 으로 초기화하지 않는다 — 452차 규약.
                 "book_bid_tot": None,
                 "book_ask_tot": None,
+                # [MW0601 566차 / T-BOOK-1a] 봉내 최댓값 — None = 미계측(NULL).
+                "book_bid_max": None,
+                "book_ask_max": None,
                 "book_snaps": 0,
                 "_book_bid_sum": 0,
                 "_book_ask_sum": 0,

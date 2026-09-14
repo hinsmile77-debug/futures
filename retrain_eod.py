@@ -204,6 +204,33 @@ def p8_scaler_refit() -> bool:
 
 
 # ── daily_close() 완료 대기 ──────────────────────────────────────
+def _describe_model_age(horizon_key):
+    """[MW0601 566차 / F2-3ⓑ] 그 호라이즌 모델이 **언제 학습된 것인지** 한 줄로.
+
+    경고에 「갱신 안 됨」만 적으면 얼마나 낡았는지 모른다. 사이드카
+    `gbm_{hz}_meta.json` 이 정답을 들고 있다 — `acc.txt` 는 교체 시에만 쓰여
+    「이미 존재하지 않는 모델의 성적」일 수 있다(456차 F6·F7).
+
+    ⚠ 읽기 실패는 **조용히 넘기지 않는다** — 사유를 문자열로 돌려준다
+       (계측 4원칙 ②: 모르는 것과 0을 같게 적지 않는다).
+    """
+    _path = os.path.join(_ROOT, "model", "horizons", "gbm_%s_meta.json" % horizon_key)
+    try:
+        with io.open(_path, encoding="utf-8") as f:
+            _meta = json.load(f)
+    except Exception as _e:                                   # noqa: BLE001
+        return "(현행 %s 모델 학습시각 미상: %r)" % (horizon_key, _e)
+    _at = _meta.get("trained_at")
+    if not _at:
+        return "(현행 %s 모델 학습시각 미기록)" % horizon_key
+    try:
+        _age = (datetime.datetime.now()
+                - datetime.datetime.strptime(_at, "%Y-%m-%d %H:%M:%S")).days
+        return "현행 %s 모델은 %s 학습본(약 %d일 경과)." % (horizon_key, _at, _age)
+    except Exception:                                         # noqa: BLE001
+        return "현행 %s 모델은 %s 학습본." % (horizon_key, _at)
+
+
 def _system_log_age_sec(day_token):
     """오늘 SYSTEM 로그의 최종 기록 이후 경과초. 파일이 없으면 None(**미측정**).
 
@@ -490,6 +517,41 @@ def main():
             t_load,
             t_total,
         )
+
+        # ── [MW0601 566차 / F2-3ⓑ] 폴백이 **조용히 건너뛴 호라이즌**을 드러낸다 ──────
+        # 🔴 Phase 2 폴백은 1m 을 **구조적으로 학습할 수 없다.**
+        #    Phase 2 는 `raw_features_horizon` 을 읽는데 그 테이블에 `1m` 행은
+        #    **사상 0개**다 — 1m 은 기본 분봉이라 `raw_features` 에만 있고, 코드도
+        #    그렇게 적고 있다(`batch_retrainer.py` 「1m은 설계상 기록되지 않음」).
+        #    ⇒ 폴백이 걸린 날마다 1m 모델이 **하루씩 늙는다.**
+        #
+        # 종전에는 이 사실이 `[Retrain-P2] 1m 데이터 부족 0 < 15000` **한 줄**로만
+        # 남았다. 그 줄은 "표본이 조금 모자랐다" 처럼 읽히지 그 호라이즌이 **영원히**
+        # 갱신되지 않는다는 뜻으로 읽히지 않는다. 계측 4원칙 ④ — 폴백이 쓰였으면
+        # 그 사실을 남긴다. **조용히 늙는 것이 늙는 것보다 나쁘다.**
+        #
+        # ⚠ 이것은 경고일 뿐 동작을 바꾸지 않는다. 임계도 건드리지 않는다(458차 D6).
+        if _phase2_fallback:
+            _hz_res = result.get("horizons", {}) or {}
+            _skipped = sorted(
+                h for h, r in _hz_res.items()
+                if not r.get("replaced") and not r.get("guard_rejected")
+            )
+            if _skipped:
+                log.warning(
+                    "[EODFallback] 폴백 경로에서 **미교체** 호라이즌 %d개: %s "
+                    "— 이 모델들은 오늘 갱신되지 않았다(구모델 유지).",
+                    len(_skipped), ", ".join(_skipped),
+                )
+            if "1m" in _hz_res and not _hz_res["1m"].get("replaced"):
+                log.warning(
+                    "[EODFallback] 🔴 **1m 은 폴백으로 학습할 수 없다 — 표본 부족이 "
+                    "아니라 구조다.** Phase 2 는 raw_features_horizon 을 읽는데 그 "
+                    "테이블에 1m 행은 설계상 존재하지 않는다. 1m 을 갱신하려면 "
+                    "Phase 1 이 MIN_TRAIN_BARS 를 넘어야 한다. "
+                    "⚠ 임계를 낮추지 말 것(458차 D6) — 라이브 행이 쌓이면 풀린다. %s",
+                    _describe_model_age("1m"),
+                )
 
         # 완료 마커 기록
         # [563차 후속] **먼저 문자열을 완성한 뒤** tmp 에 쓰고 교체한다.
