@@ -2208,6 +2208,60 @@ def candle_ts_str(candle: dict) -> str:
     return ts_raw.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts_raw, "strftime") else str(ts_raw)
 
 
+def insert_session_bar_if_missing(candle: dict, session: str, source: str) -> bool:
+    """[565차] 보충 전용 — ts 가 이미 있으면 **아무것도 하지 않는다**(실시간 봉이 우선).
+
+    차트 TR·로그 복구본은 bid/ask·틱수가 없으므로 실시간 행을 덮으면 정보가 준다.
+    반환: 삽입됐으면 True.
+    """
+    with _lock:
+        with get_conn(RAW_DATA_DB) as conn:
+            cur = conn.execute(
+                """INSERT OR IGNORE INTO session_bars
+                   (ts, session, open, high, low, close, volume, buy_vol, sell_vol,
+                    anchor_buy, anchor_sell, bid1, ask1, bid_qty, ask_qty, oi,
+                    tick_count, auction_code, auction_ticks, source)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    candle_ts_str(candle), session,
+                    candle.get("open"), candle.get("high"), candle.get("low"), candle.get("close"),
+                    candle.get("volume"),
+                    candle.get("buy_vol"), candle.get("sell_vol"),
+                    candle.get("anchor_buy"), candle.get("anchor_sell"),
+                    candle.get("bid1"), candle.get("ask1"), candle.get("bid_qty"), candle.get("ask_qty"),
+                    candle.get("oi"), candle.get("tick_count"),
+                    candle.get("auction_code"), candle.get("auction_ticks"),
+                    source,
+                ),
+            )
+            return cur.rowcount > 0
+
+
+def update_session_bar_ohlv_from_chart(ts: str, bar: dict, new_source: str) -> None:
+    """[565차] 08:45 개장 봉 전용 — 차트 값으로 open/high/low/volume 만 보정, close·bid/ask 는 유지.
+
+    실시간 구독이 개장 단일가 체결 뒤에 붙어 O·H·V 가 틀리는 봉이다. `source` 를 바꿔
+    "실시간 봉인데 O/H/L/V 는 차트에서 왔다"를 행 자체가 말하게 한다(계측 4원칙 ④).
+    """
+    with _lock:
+        with get_conn(RAW_DATA_DB) as conn:
+            conn.execute(
+                "UPDATE session_bars SET open=?, high=?, low=?, volume=?, source=? WHERE ts=?",
+                (bar.get("open"), bar.get("high"), bar.get("low"), bar.get("volume"), new_source, ts),
+            )
+
+
+def fetch_session_bars_map(day_from: str, day_to: str) -> Dict[str, sqlite3.Row]:
+    """[565차] `session_bars` ts → row (날짜 구간 포함). 대사용."""
+    with get_conn(RAW_DATA_DB) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM session_bars WHERE substr(ts,1,10) BETWEEN ? AND ?",
+            (day_from, day_to),
+        ).fetchall()
+    return {r["ts"]: r for r in rows}
+
+
 def save_session_bar(candle: dict, session: str, source: str = "rt") -> None:
     """[MW0601 533차] 풀타임 세션 봉 1행 저장 (`session_bars`).
 

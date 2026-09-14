@@ -54,6 +54,18 @@
 근거: `docs/미륵이고도화3/호가깊이/호가잔량_유효성_딥다이브_MW0601-20260914.md` ·
 `dev_memory/DECISION_LOG.md` 2026-09-14(561차)
 
+### 565차 — 풀타임 수집 Phase 3 후속 (MW0601, 2026-09-14) — **매매 정책 무변경**
+
+- [ ] **09-15 08:41 첫 자동 보충 확인** — SYSTEM 로그 `[SessionBackfill] 2026-09-14 차트 보충 — chart=411 existing=411
+      inserted=0 open_fixed=0 mismatch=…`(09-14 는 이미 수동 보충됨 → inserted 0 정상). 09-16 부터는 `inserted=1`(15:45)·`open_fixed=1`.
+      장후 `python scripts/session_bars_recon.py --date 2026-09-15` → Phase 1 PASS + `CLOSE_FILL 기대 1 실측 1`.
+- [ ] **사용자 결정**: Phase 2(수명 +6분)·프로브 P0-1/P0-2·안 C(별도 수집 프로세스) **폐기 확정** 여부 — 차트 TR 이 전부 답했다.
+      남는 프로브는 P0-4(병행 구독)뿐이며 안 C 를 접으면 그것도 불필요.
+- [ ] **Phase 4 첫 소비 전환 후보** — 청산 사후검증·맥점(GP) T3 평가의 이력 원천을 `raw_candles` → `session_bars`
+      (`session IN ('PRE_MARKET','REGULAR','POST_FORCE_EXIT')`, 종가 판정은 `CLOSE_FILL`). `docs/미륵이고도화3/당일맥점예측_…가이드` 표 갱신.
+      ⚠ 학습 라벨 전환은 별도 게이트(533차 §1-2).
+- [ ] 장중 봉 open 1~2틱 불일치(하루 1~4봉) — 틱 도착 순서 차이로 추정, H/L/C/V 동일. 원인 확인은 낮은 우선순위(정확도 영향 없음).
+
 ### 561차 — 호가잔량 추정량 개정 (2026-09-14) — **매매 정책 무변경**
 
 근거: `DECISION_LOG.md` 2026-09-14(561차) ·

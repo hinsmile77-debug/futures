@@ -1116,6 +1116,8 @@ class TradingSystem:
         # 15:46까지). 워커가 죽은 큐에 넣으면 조용히 유실되므로 이 플래그로 동기 저장
         # 경로로 우회한다. 명시 초기화 — getattr 폴백 금지(계측 4원칙 ④).
         self._db_writer_closed: bool = False
+        # [565차] 전 거래일 차트 TR 보충 1회 플래그 (08:41~08:44 스케줄러 틱)
+        self._chart_backfill_done: bool = False
         self._const_out_refit_until = None           # ConstOut 트리거 쿨다운 (30분)
         self._const_out_heavy_cooldown_until = None  # ConstOut 직후 heavy 작업 유예 (3분)
         self._price_momentum_refit_until = None      # D_PRICE_MOMENTUM 쿨다운 (20분)
@@ -14831,6 +14833,34 @@ class TradingSystem:
             _ts_scheduler_force_exit_net(self, now)
         except Exception:
             logger.exception("[SchedForceExit] 안전망 예외 — 30초 후 재시도")
+
+        # ── [MW0601 565차 / 풀타임 수집 Phase 3] 전 거래일 차트 TR 보충 ────────
+        # 08:41~08:44 1회. 실시간이 못 잡는 개장 체결·15:45 마감 체결·재기동 공백을
+        # `CpSysDib.FutOptChart` 로 메운다(source='chart_backfill', 기존 행은 덮지 않음).
+        # BlockRequest 라 COM 콜백 밖(§4)이고 이 시각엔 파이프라인이 없다. 만기일의
+        # 만기 월물은 사후 조회가 거부되므로 모듈이 건너뛰고 로그를 남긴다.
+        if (
+            not self._chart_backfill_done
+            and is_trading_day(now)
+            and datetime.time(8, 41) <= now.time() < datetime.time(8, 44)
+            and self.broker is not None and self.broker.is_connected
+        ):
+            self._chart_backfill_done = True
+            try:
+                from config.settings import SESSION_BARS_ENABLED as _sb_on
+                if _sb_on:
+                    from collection.cybos.chart_backfill import backfill_day, prev_trading_day
+                    _prev = prev_trading_day(now.date())
+                    _st = backfill_day(_prev)
+                    if _st is not None:
+                        log_manager.system(
+                            f"[SessionBackfill] {_prev} 차트 보충 — chart={_st['chart']} "
+                            f"existing={_st['existing']} inserted={_st['inserted']} "
+                            f"mismatch={_st['mismatch']}",
+                            "WARNING" if _st["mismatch"] else "INFO",
+                        )
+            except Exception as _cb_e:
+                logger.warning("[SessionBackfill] 실패 (무해): %s", _cb_e)
 
         # ── [MW0601 550차] 마감 뒤 마지막 봉 시간 기준 플러시 ──────────────────
         # 15:35 마감 단일가부터 체결틱이 없어 15:34 봉이 다음 분 롤오버를 영원히

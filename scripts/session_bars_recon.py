@@ -31,7 +31,11 @@ from config.settings import RAW_DATA_DB  # noqa: E402
 from utils.analysis_db import connect_ro, guard_intraday  # noqa: E402
 
 EXPECT_PHASE1 = {"PRE_MARKET": 15, "REGULAR": 370, "POST_FORCE_EXIT": 25}
-EXPECT_PHASE2 = {"CLOSE_FILL": 1}
+# [565차] 만기일은 15:20 마감 — POST_FORCE_EXIT 15:10~15:19 = 10봉, 마감 단일가 없음
+EXPECT_PHASE1_EXPIRY = {"PRE_MARKET": 15, "REGULAR": 370, "POST_FORCE_EXIT": 10}
+# [565차] Phase 3 — 다음 거래일 08:41 차트 TR 보충: 15:45 마감 체결 1행(source=chart_backfill).
+# 만기일은 만기 월물 사후 조회 불가라 0 이 정상.
+EXPECT_PHASE3 = {"CLOSE_FILL": 1}
 
 
 def main() -> int:
@@ -50,11 +54,17 @@ def main() -> int:
         if not day:
             print("[중단] session_bars 비어 있음")
             return 1
+        import datetime as _dt
+        from utils.time_utils import is_expiry_day
+        _expiry = is_expiry_day(_dt.datetime.strptime(day, "%Y-%m-%d"))
         rows = con.execute(
             "SELECT session, COUNT(*), MIN(ts), MAX(ts), SUM(auction_code IS NULL), SUM(COALESCE(auction_ticks,0)>0), "
             "SUM(source<>'rt') FROM session_bars WHERE substr(ts,1,10)=? GROUP BY session ORDER BY MIN(ts)",
             (day,)).fetchall()
-        print("=== %s session_bars ===" % day)
+        src_rows = con.execute(
+            "SELECT source, COUNT(*) FROM session_bars WHERE substr(ts,1,10)=? GROUP BY source", (day,)).fetchall()
+        print("=== %s session_bars ===%s" % (day, "  (만기일 — 15:20 마감)" if _expiry else ""))
+        print("  source: " + ", ".join("%s=%d" % (k, v) for k, v in src_rows))
         print("  %-16s %5s  %-19s %-19s %8s %8s %6s" % ("session", "n", "first", "last", "ac_NULL", "ac_hit", "nonRT"))
         counts = {}
         for s, n, a, b, nnull, nhit, nrt in rows:
@@ -71,7 +81,7 @@ def main() -> int:
         mism = con.execute(
             "SELECT COUNT(*), SUM(s.open<>r.open), SUM(s.high<>r.high), SUM(s.low<>r.low), "
             "SUM(s.close<>r.close), SUM(s.volume<>r.volume) "
-            "FROM session_bars s JOIN raw_candles r ON r.ts=s.ts WHERE substr(s.ts,1,10)=?", (day,)).fetchone()
+            "FROM session_bars s JOIN raw_candles r ON r.ts=s.ts WHERE substr(s.ts,1,10)=? AND s.source='rt'", (day,)).fetchone()
         n_join = mism[0] or 0
         bad = [int(x or 0) for x in mism[1:]]
         print("\nraw_candles 교집합 %d행 — 불일치 O/H/L/C/V = %s" % (n_join, bad))
@@ -82,14 +92,29 @@ def main() -> int:
 
         print("\n=== 판정 ===")
         ok = True
-        for k, v in EXPECT_PHASE1.items():
-            got = counts.get(k, 0)
+        _src = dict(src_rows)
+        if _src.get("log_recovered") and not _src.get("rt"):
+            print("  -- 로그 복구본만 있는 날(533차 배포 이전) — Phase 1 판정 대상 아님. 행수만 참고.")
+            print("  Phase 1 N/A")
+            return 0
+        # rt 봉만으로 Phase 1 을 판정한다 — 보충본이 결손을 가리면 안 된다(계측 4원칙 ③).
+        # 08:45 봉은 차트 보정 뒤 source='rt_chart_open' 이 되므로 rt 로 함께 센다.
+        rt_counts = dict(con.execute(
+            "SELECT session, COUNT(*) FROM session_bars WHERE substr(ts,1,10)=? "
+            "AND source IN ('rt','rt_chart_open') GROUP BY session", (day,)).fetchall())
+        for k, v in (EXPECT_PHASE1_EXPIRY if _expiry else EXPECT_PHASE1).items():
+            got = rt_counts.get(k, 0)
             flag = "OK " if got == v else "!! "
             ok = ok and got == v
-            print("  %s %-16s 기대 %3d 실측 %3d" % (flag, k, v, got))
-        for k, v in EXPECT_PHASE2.items():
+            extra = "  (보충 포함 %d)" % counts.get(k, 0) if counts.get(k, 0) != got else ""
+            print("  %s %-16s 기대 %3d 실측(rt) %3d%s" % (flag, k, v, got, extra))
+        for k, v in EXPECT_PHASE3.items():
             got = counts.get(k, 0)
-            print("  %s %-16s 기대 %3d 실측 %3d  (Phase 2 배선 전이면 0이 정상)" % ("OK " if got == v else "-- ", k, v, got))
+            if _expiry:
+                print("  -- %-16s 만기일 — 마감 단일가 없음(0 정상), 실측 %d" % (k, got))
+            else:
+                print("  %s %-16s 기대 %3d 실측 %3d  (Phase 3 차트 보충 — 다음 거래일 08:41 이후 채워짐)" % (
+                    "OK " if got == v else "-- ", k, v, got))
         if sum(bad) or only_raw:
             ok = False
             print("  !! OHLCV 불일치 또는 raw_candles 전용 봉 존재 — 적재 경로 재확인")
