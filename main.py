@@ -7906,9 +7906,14 @@ class TradingSystem:
                         _cs_min_pass = _cs_req
                         break
                 if _cs_min_pass is not None and _cr["pass_count"] < _cs_min_pass:
+                    # [MW0601 564차] `log_manager.*` 는 stdlib logger 가 아니다 —
+                    # `(msg, level="INFO", **kwargs)` 라 **지연 포매팅을 지원하지 않는다.**
+                    # 여기 %-인자를 그대로 넘기면 TypeError 로 매분 파이프라인이 죽고
+                    # ERR-FATAL 핸들러가 자동진입을 15분 끈다(2026-09-14 14:25 실측).
+                    # 반드시 **미리 조립**해서 단일 문자열로 넘길 것.
                     log_manager.signal(
-                        "[ColdStart] pass=%d < required=%d (%d~%d) → X등급 강등",
-                        _cr["pass_count"], _cs_min_pass, _cs_start, _cs_end,
+                        "[ColdStart] pass=%d < required=%d (%d~%d) → X등급 강등"
+                        % (_cr["pass_count"], _cs_min_pass, _cs_start, _cs_end)
                     )
                     _cr = dict(_cr)
                     _cr["grade"]      = "X"
@@ -7925,11 +7930,15 @@ class TradingSystem:
                 if _ens_conf_floor_dyn > ENS_CONF_FLOOR_FOR_AUTO and confidence < _ens_conf_floor_dyn:
                     _cr = dict(_cr)
                     _cr["auto_entry"] = False
+                    # [MW0601 564차] 🔴 **2026-09-14 14:25 여기서 실제로 터졌다.**
+                    # `signal() takes from 2 to 3 positional arguments but 5 were given`
+                    # → minute_pipeline ERR-FATAL → 자동진입 OFF + 15분 쿨다운.
+                    # 자동진입 **하나**를 끄려던 분기가 **전부**를 껐다. 미리 조립한다.
                     log_manager.signal(
                         "[P2] conf_floor dynamic=%.1f%% (static=%.1f%%) → auto_entry=OFF "
-                        "(conf=%.1f%%)",
-                        _ens_conf_floor_dyn * 100, ENS_CONF_FLOOR_FOR_AUTO * 100,
-                        confidence * 100,
+                        "(conf=%.1f%%)"
+                        % (_ens_conf_floor_dyn * 100, ENS_CONF_FLOOR_FOR_AUTO * 100,
+                           confidence * 100)
                     )
 
             _final_grade = _cr["grade"]
