@@ -8343,6 +8343,16 @@ class MinuteChartCanvas(QWidget):
         # [오버레이 P1] 봉별 4상태. 빈 dict 는 「미산출」이다 — 「상태 없음」과 다르다.
         self._state_map = {}
         self._state_provisional = True   # 라이브면 중앙값이 확정 전이다
+        # [오버레이 P3] 장전 레벨. None 은 「미조회」다 — 빈 dict(「그날 없음」)와 다르다.
+        self._pre_levels = None
+        # 레이어 토글. 기본은 **전부 꺼짐** — 화면은 빼는 것도 설계다(원칙 6).
+        # 거래 스팬은 **기본 켜짐** — 567차 이전부터 그리던 것이라 끄면 퇴행이다.
+        self._ov = {"struct": False, "price": False, "trade_mireuk": True}
+        # [dev 이식 / 569차 선행] 이번 paint 의 Y축 범위. 🔴 None 으로 둔다 —
+        #   미설정과 "0" 을 같은 값으로 만들면 _is_off_axis 가 첫 paint 전에
+        #   축 안이라고 단정한다(계측 4원칙 ②·④).
+        self._axis_lo = None
+        self._axis_hi = None
         self._regime_map = {}        # {ts_key: regime_str} 봉별 레짐 히스토리
         self._dir_map    = {}        # {ts_key: direction_int} 봉별 방향예측 히스토리
         self._last_tick_update_ms: float = 0.0   # update() throttle용 타임스탬프
@@ -8608,10 +8618,15 @@ class MinuteChartCanvas(QWidget):
         pad = max((hi - lo) * 0.08, 0.2)
         lo -= pad
         hi += pad
+        # 축 밖 판정용 — _is_off_axis / _draw_struct_model 이 참조한다.
+        self._axis_lo, self._axis_hi = lo, hi
 
         import time as _t2
         _t_grid = _t2.monotonic(); self._draw_grid(painter, plot, lo, hi)
         self._draw_session_tail(painter, plot, candles, padded_count)
+        # [오버레이 P3] 면 → 선 → 빗금 순. 면이 위로 오면 선을 덮는다
+        self._draw_price_model(painter, plot, lo, hi)
+        self._draw_struct_model(painter, plot, lo, hi)
         # [오버레이 P2] 금지 빗금은 **캔들 뒤**라야 판독을 가리지 않는다
         self._draw_state_overlay(painter, plot, candles, padded_count)
         _t_spans = _t2.monotonic()
@@ -8795,6 +8810,10 @@ class MinuteChartCanvas(QWidget):
             _x0 = plot.left() + _step * _i0
             _x1 = plot.left() + _step * len(candles)
             painter.save()
+        except Exception as _e:
+            logger.debug("[ChartDBG] _draw_session_tail 진입 예외: %s", _e)
+            return
+        try:
             # 옅은 배경 — 캔들 판독을 가리지 않는 선에서 구간만 표시한다
             painter.fillRect(QRectF(_x0, plot.top(), max(1.0, _x1 - _x0), plot.height()),
                              QColor(88, 166, 255, 16))
@@ -8819,9 +8838,10 @@ class MinuteChartCanvas(QWidget):
                 _tx = max(plot.left() + S.p(4), _x0 - S.p(5) - _w)
             painter.setPen(QColor("#58A6FF"))
             painter.drawText(QPointF(_tx, plot.top() + S.p(12)), _txt)
-            painter.restore()
         except Exception as _e:
             logger.debug("[ChartDBG] _draw_session_tail 예외: %s", _e)
+        finally:
+            painter.restore()
 
     def _draw_candles(self, painter: QPainter, plot: QRectF, candles, lo: float, hi: float, padded_count: int):
         count = max(padded_count, 1)
@@ -8949,6 +8969,109 @@ class MinuteChartCanvas(QWidget):
             runs.append((i0, len(candles), cur))
         return runs
 
+    # ── [오버레이 P3] 장전 레벨 ───────────────────────────────────────
+    #
+    # 🔴 **레벨을 만들어내지 않는다.** 미륵이가 08:50/09:30 에 이미 산출해
+    #   `premarket_levels.db` 에 써 둔 값을 **옮겨 그릴 뿐**이다.
+    #   화면에서 재계산하면 DB 와 화면이 갈라진다(계획서 §6 금지 4).
+    # 🔴 구조모델은 자기 무작위 기준을 못 이겼다(극값 안착 49.6% vs 47.1%).
+    #   그래서 **신뢰 문구를 붙이지 않고** 얇은 점선으로만 그린다.
+    PRICE_MODEL_COLOR = "#39C5CF"
+    STRUCT_MODEL_COLOR = "#C2CCD6"
+
+    def _draw_price_model(self, painter: QPainter, plot: QRectF, lo: float, hi: float):
+        """가격모델 — 고·저 점추정과 50%/80% 구간. 면이라 **가장 아래**에 깐다."""
+        if not self._ov.get("price") or not self._pre_levels:
+            return
+        try:
+            L = self._pre_levels
+            base = QColor(self.PRICE_MODEL_COLOR)
+            painter.save()
+        except Exception as _e:
+            logger.debug("[ChartDBG] _draw_price_model 진입 예외: %s", _e)
+            return
+        # 🔴 save() 이후는 **반드시** finally 로 restore 한다. 예외 시 restore 가
+        #   건너뛰면 painter 상태가 남아 **이후 레이어 전부가 오염된다**
+        #   (실측: QPainter::end 가 "ended with 2 saved states" 경고를 냈다).
+        try:
+            painter.setPen(Qt.NoPen)
+            for _k, _a in (("80", 14), ("50", 26)):
+                for _side in ("high", "low"):
+                    _a0 = L.get("%s%s_lo" % (_side, _k))
+                    _a1 = L.get("%s%s_hi" % (_side, _k))
+                    if _a0 is None or _a1 is None:
+                        continue
+                    y0 = self._price_to_y(max(_a0, _a1), plot, lo, hi)
+                    y1 = self._price_to_y(min(_a0, _a1), plot, lo, hi)
+                    col = QColor(base); col.setAlpha(_a)
+                    painter.setBrush(col)
+                    painter.drawRect(QRectF(plot.left(), y0, plot.width(), max(1.0, y1 - y0)))
+            # 점추정 — 실선 1px + 우측 값
+            painter.setBrush(Qt.NoBrush)
+            for _key, _tag in (("dist_high", "가격 고"), ("dist_low", "가격 저")):
+                v = L.get(_key)
+                if v is None:
+                    continue
+                if self._is_off_axis(v):
+                    continue
+                y = self._price_to_y(v, plot, lo, hi)
+                _pen = QPen(base); _pen.setWidth(1)
+                painter.setPen(_pen)
+                painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
+                painter.setFont(QFont("Consolas", 8))
+                painter.drawText(QPointF(plot.right() - S.p(96), y - S.p(3)),
+                                 "%s %.2f" % (_tag, v))
+        except Exception as _e:
+            logger.debug("[ChartDBG] _draw_price_model 예외: %s", _e)
+        finally:
+            painter.restore()
+
+    def _draw_struct_model(self, painter: QPainter, plot: QRectF, lo: float, hi: float):
+        """구조모델 — 매물대·전일저·갭하변 등 후보 레벨. 점선 + 라벨 칩."""
+        if not self._ov.get("struct") or not self._pre_levels:
+            return
+        try:
+            L = self._pre_levels
+            col = QColor(self.STRUCT_MODEL_COLOR)
+            painter.save()
+        except Exception as _e:
+            logger.debug("[ChartDBG] _draw_struct_model 진입 예외: %s", _e)
+            return
+        try:
+            _off_up, _off_dn = [], []
+            for _key in ("struct_up", "struct_down"):
+                for _item in (L.get(_key) or []):
+                    try:
+                        lv = float(_item[0])
+                        tags = _item[1] if len(_item) > 1 else []
+                    except Exception:
+                        continue
+                    if self._is_off_axis(lv):
+                        (_off_up if lv > (self._axis_hi or 0) else _off_dn).append(lv)
+                        continue
+                    y = self._price_to_y(lv, plot, lo, hi)
+                    _pen = QPen(col); _pen.setWidth(1); _pen.setStyle(Qt.DashLine)
+                    painter.setPen(_pen)
+                    painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
+                    # 양 끝 캡 — 선이 캔들에 묻혀도 끝은 보인다
+                    painter.setPen(Qt.NoPen); painter.setBrush(col)
+                    for xx in (plot.left(), plot.right() - 2):
+                        painter.drawRect(QRectF(xx, y - 3, 2.5, 6))
+                    _txt = "%g  %s" % (lv, " · ".join(str(t) for t in tags)[:34])
+                    painter.setFont(QFont("Consolas", 8))
+                    self._draw_label_chip(painter, plot.left() + S.p(5), y - S.p(20),
+                                          _txt, QColor(13, 17, 23, 225), col, True)
+            # 축 밖은 가장자리 캐럿으로 — 클램프해서 가장자리 가격인 척하면 안 된다
+            for _lst, _up in ((_off_up, True), (_off_dn, False)):
+                if not _lst:
+                    continue
+                _y = plot.top() + S.p(6) if _up else plot.bottom() - S.p(6)
+                self._draw_off_axis_caret(painter, plot.right() - S.p(14), _y, col, above=_up)
+        except Exception as _e:
+            logger.debug("[ChartDBG] _draw_struct_model 예외: %s", _e)
+        finally:
+            painter.restore()
+
     def _draw_state_overlay(self, painter: QPainter, plot: QRectF, candles, padded_count: int):
         """⭐ BUY_MECH 구간 = **롱 금지**. 이 화면에서 유일하게 검증된 문장이다.
 
@@ -8969,6 +9092,10 @@ class MinuteChartCanvas(QWidget):
             # 잠정은 약해야 하지만 **안 보이면 정보가 0** 이다. 실측으로 조정.
             col.setAlpha(28 if self._state_provisional else 44)
             painter.save()
+        except Exception as _e:
+            logger.debug("[ChartDBG] _draw_state_overlay 진입 예외: %s", _e)
+            return
+        try:
             painter.setPen(Qt.NoPen)
             painter.setBrush(QBrush(col, Qt.BDiagPattern))
             _n = 0
@@ -8986,9 +9113,10 @@ class MinuteChartCanvas(QWidget):
                 painter.setFont(QFont("Malgun Gothic", 8, QFont.Bold))
                 painter.setPen(QColor("#D29922"))
                 painter.drawText(QPointF(plot.left() + S.p(6), plot.top() + S.p(12)), _txt)
-            painter.restore()
         except Exception as _e:
             logger.debug("[ChartDBG] _draw_state_overlay 예외: %s", _e)
+        finally:
+            painter.restore()
 
     def _draw_state_lane(self, painter: QPainter, plot: QRectF, candles, padded_count: int):
         """방향 바 바로 위 4상태 레인. 상태가 **없는** 봉은 비워 둔다.
@@ -9003,6 +9131,10 @@ class MinuteChartCanvas(QWidget):
             step = plot.width() / count
             bar_y = plot.bottom() - _REGIME_BAR_H - _DIR_BAR_H - _STATE_BAR_H
             painter.save()
+        except Exception as _e:
+            logger.debug("[ChartDBG] _draw_state_lane 진입 예외: %s", _e)
+            return
+        try:
             painter.setPen(Qt.NoPen)
             _dim = 0.62 if self._state_provisional else 1.0
             for i0, i1, st in self._state_runs(candles):
@@ -9014,14 +9146,89 @@ class MinuteChartCanvas(QWidget):
                 painter.setBrush(col)
                 painter.drawRect(QRectF(plot.left() + step * i0, bar_y,
                                         step * (i1 - i0) - 1, _STATE_BAR_H))
-            painter.restore()
         except Exception as _e:
             logger.debug("[ChartDBG] _draw_state_lane 예외: %s", _e)
+        finally:
+            painter.restore()
+
+    # ── [dev 이식 / 569차] 축 밖 판정 2종은 555차 후속2 의 것이지만 569차의
+    #   `_draw_struct_model` 이 **직접 호출**하므로 최소 선행분으로 함께 가져온다.
+    #   dev 의 다른 그리기 경로는 이것을 부르지 않는다 — 동작 변화 없음.
+    def _is_off_axis(self, price: float) -> bool:
+        """[555차 후속2 / P1] 가격이 이번 paint 의 Y축 밖인가.
+
+        축 범위가 아직 없으면(첫 paint 전) **판정하지 않는다** — `False` 를 돌려
+        「축 안」이라 단정하지 않고, 캐럿을 안 그릴 뿐이다(계측 4원칙 ②).
+        """
+        if self._axis_lo is None or self._axis_hi is None or price <= 0:
+            return False
+        return price < self._axis_lo or price > self._axis_hi
+
+    def _draw_off_axis_caret(self, painter: QPainter, x: float, y: float,
+                             color: QColor, above: bool):
+        """축 밖 마커에 캐럿 + `↕` 를 붙인다 — 「여기가 실제 가격이 아니다」 표시.
+
+        🔴 클램프만 하고 표시를 안 하면 마커가 **가장자리 가격인 척**한다.
+          그건 축이 늘어나는 것보다 더 나쁘다(계측 4원칙 ④ — 폴백 가시화).
+        """
+        painter.setBrush(color)
+        painter.setPen(QPen(color, 1.0))
+        if above:
+            poly = QPolygonF([QPointF(x, y - 7.0),
+                              QPointF(x - 4.0, y - 1.0),
+                              QPointF(x + 4.0, y - 1.0)])
+        else:
+            poly = QPolygonF([QPointF(x, y + 7.0),
+                              QPointF(x - 4.0, y + 1.0),
+                              QPointF(x + 4.0, y + 1.0)])
+        painter.drawPolygon(poly)
+        painter.setBrush(Qt.NoBrush)
+
+    def _draw_trade_span_area(self, painter: QPainter, x1: float, y1: float,
+                              x2: float, y2: float, color: QColor, step: float,
+                              plot: QRectF):
+        """진입~청산 **구간**을 면으로 깐다.
+
+        🔴 라벨은 붙이지 않는다 — `_draw_markers` 가 이미 손익·사유를 찍는다.
+          같은 값을 두 번 쓰면 화면이 시끄러워지고, 하루 20건이 넘는 날은
+          칩이 서로를 덮어 둘 다 못 읽게 된다(원칙 6 — 빼는 것도 설계다).
+        🔴 색은 손익에서 온다(호출부가 정한다). 방향이 아니다.
+        """
+        try:
+            xa, xb = min(x1, x2), max(x1, x2)
+            ya, yb = min(y1, y2), max(y1, y2)
+            w = max(step * 0.9, xb - xa)
+            h = max(S.p(6), yb - ya)
+            painter.save()
+        except Exception:
+            return
+        try:
+            # 면 — 아주 옅게. 캔들 판독을 가리지 않는다
+            _f = QColor(color); _f.setAlpha(30)
+            painter.setPen(Qt.NoPen); painter.setBrush(_f)
+            painter.drawRect(QRectF(xa, ya, w, h))
+            # 진입·청산 세로 경계 — 면이 납작해도 **구간**은 이 두 선으로 읽힌다.
+            # 🔴 차트 전체 높이로 긋지 않는다. 경계의 역할은 **그 구간**을 읽히게
+            #   하는 것이지 화면을 가르는 게 아니다 — 40건인 날(실측 2026-09-01)은
+            #   전체 높이 세로선 80개가 캔들을 덮어 차트가 못 읽히게 됐다.
+            _m = S.p(10)
+            _y0 = max(plot.top(), ya - _m)
+            _y1 = min(plot.bottom(), ya + h + _m)
+            _p = QPen(QColor(color.red(), color.green(), color.blue(), 120))
+            _p.setWidth(1); _p.setStyle(Qt.DotLine)
+            painter.setPen(_p)
+            for xx in (xa, xa + w):
+                painter.drawLine(QPointF(xx, _y0), QPointF(xx, _y1))
+        except Exception as _e:
+            logger.debug("[ChartDBG] _draw_trade_span_area 예외: %s", _e)
+        finally:
+            painter.restore()
 
     def _draw_trade_spans(self, painter: QPainter, plot: QRectF, candles, index_map, lo: float, hi: float, padded_count: int):
         count = max(padded_count, 1)
         step = plot.width() / count
-        for trade in self._completed_trades:
+        _show = self._ov.get("trade_mireuk", True)
+        for trade in (self._completed_trades if _show else []):
             entry_dt = self._coerce_dt(trade.get("entry_ts"))
             exit_dt = self._coerce_dt(trade.get("exit_ts"))
             if not entry_dt or not exit_dt:
@@ -9040,12 +9247,20 @@ class MinuteChartCanvas(QWidget):
                 pen = QPen(QColor("#FF5D73"))
             else:
                 pen = QPen(QColor("#8B949E"))
+            # [오버레이 P4a / dev 이식] 면 + 세로 경계를 먼저 깔고 그 위에 기존 선.
+            # ⚠ v9-dev 는 여기서 대각 연결선(_draw_link_line, 555차 후속2)으로
+            #   바꾸지만 dev 는 진입가 수평선이다. 그 시각 변경은 555차 몫이라
+            #   가져오지 않고, **569차가 더한 면·경계만** 얹는다.
+            _ep = float(trade.get("exit_price") or 0.0)
+            _y2 = self._price_to_y(_ep, plot, lo, hi) if _ep > 0 else y
+            self._draw_trade_span_area(painter, x1, y, x2, _y2,
+                                       QColor(pen.color()), step, plot)
             pen.setWidth(2)
             pen.setStyle(Qt.DashLine)
             painter.setPen(pen)
             painter.drawLine(int(x1), int(y), int(x2), int(y))
 
-        if self._active_trade:
+        if self._active_trade and _show:
             entry_dt = self._coerce_dt(self._active_trade.get("entry_ts"))
             start_idx = self._resolve_index(index_map, candles, entry_dt)
             end_idx = len(candles) - 1 if candles else None
@@ -9687,6 +9902,16 @@ class MinuteChartCanvas(QWidget):
                 st = "BUY_STACK" if o > 0 else "BUY_MECH"
             self._state_map[row["ts"]] = st
 
+    def set_premarket_levels(self, levels):
+        """장전 레벨 주입. `None` 은 **미조회**다 — 「그날 없음」과 가르려고 남긴다."""
+        self._pre_levels = levels
+        self.update()
+
+    def set_overlay(self, key: str, on: bool):
+        if key in self._ov:
+            self._ov[key] = bool(on)
+            self.update()
+
     def _state_is_past_session(self):
         """이 세션의 당일 중앙값·분위수가 **확정됐는가**.
 
@@ -9812,6 +10037,8 @@ class MinuteChartDialog(QDialog):
         # 🔴 「미측정」과 「0건」을 가르기 위한 최소 재료다(계측 4원칙 ②).
         #   건수만으로는 못 가른다 — 레이어마다 **원천이 시작된 날**이 다르고,
         #   레짐은 EOD purge(30일) 때문에 경계가 매일 움직인다.
+        # [오버레이 P3] 레이어 토글 상태. 기본 전부 꺼짐 — 빼는 것도 설계다.
+        self._ov_btn = {}
         self._cov = {}            # {layer: 그 레이어에 행이 있는 날짜 set} · None = 원천없음
         self._cnt = {}            # {layer: 당일 건수} · None = 조회 실패
         self._layer_lbl = None
@@ -9829,6 +10056,7 @@ class MinuteChartDialog(QDialog):
         root.setContentsMargins(S.p(12), S.p(12), S.p(12), S.p(12))
         root.setSpacing(S.p(8))
         root.addLayout(self._build_date_bar())
+        root.addLayout(self._build_overlay_bar())
         root.addWidget(self._status)
         root.addWidget(self._chart, 1)
 
@@ -10005,6 +10233,101 @@ class MinuteChartDialog(QDialog):
         bar.addStretch(1)
         bar.addWidget(self._layer_lbl)
         return bar
+
+    # ── [오버레이 P3] 레이어 토글 바 ──────────────────────────────────
+    _OV_SPEC = (
+        ("trade_mireuk", "거래미륵", "#E6EDF3"),
+        ("struct",       "구조모델", "#C2CCD6"),
+        ("price",        "가격모델", "#39C5CF"),
+    )
+
+    def _build_overlay_bar(self):
+        bar = QHBoxLayout()
+        bar.setSpacing(S.p(6))
+        lbl = QLabel("레이어")
+        lbl.setStyleSheet(f"color:{C['text2']};font-size:{S.f(10)}px;")
+        bar.addWidget(lbl)
+        for _key, _txt, _col in self._OV_SPEC:
+            b = QPushButton(_txt)
+            b.setCheckable(True)
+            b.setChecked(_key == "trade_mireuk")   # 거래는 기존 동작 유지
+            b.setStyleSheet(
+                f"QPushButton{{background:{C['bg3']};color:{C['text2']};"
+                f"border:1px solid {C['border']};border-radius:7px;"
+                f"padding:5px 12px;font-size:{S.f(10)}px;font-weight:600;}}"
+                f"QPushButton:checked{{color:{_col};border-color:{_col};}}"
+            )
+            b.toggled.connect(lambda on, k=_key: self._on_overlay_toggled(k, on))
+            self._ov_btn[_key] = b
+            bar.addWidget(b)
+        self._ov_note = QLabel("")
+        self._ov_note.setStyleSheet(f"color:{C['text2']};font-size:{S.f(10)}px;")
+        bar.addWidget(self._ov_note)
+        bar.addStretch(1)
+        return bar
+
+    def _on_overlay_toggled(self, key: str, on: bool):
+        self._chart.set_overlay(key, on)
+
+    # ── 장전 레벨 적재 ────────────────────────────────────────────────
+    #
+    # 🔴 미륵이가 08:50/09:30 에 이미 산출해 둔 값을 **읽기만** 한다.
+    #   화면에서 다시 계산하면 DB 와 화면이 갈라진다(계획서 §6 금지 4).
+    # 🔴 `None`(미조회)과 `{}`(그날 없음)를 가른다 — 같은 빈 화면이면
+    #   "산출이 안 된 날"과 "아직 안 읽은 것"이 구분되지 않는다(계측 4원칙 ②).
+    _PRE_KEYS = ("ref_price", "atr14", "dist_high", "dist_low",
+                 "high50_lo", "high50_hi", "high80_lo", "high80_hi",
+                 "low50_lo", "low50_hi", "low80_lo", "low80_hi",
+                 "struct_up", "struct_down", "train_n", "rhat_scale", "warnings")
+
+    def _load_premarket_levels(self, session_date: str):
+        """그날 장전 레벨 1건. 같은 날 여러 stage 가 있으면 **최신 산출**을 쓴다."""
+        import json as _json
+        try:
+            from config.settings import DB_DIR
+            _db = os.path.join(DB_DIR, "premarket_levels.db")
+        except Exception as _e:
+            logger.debug("[ChartDBG] 장전레벨 경로 실패: %s", _e)
+            return None
+        try:
+            _rows = fetchall(
+                _db,
+                "SELECT * FROM premarket_levels WHERE date=? ORDER BY computed_at DESC LIMIT 1",
+                (session_date,),
+            )
+        except Exception as _e:
+            logger.debug("[ChartDBG] 장전레벨 조회 실패: %s", _e)
+            return None
+        if not _rows:
+            return {}                      # 그날 산출이 없다 — **미조회가 아니다**
+        _r = dict(_rows[0])
+        _out = {"stage": _r.get("stage")}
+        for _k in self._PRE_KEYS:
+            _v = _r.get(_k)
+            if _k in ("struct_up", "struct_down", "warnings"):
+                try:
+                    _v = _json.loads(_v) if _v else []
+                except Exception:
+                    _v = []
+            _out[_k] = _v
+        return _out
+
+    def _apply_premarket_levels(self):
+        _lv = self._load_premarket_levels(self._session_date)
+        self._chart.set_premarket_levels(_lv)
+        try:
+            if _lv is None:
+                _t = "장전레벨 미조회"
+            elif not _lv:
+                _t = "장전레벨 없음 (그날 미산출)"
+            else:
+                _n = len(_lv.get("struct_up") or []) + len(_lv.get("struct_down") or [])
+                _t = "장전레벨 %s · 구조 %d개" % (_lv.get("stage") or "?", _n)
+                if _lv.get("warnings"):
+                    _t += " · ⚠%d" % len(_lv["warnings"])
+            self._ov_note.setText(_t)
+        except Exception as _e:
+            logger.debug("[ChartDBG] 장전레벨 문구 실패: %s", _e)
 
     def _style_calendar(self):
         """달력을 대시보드 다크 테마에 맞춘다."""
@@ -10434,6 +10757,7 @@ class MinuteChartDialog(QDialog):
             self._cnt["direction"] = None
         self._refresh_mode_label()
         self._refresh_layer_badges()
+        self._apply_premarket_levels()
         self._chart.update()
 
     def _start_reload_thread(self, session_date: str = None):
@@ -10552,6 +10876,7 @@ class MinuteChartDialog(QDialog):
             logger.debug("[ChartDBG] _apply_reload_result direction 복원 실패: %s", _e)
         self._refresh_mode_label()
         self._refresh_layer_badges()
+        self._apply_premarket_levels()
         self._chart.update()
         # reset_session이 _active_trade를 초기화하므로, 외부 훅으로 재동기화
         if callable(getattr(self, '_post_reload_hook', None)):
