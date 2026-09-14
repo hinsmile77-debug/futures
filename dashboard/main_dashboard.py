@@ -14,6 +14,7 @@
 
 import json
 import os
+import re            # [오버레이 P3b] 피터 사료 파서
 import logging
 import subprocess
 import sys
@@ -8317,6 +8318,140 @@ def _as_num(v):
     except (TypeError, ValueError):
         return None
 
+
+# ── [오버레이 P3b/P4b] 피터리 사료 — 파서 · 저장소 ─────────────────────────
+#
+# ⛔ **레벨을 찾아내는 도구가 아니다.** 그가 이미 쓴 숫자를 옮겨 적는 도구다.
+#   맥점 산출법은 미상이고 자동 생성은 금지다(구현계획 §6-1).
+#   여기서 하는 일은 **받아쓰기이지 예측이 아니다.**
+# 🔴 사료(누가 말한 것)와 실측(돈이 오간 것)은 시각 언어로 갈라야 한다 —
+#   피터는 **점선**, 미륵이는 **실선**. 같은 모양이면 화면이 거짓말을 한다.
+# 🔴 계약 스케일이 다르다. 그의 숫자는 정규 지수, 차트는 미륵이 계약이고
+#   오프셋이 날마다 다르다(실측 09-14 −4.00 · 09-11 −4.47 · 09-04 −0.01).
+#   그래서 오프셋은 **사용자가 그날 값을 넣는다** — 추정하지 않는다.
+_PT_N = r'(\d{3,4}(?:\.\d{1,2})?)'
+PETER_RULES = [
+    ('level_pub', re.compile(r'([123])\s*차\s*(?:저항선|지지선)\s*' + _PT_N), True),
+    ('entry_brk', re.compile(_PT_N + r'\s*돌파\s*시?\s*(?:매수|재매수)'), False),
+    ('entry_dip', re.compile(_PT_N + r'\s*(?:까지\s*내려오면|맥점\s*부근\s*오면|부근\s*오면|오면)\s*매수'), False),
+    ('entry_dip', re.compile(_PT_N + r'\s*매수\s*맥점'), False),
+    ('fill_buy',  re.compile(_PT_N + r'\s*(?:매수\s*체결|매수체결|체결됨)'), False),
+    ('fill_exit', re.compile(_PT_N + r'\s*청산\s*체결|' + _PT_N + r'\s*청산체결'), False),
+    ('stop',      re.compile(_PT_N + r'\s*이탈\s*(?:시|하면)?\s*(?:[가-힣]{1,4}\s*){0,2}손절'), False),
+    ('exit_cond', re.compile(_PT_N + r'\s*이탈\s*(?:시|하면)?\s*(?:[가-힣]{1,4}\s*){0,3}수익\s*실현'), False),
+    ('stop',      re.compile(r'손절가?\s*' + _PT_N), False),
+    # ⚠ '청산가 1089 손절가 1077' 에서 1089 를 손절로 오독하지 않도록 (?!가)
+    ('stop',      re.compile(_PT_N + r'\s*손절(?!가)'), False),
+    ('target',    re.compile(r'청산가\s*(?:로\s*변경)?\s*' + _PT_N), False),
+    ('target',    re.compile(_PT_N + r'\s*청산가'), False),
+    ('target',    re.compile(_PT_N + r'\s*목표가'), False),
+    ('target',    re.compile(_PT_N + r'\s*에\s*청산'), False),
+    ('half',      re.compile(_PT_N + r'\s*에서\s*절반'), False),
+]
+PETER_KIND_KO = {'level_pub': '레벨공개', 'entry_brk': '진입(돌파)', 'entry_dip': '진입(눌림)',
+                 'fill_buy': '매수체결', 'fill_exit': '청산체결', 'stop': '손절',
+                 'target': '목표', 'half': '절반', 'exit_cond': '조기청산'}
+# 화면에 **선으로** 그릴 종류만. 체결 보고·절반 같은 건 선이 아니다.
+PETER_LINE_KINDS = ('entry_brk', 'entry_dip', 'stop', 'target', 'exit_cond', 'level_pub')
+PETER_KIND_COLOR = {'entry_brk': '#3FB950', 'entry_dip': '#3FB950', 'stop': '#F85149',
+                    'target': '#58A6FF', 'exit_cond': '#58A6FF', 'level_pub': '#BC8CFF'}
+
+# 거래 한 줄 형식 — 시각이 트윗에 없으므로 **사용자가 적는다**. 추론하지 않는다.
+#   09:39 L 1050 / 10:16 X 1047 손절
+#   14:26 L 1050 / - 미결
+_PT_TRADE = re.compile(
+    r'^\s*(\d{1,2}:\d{2})\s+([LS])\s+(\d{3,4}(?:\.\d{1,2})?)\s*/\s*'
+    r'(?:(\d{1,2}:\d{2})\s+X\s+(\d{3,4}(?:\.\d{1,2})?)|(-))\s*(.*)$')
+
+
+def parse_peter_text(text: str, offset: float = 0.0):
+    """트윗 원문 → 레벨 목록. `offset` 은 **정규 → 미륵이 계약** 보정값이다."""
+    hits, seen = [], set()
+    for kind, rx, is_pub in PETER_RULES:
+        for m in rx.finditer(text or ""):
+            g = [x for x in m.groups() if x is not None]
+            if not g:
+                continue
+            key = (kind, g[-1])
+            if key in seen:
+                continue
+            seen.add(key)
+            rec = {'kind': kind, 'level': float(g[-1]), 'at': m.start()}
+            if is_pub:
+                rec['rank'] = int(g[0]); rec['level'] = float(g[1])
+            rec['level_adj'] = rec['level'] + float(offset or 0.0)
+            hits.append(rec)
+    hits.sort(key=lambda r: r['at'])
+    return hits
+
+
+def parse_peter_trades(text: str, offset: float = 0.0, session_date: str = ""):
+    """거래 줄 → 레코드. 형식을 못 맞춘 줄은 **버리지 않고 err 로 돌려준다.**"""
+    out, err = [], []
+    for _ln in (text or "").splitlines():
+        if not _ln.strip():
+            continue
+        m = _PT_TRADE.match(_ln)
+        if not m:
+            err.append(_ln.strip())
+            continue
+        _i, _d, _ep, _x, _xp, _open, _why = m.groups()
+        _off = float(offset or 0.0)
+        out.append({
+            'entry_hm': _i, 'direction': 'LONG' if _d == 'L' else 'SHORT',
+            'entry_price': float(_ep) + _off,
+            'exit_hm': _x, 'exit_price': (float(_xp) + _off) if _xp else None,
+            'open': bool(_open), 'why': (_why or '').strip(),
+            'entry_ts': "%s %s:00" % (session_date, _i) if session_date else None,
+            'exit_ts': ("%s %s:00" % (session_date, _x)) if (_x and session_date) else None,
+        })
+    return out, err
+
+
+def peter_db_path():
+    """피터 사료 전용 DB. **미륵이 DB 를 건드리지 않는다**(456차 원칙)."""
+    from config.settings import DB_DIR
+    return os.path.join(DB_DIR, "peter_levels.db")
+
+
+PETER_DDL = """
+CREATE TABLE IF NOT EXISTS peter_paste (
+    date      TEXT PRIMARY KEY,
+    offset    REAL NOT NULL DEFAULT 0,
+    raw_lv    TEXT,
+    raw_tr    TEXT,
+    saved_at  TEXT
+)
+"""
+
+
+def peter_load(session_date: str):
+    """그날 붙여넣기 1건. None = 미조회/없음 — 호출부가 가른다."""
+    try:
+        import sqlite3 as _sq
+        _p = peter_db_path()
+        if not os.path.exists(_p):
+            return None
+        with _sq.connect(_p) as _c:
+            _c.row_factory = _sq.Row
+            _r = _c.execute("SELECT * FROM peter_paste WHERE date=?", (session_date,)).fetchone()
+        return dict(_r) if _r else None
+    except Exception as _e:
+        logger.debug("[ChartDBG] 피터 사료 조회 실패: %s", _e)
+        return None
+
+
+def peter_save(session_date: str, offset: float, raw_lv: str, raw_tr: str):
+    import sqlite3 as _sq
+    import datetime as _dt
+    with _sq.connect(peter_db_path()) as _c:
+        _c.execute(PETER_DDL)
+        _c.execute(
+            "INSERT OR REPLACE INTO peter_paste(date,offset,raw_lv,raw_tr,saved_at)"
+            " VALUES(?,?,?,?,?)",
+            (session_date, float(offset or 0.0), raw_lv or "", raw_tr or "",
+             _dt.datetime.now().isoformat(timespec="seconds")))
+
 class MinuteChartCanvas(QWidget):
     RIGHT_PADDING_BARS = 10
 
@@ -8347,7 +8482,11 @@ class MinuteChartCanvas(QWidget):
         self._pre_levels = None
         # 레이어 토글. 기본은 **전부 꺼짐** — 화면은 빼는 것도 설계다(원칙 6).
         # 거래 스팬은 **기본 켜짐** — 567차 이전부터 그리던 것이라 끄면 퇴행이다.
-        self._ov = {"struct": False, "price": False, "trade_mireuk": True}
+        self._ov = {"struct": False, "price": False, "trade_mireuk": True,
+                    "peter_lv": False, "trade_peter": False}
+        # 피터 사료 — 붙여넣은 것만 있다. 없으면 **없는 것**이지 0 이 아니다.
+        self._peter_levels = []
+        self._peter_trades = []
         # [dev 이식 / 569차 선행] 이번 paint 의 Y축 범위. 🔴 None 으로 둔다 —
         #   미설정과 "0" 을 같은 값으로 만들면 _is_off_axis 가 첫 paint 전에
         #   축 안이라고 단정한다(계측 4원칙 ②·④).
@@ -8627,11 +8766,14 @@ class MinuteChartCanvas(QWidget):
         # [오버레이 P3] 면 → 선 → 빗금 순. 면이 위로 오면 선을 덮는다
         self._draw_price_model(painter, plot, lo, hi)
         self._draw_struct_model(painter, plot, lo, hi)
+        self._draw_peter_levels(painter, plot, lo, hi)
         # [오버레이 P2] 금지 빗금은 **캔들 뒤**라야 판독을 가리지 않는다
         self._draw_state_overlay(painter, plot, candles, padded_count)
         _t_spans = _t2.monotonic()
         index_map = {c["ts"]: i for i, c in enumerate(candles)}
         self._draw_trade_spans(painter, plot, candles, index_map, lo, hi, padded_count)
+        # 피터 사료는 실측 **아래**에 깐다 — 겹치면 실측이 이긴다
+        self._draw_peter_trades(painter, plot, candles, index_map, lo, hi, padded_count)
         _t_candles = _t2.monotonic(); self._draw_candles(painter, plot, candles, lo, hi, padded_count)
         _t_dir    = _t2.monotonic();  self._draw_direction_bar(painter, plot, candles, padded_count)
         _t_regime = _t2.monotonic();  self._draw_regime_bar(painter, plot, candles, padded_count)
@@ -9072,6 +9214,123 @@ class MinuteChartCanvas(QWidget):
         finally:
             painter.restore()
 
+    def _draw_peter_levels(self, painter: QPainter, plot: QRectF, lo: float, hi: float):
+        """붙여넣은 피터맥점. **점선** — 사료이지 실측이 아니다."""
+        if not self._ov.get("peter_lv") or not self._peter_levels:
+            return
+        try:
+            painter.save()
+        except Exception:
+            return
+        try:
+            _off_up, _off_dn = [], []
+            _seen = set()
+            # 🔴 가까운 레벨(1050/1049)은 칩이 겹쳐 둘 다 못 읽는다.
+            #   실측으로 확인했다 — 최소 간격을 강제해 아래로 밀어 쌓는다.
+            _used_y = []
+            _CHIP_GAP = S.p(19)
+            for _h in self._peter_levels:
+                if _h.get("kind") not in PETER_LINE_KINDS:
+                    continue                    # 체결 보고·절반은 선이 아니다
+                _lv = _h.get("level_adj")
+                if _lv is None:
+                    continue
+                _key = (_h["kind"], round(_lv, 2))
+                if _key in _seen:
+                    continue
+                _seen.add(_key)
+                col = QColor(PETER_KIND_COLOR.get(_h["kind"], "#BC8CFF"))
+                if self._is_off_axis(_lv):
+                    (_off_up if _lv > (self._axis_hi or 0) else _off_dn).append(_lv)
+                    continue
+                y = self._price_to_y(_lv, plot, lo, hi)
+                _p = QPen(col); _p.setWidth(1); _p.setStyle(Qt.DashLine)
+                painter.setPen(_p)
+                painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
+                painter.setFont(QFont("Consolas", 8))
+                _txt = "%s %g" % (PETER_KIND_KO.get(_h["kind"], _h["kind"]), _h.get("level"))
+                _cy = y - S.p(20)
+                while any(abs(_cy - _u) < _CHIP_GAP for _u in _used_y):
+                    _cy += _CHIP_GAP
+                _used_y.append(_cy)
+                self._draw_label_chip(painter, plot.right() - S.p(150), _cy,
+                                      _txt, QColor(13, 17, 23, 225), col, True)
+            for _lst, _up in ((_off_up, True), (_off_dn, False)):
+                if not _lst:
+                    continue
+                _y = plot.top() + S.p(6) if _up else plot.bottom() - S.p(6)
+                self._draw_off_axis_caret(painter, plot.right() - S.p(30), _y,
+                                          QColor("#BC8CFF"), above=_up)
+        except Exception as _e:
+            logger.debug("[ChartDBG] _draw_peter_levels 예외: %s", _e)
+        finally:
+            painter.restore()
+
+    def _draw_peter_trades(self, painter: QPainter, plot: QRectF, candles, index_map,
+                           lo: float, hi: float, padded_count: int):
+        """붙여넣은 피터 거래. 미륵이 실체결과 **선 종류**로 가른다(점선 = 사료)."""
+        if not self._ov.get("trade_peter") or not self._peter_trades:
+            return
+        try:
+            count = max(padded_count, 1)
+            step = plot.width() / count
+            painter.save()
+        except Exception:
+            return
+        try:
+            for _t in self._peter_trades:
+                _i = self._coerce_dt(_t.get("entry_ts"))
+                if not _i:
+                    continue
+                _a = self._resolve_index(index_map, candles, _i)
+                if _a is None:
+                    continue
+                _ep = float(_t.get("entry_price") or 0.0)
+                _xp = _t.get("exit_price")
+                _x = self._coerce_dt(_t.get("exit_ts")) if _t.get("exit_ts") else None
+                _b = self._resolve_index(index_map, candles, _x) if _x else (len(candles) - 1)
+                if _b is None:
+                    _b = len(candles) - 1
+                # 색 = 손익. 미결은 확정 손익이 아니므로 **무채색**이다.
+                if _xp is None:
+                    col = QColor("#C2CCD6")
+                else:
+                    _pnl = (_xp - _ep) if _t.get("direction") == "LONG" else (_ep - _xp)
+                    col = QColor("#3FB950" if _pnl >= 0 else "#F85149")
+                x1 = plot.left() + step * (_a + 0.5)
+                x2 = plot.left() + step * (_b + 0.5)
+                y1 = self._price_to_y(_ep, plot, lo, hi)
+                y2 = self._price_to_y(_xp, plot, lo, hi) if _xp else y1
+                _f = QColor(col); _f.setAlpha(22)
+                painter.setPen(Qt.NoPen); painter.setBrush(_f)
+                painter.drawRect(QRectF(min(x1, x2), min(y1, y2),
+                                        max(step * 0.9, abs(x2 - x1)),
+                                        max(S.p(6), abs(y2 - y1))))
+                _p = QPen(col); _p.setWidth(1); _p.setStyle(Qt.DashLine)
+                painter.setPen(_p); painter.setBrush(Qt.NoBrush)
+                painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+                painter.setFont(QFont("Consolas", 8))
+                _lab = ("평가 " if _xp is None else "") + "%s %s" % (
+                    _t.get("entry_hm") or "", _t.get("why") or "")
+                # 🔴 미결 거래는 마지막 봉까지 뻗어 중앙이 우측 끝에 온다 —
+                #   그대로 두면 피터맥점 칩과 겹쳐 둘 다 못 읽는다(실측).
+                #   레벨 칩 영역(우측 150px)을 침범하지 않도록 가둔다.
+                _full = _lab.strip() + " 피터리"
+                # 🔴 고정값으로 가두면 안 된다 — 칩 폭이 글자마다 달라서
+                #   긴 라벨은 여전히 레벨 칩 영역을 파고든다(실측).
+                #   `_draw_label_chip` 과 **같은 식**으로 폭을 재서 오른쪽 끝을 맞춘다.
+                _fm = painter.fontMetrics()
+                _cw = max(S.p(84), _fm.horizontalAdvance(_full) + S.p(12))
+                _cx = (x1 + x2) / 2 - _cw / 2
+                _cx = min(max(_cx, plot.left() + S.p(4)),
+                          plot.right() - S.p(154) - _cw)
+                self._draw_label_chip(painter, _cx, min(y1, y2) - S.p(20), _full,
+                                      QColor(13, 17, 23, 225), col, True)
+        except Exception as _e:
+            logger.debug("[ChartDBG] _draw_peter_trades 예외: %s", _e)
+        finally:
+            painter.restore()
+
     def _draw_state_overlay(self, painter: QPainter, plot: QRectF, candles, padded_count: int):
         """⭐ BUY_MECH 구간 = **롱 금지**. 이 화면에서 유일하게 검증된 문장이다.
 
@@ -9276,11 +9535,21 @@ class MinuteChartCanvas(QWidget):
                 painter.drawLine(int(x1), int(y), int(x2), int(y))
 
     def _draw_markers(self, painter: QPainter, plot: QRectF, candles, index_map, lo: float, hi: float, padded_count: int):
+        # 🔴 「거래미륵」 토글은 **거래 표시 전부**를 끈다. 스팬만 끄면 마커가 남아
+        #   토글이 안 듣는 것처럼 보인다 — 실측으로 확인했다.
+        #
+        # ⚠ [dev 이식] v9-dev 는 여기서 곧장 `return` 한다. **dev 는 그럴 수 없다** —
+        #   이 함수가 끝에서 GP 섀도(`_draw_gp_markers`)를 부르기 때문이다.
+        #   v9-dev 는 GP 가 paintEvent 직속 별개 레이어(`_draw_gp_layer`)라 영향이
+        #   없지만, dev 에서 그대로 return 하면 「거래미륵」이 **GP 까지 조용히 끈다.**
+        #   자기 이름이 아닌 레이어를 끄는 토글은 화면이 거짓말하는 것이다.
+        #   그래서 미륵이 마커만 건너뛰고 GP 는 그대로 그린다.
+        _show = self._ov.get("trade_mireuk", True)
         count = max(padded_count, 1)
         step = plot.width() / count
         occupied = []
 
-        if self._active_trade:
+        if _show and self._active_trade:
             marker = {
                 "ts": self._active_trade.get("entry_ts"),
                 "price": self._active_trade.get("entry_price"),
@@ -9288,7 +9557,7 @@ class MinuteChartCanvas(QWidget):
             }
             self._draw_one_marker(painter, plot, candles, index_map, lo, hi, step, marker, occupied)
 
-        for trade in self._completed_trades:
+        for trade in (self._completed_trades if _show else []):
             entry_marker = {
                 "ts": trade.get("entry_ts"),
                 "price": trade.get("entry_price"),
@@ -9306,11 +9575,12 @@ class MinuteChartCanvas(QWidget):
             self._draw_one_marker(painter, plot, candles, index_map, lo, hi, step, entry_marker, occupied)
             self._draw_one_marker(painter, plot, candles, index_map, lo, hi, step, exit_marker, occupied)
 
-        for marker in self._exit_markers:
+        for marker in (self._exit_markers if _show else []):
             if not marker.get("finalize"):
                 self._draw_one_marker(painter, plot, candles, index_map, lo, hi, step, marker, occupied)
 
         # 실거래를 먼저 그린 뒤 GP 를 얹는다 — 겹칠 때 가상이 실거래를 가리지 않게.
+        # 🔴 `_show` 와 무관하게 그린다(위 주석 참조). 「거래미륵」은 GP 토글이 아니다.
         self._draw_gp_markers(painter, plot, candles, index_map, lo, hi, step, occupied)
 
     def _draw_gp_markers(self, painter, plot, candles, index_map, lo, hi, step, occupied):
@@ -9907,6 +10177,12 @@ class MinuteChartCanvas(QWidget):
         self._pre_levels = levels
         self.update()
 
+    def set_peter(self, levels, trades):
+        """피터 사료 주입 — 붙여넣기에서만 온다. **생성하지 않는다.**"""
+        self._peter_levels = list(levels or [])
+        self._peter_trades = list(trades or [])
+        self.update()
+
     def set_overlay(self, key: str, on: bool):
         if key in self._ov:
             self._ov[key] = bool(on)
@@ -10237,6 +10513,8 @@ class MinuteChartDialog(QDialog):
     # ── [오버레이 P3] 레이어 토글 바 ──────────────────────────────────
     _OV_SPEC = (
         ("trade_mireuk", "거래미륵", "#E6EDF3"),
+        ("trade_peter",  "거래피터", "#ADBAC7"),
+        ("peter_lv",     "피터맥점", "#BC8CFF"),
         ("struct",       "구조모델", "#C2CCD6"),
         ("price",        "가격모델", "#39C5CF"),
     )
@@ -10260,14 +10538,133 @@ class MinuteChartDialog(QDialog):
             b.toggled.connect(lambda on, k=_key: self._on_overlay_toggled(k, on))
             self._ov_btn[_key] = b
             bar.addWidget(b)
+        # 🔴 토글들 옆에서 흐린 라벨처럼 보이면 **누를 것으로 안 읽힌다** — 실측으로 확인했다.
+        #   피터 레이어의 유일한 입구이므로 그 레이어 색(보라)을 그대로 입힌다.
+        self._btn_peter = QPushButton("✎ 피터 입력…")
+        self._btn_peter.setStyleSheet(
+            f"QPushButton{{background:rgba(188,140,255,0.14);color:#BC8CFF;"
+            f"border:1px solid #BC8CFF;border-radius:7px;"
+            f"padding:5px 12px;font-size:{S.f(10)}px;font-weight:600;}}"
+            f"QPushButton:hover{{background:rgba(188,140,255,0.26);}}"
+        )
+        self._btn_peter.clicked.connect(self._open_peter_input)
+        bar.addWidget(self._btn_peter)
         self._ov_note = QLabel("")
         self._ov_note.setStyleSheet(f"color:{C['text2']};font-size:{S.f(10)}px;")
         bar.addWidget(self._ov_note)
+        self._peter_note = QLabel("")
+        self._peter_note.setStyleSheet(f"color:{C['text2']};font-size:{S.f(10)}px;")
+        bar.addWidget(self._peter_note)
         bar.addStretch(1)
         return bar
 
+    # ── [오버레이 P3b/P4b] 피터 사료 붙여넣기 ─────────────────────────
+    #
+    # ⛔ 레벨을 **만들어내지 않는다.** 그가 쓴 숫자를 옮겨 적을 뿐이다(§6-1).
+    # 🔴 오프셋은 사용자가 넣는다. 그의 숫자는 정규 지수, 차트는 미륵이 계약이고
+    #   둘의 차이가 날마다 다르다(실측 09-14 −4.00 · 09-11 −4.47 · 09-04 −0.01).
+    #   추정해서 넣으면 화면이 조용히 틀린 가격을 그린다.
+    def _open_peter_input(self):
+        try:
+            _d = QDialog(self)
+            _d.setWindowTitle("피터리 사료 붙여넣기 — %s" % self._session_date)
+            _d.resize(S.p(620), S.p(560))
+            _d.setStyleSheet(f"background:{C['bg']};color:{C['text']};")
+            _v = QVBoxLayout(_d)
+
+            _top = QHBoxLayout()
+            _top.addWidget(QLabel("계약 오프셋 (정규 → 미륵이)"))
+            _sp = QDoubleSpinBox(); _sp.setRange(-50.0, 50.0); _sp.setSingleStep(0.01)
+            _sp.setDecimals(2); _sp.setMinimumWidth(S.p(90))
+            _sp.setStyleSheet(f"background:{C['bg3']};color:{C['text']};"
+                              f"border:1px solid {C['border']};padding:3px;")
+            _top.addWidget(_sp)
+            _hint = QLabel("예: 그의 1050 이 차트 1046 이면 −4.00")
+            _hint.setStyleSheet(f"color:{C['text2']};font-size:{S.f(10)}px;")
+            _top.addWidget(_hint); _top.addStretch(1)
+            _v.addLayout(_top)
+
+            _v.addWidget(QLabel("① 지시 트윗 원문 — 그대로 붙여넣는다"))
+            _t1 = QTextEdit(); _t1.setMinimumHeight(S.p(150))
+            _t1.setStyleSheet(f"background:{C['bg2']};color:{C['text']};"
+                              f"border:1px solid {C['border']};")
+            _v.addWidget(_t1)
+
+            _v.addWidget(QLabel("② 거래 — 한 줄에 하나.  09:39 L 1050 / 10:16 X 1047 손절"))
+            _t2 = QTextEdit(); _t2.setMinimumHeight(S.p(110))
+            _t2.setStyleSheet(f"background:{C['bg2']};color:{C['text']};"
+                              f"border:1px solid {C['border']};")
+            _v.addWidget(_t2)
+
+            _prev = QLabel("")
+            _prev.setWordWrap(True)
+            _prev.setStyleSheet(f"color:{C['text2']};font-size:{S.f(10)}px;")
+            _v.addWidget(_prev)
+
+            def _refresh():
+                _lv = parse_peter_text(_t1.toPlainText(), _sp.value())
+                _tr, _err = parse_peter_trades(_t2.toPlainText(), _sp.value(), self._session_date)
+                _lines = ["맥점 %d건 · 거래 %d건" % (len(_lv), len(_tr))]
+                for _h in _lv[:6]:
+                    _lines.append("  %s %g → %g" % (PETER_KIND_KO.get(_h['kind'], _h['kind']),
+                                                    _h['level'], _h['level_adj']))
+                if _err:
+                    # 🔴 못 읽은 줄을 조용히 버리지 않는다 — 버리면 "입력했는데 안 뜬다"가 된다
+                    _lines.append("  ⚠ 형식 오류 %d줄: %s" % (len(_err), " / ".join(_err[:2])))
+                _prev.setText("\n".join(_lines))
+
+            _t1.textChanged.connect(_refresh)
+            _t2.textChanged.connect(_refresh)
+            _sp.valueChanged.connect(_refresh)
+
+            _prev_row = peter_load(self._session_date)
+            if _prev_row:
+                _sp.setValue(float(_prev_row.get("offset") or 0.0))
+                _t1.setPlainText(_prev_row.get("raw_lv") or "")
+                _t2.setPlainText(_prev_row.get("raw_tr") or "")
+            _refresh()
+
+            _bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+            _bb.accepted.connect(_d.accept); _bb.rejected.connect(_d.reject)
+            _v.addWidget(_bb)
+
+            if _d.exec_() == QDialog.Accepted:
+                peter_save(self._session_date, _sp.value(),
+                           _t1.toPlainText(), _t2.toPlainText())
+                self._apply_peter()
+        except Exception as _e:
+            logger.warning("[ChartDBG] 피터 입력 실패: %s", _e)
+
+    def _apply_peter(self):
+        """저장된 사료를 캔버스에 올린다. 없으면 **빈 채로** 올린다(0 이 아니라 없음)."""
+        try:
+            _row = peter_load(self._session_date)
+            if not _row:
+                self._chart.set_peter([], [])
+                # 빈 상태에 **다음 행동**을 적는다. "없음"만 쓰면 막다른 길이다.
+                self._peter_note.setText("피터 사료 없음 — 「✎ 피터 입력…」")
+                return
+            _off = float(_row.get("offset") or 0.0)
+            _lv = parse_peter_text(_row.get("raw_lv") or "", _off)
+            _tr, _err = parse_peter_trades(_row.get("raw_tr") or "", _off, self._session_date)
+            self._chart.set_peter(_lv, _tr)
+            _t = "피터 맥점 %d · 거래 %d · 오프셋 %+.2f" % (len(_lv), len(_tr), _off)
+            if _err:
+                _t += " · ⚠형식오류 %d" % len(_err)
+            self._peter_note.setText(_t)
+        except Exception as _e:
+            logger.debug("[ChartDBG] 피터 적용 실패: %s", _e)
+
     def _on_overlay_toggled(self, key: str, on: bool):
         self._chart.set_overlay(key, on)
+        # 🔴 피터 레이어를 켰는데 사료가 없으면 **아무 일도 안 일어난다** —
+        #   사용자는 "입력란이 없다"고 읽는다(실측). 토글 자체를 입구로 만든다.
+        if on and key in ("peter_lv", "trade_peter"):
+            try:
+                if not peter_load(self._session_date):
+                    self._open_peter_input()
+            except Exception as _e:
+                logger.debug("[ChartDBG] 피터 토글 진입 실패: %s", _e)
 
     # ── 장전 레벨 적재 ────────────────────────────────────────────────
     #
@@ -10758,6 +11155,7 @@ class MinuteChartDialog(QDialog):
         self._refresh_mode_label()
         self._refresh_layer_badges()
         self._apply_premarket_levels()
+        self._apply_peter()
         self._chart.update()
 
     def _start_reload_thread(self, session_date: str = None):
@@ -10877,6 +11275,7 @@ class MinuteChartDialog(QDialog):
         self._refresh_mode_label()
         self._refresh_layer_badges()
         self._apply_premarket_levels()
+        self._apply_peter()
         self._chart.update()
         # reset_session이 _active_trade를 초기화하므로, 외부 훅으로 재동기화
         if callable(getattr(self, '_post_reload_hook', None)):
