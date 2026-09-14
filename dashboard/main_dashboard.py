@@ -10166,6 +10166,11 @@ class MinuteChartCanvas(QWidget):
                          Qt.AlignCenter, "%+.2fpt" % val)
 
     def _draw_markers(self, painter: QPainter, plot: QRectF, candles, index_map, lo: float, hi: float, padded_count: int):
+        # 🔴 「거래미륵」 토글은 **거래 표시 전부**를 끈다. 스팬만 끄면 마커가 남아
+        #   토글이 안 듣는 것처럼 보인다 — 실측으로 확인했다.
+        #   GP 섀도(_draw_gp_layer)는 별개 레이어라 여기 걸리지 않는다.
+        if not self._ov.get("trade_mireuk", True):
+            return
         count = max(padded_count, 1)
         step = plot.width() / count
         occupied = []
@@ -11045,12 +11050,14 @@ class MinuteChartDialog(QDialog):
             b.toggled.connect(lambda on, k=_key: self._on_overlay_toggled(k, on))
             self._ov_btn[_key] = b
             bar.addWidget(b)
-        self._btn_peter = QPushButton("피터 입력…")
+        # 🔴 토글들 옆에서 흐린 라벨처럼 보이면 **누를 것으로 안 읽힌다** — 실측으로 확인했다.
+        #   피터 레이어의 유일한 입구이므로 그 레이어 색(보라)을 그대로 입힌다.
+        self._btn_peter = QPushButton("✎ 피터 입력…")
         self._btn_peter.setStyleSheet(
-            f"QPushButton{{background:{C['bg3']};color:{C['text2']};"
-            f"border:1px solid {C['border']};border-radius:7px;"
-            f"padding:5px 12px;font-size:{S.f(10)}px;}}"
-            f"QPushButton:hover{{border-color:#BC8CFF;color:#BC8CFF;}}"
+            f"QPushButton{{background:rgba(188,140,255,0.14);color:#BC8CFF;"
+            f"border:1px solid #BC8CFF;border-radius:7px;"
+            f"padding:5px 12px;font-size:{S.f(10)}px;font-weight:600;}}"
+            f"QPushButton:hover{{background:rgba(188,140,255,0.26);}}"
         )
         self._btn_peter.clicked.connect(self._open_peter_input)
         bar.addWidget(self._btn_peter)
@@ -11146,7 +11153,8 @@ class MinuteChartDialog(QDialog):
             _row = peter_load(self._session_date)
             if not _row:
                 self._chart.set_peter([], [])
-                self._peter_note.setText("피터 사료 없음")
+                # 빈 상태에 **다음 행동**을 적는다. "없음"만 쓰면 막다른 길이다.
+                self._peter_note.setText("피터 사료 없음 — 「✎ 피터 입력…」")
                 return
             _off = float(_row.get("offset") or 0.0)
             _lv = parse_peter_text(_row.get("raw_lv") or "", _off)
@@ -11161,6 +11169,14 @@ class MinuteChartDialog(QDialog):
 
     def _on_overlay_toggled(self, key: str, on: bool):
         self._chart.set_overlay(key, on)
+        # 🔴 피터 레이어를 켰는데 사료가 없으면 **아무 일도 안 일어난다** —
+        #   사용자는 "입력란이 없다"고 읽는다(실측). 토글 자체를 입구로 만든다.
+        if on and key in ("peter_lv", "trade_peter"):
+            try:
+                if not peter_load(self._session_date):
+                    self._open_peter_input()
+            except Exception as _e:
+                logger.debug("[ChartDBG] 피터 토글 진입 실패: %s", _e)
 
     # ── 장전 레벨 적재 ────────────────────────────────────────────────
     #
