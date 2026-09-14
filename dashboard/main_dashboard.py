@@ -29,15 +29,17 @@ from PyQt5.QtWidgets import (
     QToolTip, QTableWidget, QTableWidgetItem, QHeaderView, QShortcut,
     QDialog, QDialogButtonBox, QDoubleSpinBox, QSpinBox, QFormLayout,
     QRadioButton, QButtonGroup,
+    QDateEdit, QCalendarWidget,   # [날짜선택] 달력 팝업
 )
 from PyQt5.QtCore import (
     Qt, QTimer, QThread, pyqtSignal, QPropertyAnimation,
-    QEasingCurve, QRect, QRectF, QPointF, QObject
+    QEasingCurve, QRect, QRectF, QPointF, QObject,
+    QDate,   # [날짜선택] 달력 팝업
 )
 from PyQt5.QtGui import (
     QFont, QColor, QPalette, QPainter, QBrush, QPen,
     QLinearGradient, QFontDatabase, QIcon, QKeySequence, QPainterPath, QPolygonF,
-    QTextCursor, QTextBlockFormat,
+    QTextCursor, QTextBlockFormat, QTextCharFormat,
 )
 
 from config.constants import (FUTURES_PT_VALUE, BROKER_CHANNEL_SPECS,
@@ -9064,6 +9066,7 @@ class MinuteChartCanvas(QWidget):
 
         import time as _t2
         _t_grid = _t2.monotonic(); self._draw_grid(painter, plot, lo, hi)
+        self._draw_session_tail(painter, plot, candles, padded_count)
         _t_spans = _t2.monotonic()
         index_map = {c["ts"]: i for i, c in enumerate(candles)}
         self._draw_trade_spans(painter, plot, candles, index_map, lo, hi, padded_count)
@@ -9225,6 +9228,50 @@ class MinuteChartCanvas(QWidget):
             y = plot.top() + plot.height() * idx / N_H
             painter.drawText(QRectF(0, y - 10, plot.left() - 6, 20),
                              Qt.AlignRight | Qt.AlignVCenter, f"{price:.2f}")
+
+    def _draw_session_tail(self, painter: QPainter, plot: QRectF, candles, padded_count: int):
+        """수집 절단 지점과 그 뒤 마감구간을 갈라 보여준다.
+
+        🔴 15:09 이후 봉은 `raw_candles` 가 아니라 `session_bars` 에서 왔고,
+          15:45 는 **종가단일가**라 연속거래 봉과 가격 형성 방식이 다르다.
+          경계 없이 이어 그리면 하나의 연속 수집처럼 읽힌다(계측 4원칙 ④).
+        """
+        try:
+            _i0 = next((i for i, c in enumerate(candles) if c.get("tail")), None)
+            if _i0 is None:
+                return
+            _count = max(padded_count, 1)
+            _step = plot.width() / _count
+            _x0 = plot.left() + _step * _i0
+            _x1 = plot.left() + _step * len(candles)
+            painter.save()
+            # 옅은 배경 — 캔들 판독을 가리지 않는 선에서 구간만 표시한다
+            painter.fillRect(QRectF(_x0, plot.top(), max(1.0, _x1 - _x0), plot.height()),
+                             QColor(88, 166, 255, 16))
+            _pen = QPen(QColor("#58A6FF"))
+            _pen.setWidth(1)
+            _pen.setStyle(Qt.DashLine)
+            painter.setPen(_pen)
+            painter.drawLine(QPointF(_x0, plot.top()), QPointF(_x0, plot.bottom()))
+            _n_auc = sum(1 for c in candles[_i0:] if c.get("session") == "CLOSE_FILL")
+            _txt = "수집 절단 → 마감구간 %d봉" % (len(candles) - _i0)
+            if _n_auc:
+                _txt += " · 종가단일가 %d" % _n_auc
+            painter.setFont(QFont("Consolas", 8))
+            # 마감구간은 하루의 7% 남짓이라 경계가 늘 오른쪽 끝에 선다.
+            # 오른쪽에 자리가 없으면 라벨을 경계 **왼쪽**에 쓴다 — 안 그러면
+            # 뒷부분("종가단일가 N")이 잘려 나가 있는 줄도 모른다.
+            _fm = painter.fontMetrics()
+            _w = (_fm.horizontalAdvance(_txt) if hasattr(_fm, "horizontalAdvance")
+                  else _fm.width(_txt))
+            _tx = _x0 + S.p(5)
+            if _tx + _w > plot.right() - S.p(4):
+                _tx = max(plot.left() + S.p(4), _x0 - S.p(5) - _w)
+            painter.setPen(QColor("#58A6FF"))
+            painter.drawText(QPointF(_tx, plot.top() + S.p(12)), _txt)
+            painter.restore()
+        except Exception as _e:
+            logger.debug("[ChartDBG] _draw_session_tail 예외: %s", _e)
 
     def _draw_candles(self, painter: QPainter, plot: QRectF, candles, lo: float, hi: float, padded_count: int):
         count = max(padded_count, 1)
@@ -9975,6 +10022,10 @@ class MinuteChartCanvas(QWidget):
                 "low": float(candle.get("low") or 0.0),
                 "close": float(candle.get("close") or 0.0),
                 "volume": int(candle.get("volume") or 0),
+                # [C단계] 마감구간 병합 표식. 여기서 버리면 화면이 두 원천을
+                #   같은 픽셀로 그려 "조용히 그럴듯한 값"이 된다(계측 4원칙 ④).
+                "tail": 1 if candle.get("tail") else 0,
+                "session": str(candle.get("session") or ""),
             }
         except Exception:
             return None
@@ -10030,6 +10081,10 @@ class MinuteChartDialog(QDialog):
     # [553차] GP 섀도 2종 추가 — gp_trades(list) · gp_wired(bool).
     # `gp_wired` 가 없으면 「미배선」과 「오늘 0건」을 구분할 수 없다(계측 4원칙 ②).
     _sig_reload_done = pyqtSignal(list, list, list, list, bool)
+    # [날짜선택 A단계] 날짜 목록(배경 조회) → 메인 스레드 전달.
+    #   raw_candles DISTINCT 는 인덱스를 못 타는 전체 스캔이다(실측 262일 310ms).
+    #   장중 메인 스레드에서 돌리면 그만큼 화면이 멈춘다.
+    _sig_dates_ready = pyqtSignal(list, dict)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -10037,6 +10092,25 @@ class MinuteChartDialog(QDialog):
         self.setWindowTitle(f"당일 1분봉 차트 ({self.SHORTCUT_TEXT})")
         self.resize(S.p(1180), S.p(700))
         self._session_date = datetime.now().date().isoformat()
+        # ── [날짜선택 A단계] 라이브/복기 모드 ──────────────────────────
+        # 🔴 이건 화면 상태가 아니라 **데이터 무결성 장치**다.
+        #   과거 날짜를 보는 중에 실시간 틱·봉·마커가 들어오면 과거 차트
+        #   뒤에 오늘 데이터가 조용히 이어붙는다(계측 4원칙 ④).
+        #   False 인 동안 외부 주입 진입점 8개는 전부 무시한다.
+        self._live_mode = True
+        self._date_edit = None
+        self._cal = None          # 자체 QCalendarWidget
+        self._cal_popup = None    # 그것을 담는 Qt.Popup 컨테이너
+        self._mode_lbl = None
+        self._date_list = []      # 봉이 있는 날짜(오름차순)
+        self._date_set = set()    # 같은 내용의 집합 — 달력 표식·유효성 검사용
+        # ── [날짜선택 B단계] 레이어 커버리지·건수 ──────────────────────
+        # 🔴 「미측정」과 「0건」을 가르기 위한 최소 재료다(계측 4원칙 ②).
+        #   건수만으로는 못 가른다 — 레이어마다 **원천이 시작된 날**이 다르고,
+        #   레짐은 EOD purge(30일) 때문에 경계가 매일 움직인다.
+        self._cov = {}            # {layer: 그 레이어에 행이 있는 날짜 set} · None = 원천없음
+        self._cnt = {}            # {layer: 당일 건수} · None = 조회 실패
+        self._layer_lbl = None
 
         self._chart = MinuteChartCanvas(self)
         self._status = QLabel(
@@ -10048,6 +10122,7 @@ class MinuteChartDialog(QDialog):
         root = QVBoxLayout(self)
         root.setContentsMargins(S.p(12), S.p(12), S.p(12), S.p(12))
         root.setSpacing(S.p(8))
+        root.addLayout(self._build_date_bar())
         root.addWidget(self._status)
         root.addWidget(self._chart, 1)
 
@@ -10056,6 +10131,7 @@ class MinuteChartDialog(QDialog):
 
         # 배경 스레드 → 메인 스레드 전달: 시그널 연결
         self._sig_reload_done.connect(self._apply_reload_result)
+        self._sig_dates_ready.connect(self._apply_dates)
 
         # 리로드 완료 후 호출될 외부 콜백 (active position 재동기화 등)
         # main.py에서 set_minute_chart_post_reload_hook()으로 주입
@@ -10064,6 +10140,7 @@ class MinuteChartDialog(QDialog):
         # Qt 이벤트 루프 진입 후 첫 틱에 백그라운드 로드 시작
         # (이벤트 루프 이전에 스레드를 시작하면 QTimer.singleShot 람다가
         #  Python 3.7 32-bit에서 레퍼런스 카운팅 오류로 크래시)
+        QTimer.singleShot(0, self._start_dates_thread)
         QTimer.singleShot(0, self._start_reload_thread)
 
     @staticmethod
@@ -10082,6 +10159,39 @@ class MinuteChartDialog(QDialog):
                 if abs(cur_open - prev_close) / prev_close > threshold:
                     return candles[i:]
         return candles
+
+    @staticmethod
+    def _merge_session_tail(candles, session_date):
+        """`raw_candles` 가 끊긴 뒤(실측 15:08)를 `session_bars` 로 잇는다.
+
+        🔴 겹치는 구간은 건드리지 않는다 — raw 의 **마지막 ts 이후** 행만 붙인다.
+          (실측: 겹치는 REGULAR 봉은 o/h/l/c/volume 이 raw 와 완전히 같다)
+        🔴 붙인 봉에는 `tail` 표식과 `session` 을 달아 보낸다. 화면이 두 원천을
+          갈라 그려야 한다.
+        session_bars 부재(2026-08-03 이전)는 **정상**이다. 차트를 죽이지 않는다.
+        """
+        try:
+            _last = candles[-1]["ts"] if candles else (str(session_date) + " 00:00:00")
+            _rows = fetchall(
+                RAW_DATA_DB,
+                """SELECT ts, open, high, low, close, volume, session
+                   FROM session_bars
+                   WHERE ts LIKE ? AND ts > ?
+                   ORDER BY ts ASC""",
+                (f"{session_date}%", _last),
+            )
+            _tail = []
+            for _r in _rows:
+                _d = dict(_r)
+                _d["tail"] = 1
+                _tail.append(_d)
+            if _tail:
+                logger.debug("[ChartDBG] 마감구간 병합 %d봉 (%s~%s)", len(_tail),
+                             _tail[0]["ts"][11:16], _tail[-1]["ts"][11:16])
+            return list(candles) + _tail
+        except Exception as _e:
+            logger.debug("[ChartDBG] 마감구간 병합 스킵: %s", _e)
+            return candles
 
     @staticmethod
     def _is_partial_exit_reason(exit_reason: str) -> bool:
@@ -10167,8 +10277,427 @@ class MinuteChartDialog(QDialog):
             % (self.SHORTCUT_TEXT, self._gp_status_text(gp_trades or [], gp_wired))
         )
 
-    def reload_today(self):
-        self._session_date = datetime.now().date().isoformat()
+    # ── [날짜선택 A단계] 날짜 바 · 모드 전환 ───────────────────────────
+    def _build_date_bar(self):
+        """달력 팝업 + 「오늘」 버튼 + 모드 표시.
+
+        🔴 콤보박스가 아니라 **달력**인 이유: 262일 목록은 드롭다운이 화면을
+          덮어 차트를 가린다. 달력은 한 달씩 보여주므로 크기가 일정하다.
+        """
+        bar = QHBoxLayout()
+        bar.setSpacing(S.p(6))
+        lbl = QLabel("날짜")
+        lbl.setStyleSheet(f"color:{C['text2']};font-size:{S.f(10)}px;")
+
+        # 🔴 내장 달력 팝업(setCalendarPopup)을 쓰지 않는다.
+        #   다크 스타일시트로 QDateEdit 을 칠하는 순간 ::drop-down 화살표가
+        #   이미지 리소스 없이는 사라져 **누를 곳이 없어진다.**
+        #   달력은 아래 「달력」 버튼 + 자체 Qt.Popup 으로 연다.
+        self._date_edit = QDateEdit()
+        self._date_edit.setCalendarPopup(False)
+        self._date_edit.setDisplayFormat("yyyy-MM-dd (ddd)")
+        self._date_edit.setMinimumWidth(S.p(132))
+        self._date_edit.setStyleSheet(
+            f"QDateEdit{{background:{C['bg3']};color:{C['text']};"
+            f"border:1px solid {C['border']};border-radius:4px;"
+            f"padding:3px 8px;font-size:{S.f(10)}px;}}"
+        )
+        self._date_edit.dateChanged.connect(self._on_date_changed)
+
+        self._cal = QCalendarWidget()
+        self._cal.clicked.connect(self._pick_date)
+        self._style_calendar()
+
+        self._btn_cal = QPushButton("달력 ▾")
+        self._btn_cal.setStyleSheet(
+            f"QPushButton{{background:{C['bg3']};color:{C['text']};"
+            f"border:1px solid {C['border']};border-radius:4px;"
+            f"padding:3px 10px;font-size:{S.f(10)}px;}}"
+            f"QPushButton:hover{{border-color:{C['blue']};}}"
+        )
+        self._btn_cal.clicked.connect(self._open_calendar)
+
+        self._btn_today = QPushButton("오늘")
+        self._btn_today.setStyleSheet(
+            f"QPushButton{{background:{C['bg3']};color:{C['text2']};"
+            f"border:1px solid {C['border']};border-radius:4px;"
+            f"padding:3px 10px;font-size:{S.f(10)}px;}}"
+        )
+        self._btn_today.clicked.connect(self._go_today)
+
+        self._mode_lbl = QLabel("")
+        self._mode_lbl.setStyleSheet(f"color:{C['text2']};font-size:{S.f(10)}px;")
+
+        self._layer_lbl = QLabel("")
+        self._layer_lbl.setTextFormat(Qt.RichText)
+        self._layer_lbl.setStyleSheet(f"font-size:{S.f(10)}px;")
+
+        bar.addWidget(lbl)
+        bar.addWidget(self._date_edit)
+        bar.addWidget(self._btn_cal)
+        bar.addWidget(self._btn_today)
+        bar.addWidget(self._mode_lbl)
+        bar.addStretch(1)
+        bar.addWidget(self._layer_lbl)
+        return bar
+
+    def _style_calendar(self):
+        """달력을 대시보드 다크 테마에 맞춘다."""
+        try:
+            cal = self._cal
+            if cal is None:
+                return
+            cal.setGridVisible(True)
+            cal.setVerticalHeaderFormat(QCalendarWidget.NoVerticalHeader)
+            cal.setStyleSheet(
+                f"QCalendarWidget QWidget{{alternate-background-color:{C['bg2']};}}"
+                f"QCalendarWidget QAbstractItemView:enabled{{"
+                f"background:{C['bg']};color:{C['text2']};"
+                f"selection-background-color:{C['blue']};selection-color:{C['bg']};"
+                f"outline:none;}}"
+                f"QCalendarWidget QWidget#qt_calendar_navigationbar{{"
+                f"background:{C['bg2']};}}"
+                f"QCalendarWidget QToolButton{{color:{C['text']};background:transparent;"
+                f"border:none;padding:4px 8px;}}"
+                f"QCalendarWidget QToolButton:hover{{background:{C['bg3']};}}"
+                f"QCalendarWidget QMenu{{background:{C['bg2']};color:{C['text']};}}"
+                f"QCalendarWidget QSpinBox{{background:{C['bg2']};color:{C['text']};"
+                f"border:1px solid {C['border']};}}"
+            )
+        except Exception as _e:
+            logger.debug("[ChartDBG] _style_calendar 예외: %s", _e)
+
+    def _start_dates_thread(self):
+        """날짜 목록을 배경에서 읽는다 — 메인 스레드를 310ms 멈추지 않기 위해."""
+        import threading as _thr
+        if getattr(self, '_dates_running', False):
+            return
+        self._dates_running = True
+
+        def _dset(db, sql, params=()):
+            """그 레이어에 행이 있는 **날짜 집합**.
+
+            🔴 (최초,최종) 경계로는 **구간 안의 구멍**을 못 잡는다 — 레짐 보관
+              기간 안인데 그날만 파이프라인이 안 돈 경우가 「0건」으로 둔갑한다.
+              대상 테이블은 전부 작다(실측: trades 58일 26ms · GP 14일 20ms).
+            None 반환 = **원천 자체를 못 읽었다**. 빈 집합과 다르다.
+            """
+            try:
+                _r = fetchall(db, sql, params)
+                return {str(x["d"]) for x in _r if x["d"]}
+            except Exception as _e:
+                logger.debug("[ChartDBG] 커버리지 조회 실패(%s): %s", db, _e)
+                return None
+
+        def _run():
+            import time as _t
+            _t0 = _t.monotonic()
+            dates = []
+            cov = {}
+            try:
+                rows = fetchall(
+                    RAW_DATA_DB,
+                    "SELECT DISTINCT substr(ts,1,10) AS d FROM raw_candles ORDER BY d ASC",
+                )
+                dates = [str(r["d"]) for r in rows if r["d"]]
+            except Exception as _e:
+                logger.warning("[ChartDBG] 날짜목록 조회 실패: %s", _e)
+            # 🔴 레이어마다 따로 감싼다. 한 층이 터져도 나머지는 살아야 한다
+            #   — 공용 try 하나로 묶었더니 GP 하나가 죽으면서 그 뒤가 통째로
+            #   「미조회」가 됐다(실측 결함).
+            cov["candle"] = set(dates)
+            try:
+                from config.settings import PREDICTIONS_DB, TRADES_DB, CHALLENGER_DB
+            except Exception as _e:
+                logger.debug("[ChartDBG] 커버리지 설정 임포트 실패: %s", _e)
+                PREDICTIONS_DB = TRADES_DB = CHALLENGER_DB = None
+            if PREDICTIONS_DB:
+                cov["regime"] = _dset(
+                    RAW_DATA_DB,
+                    "SELECT DISTINCT substr(ts,1,10) AS d FROM regime_history")
+                cov["direction"] = _dset(
+                    PREDICTIONS_DB,
+                    "SELECT DISTINCT substr(ts,1,10) AS d FROM ensemble_decisions")
+                cov["trade"] = _dset(
+                    TRADES_DB,
+                    "SELECT DISTINCT substr(entry_ts,1,10) AS d FROM trades")
+            try:
+                # GP 는 사전등록 도전자 2종으로 한정한다 — 전체 challenger_trades 가 아니다.
+                # ⚠ `gp_rule_challenger_ids` 는 **dict** 다({"long":…, "short":…}).
+                #   인덱스로 읽으면 KeyError 로 조용히 죽는다(_load_gp_trades 와 같은 접근).
+                from config.settings import VALIDATION_CAMPAIGN
+                _ids = VALIDATION_CAMPAIGN["gp_rule_challenger_ids"]
+                cov["gp"] = _dset(
+                    CHALLENGER_DB,
+                    "SELECT DISTINCT substr(entry_ts,1,10) AS d FROM challenger_trades"
+                    " WHERE challenger_id IN (?,?)", (_ids["long"], _ids["short"]))
+            except Exception as _e:
+                logger.debug("[ChartDBG] GP 커버리지 실패: %s", _e)
+                cov["gp"] = None
+            finally:
+                self._dates_running = False
+            logger.debug("[ChartDBG] 날짜목록 %d일 · 커버리지 %d층 %.1fms",
+                         len(dates), len(cov), (_t.monotonic() - _t0) * 1000)
+            self._sig_dates_ready.emit(dates, cov)
+
+        _thr.Thread(target=_run, daemon=True).start()
+
+    def _apply_dates(self, dates, cov=None):
+        """메인 스레드에서 달력 범위와 표식을 세운다.
+
+        🔴 조회 실패(빈 목록)와 "봉이 하루도 없다"는 다르다. 실패면 오늘 하나만
+          남아 복기 선택이 불가능해질 뿐, 실시간 동작은 그대로다.
+        """
+        dates = sorted({str(d) for d in (dates or []) if d})
+        _today = datetime.now().date().isoformat()
+        if _today not in dates:
+            dates.append(_today)   # 장 시작 전 — 오늘 봉이 아직 0개일 수 있다
+            dates.sort()
+        self._date_list = dates
+        self._date_set = set(dates)
+        if cov:
+            # 시그널을 건너온 값이라 set 이 list 로 바뀌어 있을 수 있다
+            self._cov = {k: (None if v is None else set(v)) for k, v in cov.items()}
+        self._refresh_layer_badges()
+        if self._date_edit is None:
+            self._refresh_mode_label()
+            return
+        _lo = QDate.fromString(dates[0], "yyyy-MM-dd")
+        _hi = QDate.fromString(dates[-1], "yyyy-MM-dd")
+        self._date_edit.blockSignals(True)
+        self._date_edit.setDateRange(_lo, _hi)
+        self._date_edit.setDate(QDate.fromString(self._session_date, "yyyy-MM-dd"))
+        self._date_edit.blockSignals(False)
+        self._mark_calendar(_lo, _hi)
+        self._refresh_mode_label()
+
+    def _mark_calendar(self, lo, hi):
+        """봉이 있는 날은 밝게·굵게, 없는 날은 흐리게.
+
+        🔴 없는 날을 **숨기지 않고 흐리게 남긴다** — 휴장일인지 수집 실패인지를
+          사용자가 달력에서 직접 볼 수 있어야 한다(계측 4원칙 ②).
+        """
+        try:
+            cal = self._cal
+            if cal is None:
+                return
+            _on = QTextCharFormat()
+            _on.setForeground(QBrush(QColor(C['text'])))
+            _on.setFontWeight(QFont.Bold)
+            _off = QTextCharFormat()
+            _off.setForeground(QBrush(QColor(C['border'])))
+            _d = QDate(lo)
+            _n_on = _n_off = 0
+            while _d <= hi:
+                if _d.toString("yyyy-MM-dd") in self._date_set:
+                    cal.setDateTextFormat(_d, _on); _n_on += 1
+                else:
+                    cal.setDateTextFormat(_d, _off); _n_off += 1
+                _d = _d.addDays(1)
+            logger.debug("[ChartDBG] 달력 표식 — 봉 있음 %d일 · 없음 %d일",
+                         _n_on, _n_off)
+        except Exception as _e:
+            logger.debug("[ChartDBG] _mark_calendar 예외: %s", _e)
+
+    # ── [날짜선택 B단계] 레이어 배지 ───────────────────────────────────
+    #
+    # 🔴 「미측정」과 「0건」은 다르다. 과거 날짜에서 레짐·방향·거래가 비는 건
+    #   대부분 **그 원천이 그날 아직 없었기 때문**이지 "신호가 없었다"가 아니다.
+    #   둘을 같은 회색 0으로 그리면 FP-CRITICAL 죽은 게이트와 같은 착시가 된다.
+    #   `_gp_status_text` 가 GP 한 층에 대해 하던 구분을 5개 층으로 넓힌 것이다.
+    _LAYER_ORDER = (("candle", "봉"), ("regime", "레짐"), ("direction", "방향"),
+                    ("trade", "거래"), ("gp", "GP"))
+
+    def _pipeline_ran(self):
+        """그날 파이프라인이 돌았는가. **True / False / None(증인을 못 읽음).**
+
+        🔴 거래가 0행인 날은 **무포지션일**일 수도 있고 **미수집**일 수도 있다.
+          거래 테이블만 봐서는 못 가른다. 방향 이력은 파이프라인이 매분 쓰므로
+          "그날 시스템이 살아 있었다"의 가장 촘촘한 증거다.
+        🔴 증인을 **못 읽은 것**을 "안 돌았다"로 접으면 거래 0행이 전부
+          「미수집」으로 둔갑한다 — 미측정을 측정값으로 바꾸는 짓이다(계측 4원칙 ②).
+          그래서 세 번째 상태 None 이 필요하다.
+        """
+        for _k in ("direction", "regime"):
+            _c = self._cov.get(_k)
+            if not _c:
+                continue                      # None(못 읽음)·빈 집합 — 증인 자격 없음
+            if self._session_date in _c:
+                return True
+            if _k == "regime" and self._session_date < min(_c):
+                continue                      # purge 로 잘린 구간 — 없음이 증거가 못 된다
+            return False
+        return None
+
+    def _layer_state(self, key):
+        """(문구, 색). 여섯 상태를 가른다 — 미조회·원천없음·기록없음·보관밖/미수집·0건·n건."""
+        if key == "gp" and not self._cnt.get("gp_wired", False):
+            return "미배선", C['purple']
+        if key not in self._cov:
+            return "미조회", C['purple']          # 커버리지를 아직 안 읽었다
+        _days = self._cov.get(key)
+        if _days is None:
+            return "원천없음", C['purple']        # DB/테이블 자체를 못 읽었다
+        if not _days:
+            return "기록없음", C['orange']        # 테이블은 있는데 행이 0
+        _d = self._session_date
+        if _d not in _days:
+            # 오늘이면 "아직 없다"(=0건). 과거면 그날 원천이 없었던 것이다.
+            if self._live_mode:
+                return "0건", C['text2']
+            # 레짐만 사유가 다르다 — EOD purge(30일)라 경계가 매일 움직인다
+            if key == "regime" and _d < min(_days):
+                return "보관밖", C['orange']
+            # 거래·GP 는 "행이 없다"가 곧 "미수집"이 아니다. 그날 파이프라인이
+            # 돌았다면 **무포지션일**이고, 그건 측정된 0 이다.
+            if key in ("trade", "gp"):
+                _ran = self._pipeline_ran()
+                if _ran is True:
+                    return "0건", C['text2']
+                if _ran is None:
+                    # 증인을 못 읽었다 — 0 인 건 맞는데 사유를 못 정한다
+                    return "0건?", C['orange']
+            return "미수집", C['orange']
+        _n = self._cnt.get(key)
+        if _n is None:
+            return "조회실패", C['red']
+        if _n <= 0:
+            return "0건", C['text2']
+        # 라벨이 이미 무엇인지 말하므로 단위를 겹쳐 쓰지 않는다("봉 384봉" 방지)
+        if key == "candle":
+            # 마감구간(session_bars)은 원천이 다르므로 합산해 숨기지 않는다
+            _t = self._cnt.get("tail") or 0
+            return (("%d+%d" % (_n - _t, _t)) if _t else "%d" % _n), C['text']
+        return ("%d" % _n if key in ("regime", "direction")
+                else "%d건" % _n), C['text']
+
+    def _refresh_layer_badges(self):
+        """레이어 배지 한 줄. **메인 스레드 전용.**"""
+        if self._layer_lbl is None:
+            return
+        try:
+            _parts = []
+            for _k, _label in self._LAYER_ORDER:
+                _txt, _col = self._layer_state(_k)
+                _parts.append('<span style="color:%s">%s&nbsp;%s</span>'
+                              % (_col, _label, _txt))
+            # 구분자는 색이 있는 막대다 — 가운뎃점은 이 크기에서 배경에 묻혀
+            # 「방향 미수집거래 3건」처럼 두 배지가 한 덩어리로 읽힌다
+            _sep = '<span style="color:%s">&nbsp;&nbsp;|&nbsp;&nbsp;</span>' % C['border']
+            self._layer_lbl.setText(_sep.join(_parts))
+            self._layer_lbl.setToolTip(
+                "레이어별 수집 상태 — 「미측정」과 「0건」은 다르다\n"
+                "  n건 / n     : 측정값\n"
+                "  384+27      : 봉 = raw_candles + 마감구간(session_bars)\n"
+                "  0건         : 원천은 돌았고 그날 실제로 0 (예: 무포지션일)\n"
+                "  0건?        : 0 인 건 맞지만 그날 가동 여부를 못 읽어 사유 미확정\n"
+                "  미수집      : 그날 그 원천이 없었다 — 0건이 아니다\n"
+                "  보관밖      : 레짐 EOD purge(30일) 이전 — 설계상 없다\n"
+                "  기록없음    : 테이블은 있는데 행이 하나도 없다\n"
+                "  원천없음    : DB·테이블 자체를 못 읽었다\n"
+                "  미배선/미조회: GP 도전자 미등록 / 커버리지 조회 전")
+        except Exception as _e:
+            logger.debug("[ChartDBG] _refresh_layer_badges 예외: %s", _e)
+
+    def _set_session_date(self, session_date: str):
+        """날짜와 모드만 정한다 — **위젯은 건드리지 않는다**(배경 스레드 호출 가능)."""
+        self._session_date = session_date
+        self._live_mode = (session_date == datetime.now().date().isoformat())
+
+    def _refresh_mode_label(self):
+        """제목·모드문구·달력 날짜를 현재 모드에 맞춘다. **메인 스레드 전용.**"""
+        try:
+            _live = self._live_mode
+            self.setWindowTitle(
+                ("당일 1분봉 차트 (%s)" % self.SHORTCUT_TEXT) if _live
+                else ("복기 · %s 1분봉 차트 (%s)" % (self._session_date, self.SHORTCUT_TEXT))
+            )
+            if self._mode_lbl is not None:
+                self._mode_lbl.setText(
+                    "● 실시간 — 틱·봉 반영 중" if _live
+                    else "■ 복기 — 실시간 유입 차단됨 · 「오늘」로 복귀"
+                )
+                self._mode_lbl.setStyleSheet(
+                    "color:%s;font-size:%dpx;"
+                    % (C['green'] if _live else C['orange'], S.f(10))
+                )
+            self._sync_date_widget()
+        except Exception as _e:
+            logger.debug("[ChartDBG] _refresh_mode_label 예외: %s", _e)
+
+    def _sync_date_widget(self):
+        """달력 위젯을 현재 세션 날짜로 되돌린다(시그널 없이)."""
+        if self._date_edit is None:
+            return
+        _qd = QDate.fromString(self._session_date, "yyyy-MM-dd")
+        if not _qd.isValid() or self._date_edit.date() == _qd:
+            return
+        self._date_edit.blockSignals(True)
+        self._date_edit.setDate(_qd)
+        self._date_edit.blockSignals(False)
+
+    def _open_calendar(self):
+        """자체 달력 팝업을 날짜칸 아래에 띄운다."""
+        try:
+            if self._cal is None:
+                return
+            if self._cal_popup is None:
+                self._cal_popup = QDialog(self, Qt.Popup)
+                self._cal_popup.setStyleSheet(
+                    f"background:{C['bg2']};border:1px solid {C['border']};")
+                _lay = QVBoxLayout(self._cal_popup)
+                _lay.setContentsMargins(1, 1, 1, 1)
+                _lay.addWidget(self._cal)
+            _qd = QDate.fromString(self._session_date, "yyyy-MM-dd")
+            if _qd.isValid():
+                self._cal.setSelectedDate(_qd)
+                self._cal.setCurrentPage(_qd.year(), _qd.month())
+            self._cal_popup.adjustSize()
+            self._cal_popup.move(
+                self._date_edit.mapToGlobal(self._date_edit.rect().bottomLeft()))
+            self._cal_popup.show()
+        except Exception as _e:
+            logger.debug("[ChartDBG] _open_calendar 예외: %s", _e)
+
+    def _pick_date(self, qd):
+        """달력에서 고른 날 → 날짜칸에 반영(유효성 검사는 _on_date_changed 가 한다)."""
+        try:
+            if self._cal_popup is not None:
+                self._cal_popup.hide()
+            if self._date_edit is not None:
+                self._date_edit.setDate(qd)
+        except Exception as _e:
+            logger.debug("[ChartDBG] _pick_date 예외: %s", _e)
+
+    def _on_date_changed(self, qd):
+        _picked = qd.toString("yyyy-MM-dd") if hasattr(qd, "toString") else str(qd)
+        if not _picked or _picked == self._session_date:
+            return
+        # 🔴 봉이 없는 날은 **조용히 빈 차트를 그리지 않는다.** 되돌리고 이유를 말한다
+        #   — 빈 화면은 "그날 거래가 없었다"로 오독된다(계측 4원칙 ②).
+        if self._date_set and _picked not in self._date_set:
+            self._sync_date_widget()
+            if self._mode_lbl is not None:
+                self._mode_lbl.setText("✕ %s — 봉 데이터 없음(휴장 또는 미수집)" % _picked)
+                self._mode_lbl.setStyleSheet(
+                    "color:%s;font-size:%dpx;" % (C['red'], S.f(10)))
+            logger.debug("[ChartDBG] 날짜 선택 거부 — 봉 없음: %s", _picked)
+            return
+        self._start_reload_thread(_picked)
+
+    def _go_today(self):
+        _today = datetime.now().date().isoformat()
+        if _today == self._session_date:
+            return
+        self._start_reload_thread(_today)
+
+    def reload_today(self, session_date: str = None):
+        """지정 날짜(기본 오늘)의 세션을 **전량 재적재**한다.
+
+        🔴 증분 재개가 아니다. 복기 중 흘려보낸 틱은 복구되지 않으므로
+          오늘로 돌아올 때 이어붙이면 조용한 구멍이 생긴다(계측 4원칙 ④).
+        """
+        self._set_session_date(session_date or datetime.now().date().isoformat())
         candle_rows = fetchall(
             RAW_DATA_DB,
             """SELECT ts, open, high, low, close, volume
@@ -10178,6 +10707,9 @@ class MinuteChartDialog(QDialog):
             (f"{self._session_date}%",),
         )
         candles = self._trim_to_last_price_group([dict(row) for row in candle_rows])
+        _n_raw = len(candles)
+        candles = self._merge_session_tail(candles, self._session_date)
+        _n_tail = len(candles) - _n_raw
 
         completed_trades = []
         exit_markers = []
@@ -10215,25 +10747,36 @@ class MinuteChartDialog(QDialog):
                                   gp_trades=gp_trades, gp_wired=gp_wired)
         self._set_status(gp_trades, gp_wired)
         # 재시작 복원: 오늘 레짐·방향예측 히스토리를 _regime_map / _dir_map에 채움
+        self._cnt = {"candle": len(candles), "tail": _n_tail,
+                     "trade": len(completed_trades) + len(exit_markers),
+                     "gp": len(gp_trades or []), "gp_wired": bool(gp_wired)}
         try:
             regime_map = fetch_regime_today(self._session_date)
+            self._cnt["regime"] = len(regime_map or {})
             if regime_map:
                 self._chart._regime_map.update(regime_map)
         except Exception:
-            pass
+            self._cnt["regime"] = None      # 조회 실패 — 0건이 아니다
         try:
             dir_map = fetch_direction_today(self._session_date)
+            self._cnt["direction"] = len(dir_map or {})
             if dir_map:
                 self._chart._dir_map.update(dir_map)
         except Exception:
-            pass
+            self._cnt["direction"] = None
+        self._refresh_mode_label()
+        self._refresh_layer_badges()
         self._chart.update()
 
-    def _start_reload_thread(self):
+    def _start_reload_thread(self, session_date: str = None):
         import threading as _thr
         if getattr(self, '_reload_running', False):
             logger.debug("[ChartDBG] _start_reload_thread: 이미 실행 중 — 중복 방지")
             return
+        # 🔴 날짜·모드는 **스레드 시작 전 메인 스레드에서** 확정한다.
+        #   배경 스레드가 self._session_date 를 읽기 시작한 뒤 바꾸면 경합이 난다.
+        self._set_session_date(session_date or datetime.now().date().isoformat())
+        self._refresh_mode_label()
         self._reload_running = True
         def _run():
             try:
@@ -10243,17 +10786,21 @@ class MinuteChartDialog(QDialog):
         _thr.Thread(target=_run, daemon=True).start()
 
     def maybe_roll_session(self):
+        # [날짜선택 A단계] 복기 모드에서는 자정 넘김 처리를 하지 않는다.
+        #   이 가드가 없으면 과거 날짜를 골라도 **다음 봉에 오늘로 강제 복귀**한다.
+        if not self._live_mode:
+            return
         today = datetime.now().date().isoformat()
         if today != self._session_date:
-            self._start_reload_thread()
+            self._start_reload_thread(today)
 
     def _reload_today_bg(self):
         """reload_today를 백그라운드 스레드에서 실행 후 _sig_reload_done 시그널로 메인 스레드에 전달."""
         import time as _t
         _t0 = _t.monotonic()
         try:
-            self._session_date = datetime.now().date().isoformat()
-
+            # [날짜선택 A단계] 날짜는 _start_reload_thread 가 이미 확정했다.
+            #   여기서 datetime.now() 를 다시 읽으면 복기 선택이 덮어써진다.
             _t1 = _t.monotonic()
             candle_rows = fetchall(
                 RAW_DATA_DB,
@@ -10262,6 +10809,7 @@ class MinuteChartDialog(QDialog):
             )
             _t2 = _t.monotonic()
             candles = self._trim_to_last_price_group([dict(row) for row in candle_rows])
+            candles = self._merge_session_tail(candles, self._session_date)
 
             completed_trades, exit_markers = [], []
             _t3 = _t.monotonic()
@@ -10314,18 +10862,29 @@ class MinuteChartDialog(QDialog):
         self._chart.reset_session(candles, completed_trades, exit_markers=exit_markers,
                                   gp_trades=gp_trades or [], gp_wired=gp_wired)
         self._set_status(gp_trades, gp_wired)
+        _cand = candles or []
+        self._cnt = {"candle": len(_cand),
+                     "tail": sum(1 for _c in _cand if _c.get("tail")),
+                     "trade": len(completed_trades or []) + len(exit_markers or []),
+                     "gp": len(gp_trades or []), "gp_wired": bool(gp_wired)}
         try:
             regime_map = fetch_regime_today(self._session_date)
+            self._cnt["regime"] = len(regime_map or {})
             if regime_map:
                 self._chart._regime_map.update(regime_map)
         except Exception as _e:
+            self._cnt["regime"] = None      # 조회 실패 — 0건이 아니다
             logger.debug("[ChartDBG] _apply_reload_result regime 복원 실패: %s", _e)
         try:
             dir_map = fetch_direction_today(self._session_date)
+            self._cnt["direction"] = len(dir_map or {})
             if dir_map:
                 self._chart._dir_map.update(dir_map)
         except Exception as _e:
+            self._cnt["direction"] = None
             logger.debug("[ChartDBG] _apply_reload_result direction 복원 실패: %s", _e)
+        self._refresh_mode_label()
+        self._refresh_layer_badges()
         self._chart.update()
         # reset_session이 _active_trade를 초기화하므로, 외부 훅으로 재동기화
         if callable(getattr(self, '_post_reload_hook', None)):
@@ -10336,21 +10895,31 @@ class MinuteChartDialog(QDialog):
 
     def update_tick(self, price: float, ts=None):
         # maybe_roll_session 제거: 매 틱마다 날짜 비교 불필요 — on_candle_closed에서만 체크 (194차)
+        if not self._live_mode:
+            return   # 복기 모드 — 실시간 유입 차단
         self._chart.update_tick(price, ts=ts)
 
     def on_candle_closed(self, candle: dict):
+        if not self._live_mode:
+            return   # 복기 모드 — 실시간 유입 차단
         self.maybe_roll_session()
         self._chart.on_candle_closed(candle)
 
     def set_regime_at(self, ts_key: str, regime: str):
         """파이프라인 완료 후 봉 레짐 색상 업데이트."""
+        if not self._live_mode:
+            return   # 복기 모드 — 실시간 유입 차단
         self._chart.set_regime_at(ts_key, regime)
 
     def set_direction_at(self, ts_key: str, direction: int):
         """파이프라인 완료 후 봉 방향예측 색상 업데이트."""
+        if not self._live_mode:
+            return   # 복기 모드 — 실시간 유입 차단
         self._chart.set_direction_at(ts_key, direction)
 
     def record_entry(self, direction: str, price: float, ts=None):
+        if not self._live_mode:
+            return   # 복기 모드 — 실시간 유입 차단
         self.maybe_roll_session()
         self._chart.record_entry(direction, price, ts=ts)
 
@@ -10363,6 +10932,8 @@ class MinuteChartDialog(QDialog):
         reason: str = "",
         direction: str = "",
     ):
+        if not self._live_mode:
+            return   # 복기 모드 — 실시간 유입 차단
         self.maybe_roll_session()
         self._chart.record_exit(
             price,
@@ -10374,10 +10945,14 @@ class MinuteChartDialog(QDialog):
         )
 
     def sync_active_position(self, direction: str, price: float, ts=None):
+        if not self._live_mode:
+            return   # 복기 모드 — 실시간 유입 차단
         self.maybe_roll_session()
         self._chart.sync_active_trade(direction, price, ts=ts)
 
     def clear_active_position(self):
+        if not self._live_mode:
+            return   # 복기 모드 — 실시간 유입 차단
         self._chart.clear_active_trade()
 
     def _coerce_dt(self, value):
