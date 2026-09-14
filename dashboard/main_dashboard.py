@@ -9258,6 +9258,7 @@ class MinuteChartCanvas(QWidget):
         # 🔴 레벨 레이어보다 **먼저** 부른다. 그래야 「롱 금지」 라벨이 칩 자리를
         #   먼저 예약하고, 뒤에 오는 구조/맥점 칩이 그 자리를 피한다(실측 결함).
         self._draw_state_overlay(painter, plot, candles, padded_count)
+        self._draw_state_vlines(painter, plot, candles, padded_count)
         # [오버레이 P3] 면 → 선 순. 면이 위로 오면 선을 덮는다
         self._draw_price_model(painter, plot, lo, hi)
         self._draw_struct_model(painter, plot, lo, hi)
@@ -9882,6 +9883,58 @@ class MinuteChartCanvas(QWidget):
         finally:
             painter.restore()
 
+    # 하루 전환 횟수 실측(2026-06-01~09-14, 73거래일): 중앙 5 · 평균 4.8 · **최대 11**.
+    #   40건 거래 때처럼 화면을 덮을 위험이 없어 전체 높이로 긋는다.
+    #   이 값을 넘으면 안 긋는다 — 표본 밖 상황에서 화면이 먼저 망가지지 않게.
+    STATE_VLINE_MAX = 30
+
+    def _state_transitions(self, candles):
+        """상태가 **바뀌는** 봉의 (idx, 새 상태). 값이 없는 봉은 전환이 아니다."""
+        out, prev = [], None
+        for idx, candle in enumerate(candles):
+            _st = self._state_map.get(candle["ts"])
+            if _st and _st != prev:
+                out.append((idx, _st))
+            if _st:
+                prev = _st
+        return out
+
+    def _draw_state_vlines(self, painter: QPainter, plot: QRectF, candles, padded_count: int):
+        """전환 지점 세로선. 가격 영역을 가로질러 아래 전환 레인과 **눈으로 이어준다**.
+
+        🔴 색은 **바뀐 뒤** 상태다 — "여기서부터 저 상태"라는 뜻이지
+          "여기까지 그랬다"가 아니다.
+        🔴 점선 + 저채도로만 긋는다. 이건 경계 표시이지 신호가 아니다 —
+          검증된 문장은 「BUY_MECH 구간 롱 금지」 하나뿐이고 그건 빗금이 말한다.
+        """
+        if not self._state_map:
+            return
+        _tr = self._state_transitions(candles)
+        if not _tr or len(_tr) > self.STATE_VLINE_MAX:
+            return
+        try:
+            painter.save()
+        except Exception:
+            return
+        try:
+            count = max(padded_count, 1)
+            step = plot.width() / count
+            _dim = 0.55 if self._state_provisional else 1.0
+            for idx, _st in _tr:
+                _c = _STATE_BAR_COLOR.get(_st)
+                if not _c:
+                    continue
+                col = QColor(_c[0])
+                col.setAlpha(int(110 * _dim))
+                _p = QPen(col); _p.setWidth(1); _p.setStyle(Qt.DotLine)
+                painter.setPen(_p)
+                x = plot.left() + step * idx
+                painter.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()))
+        except Exception as _e:
+            logger.debug("[ChartDBG] _draw_state_vlines 예외: %s", _e)
+        finally:
+            painter.restore()
+
     def _draw_state_lane(self, painter: QPainter, plot: QRectF, candles, padded_count: int):
         """방향 바 바로 위 4상태 레인. 상태가 **없는** 봉은 비워 둔다.
 
@@ -9947,24 +10000,22 @@ class MinuteChartCanvas(QWidget):
 
             # ① 전환 레인 — 상태가 **바뀌는 봉**만 찍는다. 구간 전체를 칠하면
             #   레인이 상태바와 중복되고, 전환 시점이라는 정보가 묻힌다.
+            #   🔴 세로선(_draw_state_vlines)과 **같은 헬퍼**를 쓴다 — 두 곳이
+            #     따로 세면 마커와 선이 어긋난 자리에 찍힌다.
             painter.setPen(Qt.NoPen)
-            _prev = None
-            for idx, candle in enumerate(candles):
-                _st = self._state_map.get(candle["ts"])
-                if _st and _st != _prev:
-                    _c = _STATE_BAR_COLOR.get(_st)
-                    if _c:
-                        col = QColor(_c[0]); col.setAlpha(230)
-                        painter.setBrush(col)
-                        x = _lane.left() + step * (idx + 0.5)
-                        y = _lane.center().y()
-                        _up = _st.startswith("BUY")
-                        _tri = QPolygonF([QPointF(x, y - 5 if _up else y + 5),
-                                          QPointF(x - 4.5, y + 4 if _up else y - 4),
-                                          QPointF(x + 4.5, y + 4 if _up else y - 4)])
-                        painter.drawPolygon(_tri)
-                if _st:
-                    _prev = _st
+            for idx, _st in self._state_transitions(candles):
+                _c = _STATE_BAR_COLOR.get(_st)
+                if not _c:
+                    continue
+                col = QColor(_c[0]); col.setAlpha(230)
+                painter.setBrush(col)
+                x = _lane.left() + step * (idx + 0.5)
+                y = _lane.center().y()
+                _up = _st.startswith("BUY")
+                _tri = QPolygonF([QPointF(x, y - 5 if _up else y + 5),
+                                  QPointF(x - 4.5, y + 4 if _up else y - 4),
+                                  QPointF(x + 4.5, y + 4 if _up else y - 4)])
+                painter.drawPolygon(_tri)
 
             # ② 공격자 때린 쪽 · ③ ΔOI 30분
             for _r, _src, _pos, _neg, _tag in (
