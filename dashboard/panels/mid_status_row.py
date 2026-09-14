@@ -101,7 +101,123 @@ def fetch_day_state(ts_from: str, ts_to: str) -> Optional[dict]:
         return None
 
 
-class _StateWorker(QThread):
+# ── 보유 중 레벨선 ───────────────────────────────────────────────
+# 시안 「보유 중」 차트: 진입 · 하드스톱 · TP1/2/3 · 트레일링을 가로선으로.
+# 값은 전부 `pos_data` 에 이미 들어 있다 — 만들지 않고 **받아 그린다**.
+#
+# 🔴 트레일링은 **현재 값 하나뿐**이다. 시안의 계단식 궤적은 스톱 이동 이력이
+#   있어야 그릴 수 있는데 그런 테이블이 없다(`tp1_trail_shadow`·
+#   `phantom_stop_shadow` 는 별건 섀도우다). 없는 궤적을 그럴듯하게
+#   그리지 않는다(계측 4원칙 ④) — 현재 수준만 수평선으로 긋는다.
+# 라벨은 (한글, ASCII 대체) 쌍이다 — 아래 `_ko_font()` 설명 참고.
+_LEVEL_SPEC = (
+    ("stop",  ("하드스톱", "STOP"),  "#F85149", 1.3, "-"),
+    ("entry", ("진입",     "ENTRY"), "#E6EDF3", 1.5, "-"),
+    ("tp1",   ("TP1",      "TP1"),   "#3FB950", 1.0, "-"),
+    ("tp2",   ("TP2",      "TP2"),   "#3FB950", 1.0, "-"),
+    ("tp3",   ("TP3",      "TP3"),   "#3FB950", 1.0, "-"),
+    ("trail", ("트레일링", "TRAIL"), "#D29922", 1.1, "--"),
+)
+
+# 🔴 matplotlib 기본 폰트에는 한글 글리프가 **없다** — 그냥 쓰면 「진입」이
+#   두부(□□)로 찍힌다(실측). Qt 라벨은 멀쩡한데 차트만 깨지므로 놓치기 쉽다.
+#   설치된 폰트에서 한글 가능한 것을 찾아 쓰고, **하나도 없으면 두부 대신
+#   ASCII 라벨로 떨어뜨린다**. 읽을 수 없는 글자를 그리느니 영문이 낫다.
+_KO_FONTS = ("Malgun Gothic", "NanumGothic", "Noto Sans CJK KR",
+             "Noto Sans CJK JP", "Noto Sans KR", "AppleGothic",
+             "Gulim", "Batang", "Droid Sans Fallback")
+_ko_font_cache: Optional[str] = None
+
+
+def _has_hangul(name: str) -> bool:
+    """그 폰트가 한글 글리프를 **실제로 가지고 있는가**.
+
+    🔴 이름만 보고 고르면 안 된다. `Droid Sans Fallback` 은 폰트 목록에
+      있었지만 findfont 가 내준 파일에는 한글이 없었고, fontname 으로 강제한
+      순간 숫자까지 전부 두부가 됐다(실측). cmap 을 직접 뒤진다.
+    """
+    try:
+        from matplotlib import font_manager as fm
+        from matplotlib.ft2font import FT2Font
+        path = fm.findfont(fm.FontProperties(family=name),
+                           fallback_to_default=False)
+        f = FT2Font(path)
+        return bool(f.get_char_index(ord("진")) and f.get_char_index(ord("0")))
+    except Exception:
+        return False
+
+
+def _ko_font() -> str:
+    """쓸 수 있는 한글 폰트 이름. 없으면 빈 문자열(→ ASCII 라벨)."""
+    global _ko_font_cache
+    if _ko_font_cache is not None:
+        return _ko_font_cache
+    _ko_font_cache = ""
+    for name in _KO_FONTS:                       # ① 흔한 후보 먼저 (빠름)
+        if _has_hangul(name):
+            _ko_font_cache = name
+            return _ko_font_cache
+    try:                                         # ② 없으면 설치된 폰트 전수 조사
+        from matplotlib import font_manager as fm
+        for name in sorted({f.name for f in fm.fontManager.ttflist}):
+            if _has_hangul(name):
+                _ko_font_cache = name
+                break
+    except Exception:
+        pass
+    return _ko_font_cache
+
+
+def position_levels() -> List[tuple]:
+    """보유 중이면 [(label, value, color, lw, ls)], 아니면 [].
+
+    값이 없거나 0 이하인 항목은 **거른다** — 0.0 을 선으로 그으면
+    「손절이 0」 이라는 거짓말이 된다.
+    """
+    state, pos = read_position()
+    if state != "live" or not pos:
+        return []
+    if str(pos.get("status", "") or "").strip().upper() not in ("LONG", "SHORT"):
+        return []
+    raw = {
+        "stop":  _f(pos.get("stop")),
+        "entry": _f(pos.get("entry")),
+        "tp1":   _f(pos.get("tp1")),
+        "tp2":   _f(pos.get("tp2")),
+        "tp3":   _f(pos.get("tp3")),
+        "trail": _f(pos.get("trail_basis")),
+    }
+    out = []
+    _ko = bool(_ko_font())
+    for key, labels, color, lw, ls in _LEVEL_SPEC:
+        v = raw.get(key, 0.0)
+        if v <= 0:
+            continue
+        # 트레일링이 하드스톱과 사실상 같으면 선을 겹쳐 긋지 않는다
+        if key == "trail" and abs(v - raw.get("stop", 0.0)) < 0.01:
+            continue
+        out.append((labels[0] if _ko else labels[1], v, color, lw, ls))
+    return out
+
+
+def draw_position_levels(ax, x_right: float) -> List[float]:
+    """matplotlib 축에 레벨선 + 우측 라벨. 반환: 그린 값들(축 범위 확장용).
+
+    두 배너(방향 인디케이터 · 봉차트)가 같이 쓴다.
+    """
+    vals = []
+    for label, v, color, lw, ls in position_levels():
+        ax.axhline(y=v, color=color, linewidth=lw, linestyle=ls,
+                   alpha=0.95, zorder=3)
+        _kw = {"fontname": _ko_font()} if _ko_font() else {}
+        ax.text(x_right, v, "%s %.1f" % (label, v),
+                color=color, fontsize=7.5, fontweight="bold",
+                ha="right", va="bottom", zorder=6, **_kw)
+        vals.append(v)
+    return vals
+
+
+class _StateWorker(QThread):
     """당일 상태 계산 — **GUI 스레드 밖에서** 돈다.
 
     실측 37ms(조회 4.6 + 계산 33). 대시보드 페인트 경보선이 30ms 인데

@@ -28,7 +28,7 @@ from PyQt5.QtWidgets import (
 )
 
 from config.settings import PREDICTIONS_DB, RAW_DATA_DB
-from dashboard.panels.mid_status_row import MidStatusRow
+from dashboard.panels.mid_status_row import MidStatusRow, draw_position_levels
 
 _HORIZONS = ["1m", "3m", "5m", "10m", "15m", "30m"]
 _N_CANDLES = 40
@@ -490,6 +490,14 @@ class DirectionIndicatorWidget(QWidget):
                 linestyle=":", alpha=0.35, zorder=0,
             )
 
+        # ── [MW0601 579차] 보유 중 레벨선 — 진입·하드스톱·TP1/2/3·트레일링 ──
+        # 값은 포지션 스냅샷에서 온다. 보유 중이 아니면 빈 리스트다.
+        _lv = []
+        try:
+            _lv = draw_position_levels(ax, n + 2.0)
+        except Exception:
+            pass
+
         # x축 레이블 (HH:MM, 최대 8개)
         step   = max(1, n // 8)
         xticks = list(range(0, n, step))
@@ -502,6 +510,20 @@ class DirectionIndicatorWidget(QWidget):
 
         y_lo = min(prices_lo) - p_range * 0.04
         y_hi = max(prices_hi) + p_range * 0.08
+        # 🔴 레벨선이 축 밖이면 **안 보인다** — 화면에 없는 손절은 없는 것과 같다.
+        #   축을 넓혀 포함시키되, 캔들이 납작해지지 않도록 원래 폭의 3배까지만
+        #   늘린다. 그래도 못 담는 레벨은 **그리지 않은 게 아니라 축 밖**이므로
+        #   경계에 눌려 보인다 — 헤더 텍스트가 실제 값을 말한다.
+        if _lv:
+            _span = y_hi - y_lo
+            _cap  = _span * 3.0
+            _lo2  = min([y_lo] + _lv) - p_range * 0.04
+            _hi2  = max([y_hi] + _lv) + p_range * 0.08
+            if (_hi2 - _lo2) <= _cap:
+                y_lo, y_hi = _lo2, _hi2
+            else:
+                _mid = (max(prices_hi) + min(prices_lo)) / 2.0
+                y_lo, y_hi = _mid - _cap / 2.0, _mid + _cap / 2.0
         ax.set_ylim(y_lo, y_hi)
 
         self._canvas.draw_idle()

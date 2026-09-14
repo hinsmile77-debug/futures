@@ -44,7 +44,8 @@ from matplotlib.patches import Rectangle
 
 from config.settings import PREDICTIONS_DB, RAW_DATA_DB
 from dashboard.panels.mid_status_row import (
-    MidStatusRow, fetch_day_state, publish_position, read_position,
+    MidStatusRow, draw_position_levels, fetch_day_state,
+    publish_position, read_position,
 )
 
 _HORIZONS = ["1m", "3m", "5m", "10m", "15m", "30m"]
@@ -559,8 +560,26 @@ class CandleChartDialog(QDialog):
             )
 
         ax.set_xlim(*xlim)
+
+        # ── [MW0601 579차] 보유 중 레벨선 — 진입·하드스톱·TP1/2/3·트레일링 ──
+        _lv = []
+        try:
+            _lv = draw_position_levels(ax, xlim[1] - 0.2)
+        except Exception:
+            pass
+
         y_lo = min(prices_lo) - p_range * 0.04
         y_hi = max(prices_hi) + p_range * 0.08
+        # 레벨선이 축 밖이면 안 보인다 — 넓히되 캔들이 납작해지지 않게 3배까지만.
+        if _lv:
+            _cap = (y_hi - y_lo) * 3.0
+            _lo2 = min([y_lo] + _lv) - p_range * 0.04
+            _hi2 = max([y_hi] + _lv) + p_range * 0.08
+            if (_hi2 - _lo2) <= _cap:
+                y_lo, y_hi = _lo2, _hi2
+            else:
+                _mid = (max(prices_hi) + min(prices_lo)) / 2.0
+                y_lo, y_hi = _mid - _cap / 2.0, _mid + _cap / 2.0
         ax.set_ylim(y_lo, y_hi)
 
         # ── 방향예측 레인 ────────────────────────────────────────
