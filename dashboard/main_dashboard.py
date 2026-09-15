@@ -8825,7 +8825,10 @@ _STATE_BAR_COLOR = {
 }
 # [MW0601 580차] 4상태 계산은 `dashboard/stack_state` 하나로 모았다 —
 #   같은 알고리즘이 캔버스·두 배너 세 곳에서 돈다. 복사본을 두면 갈라진다.
-from dashboard.stack_state import compute_states as _stack_compute_states
+from dashboard.stack_state import (
+    compute_states as _stack_compute_states, flip_risk as _stack_flip_risk,
+    FLIP_RISK_SAMPLE as _FLIP_RISK_SAMPLE,
+)
 
 _STATE_KO = {"BUY_MECH": "기계적 매수", "BUY_STACK": "상방 쌓기",
              "SELL_STACK": "하방 쌓기", "SELL_MECH": "기계적 매도"}
@@ -9940,14 +9943,53 @@ class MinuteChartCanvas(QWidget):
                 # 실측으로 확인했다 — 기본 글리프만 쓴다.
                 # 구간이 여럿인데 라벨이 하나면 "한 군데뿐"으로 읽힌다. 개수를 적는다.
                 _txt = "■ 롱 금지 — 기계적 매수 %d구간" % _n
-                if self._state_provisional:
-                    _txt += " (잠정 · 장중이라 당일 기준 미확정)"
                 painter.setFont(QFont("Malgun Gothic", 8, QFont.Bold))
                 painter.setPen(QColor("#D29922"))
                 painter.drawText(QPointF(plot.left() + S.p(6), plot.top() + S.p(12)), _txt)
                 self._reserve_text(painter, plot.left() + S.p(6), plot.top() + S.p(12), _txt)
+            # 🔴 [582차] 잠정 경고는 BUY_MECH 구간 유무와 **무관하게** 찍는다.
+            #   종전에는 `if _n:` 안에 있어서, 롱 금지 구간이 없는 날에는
+            #   라벨이 전부 잠정인데도 아무 경고가 안 떴다.
+            self._draw_provisional_note(painter, plot, top_offset=S.p(12) if _n else 0)
         except Exception as _e:
             logger.debug("[ChartDBG] _draw_state_overlay 예외: %s", _e)
+        finally:
+            painter.restore()
+
+    def _draw_provisional_note(self, painter: QPainter, plot: QRectF, top_offset=0):
+        """장중 라벨이 얼마나 흔들리는지 **숫자로** 적는다.
+
+        상태 라벨은 당일 중앙값·당일 50% 분위 문턱과 견줘 붙는다. 그 기준이
+        장중에는 표본이 적어 움직이므로 같은 봉의 라벨이 오후에 바뀐다.
+        「잠정」이라고만 적으면 얼마나 못 믿을지 알 수 없다 — 실측 비율을 적는다.
+
+        🔴 이건 **과거 68거래일 평균이지 오늘의 예측이 아니다.** 문구도 그렇게 쓴다.
+        🔴 원계열 히스토그램에는 붙이지 않는다. 같은 구간에서 ΔOI 는 0봉 변했고
+          공격자는 평행이동만 한다 — 흔들리는 건 **라벨뿐**이다.
+        """
+        if not self._state_provisional or not self._state_map:
+            return
+        _risk = _stack_flip_risk(getattr(self, "_state_n", 0) or 0)
+        if _risk is None:
+            return
+        try:
+            painter.save()
+        except Exception:
+            return
+        try:
+            _col = ("#F85149" if _risk >= 50 else
+                    "#D29922" if _risk >= 25 else "#8B949E")
+            # 차트 폭을 먹지 않게 줄인다 — 표본 기간은 코드·커밋에 남긴다
+            _txt = ("■ 잠정 — %d봉 · 이 시점 라벨의 %.0f%%가 마감까지 뒤집혔다"
+                    " (68거래일 실측 평균 · 히스토그램은 안 바뀐다)"
+                    % (self._state_n, _risk))
+            _y = plot.top() + S.p(12) + top_offset + (S.p(11) if top_offset else 0)
+            painter.setFont(QFont("Malgun Gothic", 8, QFont.Bold))
+            painter.setPen(QColor(_col))
+            painter.drawText(QPointF(plot.left() + S.p(6), _y), _txt)
+            self._reserve_text(painter, plot.left() + S.p(6), _y, _txt)
+        except Exception as _e:
+            logger.debug("[ChartDBG] _draw_provisional_note 예외: %s", _e)
         finally:
             painter.restore()
 
@@ -10985,6 +11027,7 @@ class MinuteChartCanvas(QWidget):
         self._doi_map   = _r["doi_map"]
         self._thr_a     = _r["thr_a"]
         self._thr_o     = _r["thr_o"]
+        self._state_n   = _r.get("n", 0)   # 뒤집힘률 조회용 표본 크기
 
     def set_premarket_levels(self, levels):
         """장전 레벨 주입. `None` 은 **미조회**다 — 「그날 없음」과 가르려고 남긴다."""
