@@ -67,9 +67,9 @@ _STATE_CACHE: Dict[str, object] = {"key": None, "val": None}
 def fetch_day_state(ts_from: str, ts_to: str) -> Optional[dict]:
     """반환: {"state": STATE|None, "ts": 마지막 봉 ts, "n": 상태계산 사용 봉수}
 
-    마지막 봉 ts 가 그대로면 재계산하지 않는다 — 폴링은 10초, 봉은 1분이다.
-
-    ⚠ 실측 37ms(조회 4.6 + 계산 33). **GUI 스레드에서 직접 부르지 마라** —
+    마지막 봉 ts 가 그대로면 재계산하지 않는다 — 폴링은 10초, 봉은 1분이다.
+
+    ⚠ 실측 37ms(조회 4.6 + 계산 33). **GUI 스레드에서 직접 부르지 마라** —
       `MidStatusRow.tick()` 이 워커 스레드로 돌린다.
     """
     try:
@@ -217,7 +217,7 @@ def draw_position_levels(ax, x_right: float) -> List[float]:
     return vals
 
 
-class _StateWorker(QThread):
+class _StateWorker(QThread):
     """당일 상태 계산 — **GUI 스레드 밖에서** 돈다.
 
     실측 37ms(조회 4.6 + 계산 33). 대시보드 페인트 경보선이 30ms 인데
@@ -237,7 +237,7 @@ class _StateWorker(QThread):
             self.done.emit(None)
 
 
-class MidStatusRow(QFrame):
+class MidStatusRow(QFrame):
     """[상태 배지]  현재가  포지션 …………………  최근 N봉"""
 
     def __init__(self, span_text: str = "", parent=None):
