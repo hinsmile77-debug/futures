@@ -8477,6 +8477,14 @@ def parse_peter_trades(text: str, offset: float = 0.0, session_date: str = ""):
     return out, err
 
 
+# [MW0601 583차] 계약 오프셋 기본값 — 사용자 지시로 고정한다.
+#   정규 선물과 미륵이 차트의 계약월이 달라 늘 같은 방향으로 벌어진다.
+#   ⛔ 이건 **추정이 아니라 사용자가 정한 값**이다(계획서 §6 D1 은 맥점을
+#     자동 생성하지 말라는 것이지, 오프셋 기본값을 두지 말라는 게 아니다).
+#   그날 저장된 값이 있으면 **항상 그쪽이 이긴다** — 기본값은 빈 화면에만 쓴다.
+PETER_DEFAULT_OFFSET = -4.00
+
+
 def peter_db_path():
     """피터 사료 전용 DB. **미륵이 DB 를 건드리지 않는다**(456차 원칙)."""
     from config.settings import DB_DIR
@@ -10968,14 +10976,26 @@ class MinuteChartDialog(QDialog):
 
             _v.addWidget(QLabel("① 지시 트윗 원문 — 그대로 붙여넣는다"))
             _t1 = QTextEdit(); _t1.setMinimumHeight(S.p(150))
+            # 🔴 [583차] 웹에서 복사하면 **글자색까지 따라온다**. X 본문은
+            #   거의 검정(#0F1419)이라 어두운 배경에 붙는 순간 안 보인다 —
+            #   스타일시트의 color 는 기본값일 뿐 서식이 있는 텍스트를 못 이긴다.
+            #   서식을 아예 받지 않는다. 파서도 깨끗한 평문을 받게 된다.
+            _t1.setAcceptRichText(False)
             _t1.setStyleSheet(f"background:{C['bg2']};color:{C['text']};"
-                              f"border:1px solid {C['border']};")
+                              f"border:1px solid {C['border']};"
+                              f"selection-background-color:{C['blue']};")
             _v.addWidget(_t1)
 
             _v.addWidget(QLabel("② 거래 — 한 줄에 하나.  09:39 L 1050 / 10:16 X 1047 손절"))
             _t2 = QTextEdit(); _t2.setMinimumHeight(S.p(110))
+            # 🔴 [583차] 웹에서 복사하면 **글자색까지 따라온다**. X 본문은
+            #   거의 검정(#0F1419)이라 어두운 배경에 붙는 순간 안 보인다 —
+            #   스타일시트의 color 는 기본값일 뿐 서식이 있는 텍스트를 못 이긴다.
+            #   서식을 아예 받지 않는다. 파서도 깨끗한 평문을 받게 된다.
+            _t2.setAcceptRichText(False)
             _t2.setStyleSheet(f"background:{C['bg2']};color:{C['text']};"
-                              f"border:1px solid {C['border']};")
+                              f"border:1px solid {C['border']};"
+                              f"selection-background-color:{C['blue']};")
             _v.addWidget(_t2)
 
             _prev = QLabel("")
@@ -10999,6 +11019,7 @@ class MinuteChartDialog(QDialog):
             _t2.textChanged.connect(_refresh)
             _sp.valueChanged.connect(_refresh)
 
+            _sp.setValue(PETER_DEFAULT_OFFSET)   # 저장분이 있으면 아래에서 덮인다
             _prev_row = peter_load(self._session_date)
             if _prev_row:
                 _sp.setValue(float(_prev_row.get("offset") or 0.0))
