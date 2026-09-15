@@ -8823,6 +8823,10 @@ _STATE_BAR_COLOR = {
     "SELL_STACK": ("#F85149",  90),
     "SELL_MECH":  ("#8B949E",  90),
 }
+# [MW0601 580차] 4상태 계산은 `dashboard/stack_state` 하나로 모았다 —
+#   같은 알고리즘이 캔버스·두 배너 세 곳에서 돈다. 복사본을 두면 갈라진다.
+from dashboard.stack_state import compute_states as _stack_compute_states
+
 _STATE_KO = {"BUY_MECH": "기계적 매수", "BUY_STACK": "상방 쌓기",
              "SELL_STACK": "하방 쌓기", "SELL_MECH": "기계적 매도"}
 # [오버레이 P7] 가격 아래 보조 패널 — 전환 레인 + 원계열 히스토그램 2단
@@ -9151,6 +9155,9 @@ class MinuteChartCanvas(QWidget):
             self._closed_candles.append(normalized)
         if self._live_candle and self._live_candle["ts"] == normalized["ts"]:
             self._live_candle = None
+        # 🔴 [580차] 봉만 붙이고 상태를 다시 세지 않으면, 장전에 연 차트는
+        #   워밍업(30봉) 미달 상태로 굳어 **하루 종일 오버레이가 안 나온다**.
+        self._compute_states()
         self.update()
 
     def sync_active_trade(self, direction: str, price: float, ts=None):
@@ -10940,72 +10947,25 @@ class MinuteChartCanvas(QWidget):
     def _compute_states(self):
         """`_closed_candles` 에서 봉별 4상태를 만들어 `_state_map` 에 채운다.
 
-        `reset_session` 에서 **1회만** 부른다 — paintEvent 는 30ms 경보선이 있다.
+        계산 본체는 `dashboard.stack_state.compute_states` 다(사전등록 구현 이식,
+        `stack_features.build()` 대조 70일 5,871봉 불일치 0).
+
+        [580차] 종전에는 `reset_session` 에서만 불렀다 — 그래서 **장전에 차트를
+          열어두면 하루 종일 상태가 안 붙었다**. 봉이 30개를 넘겨도 다시 세지
+          않으니 빗금·상태레인·전환·플로우패널·레전드가 통째로 안 나왔다.
+          지금은 봉이 닫힐 때마다 다시 센다(356봉 실측 0.6ms).
         """
-        self._state_map = {}
-        self._aggr_map = {}
-        self._doi_map = {}
-        self._thr_a = None
-        self._thr_o = None
         self._state_provisional = not self._state_is_past_session()
-        # 🔴 사전등록 구현은 `m = m[m.oi.fillna(0) > 0]` 로 **OI 결측 봉을 버린 뒤**
-        #   창을 센다. 남겨두면 30봉 창이 그만큼 밀려 판정이 달라진다
-        #   (실측 2026-08-04: OI NULL 15봉 → 남겨두면 98봉, 버리면 95봉).
-        #   버린 봉은 캔들로는 그대로 그린다 — 상태만 없는 것이다.
-        rows = [r for r in self._closed_candles if (r.get("oi") or 0) > 0]
-        W = self.STATE_W
-        if len(rows) <= W:
-            return                       # 워밍업 미달 — **무표시**. 회색으로도 그리지 않는다
-        # ① ΔOI · 공격자 원시비율
-        d_oi, raw = [None] * len(rows), [None] * len(rows)
-        # 🔴 창 경계를 사전등록 구현(`stack_features.build`)과 **정확히** 맞춘다.
-        #   pandas 기준: `rolling(W).sum()` 은 i=W-1 에서 첫 값, `diff(W)` 는 i=W.
-        #   여기서 한 칸만 어긋나도 당일 분위 문턱이 밀려 경계 봉의 판정이 뒤집힌다
-        #   (실측: i>=W 로 맞췄을 때 9/11·9/14 각 1봉 불일치).
-        for i in range(len(rows)):
-            if i >= W:
-                a, b = rows[i].get("oi"), rows[i - W].get("oi")
-                if a is not None and b is not None and a > 0 and b > 0:
-                    d_oi[i] = a - b
-            if i >= W - 1:
-                bv = sv = vv = 0.0
-                ok = True
-                for j in range(i - W + 1, i + 1):
-                    _b, _s, _v = rows[j].get("buy_vol"), rows[j].get("sell_vol"), rows[j].get("volume")
-                    if _b is None or _s is None:
-                        ok = False
-                        break
-                    bv += _b; sv += _s; vv += (_v or 0)
-                if ok and vv > 0 and (bv + sv) > 0:
-                    raw[i] = (bv - sv) / vv
-        # ② 당일 중앙값 디바이어스
-        vals = sorted(v for v in raw if v is not None)
-        if not vals:
+        try:
+            _r = _stack_compute_states(self._closed_candles)
+        except Exception as _e:
+            logger.debug("[ChartDBG] _compute_states 예외: %s", _e)
             return
-        med = self._quantile(vals, 0.50)
-        imb = [None if v is None else v - med for v in raw]
-        # ③ 활성 문턱 — 절대값의 50% 분위
-        thrA = self._quantile(sorted(abs(v) for v in imb if v is not None), self.STATE_ACTIVE_Q)
-        thrO = self._quantile(sorted(abs(v) for v in d_oi if v is not None), self.STATE_ACTIVE_Q)
-        if thrA is None or thrO is None:
-            return
-        self._thr_a, self._thr_o = thrA, thrO
-        # ④ 상태 + 원계열 보관
-        for i, row in enumerate(rows):
-            a, o = imb[i], d_oi[i]
-            if a is not None:
-                self._aggr_map[row["ts"]] = a
-            if o is not None:
-                self._doi_map[row["ts"]] = o
-            if a is None or o is None:
-                continue
-            if abs(a) < thrA or abs(o) < thrO:
-                continue                 # 비활성 — 상태 없음(NA). 그리지 않는다
-            if a < 0:
-                st = "SELL_STACK" if o > 0 else "SELL_MECH"
-            else:
-                st = "BUY_STACK" if o > 0 else "BUY_MECH"
-            self._state_map[row["ts"]] = st
+        self._state_map = _r["state_map"]
+        self._aggr_map  = _r["aggr_map"]
+        self._doi_map   = _r["doi_map"]
+        self._thr_a     = _r["thr_a"]
+        self._thr_o     = _r["thr_o"]
 
     def set_premarket_levels(self, levels):
         """장전 레벨 주입. `None` 은 **미조회**다 — 「그날 없음」과 가르려고 남긴다."""
@@ -12161,23 +12121,58 @@ class MinuteChartDialog(QDialog):
             return   # 복기 모드 — 실시간 유입 차단
         self._chart.update_tick(price, ts=ts)
 
+    def _bump_live_counts(self):
+        """실시간 유입분을 배지에 반영한다. **메인 스레드 전용.**
+
+        🔴 [580차] 배지는 `_apply_reload` 에서 **한 번만** 채워졌다. 장전에 차트를
+          열면 그때 원천이 0행이라 커버리지에 오늘이 없고, 종일 유입돼도 다시 세지
+          않으니 「봉 0건 · 레짐 0건 · 방향 0건」으로 굳는다 — 캔들은 눈앞에
+          그려지는데 배지만 0이라 **계측이 거짓말을 한다**(계측 4원칙 ④).
+          커버리지(`_cov`)에도 오늘을 넣어야 한다. 넣지 않으면 `_layer_state` 가
+          「오늘이 커버리지에 없다」는 이유로 건수를 보기 전에 0건을 반환한다.
+        """
+        try:
+            _c = self._chart
+            _live = {
+                "candle":    len(_c._closed_candles or []),
+                "tail":      sum(1 for _b in (_c._closed_candles or []) if _b.get("tail")),
+                "regime":    len(_c._regime_map or {}),
+                "direction": len(_c._dir_map or {}),
+                "trade":     len(_c._completed_trades or []) + len(_c._exit_markers or []),
+                "gp":        len(_c._gp_trades or []),
+            }
+            for _k, _v in _live.items():
+                # 되돌아가지 않는다 — 재적재 결과가 더 많으면 그쪽을 남긴다
+                if _v > (self._cnt.get(_k) or 0):
+                    self._cnt[_k] = _v
+                if _k == "tail":
+                    continue
+                if _v > 0 and isinstance(self._cov.get(_k), set):
+                    self._cov[_k].add(self._session_date)
+            self._refresh_layer_badges()
+        except Exception as _e:
+            logger.debug("[ChartDBG] _bump_live_counts 예외: %s", _e)
+
     def on_candle_closed(self, candle: dict):
         if not self._live_mode:
             return   # 복기 모드 — 실시간 유입 차단
         self.maybe_roll_session()
         self._chart.on_candle_closed(candle)
+        self._bump_live_counts()
 
     def set_regime_at(self, ts_key: str, regime: str):
         """파이프라인 완료 후 봉 레짐 색상 업데이트."""
         if not self._live_mode:
             return   # 복기 모드 — 실시간 유입 차단
         self._chart.set_regime_at(ts_key, regime)
+        self._bump_live_counts()
 
     def set_direction_at(self, ts_key: str, direction: int):
         """파이프라인 완료 후 봉 방향예측 색상 업데이트."""
         if not self._live_mode:
             return   # 복기 모드 — 실시간 유입 차단
         self._chart.set_direction_at(ts_key, direction)
+        self._bump_live_counts()
 
     def record_entry(self, direction: str, price: float, ts=None):
         if not self._live_mode:
