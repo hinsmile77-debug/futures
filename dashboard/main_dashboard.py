@@ -9987,17 +9987,36 @@ class MinuteChartCanvas(QWidget):
         try:
             count = max(padded_count, 1)
             step = plot.width() / count
-            _dim = 0.55 if self._state_provisional else 1.0
+            # 🔴 [581차] 종전 alpha 110×0.55 + 1px DotLine 은 **안 보였다**.
+            #   실측: 배경 대비 휘도차 Δ3.5~4.1 (0~255 척도) — 그릴 뿐 못 읽는다.
+            #   「신호가 아니라 경계」라는 의도는 유지하되, 읽히긴 해야 한다.
+            #   · 안티에일리어싱을 끈다 — 1px 점선이 반투명으로 번져 잉크가 흩어졌다
+            #   · 대시를 촘촘히(2on/3off) 하고 알파를 올린다
+            #   · 아래 전환 레인 쪽 끝에 **실선 꼬리**를 붙여 눈이 걸리게 한다
+            #     (이 선의 목적이 가격 영역과 전환 레인을 잇는 것이다)
+            _was_aa = painter.renderHints() & QPainter.Antialiasing
+            painter.setRenderHint(QPainter.Antialiasing, False)
+            _dim = 0.78 if self._state_provisional else 1.0
+            _tail_h = min(S.p(26), plot.height() * 0.12)
             for idx, _st in _tr:
                 _c = _STATE_BAR_COLOR.get(_st)
                 if not _c:
                     continue
-                col = QColor(_c[0])
-                col.setAlpha(int(110 * _dim))
-                _p = QPen(col); _p.setWidth(1); _p.setStyle(Qt.DotLine)
-                painter.setPen(_p)
                 x = plot.left() + step * idx
-                painter.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()))
+                col = QColor(_c[0])
+                col.setAlpha(int(215 * _dim))
+                _p = QPen(col); _p.setWidth(1)
+                _p.setStyle(Qt.CustomDashLine); _p.setDashPattern([2, 3])
+                painter.setPen(_p)
+                painter.drawLine(QPointF(x, plot.top()),
+                                 QPointF(x, plot.bottom() - _tail_h))
+                # 실선 꼬리 — 전환 레인과 이어지는 부분만
+                col2 = QColor(_c[0]); col2.setAlpha(int(255 * _dim))
+                _p2 = QPen(col2); _p2.setWidth(1); _p2.setStyle(Qt.SolidLine)
+                painter.setPen(_p2)
+                painter.drawLine(QPointF(x, plot.bottom() - _tail_h),
+                                 QPointF(x, plot.bottom()))
+            painter.setRenderHint(QPainter.Antialiasing, bool(_was_aa))
         except Exception as _e:
             logger.debug("[ChartDBG] _draw_state_vlines 예외: %s", _e)
         finally:
