@@ -39,7 +39,7 @@ from PyQt5.QtCore import (
 )
 from PyQt5.QtGui import (
     QFont, QColor, QPalette, QPainter, QBrush, QPen,
-    QLinearGradient, QFontDatabase, QIcon, QKeySequence, QPainterPath, QPolygonF,
+    QLinearGradient, QFontDatabase, QIcon, QKeySequence, QPainterPath, QPolygonF, QFontMetricsF,
     QTextCursor, QTextBlockFormat, QTextCharFormat,
 )
 
@@ -8878,6 +8878,7 @@ class MinuteChartCanvas(QWidget):
         # 피터 사료는 실측 **아래**에 깐다 — 겹치면 실측이 이긴다
         self._draw_peter_trades(painter, plot, candles, index_map, lo, hi, padded_count)
         _t_candles = _t2.monotonic(); self._draw_candles(painter, plot, candles, lo, hi, padded_count)
+        self._draw_peter_labels(painter, plot)   # 라벨은 캔들 위에
         _t_dir    = _t2.monotonic();  self._draw_direction_bar(painter, plot, candles, padded_count)
         _t_regime = _t2.monotonic();  self._draw_regime_bar(painter, plot, candles, padded_count)
         self._draw_state_lane(painter, plot, candles, padded_count)
@@ -9381,6 +9382,12 @@ class MinuteChartCanvas(QWidget):
         finally:
             painter.restore()
 
+    # 시안(`mockup_two_charts.html` span())이 한 거래에 쓰는 요소는 **7개**다.
+    #   ① 진입·청산 세로 경계  ② 띠  ③ 진입→청산 연결선  ④ 진입 삼각형
+    #   ⑤ 청산 마름모  ⑥ 손익 칩(위)  ⑦ 방향·시각·사유 라벨(아래)
+    # 종전 구현은 ②③⑥ 셋뿐이었고 ⑥ 의 내용도 달랐다(시각·사유 → 시안은 손익).
+    PETER_VLINE_MAX = 12   # 사료가 많은 날 세로선이 화면을 덮지 않게
+
     def _draw_peter_trades(self, painter: QPainter, plot: QRectF, candles, index_map,
                            lo: float, hi: float, padded_count: int):
         """붙여넣은 피터 거래. 미륵이 실체결과 **선 종류**로 가른다(점선 = 사료)."""
@@ -9393,6 +9400,13 @@ class MinuteChartCanvas(QWidget):
         except Exception:
             return
         try:
+            _OP = 0.80          # 사료는 실체결보다 한 단계 옅다(시안 op)
+            _vline_ok = len(self._peter_trades) <= self.PETER_VLINE_MAX
+            # 미결 평가용 기준가 — 마지막 종가. 없으면 평가 자체를 하지 않는다.
+            _mark = None
+            if self._closed_candles:
+                _mark = _as_num(self._closed_candles[-1].get("close"))
+            _defer = []          # (⑥⑦ 라벨) 2차 패스용
             for _t in self._peter_trades:
                 _i = self._coerce_dt(_t.get("entry_ts"))
                 if not _i:
@@ -9406,41 +9420,123 @@ class MinuteChartCanvas(QWidget):
                 _b = self._resolve_index(index_map, candles, _x) if _x else (len(candles) - 1)
                 if _b is None:
                     _b = len(candles) - 1
-                # 색 = 손익. 미결은 확정 손익이 아니므로 **무채색**이다.
-                if _xp is None:
-                    col = QColor("#C2CCD6")
-                else:
-                    _pnl = (_xp - _ep) if _t.get("direction") == "LONG" else (_ep - _xp)
-                    col = QColor("#3FB950" if _pnl >= 0 else "#F85149")
+                _long = (_t.get("direction") == "LONG")
+                _open = _xp is None
+                # 🔴 시안 주석 그대로 — **미결도 손익 색을 쓴다. 회색은 구조모델 전용이다.**
+                #   종전 구현은 미결을 회색으로 칠해 구조모델과 같은 색이 됐다.
+                _px = _mark if _open else _xp
+                _pnl = None
+                if _px is not None and _ep > 0:
+                    _pnl = (_px - _ep) if _long else (_ep - _px)
+                col = QColor("#3FB950" if (_pnl or 0) >= 0 else "#F85149")
                 x1 = plot.left() + step * (_a + 0.5)
                 x2 = plot.left() + step * (_b + 0.5)
                 y1 = self._price_to_y(_ep, plot, lo, hi)
-                y2 = self._price_to_y(_xp, plot, lo, hi) if _xp else y1
-                _f = QColor(col); _f.setAlpha(22)
+                y2 = self._price_to_y(_px, plot, lo, hi) if _px is not None else y1
+                _yt = min(y1, y2)
+                _yh = max(S.p(14), abs(y2 - y1))      # 손익이 작아도 띠가 보이게
+                _xa, _xb = min(x1, x2), max(x1, x2)
+                _w = max(S.p(9), _xb - _xa)           # 1~2분 거래도 보이게
+
+                # ① 진입·청산 세로 경계 — 캔들과 색이 겹쳐도 구간은 이 두 선으로 읽힌다
+                if _vline_ok:
+                    _pv = QPen(QColor(col)); _pv.setWidth(1)
+                    _pv.setStyle(Qt.CustomDashLine); _pv.setDashPattern([2, 4])
+                    _cv = QColor(col); _cv.setAlpha(int(255 * _OP * 0.45))
+                    _pv.setColor(_cv); painter.setPen(_pv)
+                    for _xx in (x1, x2):
+                        painter.drawLine(QPointF(_xx, plot.top()), QPointF(_xx, plot.bottom()))
+
+                # ② 띠 — 테두리 없이 면으로만. 미결은 옅게(확정 손익이 아니다)
+                _f = QColor(col)
+                _f.setAlpha(int(255 * _OP * (0.14 if _open else 0.26)))
                 painter.setPen(Qt.NoPen); painter.setBrush(_f)
-                painter.drawRect(QRectF(min(x1, x2), min(y1, y2),
-                                        max(step * 0.9, abs(x2 - x1)),
-                                        max(S.p(6), abs(y2 - y1))))
-                _p = QPen(col); _p.setWidth(1); _p.setStyle(Qt.DashLine)
+                painter.drawRect(QRectF(_xa, _yt, _w, _yh))
+
+                # ③ 진입→청산 연결선 — 띠가 납작해도 방향과 폭이 읽힌다
+                _pc = QColor(col); _pc.setAlpha(int(255 * _OP * 0.9))
+                _p = QPen(_pc); _p.setWidthF(1.6)
+                _p.setStyle(Qt.CustomDashLine); _p.setDashPattern([4, 3])
                 painter.setPen(_p); painter.setBrush(Qt.NoBrush)
                 painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
-                painter.setFont(QFont("Consolas", 8))
-                _lab = ("평가 " if _xp is None else "") + "%s %s" % (
-                    _t.get("entry_hm") or "", _t.get("why") or "")
-                # 🔴 미결 거래는 마지막 봉까지 뻗어 중앙이 우측 끝에 온다 —
-                #   그대로 두면 피터맥점 칩과 겹쳐 둘 다 못 읽는다(실측).
-                #   레벨 칩 영역(우측 150px)을 침범하지 않도록 가둔다.
-                _full = _lab.strip() + " 피터리"
-                # 🔴 고정값으로 가두면 안 된다 — 칩 폭이 글자마다 달라서
-                #   긴 라벨은 여전히 레벨 칩 영역을 파고든다(실측).
-                #   `_draw_label_chip` 과 **같은 식**으로 폭을 재서 오른쪽 끝을 맞춘다.
+
+                # ④ 진입 삼각형 — 롱은 진입가 아래에서 위를 본다
+                _mk = QColor(col); _mk.setAlpha(int(255 * _OP))
+                painter.setBrush(_mk)
+                _pe = QPen(QColor("#0d1117")); _pe.setWidthF(1.2); painter.setPen(_pe)
+                _t10, _t18, _t45 = S.p(10), S.p(18), S.p(4.5)
+                if _long:
+                    _tri = QPolygonF([QPointF(x1, y1 + _t10),
+                                      QPointF(x1 - _t45, y1 + _t18),
+                                      QPointF(x1 + _t45, y1 + _t18)])
+                else:
+                    _tri = QPolygonF([QPointF(x1, y1 - _t10),
+                                      QPointF(x1 - _t45, y1 - _t18),
+                                      QPointF(x1 + _t45, y1 - _t18)])
+                painter.drawPolygon(_tri)
+
+                # ⑤ 청산 마름모 — 미결이면 찍지 않는다(청산이 없었으니까)
+                if not _open:
+                    _d35 = S.p(3.5)
+                    painter.drawPolygon(QPolygonF([
+                        QPointF(x2, y2 - _d35 * 1.414), QPointF(x2 + _d35 * 1.414, y2),
+                        QPointF(x2, y2 + _d35 * 1.414), QPointF(x2 - _d35 * 1.414, y2)]))
+
+                # ⑥⑦ 은 **2차 패스**로 미룬다. 거래마다 그리면 뒤 거래의
+                #   전체높이 세로선(①)이 앞 거래의 칩을 가로질러 글자를 끊는다(실측).
+                _defer.append((_xa, _w, _yt, _yh, col, _pnl, _open, _t))
+
+            # 🔴 라벨은 **캔들보다 뒤에** 그려야 한다. paintEvent 순서가
+            #   …_draw_peter_trades → _draw_candles… 이라 여기서 찍으면
+            #   캔들 몸통이 글자를 덮어 「-3.00p 피▯리」 처럼 끊긴다(실측).
+            self._peter_label_q = _defer
+        except Exception as _e:
+            logger.debug("[ChartDBG] _draw_peter_trades 예외: %s", _e)
+        finally:
+            painter.restore()
+
+    def _draw_peter_labels(self, painter: QPainter, plot: QRectF):
+        """피터 거래 라벨(⑥ 손익 칩 · ⑦ 방향·시각·사유). **캔들 뒤에** 부른다."""
+        _defer = getattr(self, "_peter_label_q", None)
+        if not _defer:
+            return
+        try:
+            painter.save()
+        except Exception:
+            return
+        try:
+            _OP = 0.80
+            painter.setFont(QFont("Consolas", 8))
+            for _xa, _w, _yt, _yh, col, _pnl, _open, _t in _defer:
+                if _pnl is None:
+                    _ltx = "평가 ——p 피터리"      # 기준가를 못 구했다. 0 으로 채우지 않는다
+                else:
+                    _ltx = "%s%+.2fp 피터리" % ("평가 " if _open else "", _pnl)
                 _fm = painter.fontMetrics()
-                _cw = max(S.p(84), _fm.horizontalAdvance(_full) + S.p(12))
-                _cx = (x1 + x2) / 2 - _cw / 2
+                _cw = max(S.p(84), _fm.horizontalAdvance(_ltx) + S.p(12))
+                _cx = (_xa + _xa + _w) / 2 - _cw / 2
                 _cx = min(max(_cx, plot.left() + S.p(4)),
                           plot.right() - S.p(154) - _cw)
-                self._draw_label_chip(painter, _cx, min(y1, y2) - S.p(20), _full,
+                self._draw_label_chip(painter, _cx, _yt - S.p(20), _ltx,
                                       QColor(13, 17, 23, 225), col, True)
+
+                # ⑦ 방향·시각·사유 라벨 — 띠 아래
+                _wtx = "%s %s→%s%s" % (_t.get("direction") or "",
+                                       _t.get("entry_hm") or "",
+                                       _t.get("exit_hm") or "미결",
+                                       (" · " + _t.get("why")) if _t.get("why") else "")
+                _ww = _fm.horizontalAdvance(_wtx) + S.p(12)
+                _wx = (_xa + _xa + _w) / 2 - _ww / 2
+                _wx = min(max(_wx, plot.left() + S.p(4)), plot.right() - _ww - S.p(4))
+                _wr = self._place_chip(QRectF(_wx, _yt + _yh + S.p(3), _ww, S.p(13)),
+                                       self._last_plot_rect)
+                if _wr is not None:
+                    painter.setPen(Qt.NoPen)
+                    painter.setBrush(QColor(13, 17, 23, 210))
+                    painter.drawRect(_wr)
+                    _wc = QColor(col); _wc.setAlpha(int(255 * _OP * 0.85))
+                    painter.setPen(_wc)
+                    painter.drawText(_wr, Qt.AlignCenter, _wtx)
         except Exception as _e:
             logger.debug("[ChartDBG] _draw_peter_trades 예외: %s", _e)
         finally:
@@ -9454,46 +9550,91 @@ class MinuteChartCanvas(QWidget):
         (매수 +7.0%p, P=0.77). 그래서 **이것만** 배경으로 크게 그린다 —
         대칭으로 그리면 "사라"도 같은 무게로 검증된 줄 안다(계측 4원칙 ④).
 
-        🔴 `_state_provisional` 이면 채도를 절반으로 떨어뜨린다. 라이브에서는
-          당일 중앙값·분위수가 아직 확정 전이라 **검증된 수치가 아니다.**
+        [585차] 시안(`mockup_two_charts.html` A·금지 빗금)은 **4겹**이다:
+          ① 45° 빗금 (선폭 1.6 · 투명도 .30 · 간격 7)
+          ② 바탕 면 (warn 색 · 투명도 .05) — 빗금 사이가 비어 보이지 않게
+          ③ 구간 시작 세로선 (투명도 .4) — 어디서부터인지
+          ④ 구간별 「⊘ 롱 금지」 라벨 (구간이 충분히 넓을 때)
+        종전 구현은 ① 하나였고 그마저 투명도가 .11(alpha 28)로 시안의 1/3 이었다.
+        화면에서 **가장 흐린 요소**가 유일하게 검증된 문장이었다 — 앞뒤가 바뀌었다.
         """
         if not self._state_map:
             return
         try:
             count = max(padded_count, 1)
             step = plot.width() / count
-            col = QColor("#D29922")
-            # 잠정은 약해야 하지만 **안 보이면 정보가 0** 이다. 실측으로 조정.
-            col.setAlpha(28 if self._state_provisional else 44)
+            _dim = 0.75 if self._state_provisional else 1.0
             painter.save()
         except Exception as _e:
             logger.debug("[ChartDBG] _draw_state_overlay 진입 예외: %s", _e)
             return
         try:
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QBrush(col, Qt.BDiagPattern))
+            _W = "#D29922"
+            _runs = list(self._state_runs(candles, want="BUY_MECH"))
             _n = 0
-            for i0, i1, _st in self._state_runs(candles, want="BUY_MECH"):
-                painter.drawRect(QRectF(plot.left() + step * i0, plot.top(),
-                                        step * (i1 - i0), plot.height()))
+            _sp = S.p(7) * 1.41421356      # 45° 선의 x 방향 간격(수직 간격 7)
+            for i0, i1, _st in _runs:
+                _x0 = plot.left() + step * i0
+                _w = step * (i1 - i0)
+                if _w <= 2:
+                    continue
+                _r = QRectF(_x0, plot.top(), _w, plot.height())
+                painter.setClipRect(_r)
+                # ② 바탕 면 — 빗금 사이가 비어 보이지 않게 아주 옅게 깐다
+                _bg = QColor(_W); _bg.setAlpha(int(255 * 0.05 * _dim))
+                painter.fillRect(_r, _bg)
+                # ① 45° 빗금 — Qt 의 BDiagPattern 은 선폭이 1px 로 고정이라
+                #   시안의 1.6px 을 낼 수 없다. 직접 긋는다.
+                _hc = QColor(_W); _hc.setAlpha(int(255 * 0.30 * _dim))
+                _hp = QPen(_hc); _hp.setWidthF(1.6); _hp.setCapStyle(Qt.FlatCap)
+                painter.setPen(_hp)
+                _h = _r.height()
+                _xx = _r.left() - _h
+                while _xx < _r.right():
+                    painter.drawLine(QPointF(_xx, _r.bottom()),
+                                     QPointF(_xx + _h, _r.top()))
+                    _xx += _sp
+                painter.setClipping(False)
+                # ③ 구간 시작 세로선 — 「여기서부터」를 못 박는다
+                _ec = QColor(_W); _ec.setAlpha(int(255 * 0.40 * _dim))
+                _ep = QPen(_ec); _ep.setWidth(1); painter.setPen(_ep)
+                painter.drawLine(QPointF(_x0, plot.top()), QPointF(_x0, plot.bottom()))
+                # ④ 구간 라벨 — 좁은 구간엔 안 붙인다(글자가 구간을 넘친다)
+                if _w > S.p(110):
+                    painter.setFont(QFont("Malgun Gothic", 8, QFont.Bold))
+                    painter.setPen(QColor(_W))
+                    painter.drawText(QPointF(_x0 + S.p(6), plot.top() + S.p(14)),
+                                     self._no_long_mark() + " 롱 금지")
                 _n += 1
             if _n:
-                # 이모지(⛔)는 QPainter 에서 폰트에 없으면 **두부 박스**로 떨어진다.
-                # 실측으로 확인했다 — 기본 글리프만 쓴다.
-                # 구간이 여럿인데 라벨이 하나면 "한 군데뿐"으로 읽힌다. 개수를 적는다.
-                _txt = "■ 롱 금지 — 기계적 매수 %d구간" % _n
+                # 이모지는 QPainter 에서 폰트에 없으면 **두부 박스**로 떨어진다(실측).
+                _txt = "%s 롱 금지 — 기계적 매수 %d구간" % (self._no_long_mark(), _n)
                 painter.setFont(QFont("Malgun Gothic", 8, QFont.Bold))
-                painter.setPen(QColor("#D29922"))
+                painter.setPen(QColor(_W))
                 painter.drawText(QPointF(plot.left() + S.p(6), plot.top() + S.p(12)), _txt)
                 self._reserve_text(painter, plot.left() + S.p(6), plot.top() + S.p(12), _txt)
-            # 🔴 [582차] 잠정 경고는 BUY_MECH 구간 유무와 **무관하게** 찍는다.
-            #   종전에는 `if _n:` 안에 있어서, 롱 금지 구간이 없는 날에는
-            #   라벨이 전부 잠정인데도 아무 경고가 안 떴다.
             self._draw_provisional_note(painter, plot, top_offset=S.p(12) if _n else 0)
         except Exception as _e:
             logger.debug("[ChartDBG] _draw_state_overlay 예외: %s", _e)
         finally:
             painter.restore()
+
+    _NO_LONG_CACHE = None
+
+    def _no_long_mark(self):
+        """「⊘」가 이 폰트에 있으면 쓰고, 없으면 ■ 로 떨어진다.
+
+        🔴 글리프 유무를 **재서** 정한다. 없는 글자를 찍으면 두부(□)가 되는데,
+          두부는 「금지」로 안 읽힌다 — 차라리 ■ 가 낫다.
+        """
+        if MinuteChartCanvas._NO_LONG_CACHE is None:
+            try:
+                _fm = QFontMetricsF(QFont("Malgun Gothic", 8, QFont.Bold))
+                MinuteChartCanvas._NO_LONG_CACHE = (
+                    "\u2298" if _fm.inFont("\u2298") else "\u25a0")
+            except Exception:
+                MinuteChartCanvas._NO_LONG_CACHE = "\u25a0"
+        return MinuteChartCanvas._NO_LONG_CACHE
 
     def _draw_provisional_note(self, painter: QPainter, plot: QRectF, top_offset=0):
         """장중 라벨이 얼마나 흔들리는지 **숫자로** 적는다.
@@ -11006,7 +11147,10 @@ class MinuteChartDialog(QDialog):
             def _refresh():
                 _lv = parse_peter_text(_t1.toPlainText(), _sp.value())
                 _tr, _err = parse_peter_trades(_t2.toPlainText(), _sp.value(), self._session_date)
-                _lines = ["맥점 %d건 · 거래 %d건" % (len(_lv), len(_tr))]
+                _tr_n = ("거래 미입력 — ② 칸에 「09:39 L 1050 / 10:16 X 1047 손절」"
+                         " 형식으로 적는다"
+                         if not _t2.toPlainText().strip() else "거래 %d건" % len(_tr))
+                _lines = ["맥점 %d건 · %s" % (len(_lv), _tr_n)]
                 for _h in _lv[:6]:
                     _lines.append("  %s %g → %g" % (PETER_KIND_KO.get(_h['kind'], _h['kind']),
                                                     _h['level'], _h['level_adj']))
@@ -11051,7 +11195,17 @@ class MinuteChartDialog(QDialog):
             _lv = parse_peter_text(_row.get("raw_lv") or "", _off)
             _tr, _err = parse_peter_trades(_row.get("raw_tr") or "", _off, self._session_date)
             self._chart.set_peter(_lv, _tr)
-            _t = "피터 맥점 %d · 거래 %d · 오프셋 %+.2f" % (len(_lv), len(_tr), _off)
+            # 🔴 [585차] 「거래 0」은 **두 가지**를 뭉갠다 —
+            #   ② 입력란을 아예 안 채웠거나, 채웠는데 0건이거나.
+            #   실측으로 겪었다: 트윗 원문만 ① 에 넣어 맥점 8건이 떴는데
+            #   거래가 0 이라, 화면이 시안과 다르다고 읽혔다. 원인은 미입력이었다.
+            #   계측 4원칙 ② — 미측정 ≠ 0건.
+            _raw_tr = (_row.get("raw_tr") or "").strip()
+            if not _raw_tr:
+                _tr_txt = "거래 미입력(② 비었음)"
+            else:
+                _tr_txt = "거래 %d" % len(_tr)
+            _t = "피터 맥점 %d · %s · 오프셋 %+.2f" % (len(_lv), _tr_txt, _off)
             if _err:
                 _t += " · ⚠형식오류 %d" % len(_err)
             self._peter_note.setText(_t)
