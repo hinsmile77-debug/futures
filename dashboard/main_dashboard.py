@@ -11690,6 +11690,18 @@ class MinuteChartDialog(QDialog):
             if _d.exec_() == QDialog.Accepted:
                 peter_save(self._session_date, _sp.value(),
                            _t1.toPlainText(), _t2.toPlainText())
+                # 🔴 [586차] 사료를 넣었는데 레이어가 꺼져 있으면 **아무 일도
+                #   안 일어난다**. 화면은 조용하고, 사용자는 「입력이 안 먹었다」로
+                #   읽는다(실측으로 겪었다 — 거래 1건이 파싱됐는데 토글이 꺼져
+                #   있어 0픽셀이었다). 방금 넣은 것은 보고 싶어서 넣은 것이다.
+                _lv0 = parse_peter_text(_t1.toPlainText(), _sp.value())
+                _tr0, _ = parse_peter_trades(_t2.toPlainText(), _sp.value(),
+                                             self._session_date)
+                for _k, _has in (("peter_lv", bool(_lv0)),
+                                 ("trade_peter", bool(_tr0))):
+                    _b = self._ov_btn.get(_k)
+                    if _has and _b is not None and not _b.isChecked():
+                        _b.setChecked(True)     # toggled 시그널이 레이어까지 켠다
                 self._apply_peter()
         except Exception as _e:
             logger.warning("[ChartDBG] 피터 입력 실패: %s", _e)
@@ -11720,6 +11732,15 @@ class MinuteChartDialog(QDialog):
             _t = "피터 맥점 %d · %s · 오프셋 %+.2f" % (len(_lv), _tr_txt, _off)
             if _err:
                 _t += " · ⚠형식오류 %d" % len(_err)
+            # 「사료는 있는데 안 보인다」의 유일한 남은 원인 — 레이어가 꺼짐.
+            #   건수만 적어두면 화면과 숫자가 어긋난 채로 조용하다.
+            _off_layers = [_n for _k, _n, _has in
+                           (("peter_lv", "피터맥점", bool(_lv)),
+                            ("trade_peter", "거래피터", bool(_tr)))
+                           if _has and _k in self._ov_btn
+                           and not self._ov_btn[_k].isChecked()]
+            if _off_layers:
+                _t += " · ⚠레이어 꺼짐(%s)" % " · ".join(_off_layers)
             self._peter_note.setText(_t)
         except Exception as _e:
             logger.debug("[ChartDBG] 피터 적용 실패: %s", _e)
