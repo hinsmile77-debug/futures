@@ -26,6 +26,7 @@ up/down 이 무엇을 하든 "붕괴" 로 읽힌다.
       냈다" 와 구분되지 않는다(계측 4원칙 ②).
   T3  🔴 10:59 재현 — live 는 STUCK 인데 raw 는 아니다. 이게 P1-1 의 존재 이유다.
   T4  반대 방향도 잡는다 — raw 가 상수면 raw 판정이 STUCK 이다(감지력 보존).
+  T4b 🔴 raw 버퍼 수명이 live 와 같다 — 해소 시 관찰창을 비운다. [588차]
   T5  기본값에서 **live 판정이 바뀌지 않는다**(`_BASED_ENABLED=False`).
   T6  플래그를 켜면 raw 기준으로 바뀐다.
   T7  🔴 raw 미측정 호라이즌은 플래그를 켜도 **live 판정을 유지**한다.
@@ -115,6 +116,60 @@ def test_t4_raw_constant_is_detected():
     """감지력 보존 — raw 가 진짜 상수면 섀도가 잡아야 한다."""
     d = _drive([0.360] * _N, [0.4123] * _N)
     assert d["const_output_horizons_raw"] == ["3m"]
+
+
+def test_t4b_raw_buffer_is_cleared_on_resolve():
+    """🔴 raw 버퍼도 live 와 **같은 수명 규칙**을 따른다.
+
+    live 는 해소 시 `_hz_conf_hist` 를 비운다(오염된 관찰창 재사용 방지). raw 만
+    안 비우면 두 계열이 **다른 규칙 아래** 놓여, "같은 규칙 · 다른 입력" 이라는
+    이 섀도의 전제가 깨진다 — 불일치 측정이 그만큼 오염된다.
+
+    ⚠ **값을 한 번 흔들어 해소시키는 것으로는 이 불변식을 시험할 수 없다.**
+    버퍼가 `deque(maxlen=_N)` 이라 이상치가 _N 스텝이면 자연히 밀려나, clear 가
+    있든 없든 재감지까지 똑같이 _N 스텝이 걸린다(초판이 그래서 헛돌았다).
+
+    차이가 실제로 나는 경로는 **비배포로 인한 해소**다. 3m 은 3분 중 2분만
+    배포되므로(§3) 3분마다 `_raw_stuck` 에서 빠지며 해소된다 — 그때 버퍼를 비우지
+    않으면 **다음 배포 분에 표본 1개만 더 얹고 즉시 재감지**된다.
+    """
+    ed = EnsembleDecision()
+
+    # ⚠ `horizon_proba={}` 로 비배포를 흉내내면 안 된다 — compute() 가 P0 방어로
+    #   조기 반환해 감지 블록 자체가 돌지 않는다. 실제 파이프라인에서는 3m 이 빠져도
+    #   다른 호라이즌은 살아 있으므로, 10m 을 상시 배포 상태로 둔다.
+    _OTHER = {"10m": {"up": 0.30, "down": 0.30, "flat": 0.40,
+                      "direction": 0, "confidence": 0.40}}
+
+    def step(deployed, raw_conf=0.4123, i=[0]):
+        i[0] += 1
+        hp = dict(_OTHER)
+        # 10m 은 매분 값을 흔들어 그쪽이 STUCK 되지 않게 한다(관심 대상이 아니다)
+        hp["10m"] = dict(_OTHER["10m"], confidence=round(0.40 + 0.01 * (i[0] % 7), 4))
+        raw = {}
+        if deployed:
+            hp["3m"] = {"up": 0.30, "down": 0.34, "flat": 0.36,
+                        "direction": 0, "confidence": 0.36}
+            raw["3m"] = {"confidence": raw_conf, "direction": 1}
+        return ed.compute(hp, active_horizons=["3m", "10m"], gbm_raw=raw)
+
+    for _ in range(_N):
+        d = step(True)
+    assert d["const_output_horizons_raw"] == ["3m"], "전제 실패 — 먼저 STUCK 이어야 한다"
+
+    d = step(False)                           # 비배포 → 해소
+    assert d["const_output_horizons_raw"] == [], "비배포인데 해소되지 않았다"
+
+    d = step(True)                            # 재배포 첫 분
+    assert d["const_output_horizons_raw"] == [], (
+        "재배포 1분 만에 재감지됐다 — raw 버퍼가 비워지지 않아 해소 이전 관찰창이 "
+        "그대로 남아 있다(live 는 이 자리에서 비운다)"
+    )
+    for _ in range(_N - 2):
+        d = step(True)
+        assert d["const_output_horizons_raw"] == [], "표본 _N 개 전에 재감지됐다"
+    d = step(True)
+    assert d["const_output_horizons_raw"] == ["3m"], "정확히 _N 개에서 재감지돼야 한다"
 
 
 # ══════════════════════════════════════════════════════════════════════════

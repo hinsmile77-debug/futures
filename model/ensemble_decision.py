@@ -748,6 +748,20 @@ class EnsembleDecision:
                     (max(x[1] for x in _rbuf) - min(x[1] for x in _rbuf)) if _rbuf else -1.0,
                     list(_rbuf)[-1][0] if _rbuf else 0,
                 )
+        # ── [MW0601 588차] raw 버퍼 수명을 live 와 **같은 규칙**으로 ────────────
+        # live 는 해소 시 `_hz_conf_hist` 를 비운다(아래 해소 분기). raw 만 안 비우면
+        # 두 계열이 **다른 규칙 아래** 놓여 "같은 규칙 · 다른 입력" 이라는 이 섀도의
+        # 전제가 깨진다.
+        # 🔴 실제로 매일 걸리는 경로다: 3m 은 3분 중 2분만 배포되므로(§3) 3분마다
+        #   `_raw_stuck` 에서 빠지며 해소된다. 비우지 않으면 **다음 배포 분에 표본
+        #   1개만 얹고 즉시 재감지**돼, raw 가 live 보다 훨씬 자주 STUCK 으로 읽힌다
+        #   — 재보정이 그 오염된 비율 위에서 임계를 고르게 된다.
+        # ⚠ 값을 흔들어 해소시키는 것으로는 이 결함이 드러나지 않는다(버퍼가
+        #   `deque(maxlen=N)` 이라 이상치가 N 스텝이면 자연히 밀려난다). 비배포 해소가
+        #   유일하게 갈리는 경로다 — `test_t4b` 가 그 형태로 고정한다.
+        for _h_rl in HORIZONS:
+            if self._hz_raw_stuck.get(_h_rl) and _h_rl not in _raw_stuck:
+                self._hz_raw_hist[_h_rl].clear()
         self._hz_raw_stuck = {h: (h in _raw_stuck) for h in HORIZONS}
         _const_stuck_live_shadow = set(_const_stuck)   # 리포트용 원본 보존
         if _CO_RAW_LIVE:
