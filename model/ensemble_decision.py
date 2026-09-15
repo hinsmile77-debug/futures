@@ -300,6 +300,12 @@ class EnsembleDecision:
             h: deque(maxlen=self._CONST_OUT_N) for h in HORIZONS
         }
         self._hz_stuck: Dict[str, bool] = {h: False for h in HORIZONS}
+        # [MW0601 587차 / P1-1] 보정 전 GBM raw 전용 버퍼 — 위 `_hz_conf_hist` 와
+        # **같은 규칙·다른 입력**. 둘을 한 버퍼에 섞으면 불일치를 못 잰다.
+        self._hz_raw_hist: Dict[str, deque] = {
+            h: deque(maxlen=self._CONST_OUT_N) for h in HORIZONS
+        }
+        self._hz_raw_stuck: Dict[str, bool] = {h: False for h in HORIZONS}
         # ShortHorizonOverride: dir=FLAT 연속 카운터
         self._flat_streak: int = 0
         # FL 조기 감쇠: FL 확률 70%+ 연속 분 카운터 (Phase 1 부록 C-1)
@@ -442,6 +448,7 @@ class EnsembleDecision:
         active_horizons: Optional[list] = None,
         zone_mc: float = 0.60,
         bias_override_horizons: Optional[set] = None,
+        gbm_raw: Optional[Dict[str, Dict]] = None,
         conf_stuck_streak: Optional[Dict[str, int]] = None,
         target_recent_acc: Optional[float] = None,
         zone_allows_entry: bool = True,
@@ -664,6 +671,15 @@ class EnsembleDecision:
         # → 해당 호라이즌을 앙상블에서 임시 제외 후 재정규화.
         # F1AdaptiveWeight(EMA 기반·느림)보다 빠른 응답으로 즉시 피해 최소화.
         _const_stuck: set = set()
+        # [MW0601 587차 / P1-1] 보정 전 GBM raw 기준 섀도 판정 (동작 무변경)
+        _raw_stuck: set = set()
+        _raw_seen:  set = set()   # raw 를 실제로 관찰한 호라이즌 — 미측정과 구분용
+        from config import settings as _rs_co587
+        _CO_RAW_RANGE = float(getattr(_rs_co587, "CONST_OUT_RAW_RANGE", 0.005))
+        _CO_RAW_SHADOW = bool(getattr(_rs_co587, "CONST_OUT_RAW_SHADOW_ENABLED", True))
+        _CO_RAW_LIVE = bool(getattr(_rs_co587, "CONST_OUT_RAW_BASED_ENABLED", False))
+        if not _CO_RAW_SHADOW:
+            gbm_raw = None
         # 비활성 호라이즌은 fallback 상수값으로 ConstOut을 허위 트리거하므로 버퍼 업데이트 제외
         _active_set_co = set(active_horizons) if active_horizons is not None else set(HORIZONS.keys())
         for _h in list(cur_weights.keys()):
@@ -690,6 +706,55 @@ class EnsembleDecision:
                 _confs = [x[1] for x in _hist]
                 if len(set(_dirs)) == 1 and (max(_confs) - min(_confs)) < self._CONST_OUT_RANGE:
                     _const_stuck.add(_h)
+
+            # ── [MW0601 587차 / P1-1] 보정 전 GBM raw 로 같은 판정을 한 번 더 ────
+            # 위 `_c`/`_d` 는 블렌드·감쇠·폴백·Platt 을 전부 통과한 값이다.
+            # 아래는 **GBM predict_proba 직후** 값으로 같은 규칙을 돌린 섀도 판정이다.
+            # `CONST_OUT_RAW_BASED_ENABLED` 가 True 가 되기 전까지 **판정에 관여하지
+            # 않는다** — 불일치를 재는 것이 목적이다(사유·전환조건은 settings 주석).
+            # ⚠ raw 가 없는 분은 **미측정**이다. 0 으로 채우면 "GBM 이 0 을 냈다" 와
+            #   구분되지 않는다(계측 4원칙 ②) — 버퍼에 넣지 않고 건너뛴다.
+            _raw_h = (gbm_raw or {}).get(_h)
+            if _raw_h and _raw_h.get("confidence") is not None:
+                _rc = round(float(_raw_h["confidence"]), 3)
+                _rd = int(_raw_h.get("direction", 0))
+                self._hz_raw_hist[_h].append((_rd, _rc))
+                _rhist = self._hz_raw_hist[_h]
+                if len(_rhist) >= self._CONST_OUT_N:
+                    _rdirs  = [x[0] for x in _rhist]
+                    _rconfs = [x[1] for x in _rhist]
+                    if (len(set(_rdirs)) == 1
+                            and (max(_rconfs) - min(_rconfs)) < _CO_RAW_RANGE):
+                        _raw_stuck.add(_h)
+                _raw_seen.add(_h)
+
+        # ── [MW0601 587차 / P1-1] 섀도 불일치 로그 + 전환 스위치 ───────────────
+        # 🔴 **판정 교체는 여기 한 곳에서만 일어난다.** 아래 전환 로그·앙상블 제외·
+        #   main.py 재학습 트리거가 전부 `_const_stuck` 을 읽으므로, 이 한 줄이
+        #   바뀌면 하류가 전부 따라간다.
+        # ⚠ raw 를 관찰하지 못한 호라이즌(`_raw_seen` 밖)은 **판정에서 제외하지
+        #   않는다** — 미측정을 "정상" 으로 읽으면 GBM 미준비 구간에 감지가 통째로
+        #   사라진다(계측 4원칙 ②). 그 호라이즌은 live 판정을 그대로 쓴다.
+        for _h in sorted(set(_const_stuck) | set(_raw_stuck)):
+            _lv, _rw = (_h in _const_stuck), (_h in _raw_stuck)
+            if _lv != _rw and _h in _raw_seen:
+                _lbuf, _rbuf = self._hz_conf_hist[_h], self._hz_raw_hist[_h]
+                logger.info(
+                    "[ConstOutShadow] %s 불일치 live=%s raw=%s "
+                    "| live(range=%.4f dir=%+d) raw(range=%.4f dir=%+d)",
+                    _h, "STUCK" if _lv else "-", "STUCK" if _rw else "-",
+                    (max(x[1] for x in _lbuf) - min(x[1] for x in _lbuf)) if _lbuf else -1.0,
+                    list(_lbuf)[-1][0] if _lbuf else 0,
+                    (max(x[1] for x in _rbuf) - min(x[1] for x in _rbuf)) if _rbuf else -1.0,
+                    list(_rbuf)[-1][0] if _rbuf else 0,
+                )
+        self._hz_raw_stuck = {h: (h in _raw_stuck) for h in HORIZONS}
+        _const_stuck_live_shadow = set(_const_stuck)   # 리포트용 원본 보존
+        if _CO_RAW_LIVE:
+            _const_stuck = {
+                _h for _h in (set(_const_stuck) | set(_raw_stuck))
+                if (_h in _raw_stuck) if _h in _raw_seen
+            } | {_h for _h in _const_stuck if _h not in _raw_seen}
 
         # 전환 시점에만 로그 (매 분봉마다 출력 안 함)
         for _h in list(HORIZONS.keys()):
@@ -737,6 +802,15 @@ class EnsembleDecision:
                 "confidence": res.get("confidence"),
                 "weight":     round(w, 4),
             }
+            # [MW0601 587차 / P1-1] 보정 전 GBM raw 병기 — 임계 재보정의 **원천 데이터**다.
+            # `ensemble_decisions.detail` 은 이미 분당 저장되므로 신규 컬럼 없이
+            # raw 계열이 쌓인다(317차 관리 포인트 원칙).
+            # ⚠ raw 가 없으면 **키를 넣지 않는다** — `null` 과 "0 을 냈다" 를 같은
+            #   자리에 쓰지 않기 위해서다(계측 4원칙 ②). 분석 측은 키 부재 = 미측정.
+            _raw_d = (gbm_raw or {}).get(h)
+            if _raw_d and _raw_d.get("confidence") is not None:
+                detail[h]["gbm_raw_conf"] = round(float(_raw_d["confidence"]), 4)
+                detail[h]["gbm_raw_dir"]  = int(_raw_d.get("direction", 0))
 
         if total_w > 0:
             up_score   /= total_w
@@ -1199,6 +1273,12 @@ class EnsembleDecision:
             "stuck":                 self._stuck.status_dict(),
             "f1_adaptive":           self._f1_weight.get_f1_status(),
             "const_output_horizons": sorted(_const_stuck),
+            # [MW0601 587차 / P1-1] 섀도 축 — 판정에 쓰이지 않는다(계측·리포트 전용).
+            # `_live` 는 전환 플래그와 무관하게 **항상 현행 규칙 결과**라, 전환 후에도
+            # 앞뒤를 같은 잣대로 이을 수 있다(461차 `mdd_pct` 불연속 교훈).
+            "const_output_horizons_raw":  sorted(_raw_stuck),
+            "const_output_horizons_live": sorted(_const_stuck_live_shadow),
+            "const_output_raw_measured":  sorted(_raw_seen),
             "30m_filter_blocked":    _30m_filter_blocked,
             "conf_stuck_boost_applied": _stuck_boost_applied,
             "weight_collapsed":      _weight_collapsed,

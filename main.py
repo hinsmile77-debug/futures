@@ -1250,6 +1250,9 @@ class TradingSystem:
         # 로그만으로 가를 수 있다(계측 4원칙 ④ 폴백 가시화).
         # ⚠ 진단 전용 — 판정에 쓰지 않는다.
         self._gbm_raw_conf_last: dict = {h: None for h in HORIZONS}
+        # [MW0601 587차 / P1-1] 같은 자리의 방향. ConstOut 은 (direction, conf) 쌍으로
+        # 판정하므로 conf 만 raw 로 바꾸면 절반만 raw 가 된다.
+        self._gbm_raw_dir_last: dict = {h: None for h in HORIZONS}
 
         # ── [P1] SGD 학습 호라이즌별 봉단위 dedup ───────────────────────────
         # 검증은 매분 발생하지만 같은 N분봉에서 파생된 예측은 (N-1)/N이 동일 정보의
@@ -7423,6 +7426,13 @@ class TradingSystem:
 
         # ── STEP 5: 멀티 호라이즌 예측 ─────────────────────────
         _st.append(("S5", time.perf_counter()))
+        # [MW0601 587차 / P1-1] raw 스냅샷을 **매분 비운다.**
+        # 비우지 않으면 GBM 미준비·비배포 분에 지난 분 값이 남아 "이번 분에 GBM 이
+        # 그 값을 냈다" 로 읽힌다 — 어제 잡은 폴백 4건과 같은 계열이다(계측 4원칙 ④).
+        # 채우는 곳은 아래 블렌드 루프 한 곳뿐이고, 못 채우면 None = 미측정으로 남는다.
+        for _h_rr in HORIZONS:
+            self._gbm_raw_conf_last[_h_rr] = None
+            self._gbm_raw_dir_last[_h_rr] = None
         _gbm_ready = self.model.is_ready()
         _sgd_ready = self.online_learner.is_ready()
 
@@ -7507,7 +7517,11 @@ class TradingSystem:
                 _sgd_fv     = _sgd_fv_raw[_sgd_h_idx] if _sgd_h_idx is not None else _sgd_fv_raw
                 _gbm_raw_conf = horizon_proba[h_name].get("confidence", 0.0)  # P2: blend 전 GBM conf
                 # [MW0601 564차 / P2-1] ConstOut 로그 병기용 보관 (진단 전용)
+                # [MW0601 587차 / P1-1] 방향도 함께 — ConstOut 섀도 판정 입력이 된다.
                 self._gbm_raw_conf_last[h_name] = float(_gbm_raw_conf)
+                self._gbm_raw_dir_last[h_name] = int(
+                    horizon_proba[h_name].get("direction", 0)
+                )
                 sgd_p   = self.online_learner.predict_proba(h_name, _sgd_fv)
                 blended = self.online_learner.blend_with_gbm(horizon_proba[h_name], sgd_p, h_name)
                 # P6c: RF 블렌딩 — OOB 기반 동적 가중치
@@ -7946,6 +7960,16 @@ class TradingSystem:
             ),
             zone_mc=_zone_mc,
             bias_override_horizons=self._bias_override_horizons,
+            # [MW0601 587차 / P1-1] 보정 전 GBM raw — ConstOut 섀도 판정 입력.
+            # horizon_proba 에 키를 얹지 않고 **곁채널로 넘긴다**: 그 dict 는
+            # 블렌드·bias 폴백·보정에서 네 번 통째로 재생성되므로, 키를 얹으면
+            # 한 곳만 빠뜨려도 조용히 사라진다(미측정이 아니라 오측정이 된다).
+            gbm_raw={
+                _h_gr: {"confidence": self._gbm_raw_conf_last[_h_gr],
+                        "direction":  self._gbm_raw_dir_last[_h_gr]}
+                for _h_gr in HORIZONS
+                if self._gbm_raw_conf_last[_h_gr] is not None
+            },
             conf_stuck_streak=dict(self._conf_stuck),
             target_recent_acc=_csb_target_acc,
             # [404차 후속4 / P1-E] ConfFloorGuard 오탐 억제 — 진입 금지 존

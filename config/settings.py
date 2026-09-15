@@ -591,6 +591,53 @@ FQADJ_ACC_MIN_SAMPLES: int = (
 # 장중에 실제로 중요한 건 그쪽이다. False로 두면 종전대로 6/6 전량 교체다.
 CONST_OUT_RETRAIN_SCOPED: bool = True
 
+# ── [MW0601 587차 / P1-1] ConstOut 판정을 **보정 전 GBM raw conf** 로 옮긴다 ─────
+#
+# **문제**: ConstOut 은 "GBM 이 붕괴했는가" 를 묻는 장치인데, 실제로 읽는 값은
+# `GBM → SGD 블렌드 → RF 블렌드 → BAR_CACHE_DECAY → bias fallback → Platt 보정`
+# 을 전부 통과한 뒤의 값이다. **GBM 을 진단하겠다면서 GBM 출력이 아닌 것을 본다.**
+#
+# 실측 2026-09-15 10:59 (3m, `range=0.0000 dir=+0` — P0-1 억제를 통과한 1건):
+#
+#   ts      flat(=conf)   up      down    up:down
+#   10:52   0.3603       0.3375  0.3022   1.12
+#   10:55   0.3601       0.3016  0.3383   0.89
+#   10:56   0.3601       0.2951  0.3448   0.86
+#   10:59   0.3597       0.2978  0.3425   0.87
+#
+# 최댓값 채널(flat)만 상수이고 **방향 채널(up:down)은 1.12 ↔ 0.86 으로 뒤집힌다.**
+# 모델은 살아 움직이는데 감지기가 "붕괴" 로 읽었다. 감지 정의가 `(direction, max_prob)`
+# 1차원이라, `dir=0` 구간에서 `max_prob = flat = cal_conf`(Platt 출력) 하나만 멈추면
+# up/down 이 무엇을 하든 상수로 읽힌다.
+#
+# 🔴 **상수의 출처는 현행 계측으로 가릴 수 없다** — "GBM 의 flat 이 원래 멈춰 있었다"
+#   와 "Platt 이 raw 변동을 압축했다" 가 구분되지 않는다. 그래서 먼저 **분당 raw 계열을
+#   적재**(`ensemble_decisions.detail` 의 `gbm_raw_conf`/`gbm_raw_dir`)하고, 그 위에서
+#   임계를 재보정한 뒤 전환한다. 계측 → 재보정 → 전환 순서(317차 Hurst 전례).
+#
+# ⚠ `[CONF⚠]`(보정 전 conf 고착 경보) 부재를 근거로 쓰지 말 것 — `BAR_CACHE_DECAY`
+#   가 `0.97^bar_age` 로 3분 주기 변조를 걸어 **3m·5m 에서는 구조적으로 발화 불가**다
+#   (`abs(curr-prev) < 1e-6` 를 주기가 항상 깬다). 죽은 계측이며 별건으로 등록돼 있다.
+#
+# 근거: docs/정기점검/매일점검/MW0601-20260914-3m호라이즌_ConstOut루프-딥다이브.md §10
+CONST_OUT_RAW_SHADOW_ENABLED: bool = True   # raw 계열 적재 + 섀도 판정 (동작 무변경)
+
+# 🔴 **아직 보정된 적 없는 값이다.** 전환 전에 반드시 재보정할 것.
+#   post-Platt 분포에 맞춘 `_CONST_OUT_RANGE=0.005` 를 그대로 복사해 둔 것이며,
+#   raw 분포는 보정 후보다 넓으므로 같은 값이면 **덜 발화**한다(보수적 방향).
+#   재보정: `python scripts/const_out_raw_recalibration.py`
+#   (사전등록 판정 기준은 그 스크립트 상단에 고정 — 539차 ATR 스크립트와 같은 방식)
+CONST_OUT_RAW_RANGE: float = 0.005
+
+# 🔴 **섀도가 끝나기 전에 True 로 바꾸지 말 것.** 전환 조건은 셋 다 충족:
+#   ① `ensemble_decisions.detail.gbm_raw_conf` 가 10거래일 이상 적재
+#   ② `const_out_raw_recalibration.py` 가 PASS (= 임계가 재보정됨)
+#   ③ 섀도 불일치표(live-only / raw-only / 일치)를 주간회의에 보고하고 승인
+# ⚠ 전환은 **지표 재정의**다 — `strategy_events` 에 `METRIC_REDEFINITION` 마커를
+#   남기고 471차 G-2 채널(`const_out_horizon_watch`) 시계열의 불연속을 명시할 것
+#   (461차 `mdd_pct` 교훈).
+CONST_OUT_RAW_BASED_ENABLED: bool = False
+
 FQADJ_ACC_FREEZE_MIN: float = 0.45  # 미만이면 완화 동결 (단기 CUT_THR 하한과 정합)
 FQADJ_ACC_STRENGTHEN_MIN: float = (
     0.40  # 미만이면 fq 무관 강화 (랜덤 0.50 대비 뚜렷한 하회)
