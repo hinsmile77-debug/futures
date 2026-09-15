@@ -34,6 +34,44 @@ STATE_NA_KO = "문턱 미달"
 STATE_NA_COLOR = "#484f58"
 
 
+# ── 장중 라벨 뒤집힘률 (실측) ────────────────────────────────────
+# 상태 라벨은 **당일 중앙값·당일 50% 분위 문턱**과 견줘 붙인다. 그 기준이
+# 장중에는 표본이 적어 계속 움직이므로, 같은 봉의 라벨이 오후에 바뀐다.
+#
+# 온도계 눈금(원계열 히스토그램)은 안 변한다 — 변하는 건 「덥다/춥다」라는
+# 판정 쪽이다. 그래서 눈금이 아니라 **라벨에만** 이 경고를 붙인다.
+#
+# 실측: 2026-06-08 ~ 2026-09-15 · **68거래일** · OI>0 봉 기준.
+#   n봉 시점에 붙어 있던 라벨 중 장 마감 확정본과 **다른** 비율.
+#   ΔOI 히스토그램은 같은 구간에서 **0봉** 변했고, 공격자 히스토그램은
+#   전 구간이 같은 양만큼 평행이동할 뿐 모양이 유지된다 — 라벨만 흔들린다.
+#
+# ⚠ 이건 **과거 평균이지 오늘의 예측이 아니다.** 화면 문구도 그렇게 적는다.
+FLIP_RISK_SAMPLE = "2026-06-08~09-15 · 68거래일"
+_FLIP_RISK = (
+    (40, 76.1), (60, 69.6), (80, 57.4), (100, 48.3), (120, 46.0), (150, 42.1),
+    (180, 35.4), (210, 27.3), (240, 20.1), (280, 16.6), (320, 12.0), (360, 4.9),
+)
+
+
+def flip_risk(n_bars: int) -> Optional[float]:
+    """n봉 시점 라벨이 마감까지 뒤집힌 비율(실측 평균, %). 표본 밖이면 None.
+
+    구간 사이는 선형보간한다 — 표본점 사이를 계단으로 두면 한 봉 늘었을 뿐인데
+    숫자가 껑충 뛴다.
+    """
+    if not n_bars or n_bars < STATE_W:
+        return None
+    if n_bars <= _FLIP_RISK[0][0]:
+        return _FLIP_RISK[0][1]
+    if n_bars >= _FLIP_RISK[-1][0]:
+        return _FLIP_RISK[-1][1]
+    for (x0, y0), (x1, y1) in zip(_FLIP_RISK, _FLIP_RISK[1:]):
+        if x0 <= n_bars <= x1:
+            return y0 + (y1 - y0) * (n_bars - x0) / float(x1 - x0)
+    return None
+
+
 def quantile(sorted_vals, q):
     if not sorted_vals:
         return None
@@ -53,11 +91,12 @@ def compute_states(closed_candles: List[dict]) -> dict:
     워밍업 미달이면 빈 맵을 준다 — **회색으로도 그리지 않는다**.
     """
     out = {"state_map": {}, "aggr_map": {}, "doi_map": {},
-           "thr_a": None, "thr_o": None}
+           "thr_a": None, "thr_o": None, "n": 0}
     # 🔴 사전등록 구현은 `m = m[m.oi.fillna(0) > 0]` 로 **OI 결측 봉을 버린 뒤**
     #   창을 센다. 남겨두면 30봉 창이 그만큼 밀려 판정이 달라진다
     #   (실측 2026-08-04: OI NULL 15봉 → 남겨두면 98봉, 버리면 95봉).
     rows = [r for r in (closed_candles or []) if (r.get("oi") or 0) > 0]
+    out["n"] = len(rows)       # 상태 계산에 실제로 쓰인 봉 수(OI>0)
     W = STATE_W
     if len(rows) <= W:
         return out
