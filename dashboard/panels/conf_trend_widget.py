@@ -210,7 +210,7 @@ class ConfTrendWidget(QWidget):
         super().showEvent(event)
         self._fit_table_rows()
 
-    def refresh(self):
+    def refresh(self):
         import time as _t, logging as _log
         _t0 = _t.monotonic()
         try:
