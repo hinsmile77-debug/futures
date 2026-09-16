@@ -140,19 +140,20 @@ def test_offset_is_my_contract_minus_regular(tmp_path, monkeypatch):
     # 정규는 내 계약보다 정확히 4.00 높다
     _make_regular_db(str(tmp_path), _DAY, [c["close"] + 4.00 for c in cs])
     monkeypatch.setattr(_cfg, "DB_DIR", str(tmp_path), raising=False)
-    val, n, why = peter_offset_measure(_DAY, cs)
+    val, n, why, info = peter_offset_measure(_DAY, cs)
     assert why == "" and val == -4.00, (val, n, why)
     assert n == len(cs)
+    assert info["full"] == -4.00 and info["n_full"] == len(cs)
 
 
 def test_offset_returns_none_not_zero_when_unmeasurable(tmp_path, monkeypatch):
     """🔴 「못 쟀다」와 「0.00 이다」는 절대 같은 모양이면 안 된다."""
     import config.settings as _cfg
     monkeypatch.setattr(_cfg, "DB_DIR", str(tmp_path), raising=False)
-    val, n, why = peter_offset_measure(_DAY, _candles())
+    val, n, why, _ = peter_offset_measure(_DAY, _candles())
     assert val is None and why, "정규 DB 가 없는데 값을 돌려줬다."
 
-    val2, n2, why2 = peter_offset_measure(_DAY, [])
+    val2, n2, why2, _ = peter_offset_measure(_DAY, [])
     assert val2 is None and "캔들" in why2
 
 
@@ -162,8 +163,48 @@ def test_offset_refuses_a_thin_overlap(tmp_path, monkeypatch):
     cs = _candles()
     _make_regular_db(str(tmp_path), _DAY, [c["close"] + 4.00 for c in cs[:5]])
     monkeypatch.setattr(_cfg, "DB_DIR", str(tmp_path), raising=False)
-    val, n, why = peter_offset_measure(_DAY, cs)
+    val, n, why, _ = peter_offset_measure(_DAY, cs)
     assert val is None and "적다" in why
+
+
+def test_offset_uses_the_morning_window_only(tmp_path, monkeypatch):
+    """[596차] 오프셋은 하루 안에서 **방향을 갖고** 움직인다 — 오전으로만 잰다.
+
+    실측(09-16): 09:00 −4.01 → 12:00 −4.63 → 15:00 −4.40. 전일정 중앙값을 쓰면
+    오전 매매가 0.4p 밀린다. 오후 값을 크게 어긋나게 넣어 창이 실제로 닫히는지 본다.
+    """
+    import config.settings as _cfg
+    from dashboard.main_dashboard import PETER_OFFSET_WINDOW
+    # 09:00~11:29 는 −4.00, 그 뒤는 −9.00 이 되도록 정규를 만든다
+    cs = [{"ts": (_BASE + timedelta(minutes=i)).strftime("%Y-%m-%d %H:%M:00"),
+           "open": 350.0, "high": 350.3, "low": 349.7, "close": 350.0, "volume": 1}
+          for i in range(360)]                      # 09:00 ~ 14:59
+    reg = []
+    for c in cs:
+        hm = c["ts"][11:16]
+        reg.append(c["close"] + (4.00 if PETER_OFFSET_WINDOW[0] <= hm
+                                 < PETER_OFFSET_WINDOW[1] else 9.00))
+    _make_regular_db(str(tmp_path), _DAY, reg)
+    monkeypatch.setattr(_cfg, "DB_DIR", str(tmp_path), raising=False)
+    val, n, why, info = peter_offset_measure(_DAY, cs)
+    assert val == -4.00, "오전 창 밖의 값이 새어 들어왔다 — %s" % val
+    assert n == 150, n
+    assert info["full"] == -9.00, "전일정 값이 참고로 함께 나와야 한다(드리프트 은폐 금지)."
+    assert info["lo"] == -9.00 and info["hi"] == -4.00, (info["lo"], info["hi"])
+
+
+def test_dialog_prefers_the_measured_value_over_the_saved_one():
+    """[596차] 실측값이 기본값이다 — 저장값이 계속 따라다니면 안 된다.
+
+    다만 **소리 없이 버리지 않는다**: 되돌리기 버튼이 함께 떠야 한다.
+    """
+    import inspect
+    from dashboard.main_dashboard import MinuteChartDialog
+    src = inspect.getsource(MinuteChartDialog._open_peter_input)
+    i_mv = src.index("if _mv is not None:\n                _sp.setValue(_mv)")
+    i_saved = src.index("elif _saved is not None:")
+    assert i_mv < i_saved, "저장값이 실측값보다 먼저 들어간다."
+    assert "저장 %+.2f 으로" in src, "되돌리기 버튼이 없다 — 손으로 넣은 값이 사라진다."
 
 
 # ── ③ 거래피터 — 진입·청산 **가격**이 화면에 있다 ───────────────────────────
