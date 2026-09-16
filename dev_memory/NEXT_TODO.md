@@ -2,6 +2,26 @@
 
 > 검증 필요 항목, 예정된 작업, 알려진 잠재 이슈.
 
+### 595-1 정규 10100 수집 자동화 — **라이브 왕복 1회 확인** (2026-09-17 장후)
+
+근거: `dev_memory/DECISION_LOG.md` 2026-09-17(595차).
+
+> 유닛·음성대조는 끝났지만 **라이브 왕복은 아직 안 봤다.** 배선만 하고 끝내면
+> FP-CRITICAL·TOX 와 같은 「죽은 게이트」가 된다.
+
+- [ ] **595-1a (09-17 약 15:53)** 예약작업이 실제로 돌았는가.
+      `(Get-ScheduledTaskInfo -TaskName Mireuk_RegularCollect_1552 -TaskPath '\Mireuk\').LastTaskResult` → **0**
+      · `logs/20260917_REGULAR_COLLECT.log` 에 `모드=최근7일` 줄이 새로 붙었는가
+      · `python scripts/regular_freshness.py` → `exit=0` · 최신 **2026-09-17**
+- [ ] **595-1b (09-17 약 15:55)** `logs/retrain_eod_20260917.log` 에 `[RegularFresh]` 한 줄이
+      찍혔는가. ⚠ **안 찍혔으면 배선이 아니라 실행 순서를 잘못 잡은 것**이다 —
+      EOD 는 15:50, 수집은 15:52 라 **같은 날 EOD 는 수집 전 상태를 본다**(정상 — 그날
+      당일이 결손으로 찍힐 수 있다). 판정은 **D+1 EOD** 부터 깨끗하다.
+- [ ] **595-1c** `--days 7` 재수집이 EOD 체인 소요시간을 늘렸는가(`_mark_labels` 533일 재계산).
+      09-17 실측 8초 — 30초 넘으면 라벨 갱신 주기를 분리할 것.
+- [ ] **595-2 (P2)** 다른 PC(MW0602)에서도 쓰려면 그 PC 에서
+      `TASK_REGULAR_COLLECT_INSTALL.bat` 을 한 번 돌릴 것 — 예약작업은 git 으로 공유되지 않는다.
+
 ### 563-F2 후속 — 1m 모델 재개 확인 (2026-09-16 전후)
 
 근거: `dev_memory/DECISION_LOG.md` 2026-09-14(566차 후속 ②).
