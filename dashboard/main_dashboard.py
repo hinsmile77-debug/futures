@@ -9099,26 +9099,50 @@ def parse_peter_trades(text: str, offset: float = 0.0, session_date: str = ""):
 PETER_DEFAULT_OFFSET = -4.00
 
 
-# ── [MW0601 594차] 계약 오프셋을 **데이터에서 잰다** ────────────────────────
+# ── [MW0601 596차] 계약 오프셋을 **데이터에서, 오전 구간으로** 잰다 ─────────
 #
-# 피터는 언제나 **정규 코스피200 선물지수**로 말한다. 나는 **미니 당월물**을
-# 거래하고, 그 종목은 롤마다 바뀐다. 그래서 오프셋은 「내 계약이 오늘 무엇이냐」에
-# 딸린 값이고, 사람이 외워 넣을 값이 아니다.
+# 피터는 언제나 **정규 코스피200 선물**로 말한다. 나는 **미니 당월물**을 거래하고,
+# 그 종목은 롤마다 바뀐다. 오프셋은 「내 계약이 오늘 무엇이냐」에 딸린 값이다.
 #
-# 산출식 — **offset = median(내 계약 종가 − 정규 10100 종가)**, 그날 겹치는 분봉 전부.
-#   미륵이 = 정규 + offset 이므로 부호가 이 방향이어야 한다.
-#   실측 대조(2026-09-16 확인): 09-04 −0.01 · 09-11 −4.47 —
-#   사용자가 손으로 넣어온 값과 **소수점까지 일치**한다.
+#   offset = median(내 계약 종가 − 정규 10100 종가)        # 미륵이 = 정규 + offset
 #
-# 🔴 **차트에 떠 있는 캔들을 그대로 쓴다.** 종목코드를 따로 묻지 않는다 —
-#   화면이 보여주는 계약이 곧 내 계약이라, 롤을 해도 저절로 따라온다.
-# 🔴 중앙값을 쓴다. 평균은 한쪽 끝 몇 봉(개장 직후 호가 공백)에 끌려간다.
-# 🔴 못 재면 **추정하지 않는다.** 왜 못 쟀는지 문자열로 돌려준다(계측 4원칙 ②) —
-#   「못 쟀다」와 「0.00 이다」는 화면에서 절대 같은 모양이면 안 된다.
+# 🔴 **왜 하루 전체가 아니라 오전인가** — 오프셋은 하루 안에서도 **방향을 갖고**
+#   움직인다. 잡음이 아니다(2026-09-16 실측, 30분 중앙값):
+#       09-15  08:30 −4.25 → 09:00 −4.06 → 13:00 −3.88 → 15:00 −3.65
+#       09-16  08:30 −4.10 → 09:00 −4.01 → 12:00 −4.63 → 15:00 −4.40
+#   그래서 전일정 중앙값 하나로 요약하면 시간대마다 0.5p 씩 어긋난다. 실제로
+#   09-16 피터 진입은 09:00 건인데 전일정 중앙값(−4.42)을 쓰면 1039 가 1034.58 이
+#   되어, 사용자가 손으로 넣던 −4.00(→1035.00)보다 **오히려 나빴다.**
+#   그의 매매는 거의 오전에 몰려 있으므로 **정규장 오전 구간**으로 잰다
+#   (사용자 결정 2026-09-17). 전일정 값은 화면에 함께 적어 드리프트를 숨기지 않는다.
+# 🔴 **차트에 떠 있는 캔들을 그대로 쓴다.** 종목코드를 묻지 않으므로 롤을 해도
+#   저절로 따라온다 — 화면이 보여주는 계약이 곧 내 계약이다.
+# 🔴 **중앙값**. 평균은 개장 직후 호가 공백 몇 봉에 끌려간다.
+# 🔴 못 재면 **추정하지 않는다.** `None` 과 이유를 돌려준다(계측 4원칙 ②) —
+#   「못 쟀다」와 「0.00 이다」가 같은 모양이면 화면이 조용히 틀린 가격을 그린다.
+PETER_OFFSET_WINDOW = ("09:00", "11:30")   # [시작, 끝) — 정규장 오전
+PETER_OFFSET_MIN_BARS = 30                 # 이보다 얇으면 롤·수집 구멍이다
+
+
+def _peter_offset_median(vals):
+    vals = sorted(vals)
+    _n = len(vals)
+    if not _n:
+        return None
+    return vals[_n // 2] if _n % 2 else (vals[_n // 2 - 1] + vals[_n // 2]) / 2.0
+
+
 def peter_offset_measure(session_date, candles):
-    """(value, n, reason). `value is None` 이면 못 잰 것이고 `reason` 이 이유다."""
+    """(value, n, reason, info).
+
+    `value is None` 이면 못 잰 것이고 `reason` 이 이유다.
+    `info` 는 화면에 함께 적을 참고값 — `full`(전일정 중앙값) · `n_full` ·
+    `lo`/`hi`(일중 30분 중앙값의 최저·최고) · `window`.
+    """
+    _info = {"full": None, "n_full": 0, "lo": None, "hi": None,
+             "window": "%s–%s" % PETER_OFFSET_WINDOW}
     if not session_date:
-        return None, 0, "날짜 미상"
+        return None, 0, "날짜 미상", _info
     _mine = {}
     for _c in (candles or []):
         _ts = str(_c.get("ts") or "")[:16]
@@ -9126,15 +9150,15 @@ def peter_offset_measure(session_date, candles):
         if _ts and _cl is not None:
             _mine[_ts] = float(_cl)
     if not _mine:
-        return None, 0, "차트 캔들 없음"
+        return None, 0, "차트 캔들 없음", _info
     try:
         import sqlite3 as _sq
         from config.settings import DB_DIR
         _p = os.path.join(DB_DIR, "regular_candles.db")
         if not os.path.exists(_p):
-            return None, 0, "regular_candles.db 없음"
-        # 🔴 읽기 전용으로 연다. 쓰기로 열면 마운트·권한 사정에 따라
-        #   `-journal` 찌꺼기를 남겨 **남의 DB 를 망가뜨린다**(09-16 실측).
+            return None, 0, "regular_candles.db 없음", _info
+        # 🔴 읽기 전용으로 연다. 쓰기로 열면 마운트·권한 사정에 따라 `-journal`
+        #   찌꺼기를 남겨 **남의 DB 를 망가뜨린다**(2026-09-16 실측).
         #   Windows 경로는 역슬래시를 URI 가 못 먹으므로 바꿔 준다.
         _uri = ("file:" + _p.replace("\\", "/").replace("?", "%3f").replace("#", "%23")
                 + "?mode=ro")
@@ -9144,18 +9168,32 @@ def peter_offset_measure(session_date, candles):
                 " WHERE code='10100' AND trade_date=?", (session_date,)).fetchall()
     except Exception as _e:
         logger.debug("[ChartDBG] 오프셋 실측 실패: %s", _e)
-        return None, 0, "정규 조회 실패"
+        return None, 0, "정규 조회 실패", _info
     if not _rows:
-        return None, 0, "정규 10100 미수집 — scripts/collect_regular_futures.py --today"
+        return None, 0, ("정규 10100 미수집 —"
+                         " scripts/collect_regular_futures.py --today"), _info
     _reg = {str(_r[0])[:16]: float(_r[1]) for _r in _rows if _r[1] is not None}
-    _d = [_mine[_k] - _reg[_k] for _k in _mine if _k in _reg]
-    if len(_d) < 30:
-        # 몇 봉만 겹치면 롤·수집 구멍이다. 그 값으로 화면을 그리면 조용히 틀린다.
-        return None, len(_d), "겹치는 분봉 %d개 — 너무 적다" % len(_d)
-    _d.sort()
-    _n = len(_d)
-    _med = _d[_n // 2] if _n % 2 else (_d[_n // 2 - 1] + _d[_n // 2]) / 2.0
-    return round(_med, 2), _n, ""
+
+    _pairs = [(_k, _mine[_k] - _reg[_k]) for _k in _mine if _k in _reg]
+    _full = [_d for _, _d in _pairs]
+    _info["n_full"] = len(_full)
+    _fm = _peter_offset_median(_full)
+    _info["full"] = round(_fm, 2) if _fm is not None else None
+    # 일중 드리프트 — 30분 중앙값의 최저·최고. 폭이 보여야 한 값의 한계가 보인다.
+    _buk = {}
+    for _k, _d in _pairs:
+        _buk.setdefault(_k[11:14] + ("00" if int(_k[14:16]) < 30 else "30"), []).append(_d)
+    _bm = [_peter_offset_median(_v) for _v in _buk.values() if _v]
+    if _bm:
+        _info["lo"], _info["hi"] = round(min(_bm), 2), round(max(_bm), 2)
+
+    _a, _b = PETER_OFFSET_WINDOW
+    _win = [_d for _k, _d in _pairs if _a <= _k[11:16] < _b]
+    if len(_win) < PETER_OFFSET_MIN_BARS:
+        return None, len(_win), ("오전 %s 겹치는 분봉 %d개 — 너무 적다"
+                                 % (_info["window"], len(_win))), _info
+    _m = _peter_offset_median(_win)
+    return round(_m, 2), len(_win), "", _info
 
 
 def peter_db_path():
@@ -12527,22 +12565,29 @@ class MinuteChartDialog(QDialog):
             #   롤마다 바뀐다. 사람이 외워 넣을 값이 아니다.
             #   🔴 저장값이 있으면 **저장값이 이긴다**(583차 원칙) — 실측은 옆에
             #     적어만 두고, 어긋나면 경고한다. 조용히 덮지 않는다.
-            _mv, _mn, _mwhy = peter_offset_measure(
+            _mv, _mn, _mwhy, _mi = peter_offset_measure(
                 self._session_date, getattr(self._chart, "_closed_candles", None))
             _ohint = QLabel("")
             _ohint.setWordWrap(True)
             _ohint.setStyleSheet(f"color:{C['text2']};font-size:{S.f(10)}px;")
             _v.addWidget(_ohint)
 
+            _HEAD = "피터 = 정규 코스피200 선물(10100) · 나 = 미니 당월물"
+
             def _ohint_txt():
                 if _mv is None:
-                    return ("피터 = 정규 코스피200 선물(10100) · 나 = 미니 당월물   ·   "
-                            "실측 불가: %s" % _mwhy)
-                _t = ("피터 = 정규 코스피200 선물(10100) · 나 = 미니 당월물   ·   "
-                      "실측 %+.2f  (내 계약 − 정규, %d봉 중앙값)" % (_mv, _mn))
-                if abs(_sp.value() - _mv) > 0.30:
-                    _t += "   ⚠ 지금 값 %+.2f 과 %+.2f 차이" % (_sp.value(),
-                                                            _sp.value() - _mv)
+                    return "%s   ·   실측 불가: %s" % (_HEAD, _mwhy)
+                # 🔴 [596차] 오전값만 적으면 하루 안의 드리프트가 숨는다 —
+                #   전일정 중앙값과 일중 폭을 **같이** 적는다(계측 4원칙 ②).
+                _t = ("%s   ·   실측 %+.2f  (오전 %s, %d봉 중앙값)"
+                      % (_HEAD, _mv, _mi.get("window") or "", _mn))
+                if _mi.get("full") is not None:
+                    _t += "   ·   전일정 %+.2f" % _mi["full"]
+                if _mi.get("lo") is not None and _mi.get("hi") is not None:
+                    _t += "   ·   일중 %+.2f~%+.2f" % (_mi["lo"], _mi["hi"])
+                if abs(_sp.value() - _mv) > 0.005:
+                    _t += "\n지금 값 %+.2f — 실측과 %+.2f 차이" % (_sp.value(),
+                                                              _sp.value() - _mv)
                 return _t
 
             _btn_m.setEnabled(_mv is not None)
@@ -12623,13 +12668,27 @@ class MinuteChartDialog(QDialog):
             _t2.textChanged.connect(_refresh)
             _sp.valueChanged.connect(_refresh)
 
-            # [594차] 실측이 있으면 그걸 기본으로. 못 쟀으면 종전 기본값.
-            _sp.setValue(_mv if _mv is not None else PETER_DEFAULT_OFFSET)
+            # ── [596차] **실측값이 기본값이다**(사용자 결정 2026-09-17) ──────
+            #   594차까지는 저장값이 항상 이겼다. 그러면 예전에 손으로 넣은 값이
+            #   계속 따라다녀 실측이 좋아져도 화면이 안 따라온다.
+            #   🔴 그래도 사용자가 넣었던 값을 **소리 없이 버리지 않는다** —
+            #     다르면 「저장 −4.00 으로」 버튼을 띄워 한 번에 되돌릴 수 있게 한다.
             _prev_row = peter_load(self._session_date)
+            _saved = (float(_prev_row.get("offset") or 0.0)) if _prev_row else None
+            if _mv is not None:
+                _sp.setValue(_mv)
+            elif _saved is not None:
+                _sp.setValue(_saved)
+            else:
+                _sp.setValue(PETER_DEFAULT_OFFSET)
             if _prev_row:
-                _sp.setValue(float(_prev_row.get("offset") or 0.0))
                 _t1.setPlainText(_prev_row.get("raw_lv") or "")
                 _t2.setPlainText(_prev_row.get("raw_tr") or "")
+            if _saved is not None and _mv is not None and abs(_saved - _mv) > 0.005:
+                _btn_s = QPushButton("저장 %+.2f 으로" % _saved)
+                _btn_s.setStyleSheet(f"padding:2px 8px;font-size:{S.f(10)}px;")
+                _btn_s.clicked.connect(lambda: _sp.setValue(_saved))
+                _top.insertWidget(_top.count() - 1, _btn_s)
             _refresh()
 
             _bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
@@ -12691,7 +12750,7 @@ class MinuteChartDialog(QDialog):
                 len(_od), (" · 예고 %d" % len(_ax)) if _ax else "", _tr_txt[3:], _off)
             # [594차] 저장된 오프셋이 실측과 어긋나면 화면이 조용히 틀린 가격을
             #   그린다 — 어긋남 자체를 상태줄에 띄운다(계측 4원칙 ②).
-            _mv, _mn, _ = peter_offset_measure(
+            _mv, _mn, _, _ = peter_offset_measure(
                 self._session_date, getattr(self._chart, "_closed_candles", None))
             if _mv is not None and abs(_mv - _off) > 0.30:
                 _t += " · ⚠실측 %+.2f(%d봉)" % (_mv, _mn)
