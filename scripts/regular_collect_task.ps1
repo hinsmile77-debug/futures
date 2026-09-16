@@ -31,14 +31,25 @@
               (`ALWAYS_REFETCH_DAYS=7` 이라 최근 7일은 항상 재수집 →
                PC 가 꺼져 있었거나 Cybos 미로그인으로 며칠 걸러도 **스스로 메운다**.
                비용은 TR 2청크뿐)
-    실행주체  현재 로그온 사용자 · Interactive · Limited
-              (Cybos Plus 작업과 같은 무결성 수준이어야 COM 이 붙는다)
+    실행주체  현재 로그온 사용자 · Interactive · **Highest** (`-RunLevel` 로 변경)
+              Cybos Plus 작업과 **같은 무결성 수준**이어야 COM 이 붙는다.
+              ⚠ 그 수준은 **PC 마다 다르다** — 공유되는 것은 값이 아니라 원칙이다.
+                · MW0602 실측(2026-09-17): CREON 이 **승격** 실행이라 `Limited` 로는
+                  붙지 않는다 — `IsConnect=0` · 종료코드 1 · **로그조차 안 남는다**.
+                  비승격 클라이언트가 기존 세션에 붙지 못하고 로그인 안 된
+                  새 DibServer(`-Embedding`) 를 띄우기 때문이다.
+                  방증: `start_mireuk.bat` 이 「관리자 권한 필요 -- CREON 전용」으로
+                        UAC 자기승격(`-Verb RunAs`)을 한다.
+                · Cybos 가 비승격으로 도는 PC 라면 `-RunLevel Limited` 를 쓴다.
+              ⚠ Highest 로 등록하려면 **설치 스크립트 자체가 관리자**여야 한다.
     설정      StartWhenAvailable(놓치면 복구) · IgnoreNew · 30분 제한
 
   사용법
     등록   TASK_REGULAR_COLLECT_INSTALL.bat
     해제   TASK_REGULAR_COLLECT_INSTALL.bat -Uninstall
     시각   TASK_REGULAR_COLLECT_INSTALL.bat -Time "16:10"
+    권한   TASK_REGULAR_COLLECT_INSTALL.bat -RunLevel Limited
+           (Cybos 가 비승격인 PC 에서만. 기본은 Highest — 위 「실행주체」)
 
   주의
     · 관리자 권한 불필요.
@@ -49,7 +60,9 @@ param(
     [switch]$Uninstall,
     [string]$Time       = '15:52',
     [string]$PythonPath = '',
-    [int]   $Days       = 7
+    [int]   $Days       = 7,
+    [ValidateSet('Highest','Limited')]
+    [string]$RunLevel   = 'Highest'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -128,9 +141,23 @@ $settings = New-ScheduledTaskSettingsSet `
     -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
 
 # Cybos Plus 작업과 같은 주체/무결성 - 다르면 COM 이 붙지 않는다.
+# ⚠ 그 수준은 PC 마다 다르다(헤더 「실행주체」). MW0602 는 CREON 이 승격이라 Highest.
+# 비승격에서 Highest 를 등록하려 하면 Register-ScheduledTask 가 Access is denied 로
+# 죽는다 — 그 오류는 원인을 말해 주지 않으므로 먼저 잡아 안내한다.
+if ($RunLevel -eq 'Highest') {
+    $me = New-Object Security.Principal.WindowsPrincipal(
+              [Security.Principal.WindowsIdentity]::GetCurrent())
+    if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        Write-Host '[FAIL] -RunLevel Highest 는 관리자 권한으로 등록해야 한다.' -ForegroundColor Red
+        Write-Host '       관리자 PowerShell 에서 다시 실행할 것.'
+        Write-Host '       Cybos 가 비승격으로 도는 PC 라면:'
+        Write-Host '         TASK_REGULAR_COLLECT_INSTALL.bat -RunLevel Limited'
+        exit 1
+    }
+}
 $principal = New-ScheduledTaskPrincipal `
     -UserId ("{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME) `
-    -LogonType Interactive -RunLevel Limited
+    -LogonType Interactive -RunLevel $RunLevel
 
 $desc = '정규 연결선물(10100) 풀세션 1분봉을 regular_candles.db 에 적재한다. ' +
         '2026-09-11 손 백필 이후 엿새간 갱신이 멈췄고 사흘간 아무 경보도 없었다 (MW0601 595차). ' +
@@ -152,6 +179,7 @@ Write-Host ("        execute    : {0}" -f $t.Actions[0].Execute)
 Write-Host ("        arguments  : {0}" -f $t.Actions[0].Arguments)
 Write-Host ("        catch-up   : {0}" -f $t.Settings.StartWhenAvailable)
 Write-Host ("        logon type : {0}" -f $t.Principal.LogonType)
+Write-Host ("        run level  : {0}" -f $t.Principal.RunLevel)
 
 Write-Head 'DONE'
 Write-Host '  리허설 (Cybos 로그인 상태에서):'
@@ -162,5 +190,6 @@ Write-Host '       0 = 정상.  로그: logs\<YYYYMMDD>_REGULAR_COLLECT.log'
 Write-Host '  적재 확인:'
 Write-Host '       python scripts\regular_freshness.py      (0=정상 1=결손 2=미측정)'
 Write-Host '  해제:  TASK_REGULAR_COLLECT_INSTALL.bat -Uninstall'
+Write-Host '  권한:  기본 Highest. Cybos 가 비승격인 PC 는 -RunLevel Limited'
 Write-Host ''
 exit 0

@@ -25,8 +25,16 @@
       당일이 결손으로 찍힐 수 있다). 판정은 **D+1 EOD** 부터 깨끗하다.
 - [ ] **595-1c** `--days 7` 재수집이 EOD 체인 소요시간을 늘렸는가(`_mark_labels` 533일 재계산).
       09-17 실측 8초 — 30초 넘으면 라벨 갱신 주기를 분리할 것.
-- [ ] **595-2 (P2)** 다른 PC(MW0602)에서도 쓰려면 그 PC 에서
-      `TASK_REGULAR_COLLECT_INSTALL.bat` 을 한 번 돌릴 것 — 예약작업은 git 으로 공유되지 않는다.
+- [x] **595-2 (P2) — 2026-09-17 완료(574차).** MW0602 에 등록했다.
+      🔴 **그냥 돌리면 안 된다는 것이 실측으로 드러났다** — 이 PC 는 CREON 이 **승격**
+      실행이라 원본 기본값 `RunLevel Limited` 로는 붙지 않는다(`IsConnect=0` ·
+      `LastTaskResult=1` · **로그조차 미생성**). `-RunLevel Highest` 로 등록해야 하고,
+      등록하는 셸도 **관리자**여야 한다. 근거: `DECISION_LOG.md` 2026-09-17(574차).
+- [ ] **574-1 (P2) 정규 10100 전 기간 백필** — 현재 **8거래일(09-07~09-16)뿐**이다.
+      예약작업은 `--days 7` 고정이라 **창 밖 과거는 자동으로 안 채워진다.**
+      관리자 PowerShell 에서 **인자 없이 1회** 돌리면 서버 보유분 전체를 훑는다(멱등):
+      `& "$env:USERPROFILE\anaconda3\envs\py37_32\python.exe" scripts\collect_regular_futures.py`
+      확인: `python scripts/regular_freshness.py` → `exit 0`
 
 ### 566차 체리픽 인수 판정 (원 커밋 `5b7847f` / v9-dev) — 배포 다음 거래일 장후
 

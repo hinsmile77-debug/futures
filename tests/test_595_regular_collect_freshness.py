@@ -23,6 +23,7 @@
 import datetime as dt
 import io
 import os
+import re
 import sqlite3
 import sys
 
@@ -215,6 +216,50 @@ def test_4c_task_time_is_after_1546():
     ps = _read(_SRC_TASK_PS1)
     assert "15:52" in ps
     assert "15:46" in ps                       # 이른 시각 경고 가드가 살아 있을 것
+
+
+def test_4d_runlevel_is_a_parameter_not_a_hardcoded_literal():
+    """🔴 [MW0602 2026-09-17] 무결성 수준은 **PC 마다 다르다** — 값을 박으면 깨진다.
+
+    595차 원본은 `-RunLevel Limited` 를 하드코딩했고 주석에 그 이유까지 적었다
+    (「Cybos Plus 작업과 같은 무결성 수준이어야 COM 이 붙는다」). 원칙은 맞지만
+    **가정한 값이 이 PC 에서 틀렸다** — MW0602 는 CREON 이 승격 실행이라
+    `Limited` 로 등록하면 붙지 않는다:
+
+        LastTaskResult=1 · 로그 파일조차 미생성
+        직접 재현 → "[중단] Cybos Plus 미연결(IsConnect=0)"
+
+    비승격 클라이언트가 기존 세션에 붙지 못하고 **로그인 안 된 새
+    DibServer(`-Embedding`)** 를 띄우기 때문이다(실측: COM 호출 시각에 PID 신규
+    생성, 그 프로세스만 CommandLine 이 읽힌다 = 하위 무결성).
+    `Highest` 로 바꾸자 같은 리허설이 `LastTaskResult=0` 으로 통과했다.
+
+    ⚠ 이 테스트가 깨지면 **체리픽이 이 수정을 덮은 것**이다.
+      되돌리기 전에 그 PC 의 CREON 승격 여부를 먼저 실측할 것.
+    """
+    body = _read(_SRC_TASK_PS1).split("#>")[-1]
+    assert "$RunLevel" in body, "-RunLevel 파라미터가 사라졌다"
+    assert "-LogonType Interactive -RunLevel $RunLevel" in body,         "principal 이 파라미터를 쓰지 않는다"
+    assert "-LogonType Interactive -RunLevel Limited" not in body,         "무결성 수준을 다시 박으면 안 된다"
+
+
+def test_4e_highest_registration_has_an_elevation_precheck():
+    """승격 없이 Highest 를 등록하면 `Access is denied` 만 나온다 — 원인을 말하지 않는다.
+
+    그 오류를 그대로 만나면 **무엇을 고쳐야 하는지 알 수 없다.** 실제로
+    2026-09-17 에 그렇게 한 번 막혔다. 그래서 등록 **전**에 잡고
+    두 갈래 해법(관리자로 재실행 / -RunLevel Limited)을 같이 안내한다.
+    """
+    body = _read(_SRC_TASK_PS1).split("#>")[-1]
+    i_check = body.find("IsInRole")
+    # ⚠ 그냥 find 하면 해제 경로의 `Unregister-ScheduledTask` 에 먼저 걸려
+    #   항상 실패한다(test_5 와 같은 계열의 함정). 줄 머리로 고정한다.
+    m = re.search(r"^Register-ScheduledTask", body, re.M)
+    assert m is not None, "등록 호출을 찾지 못했다"
+    i_reg = m.start()
+    assert i_check > 0, "승격 사전점검이 없다"
+    assert i_reg > 0
+    assert i_check < i_reg, "사전점검은 등록보다 **앞**이어야 한다"
 
 
 # ── 5) EOD 체인 배선 — 재학습보다 **앞**에서 본다 ────────────────────────
