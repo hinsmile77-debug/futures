@@ -9,7 +9,10 @@
 > 유닛·음성대조는 끝났지만 **라이브 왕복은 아직 안 봤다.** 배선만 하고 끝내면
 > FP-CRITICAL·TOX 와 같은 「죽은 게이트」가 된다.
 
-- [ ] **595-1a (09-17 약 15:53)** 예약작업이 실제로 돌았는가.
+> ✅ **수동 실행은 09-17 07:10:10 에 확인됐다** — `LastTaskResult=0`, 로그에
+> `모드=최근7일` 4,110행(미니 포함), `[로그 실패]` 없음. **남은 것은 「자동 발화」뿐이다.**
+
+- [ ] **595-1a (09-17 약 15:53)** 예약작업이 **스스로** 돌았는가(수동 실행 말고).
       `(Get-ScheduledTaskInfo -TaskName Mireuk_RegularCollect_1552 -TaskPath '\Mireuk\').LastTaskResult` → **0**
       · `logs/20260917_REGULAR_COLLECT.log` 에 `모드=최근7일` 줄이 새로 붙었는가
       · `python scripts/regular_freshness.py` → `exit=0` · 최신 **2026-09-17**
