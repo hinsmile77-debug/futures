@@ -92,13 +92,24 @@ def test_auto_shutdown_waits_for_backfill():
 
 
 def test_backfill_finishes_before_eod_retrain():
-    """최악의 지연(15:47 + 15초)이 EOD 재학습 트리거보다 앞이어야 한다."""
-    from config.settings import EOD_RETRAIN_SCHEDULE_HM
-    _eod = datetime.time(int(EOD_RETRAIN_SCHEDULE_HM[:2]), int(EOD_RETRAIN_SCHEDULE_HM[2:]))
+    """최악의 지연(15:47 + 15초)이 EOD 재학습 트리거보다 앞이어야 한다.
+
+    ⚠ `EOD_RETRAIN_SCHEDULE_HM` 은 **브랜치마다 있기도 없기도 하다.**
+      MW0602(`dev`)는 「없는 경보의 임계를 새로 만들 이유가 없다」며 일부러 안 들여왔다
+      (그 브랜치 `config/settings.py` 주석). 그렇다고 **skip 하면 가드가 그 브랜치에서
+      죽는다** — 그 PC 예약작업 `Maitreya_EODretrain` 은 **15:50 실측**이므로(같은 주석)
+      그 값으로 계속 검사한다. 상수가 있으면 상수가 이긴다.
+    """
+    try:
+        from config.settings import EOD_RETRAIN_SCHEDULE_HM as _hm
+        _src = "config.settings.EOD_RETRAIN_SCHEDULE_HM"
+    except ImportError:
+        _hm, _src = "1550", "MW0602 예약작업 Maitreya_EODretrain 실측(상수 없는 브랜치)"
+    _eod = datetime.time(int(_hm[:2]), int(_hm[2:]))
     _worst = datetime.time(15, 47, 15)
     assert _worst < _eod, (
-        "자동 종료 지연(최악 15:47:15)이 EOD 재학습 시각 %s 를 넘어섰다 — "
-        "main.py `_schedule_auto_shutdown` 의 15:47 을 함께 조정할 것" % EOD_RETRAIN_SCHEDULE_HM
+        "자동 종료 지연(최악 15:47:15)이 EOD 재학습 시각 %s 를 넘어섰다 (%s) — "
+        "main.py `_schedule_shutdown` 의 15:47 을 함께 조정할 것" % (_hm, _src)
     )
 
 
