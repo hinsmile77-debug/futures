@@ -341,6 +341,23 @@ def main():
     except Exception as _lv_eod_e:
         log.warning("[LEVELS] EOD 단계 실패 (무해): %s", _lv_eod_e)
 
+    # ── [MW0601 595차] 정규 연결선물(10100) 적재 신선도 ────────────────
+    # 수집 자체는 별도 예약작업(`Mireuk_RegularCollect_1552`, py37_32+Cybos COM)이
+    # 한다 — 이 프로세스는 py310_64 라 COM 을 부를 수 없다. 여기서는 **결과만
+    # 확인**한다: 2026-09-11~09-16 수집이 멈췄는데 **사흘간 아무도 몰랐다는 것**이
+    # 그 사고의 본질이었고, 그런 종류의 결함은 수집기를 고쳐도 안 없어진다.
+    # 🔴 재학습 try 블록 **앞**에 둔다(LEVELS 와 같은 이유) — 재학습이 죽어도
+    #   이 판정은 남아야 한다. 자기는 절대 예외를 밖으로 내지 않는다.
+    try:
+        from scripts.regular_freshness import check as _reg_fresh_check
+        _rf = _reg_fresh_check()
+        if _rf["status"] == "ok":
+            log.info("%s", _rf["line"])
+        else:
+            log.warning("%s", _rf["line"])
+    except Exception as _rf_e:
+        log.warning("[RegularFresh] 검사 실패 — 미측정이다(「결손 없음」이 아니다): %s", _rf_e)
+
     t_start = time.perf_counter()
 
     try:

@@ -36,6 +36,7 @@ from __future__ import print_function
 import argparse
 import csv
 import datetime as _dt
+import io
 import os
 import platform
 import sqlite3
@@ -105,8 +106,17 @@ _LOG = []
 
 def P(msg):
     line = "%s %s" % (_dt.datetime.now().strftime("%H:%M:%S"), msg)
-    print(line)
-    sys.stdout.flush()
+    # 🔴 [595차] 콘솔 인코딩(cp949)에 죽지 않는다. 스케줄러가 python.exe 를
+    #   직접 띄우면 stdout 이 파이프라 cp949 가 되고, '—'·'←' 한 글자에 프로세스가 죽는다.
+    try:
+        print(line)
+        sys.stdout.flush()
+    except (UnicodeEncodeError, ValueError, OSError):
+        try:
+            print(line.encode("ascii", "backslashreplace").decode("ascii"))
+            sys.stdout.flush()
+        except Exception:
+            pass                   # 화면에 못 찍어도 파일 로그는 남긴다
     _LOG.append(line)
 
 
@@ -170,17 +180,27 @@ def wait_quota():
 
 
 def mini_near_code():
-    """미니 근월물 코드. CpFutureCode 에 없으므로 ui_prefs 를 우선 본다."""
+    """미니 근월물 코드. CpFutureCode 에 없으므로 ui_prefs 를 우선 본다.
+
+    🔴 [595차] **반드시 `encoding="utf-8"` 로 열어야 한다.** `ui_prefs.json` 은 UTF-8 인데
+      py37 의 기본 인코딩은 로케일(한국어 Windows = cp949) 다. 배치가 `PYTHONUTF8=1`
+      을 세워 줄 때만 우연히 성공했고, 스케줄러가 python.exe 를 직접 띄우면
+      `UnicodeDecodeError` 가 나 `except: pass` 에 먹혀 **「코드를 못 찾음」으로 위장**됐다
+      (2026-09-17 실측 — 미니 수집이 조용히 통째로 빠졌다). 사유를 삼키지 않는다(계측 4원칙 ④).
+    """
+    p = os.path.join(_ROOT, "data", "ui_prefs.json")
     try:
         import json
-        with open(os.path.join(_ROOT, "data", "ui_prefs.json")) as f:
+        with io.open(p, encoding="utf-8") as f:
             raw = str(json.load(f).get("symbol_code", "")).strip()
-        if len(raw) == 8 and raw.endswith("000"):
-            return raw[:-3]
-        if raw:
-            return raw
-    except Exception:
-        pass
+    except Exception as e:
+        P("[WARN] ui_prefs.json 읽기 실패(%s): %r — 미니 코드 미상" % (p, e))
+        return ""
+    if len(raw) == 8 and raw.endswith("000"):
+        return raw[:-3]
+    if raw:
+        return raw
+    P("[WARN] ui_prefs.json 에 symbol_code 가 비어 있다 — 미니 코드 미상")
     return ""
 
 
@@ -659,7 +679,9 @@ def _flush():
         if not os.path.isdir(LOG_DIR):
             os.makedirs(LOG_DIR)
         p = os.path.join(LOG_DIR, "%s_REGULAR_COLLECT.log" % _dt.date.today().strftime("%Y%m%d"))
-        f = open(p, "a")
+        # 🔴 [595차] utf-8 명시. 기본 인코딩(cp949)으로 열면 '—'·'←' 한 글자에
+        #   write 가 터져 **그 실행의 로그가 통째로 사라진다**(2026-09-17 실측).
+        f = io.open(p, "a", encoding="utf-8")
         try:
             f.write("\n".join(_LOG) + "\n")
         finally:
