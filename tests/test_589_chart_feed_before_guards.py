@@ -153,3 +153,47 @@ def test_padded_count_single_source():
     )
     assert "self._padded_count_cur = padded_count" in src
     assert "padded_count = max(self._padded_count_cur, 1)" in src
+
+# ── 4. x축 라벨 겹침 (589차 후속) ────────────────────────────────────────────
+
+def test_axis_labels_never_collide():
+    """마지막 봉 라벨이 **항상** 찍히는데 stride 라벨이 바로 옆이면 둘 다 못 읽는다.
+
+    실측 2026-09-16: count=410 · stride=51 → idx 408·409 가 한 봉(≈4.6px) 차이라
+    `15:33`·`15:34` 가 포개져 `1ᵇ5:334` 로 보였다.
+    """
+    from dashboard.main_dashboard import MinuteChartCanvas as MC
+
+    count, plot_w, left = 410, 1800.0, 58.0
+    stride = max(1, count // 8)
+    step = plot_w / (count + MC.RIGHT_PADDING_BARS)
+    min_gap = 38.0                       # `00:00` 글자 폭 + 여유와 같은 스케일
+
+    slots = MC._axis_label_slots(count, stride, step, left, min_gap)
+
+    # ① 어떤 두 라벨도 min_gap 보다 가깝지 않다
+    xs = [x for _, x in slots]
+    assert xs == sorted(xs), "왼→오 순서로 돌려줘야 한다"
+    for a, b in zip(xs, xs[1:]):
+        assert (b - a) >= min_gap, "라벨 간격 %.1f < %.1f — 겹친다" % (b - a, min_gap)
+
+    # ② 마지막 봉은 **반드시** 남는다 (데이터가 어디서 끝나는지가 가장 중요하다)
+    assert slots[-1][0] == count - 1, "마지막 봉 라벨이 버려졌다"
+
+    # ③ 겹치던 그 stride 눈금(idx 408 = 7×51+51)은 버려졌다
+    assert 408 not in [i for i, _ in slots], "마지막 봉 바로 옆 눈금은 버려야 한다"
+    # ④ 왼쪽 눈금들은 살아 있다 — 겹침 해소가 축을 비워버리면 안 된다
+    assert len(slots) >= 8, "눈금이 %d개뿐 — 너무 많이 버렸다" % len(slots)
+
+
+def test_axis_labels_survive_zoom_and_tiny_counts():
+    """줌·소표본에서 죽지 않는다(라벨 0개·음수 인덱스 금지)."""
+    from dashboard.main_dashboard import MinuteChartCanvas as MC
+
+    for count in (1, 2, 5, 33, 100, 411):
+        stride = max(1, count // 8)
+        step = 1800.0 / (count + MC.RIGHT_PADDING_BARS)
+        slots = MC._axis_label_slots(count, stride, step, 58.0, 38.0)
+        assert slots, "count=%d 에서 라벨이 하나도 없다" % count
+        assert all(0 <= i < count for i, _ in slots)
+        assert slots[-1][0] == count - 1

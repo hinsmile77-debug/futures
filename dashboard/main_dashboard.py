@@ -11420,6 +11420,25 @@ class MinuteChartCanvas(QWidget):
         max_offset = max(0, total_count - visible_count)
         return max(0, min(int(offset or 0), max_offset))
 
+    @staticmethod
+    def _axis_label_slots(count, stride, step, left, min_gap):
+        """x축에 **실제로 찍을** (봉 인덱스, x) 목록. 왼→오 순서로 돌려준다.
+
+        마지막 봉이 우선이고, 거기서 `min_gap` 안에 드는 stride 눈금은 버린다.
+        순수 함수다 — `tests/test_589_*` 가 직접 부른다(그려봐야 아는 규칙이면 못 지킨다).
+        """
+        cands = [i for i in range(count) if i % stride == 0]
+        if count and (count - 1) not in cands:
+            cands.append(count - 1)
+        keep = []
+        for i in reversed(cands):            # 오른쪽부터 — 마지막 라벨이 이긴다
+            x = left + step * (i + 0.5)
+            if keep and (keep[-1][1] - x) < min_gap:
+                continue
+            keep.append((i, x))
+        keep.reverse()
+        return keep
+
     def _draw_axes(self, painter: QPainter, plot: QRectF, candles, lo: float, hi: float, padded_count: int):
         del lo, hi
         painter.setPen(QColor(C["text2"]))
@@ -11428,13 +11447,24 @@ class MinuteChartCanvas(QWidget):
             return
         step = plot.width() / max(padded_count, 1)
         stride = max(1, count // 8)
-        for idx, candle in enumerate(candles):
-            if idx % stride != 0 and idx != count - 1:
-                continue
-            dt = self._coerce_dt(candle["ts"])
+        # ── [MW0601 589차 후속] 오른쪽 끝 라벨 겹침 ──────────────────────────
+        # 마지막 봉 라벨은 `idx != count - 1` 예외로 **항상** 찍힌다. 그런데 stride
+        # 라벨이 바로 옆에 떨어지면 두 글자가 포개져 **둘 다 못 읽는다**.
+        # 실측(2026-09-16): count=410 · stride=51 → idx 408 과 409 가 한 봉(≈4.6px)
+        # 차이라 `15:33`·`15:34` 가 겹쳐 `1ᵇ5:334` 처럼 보였다.
+        #
+        # 🔴 오른쪽 끝에 **우선권**을 준다 — 「데이터가 어디서 끝나는가」가 중간
+        #   눈금보다 정보가 많다. 그래서 오른쪽부터 훑으며 최소 간격 미달인 것을 버린다.
+        # 간격은 **실제 글자 폭**으로 잰다 — 고정 px 로 잡으면 DPI·폰트가 바뀔 때 다시 겹친다.
+        _fm = painter.fontMetrics()
+        _lw = (_fm.horizontalAdvance("00:00") if hasattr(_fm, "horizontalAdvance")
+               else _fm.width("00:00"))
+        _min_gap = _lw + S.p(8)
+        _keep = self._axis_label_slots(count, stride, step, plot.left(), _min_gap)
+        for idx, x in _keep:
+            dt = self._coerce_dt(candles[idx]["ts"])
             if not dt:
                 continue
-            x = plot.left() + step * (idx + 0.5)
             text = dt.strftime("%H:%M")
             painter.drawText(QRectF(x - 24, plot.bottom() + 6, 48, 18), Qt.AlignHCenter | Qt.AlignTop, text)
 
