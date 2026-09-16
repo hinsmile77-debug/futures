@@ -31,6 +31,7 @@ from PyQt5.QtWidgets import (
     QDialog, QDialogButtonBox, QDoubleSpinBox, QSpinBox, QFormLayout,
     QRadioButton, QButtonGroup,
     QDateEdit, QCalendarWidget,   # [날짜선택] 달력 팝업
+    QScrollBar,                   # [590차] 1분봉 차트 하단 이동바
 )
 from PyQt5.QtCore import (
     Qt, QTimer, QThread, pyqtSignal, QPropertyAnimation,
@@ -9129,6 +9130,11 @@ class MinuteChartCanvas(QWidget):
     FULL_SESSION_SLOTS_REGULAR = 411
     FULL_SESSION_SLOTS_EXPIRY = 396
 
+    # [MW0601 590차] 시야(줌·위치)가 바뀌면 알린다 — 하단 이동바가 듣는다.
+    #   (total, visible, offset). ⚠ 절대원칙 §4 의 「콜백 내 emit 금지」와 **무관**하다 —
+    #   그건 COM 콜백 얘기고 이건 Qt 위젯 이벤트다.
+    sig_view_changed = pyqtSignal(int, int, int)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._closed_candles = []
@@ -9202,8 +9208,18 @@ class MinuteChartCanvas(QWidget):
         self.setMouseTracking(True)
         self.setStyleSheet(f"background:{C['bg']};border:1px solid {C['border']};border-radius:6px;")
 
+    @staticmethod
+    def _view_day(rows):
+        """봉 목록의 세션 날짜(`YYYY-MM-DD`). 비었으면 None — 「없음」과 「다름」을 가른다."""
+        try:
+            return str(rows[0]["ts"])[:10] if rows else None
+        except Exception:
+            return None
+
     def reset_session(self, candles, completed_trades, exit_markers=None,
                       gp_trades=None, gp_wired=False):
+        _prev_candles = self._closed_candles          # [590차] 날짜 대조용 — 덮기 전에 잡는다
+        _prev_total = len(_prev_candles)
         normalized = []
         for candle in candles:
             row = self._normalize_candle(candle)
@@ -9217,13 +9233,29 @@ class MinuteChartCanvas(QWidget):
         self._gp_trades = [dict(t) for t in (gp_trades or [])]
         self._gp_wired = bool(gp_wired)
         total = len(self._closed_candles)
-        self._visible_count = max(total, self._min_visible_count)
-        self._view_offset = 0
+        # ── [MW0601 590차] 같은 날짜 리로드면 줌·위치를 **보존**한다 ───────────
+        # 종전에는 리로드마다 무조건 전체보기로 되돌았다. 리로드 트리거에는
+        # 589차가 넣은 **15:46 마감구간 보충 후 자동 리로드**가 포함되므로,
+        # 확대해서 보고 있으면 하루에 한 번 확대가 말없이 풀렸다.
+        # 날짜가 바뀌었으면(복기 선택 등) 당연히 초기화한다 — 다른 날의 위치를
+        # 물려받으면 엉뚱한 구간이 열린다.
+        _prev_day = self._view_day(_prev_candles)
+        _new_day = self._view_day(self._closed_candles)
+        _keep = bool(_prev_day and _new_day and _prev_day == _new_day and _prev_total > 0)
+        if _keep:
+            self._visible_count = min(max(self._visible_count or total,
+                                          self._min_visible_count), max(total, 1))
+            self._view_offset = self._clamp_view_offset(
+                self._view_offset, total, self._view_visible(total))
+        else:
+            self._visible_count = max(total, self._min_visible_count)
+            self._view_offset = 0
         self._hover_pos = None
         self._dragging = False
         self._regime_map.clear()
         self._dir_map.clear()
         self._compute_states()      # [오버레이 P1] 매 paint 가 아니라 여기서 1회
+        self._emit_view()
         self.update()
 
     def set_regime_at(self, ts_key: str, regime: str):
@@ -9257,6 +9289,7 @@ class MinuteChartCanvas(QWidget):
         dt = self._coerce_dt(ts) or datetime.now()
         minute_dt = dt.replace(second=0, microsecond=0)
         key = minute_dt.strftime("%Y-%m-%d %H:%M:%S")
+        _t0 = self._view_total()   # [590차] 진행 중 봉이 새로 생기면 total 이 는다
 
         if self._closed_candles and self._closed_candles[-1]["ts"] == key:
             self._closed_candles[-1]["close"] = price
@@ -9275,17 +9308,20 @@ class MinuteChartCanvas(QWidget):
                 "close": price,
                 "volume": 0,
             }
+        self._anchor_after_growth(_t0)
         # 틱 update() throttle: 200ms 이내 중복 요청 무시 (초당 수십 틱 × paintEvent 방지)
         import time as _time
         _now_ms = _time.monotonic() * 1000
         if _now_ms - self._last_tick_update_ms >= 200:
             self._last_tick_update_ms = _now_ms
+            self._emit_view()
             self.update()
 
     def on_candle_closed(self, candle: dict):
         normalized = self._normalize_candle(candle)
         if not normalized:
             return
+        _t0 = self._view_total()   # [590차] 진행 중 봉이 확정 봉으로 바뀌면 total 은 그대로다
 
         # 종목코드 전환 감지 — 코드가 바뀌면 차트 전체 초기화
         incoming_code = str(candle.get("code") or "").strip()
@@ -9306,6 +9342,8 @@ class MinuteChartCanvas(QWidget):
         # 🔴 [580차] 봉만 붙이고 상태를 다시 세지 않으면, 장전에 연 차트는
         #   워밍업(30봉) 미달 상태로 굳어 **하루 종일 오버레이가 안 나온다**.
         self._compute_states()
+        self._anchor_after_growth(_t0)
+        self._emit_view()
         self.update()
 
     def sync_active_trade(self, direction: str, price: float, ts=None):
@@ -9547,6 +9585,7 @@ class MinuteChartCanvas(QWidget):
 
         self._visible_count = max(self._min_visible_count, min(new_count, total))
         self._view_offset = self._clamp_view_offset(self._view_offset, total, self._visible_count)
+        self._emit_view()
         self.update()
         event.accept()
 
@@ -9570,6 +9609,7 @@ class MinuteChartCanvas(QWidget):
             total = len(self._closed_candles) + (1 if self._live_candle else 0)
             visible_count = min(max(self._visible_count or total, self._min_visible_count), max(total, 1))
             self._view_offset = self._clamp_view_offset(self._drag_start_offset - candle_shift, total, visible_count)
+            self._emit_view()
         if _now_ms - self._last_mouse_update_ms >= 16:
             self._last_mouse_update_ms = _now_ms
             self.update()
@@ -9604,6 +9644,7 @@ class MinuteChartCanvas(QWidget):
             total = len(self._closed_candles) + (1 if self._live_candle else 0)
             self._visible_count = max(total, self._min_visible_count)
             self._view_offset = 0
+            self._emit_view()
             self.update()
             event.accept()
             return
@@ -11420,6 +11461,50 @@ class MinuteChartCanvas(QWidget):
         max_offset = max(0, total_count - visible_count)
         return max(0, min(int(offset or 0), max_offset))
 
+    # ── [MW0601 590차] 시야 상태 ──────────────────────────────────────
+    #
+    # 🔴 `_view_offset` 은 「**오른쪽 끝에서 몇 봉을 숨겼나**」다. 절대 위치가 아니다.
+    #   그래서 새 봉이 와서 total 이 늘면 같은 offset 이 가리키는 **절대 구간이
+    #   앞으로 밀린다** — 10:30 을 확대해 보고 있으면 1분마다 화면이 미끄러졌다.
+    #   (2026-09-16 실측 결함. 이동바를 달면 손잡이가 저절로 움직여 드러난다.)
+    #
+    # 정책(사용자 결정 2026-09-16): **과거를 보는 중이면 고정, 맨 오른쪽이면 따라간다.**
+    #   offset > 0  → total 이 늘어난 만큼 offset 도 늘려 절대 구간을 붙든다
+    #   offset == 0 → 그대로 두어 최신 봉을 따라간다(장중 실시간 감시의 기본)
+    def _view_total(self) -> int:
+        return len(self._closed_candles) + (1 if self._live_candle else 0)
+
+    def _view_visible(self, total: int = None) -> int:
+        total = self._view_total() if total is None else total
+        return min(max(self._visible_count or total, self._min_visible_count), max(total, 1))
+
+    def _anchor_after_growth(self, prev_total: int):
+        """total 이 늘었을 때 보던 구간을 붙든다. **offset==0 이면 아무것도 안 한다.**"""
+        if self._view_offset <= 0:
+            return
+        total = self._view_total()
+        grew = total - int(prev_total or 0)
+        if grew <= 0:
+            return
+        self._view_offset = self._clamp_view_offset(
+            self._view_offset + grew, total, self._view_visible(total))
+
+    def set_view_offset(self, offset: int):
+        """이동바가 부른다. **되쏘지 않는다** — 되쏘면 이동바와 무한 왕복이 된다."""
+        total = self._view_total()
+        new = self._clamp_view_offset(offset, total, self._view_visible(total))
+        if new == self._view_offset:
+            return
+        self._view_offset = new
+        self.update()
+
+    def _emit_view(self):
+        try:
+            total = self._view_total()
+            self.sig_view_changed.emit(total, self._view_visible(total), self._view_offset)
+        except Exception:
+            pass
+
     @staticmethod
     def _axis_label_slots(count, stride, step, left, min_gap):
         """x축에 **실제로 찍을** (봉 인덱스, x) 목록. 왼→오 순서로 돌려준다.
@@ -11718,6 +11803,7 @@ class MinuteChartDialog(QDialog):
         root.addLayout(self._build_overlay_bar())
         root.addWidget(self._status)
         root.addWidget(self._chart, 1)
+        root.addWidget(self._build_nav_bar())
 
         self._toggle_shortcut = QShortcut(QKeySequence(self.SHORTCUT_TEXT), self)
         self._toggle_shortcut.activated.connect(self.close)
@@ -12001,6 +12087,72 @@ class MinuteChartDialog(QDialog):
         bar.addWidget(self._peter_note)
         bar.addStretch(1)
         return bar
+
+    # ── [MW0601 590차] 하단 이동바 ────────────────────────────────────
+    #
+    # 왜 필요한가: 휠 줌·드래그 패닝은 이미 있었지만 **지금 하루 중 어디를 보고
+    # 있는지 알려주는 것이 하나도 없었다**(411봉 중 40봉을 봐도 위치 표시 무).
+    #
+    # 🔴 왕복 갱신을 끊는다. 캔버스 → 이동바는 `sig_view_changed`, 이동바 →
+    #   캔버스는 `set_view_offset()`(되쏘지 않음)이고, 갱신 중에는 `blockSignals`
+    #   로 신호를 막는다. 안 막으면 손잡이를 잡고 있는 동안 서로 되받아 떨린다.
+    # 🔴 `_view_offset` 은 **오른쪽 기준**이라 이동바 값과 방향이 반대다 —
+    #   value(왼쪽 기준) = total − visible − offset. 한쪽만 고치면 좌우가 뒤집힌다.
+    def _build_nav_bar(self):
+        self._nav = QScrollBar(Qt.Horizontal)
+        self._nav.setStyleSheet(
+            f"QScrollBar:horizontal{{background:{C['bg2']};height:{S.p(12)}px;"
+            f"border:1px solid {C['border']};border-radius:6px;margin:0px;}}"
+            f"QScrollBar::handle:horizontal{{background:{C['border']};"
+            f"border-radius:5px;min-width:{S.p(30)}px;}}"
+            f"QScrollBar::handle:horizontal:hover{{background:{C['text2']};}}"
+            "QScrollBar::add-line:horizontal,QScrollBar::sub-line:horizontal{width:0px;}"
+            "QScrollBar::add-page:horizontal,QScrollBar::sub-page:horizontal{background:transparent;}"
+        )
+        self._nav.setToolTip(
+            "줌 상태에서 이전 시간대로 이동한다.\n"
+            "휠 줌 · 드래그 이동 · 더블클릭 전체보기와 같은 위치를 가리킨다.\n"
+            "전체가 다 보이면 숨는다."
+        )
+        self._nav.valueChanged.connect(self._on_nav_moved)
+        self._chart.sig_view_changed.connect(self._on_chart_view_changed)
+        self._nav.hide()          # 전체보기 상태에서는 스크롤할 것이 없다
+        return self._nav
+
+    @staticmethod
+    def nav_value_from_offset(total: int, visible: int, offset: int) -> int:
+        """오른쪽 기준 offset → 왼쪽 기준 이동바 값. 좌우가 뒤집히는 자리다."""
+        return max(0, min(int(total) - int(visible) - int(offset), max(0, int(total) - int(visible))))
+
+    @staticmethod
+    def nav_offset_from_value(total: int, visible: int, value: int) -> int:
+        """이동바 값 → offset. `nav_value_from_offset` 의 역함수여야 한다."""
+        return max(0, min(int(total) - int(visible) - int(value), max(0, int(total) - int(visible))))
+
+    def _on_nav_moved(self, value: int):
+        _total = self._nav.maximum() + self._nav.pageStep()
+        self._chart.set_view_offset(
+            self.nav_offset_from_value(_total, self._nav.pageStep(), value))
+
+    def _on_chart_view_changed(self, total: int, visible: int, offset: int):
+        _nav = getattr(self, "_nav", None)
+        if _nav is None:
+            return
+        # 다 보이면 숨긴다 — 움직일 수 없는 손잡이는 「고장」으로 읽힌다.
+        if total <= visible:
+            if _nav.isVisible():
+                _nav.hide()
+            return
+        _nav.blockSignals(True)
+        try:
+            _nav.setRange(0, max(0, total - visible))
+            _nav.setPageStep(max(1, visible))
+            _nav.setSingleStep(max(1, visible // 10))
+            _nav.setValue(self.nav_value_from_offset(total, visible, offset))
+        finally:
+            _nav.blockSignals(False)
+        if not _nav.isVisible():
+            _nav.show()
 
     # ── [오버레이 P3b/P4b] 피터 사료 붙여넣기 ─────────────────────────
     #
