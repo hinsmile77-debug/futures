@@ -98,8 +98,12 @@ FP-CRITICAL(PSI 2개월 죽은 게이트)·TOX(한 달 죽은 섀도)와 **같�
 그 밖: `test_595_*` 13건 · `test_537`(8) · `test_563`·`test_566`(15) 전수 통과,
 `audit_dll_bootstrap.py --fail-on-gap` exit=0.
 
-⚠ **남은 것: 라이브 왕복 1회 미확인.** D+1(09-17 15:52) 예약작업이 실제로 도는지,
-15:50 EOD 로그에 `[RegularFresh]` 가 찍히는지는 **아직 안 봤다**(NEXT_TODO 595-1).
+⚠ **남은 것 — 범위가 줄었다.** 등록 직후 `Start-ScheduledTask` 로 **수동 1회 실행은
+성공했다**(07:10:10 · `LastTaskResult=0` · 로그에 `모드=최근7일` 4,110행 · 미니 A056A 포함 ·
+`[로그 실패]` 없음). 즉 **주체·COM·인자·인코딩은 라이브에서 확인됐다** — 예약작업이
+py37_32 를 Interactive/Limited 로 띄워 Cybos COM 에 붙는 것까지 실측이다.
+남은 미확인은 둘뿐이다: ① 트리거가 **자동으로** 15:52 에 발화하는가
+② 15:50 EOD 로그에 `[RegularFresh]` 가 찍히는가 (NEXT_TODO 595-1).
 
 ### 남은 리스크
 
