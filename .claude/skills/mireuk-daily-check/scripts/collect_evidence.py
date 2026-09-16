@@ -2205,7 +2205,36 @@ _OBS_DEF_RE = re.compile(
 
 
 def _obs_ids(text):
+    """본문 **언급까지** 포함한 모든 `O-*` 번호(예고 문구·회고 참조 포함).
+
+    ⚠ 이것으로 **채번 최댓값을 구하면 안 된다**(573차). 남겨 둔 쓰임은 두 가지뿐
+    — 탈락 가시화(계측 4원칙 ③)와, 아래 신규 발급 판정의 **오탐 방지**다.
+    """
     return set(int(m.group(1)) for m in re.finditer(r"\bO-(\d+)\b", text or ""))
+
+
+def _obs_def_ids(text):
+    """**발급된** `O-*` 번호만 — 체크박스 머리의 정의성 라벨(`_OBS_DEF_RE`).
+
+    [MW0602 573차 / 0916 장후 `2p-1`] 채번 최댓값은 이쪽으로 센다. 종전에는
+    `_obs_ids`(본문 전수)로 셌는데, `NEXT_TODO.md` 에는 *"다음 관측 ID는
+    `O-82`부터"* 같은 **예고 문구**가 매 세션 실린다. 예고를 발급으로 오인하면
+    다음 세션이 실제로는 비어 있는 번호를 건너뛴다.
+
+    🔴 **자기증폭한다** — 0916 실측: 실제 발급 최댓값은 `O-81` 인데 스캐너가
+    `O-83` 을 냈다. 전날 오탐(`O-82`)을 적은 리포트 문장이 그대로
+    `NEXT_TODO.md` 에 실려 **다음 날 최댓값을 한 칸 더 밀어 올렸기** 때문이다.
+    고치지 않으면 번호가 매일 하나씩 비어 간다.
+
+    ⚠ `_OBS_DEF_RE` 는 494차부터 이 파일에 있었으나 **아무도 쓰지 않았다** —
+      바로 이 구분을 하라고 만들어 둔 정규식이다(정의부 주석이 그렇게 적고 있다).
+    """
+    out = set()
+    for line in (text or "").splitlines():
+        m = _OBS_DEF_RE.match(line)
+        if m:
+            out.add(int(m.group("id").split("-")[1]))
+    return out
 
 
 def scan_obs_labels(root):
@@ -2228,7 +2257,9 @@ def scan_obs_labels(root):
     rel = os.path.join("dev_memory", "NEXT_TODO.md")
     p = os.path.join(root, rel)
     out = {"max": None, "next": None, "new": [], "collisions": [],
-           "path": "dev_memory/NEXT_TODO.md", "compared": False}
+           "path": "dev_memory/NEXT_TODO.md", "compared": False,
+           # [573차] `max` 가 무엇을 센 값인지 / 무엇을 안 셌는지를 함께 낸다.
+           "basis": None, "mentioned_only": []}
     if not os.path.exists(p):
         out["error"] = "NEXT_TODO.md 없음"
         return out
@@ -2239,18 +2270,42 @@ def scan_obs_labels(root):
         out["error"] = str(e)
         return out
 
-    now_ids = _obs_ids(cur)
+    # [MW0602 573차] **발급**(정의성 라벨)과 **언급**(예고 문구)을 가른다.
+    now_def = _obs_def_ids(cur)
+    now_any = _obs_ids(cur)
+    if now_def:
+        out["basis"] = "def"
+        now_ids = now_def
+    elif now_any:
+        # 폴백 가시화(계측 4원칙 ④) — 정의성 라벨이 0건이면 항목 **형식이
+        # 바뀐** 것이다. 넓은 스캔으로 물러서되 그 사실을 반드시 남긴다.
+        out["basis"] = "mention-fallback"
+        out["fallback_reason"] = (u"정의성 라벨 0건 — `NEXT_TODO.md` 항목 형식이 "
+                                  u"바뀌었을 수 있다(`_OBS_DEF_RE` 점검 요)")
+        now_ids = now_any
+    else:
+        now_ids = set()
+
     if now_ids:
         out["max"] = max(now_ids)
         out["next"] = out["max"] + 1
+        # 탈락 가시화(계측 4원칙 ③) — 발급 최댓값 **위에 언급만** 있는 번호.
+        # 이 줄이 없으면 "왜 O-83 이 아니라 O-82 인가"를 매번 다시 조사한다.
+        out["mentioned_only"] = sorted(
+            n for n in now_any - now_ids if n > out["max"])
 
     prev = run_git(root, ["show", "HEAD:dev_memory/NEXT_TODO.md"])
     if prev and not prev.startswith("(git "):
-        prev_ids = _obs_ids(prev)
+        prev_def = _obs_def_ids(prev)
+        prev_any = _obs_ids(prev)
+        prev_ids = prev_def if (out["basis"] == "def" and prev_def) else prev_any
         if prev_ids:
             out["compared"] = True
             prev_max = max(prev_ids)
-            out["new"] = sorted(now_ids - prev_ids)
+            # 🔴 오탐 금지(이 절 전체의 규약) — 「신규 발급」은 직전 커밋에
+            #    **언급조차 없던** 번호로만 센다. 표·본문에 있던 번호가 오늘
+            #    체크박스로 정리된 것까지 세면 늑대소년이 된다.
+            out["new"] = sorted(now_ids - prev_any)
             out["collisions"] = [n for n in out["new"] if n <= prev_max]
             out["prev_max"] = prev_max
     return out
@@ -4753,8 +4808,17 @@ def build(root, day, phase, cfg, discover_only=False):
     _obs = scan_obs_labels(root)
     if _obs.get("next"):
         # 적신호가 아니라 **안내**다 — 다음 세션이 이 줄만 보고 바르게 채번한다.
-        notes_obs = "다음 관측 ID = **`O-%d`** (현행 최댓값 `O-%s`, %s 기준)" % (
+        notes_obs = "다음 관측 ID = **`O-%d`** (발급 최댓값 `O-%s`, %s 기준)" % (
             _obs["next"], _obs["max"], _obs["path"])
+        # [MW0602 573차] 탈락 가시화 — **언급만** 있고 발급되지 않은 번호를 밝힌다.
+        # 0916 장후가 `O-83`(오탐)과 `O-82`(정답) 사이에서 한 절을 썼다.
+        _mo = _obs.get("mentioned_only") or []
+        if _mo:
+            notes_obs += (u"; 언급만 있고 **발급되지 않은** 번호 %s 는 세지 "
+                          u"않았다(예고 문구 — 573차)"
+                          % u", ".join("`O-%d`" % n for n in _mo))
+        if _obs.get("fallback_reason"):
+            notes_obs += u"; ⚠ **폴백** — %s" % _obs["fallback_reason"]
     else:
         notes_obs = None
     for _n in _obs.get("collisions", []):
