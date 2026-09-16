@@ -9130,6 +9130,12 @@ class MinuteChartCanvas(QWidget):
     FULL_SESSION_SLOTS_REGULAR = 411
     FULL_SESSION_SLOTS_EXPIRY = 396
 
+    # [MW0601 591차] Y 확장 후 캔들이 세로의 이 비율보다 작아지면 **확장하지 않는다.**
+    #   554차(마커 한 건이 캔들을 33.1% 로 눌렀다)의 재발 방지선이다.
+    #   실측 B안(점추정+구조) 최악이 37.7% 라 이 값은 **죽은 가드가 아니다** —
+    #   107 스테이지-일 중 1일에서 발동한다.
+    FULL_Y_MIN_OCCUPANCY = 0.40
+
     # [MW0601 590차] 시야(줌·위치)가 바뀌면 알린다 — 하단 이동바가 듣는다.
     #   (total, visible, offset). ⚠ 절대원칙 §4 의 「콜백 내 emit 금지」와 **무관**하다 —
     #   그건 COM 콜백 얘기고 이건 Qt 위젯 이벤트다.
@@ -9188,6 +9194,8 @@ class MinuteChartCanvas(QWidget):
                     "peter_lv": False, "trade_peter": False}
         # [589차] 전일정 x축 토글 — 기본 꺼짐. 명시 초기화(계측 4원칙 ④).
         self._full_session_x = False
+        # [591차] Y 확장 보류 사유. None = 보류 안 함(계측 4원칙 ④ — 명시 초기화)
+        self._full_y_note = None
         # 그린 프레임의 padded_count. 크로스헤어가 **같은 값**을 써야 봉과 어긋나지 않는다.
         self._padded_count_cur = 1
         # 피터 사료 — 붙여넣은 것만 있다. 없으면 **없는 것**이지 0 이 아니다.
@@ -9500,6 +9508,28 @@ class MinuteChartCanvas(QWidget):
         hi = max(prices)
         if hi <= lo:
             hi = lo + 1.0
+        # ── [MW0601 591차] 「하루 전체」 ON — Y 를 맥점 모델 범위까지 넓힌다 ──────
+        # 🔴 **합집합이다.** 모델 범위'만'으로 잡으면 캔들이 잘린다 — 실측(107 스테이지-일)
+        #   에서 실제 봉이 모델 범위를 벗어난 날이 0850 **89%** · 0930 **76%**,
+        #   벗어난 폭 중앙 13pt(봉 폭이 보통 20~25pt다).
+        # 🔴 **80% 밴드는 넣지 않는다.** 넣으면 캔들 세로 점유율 중앙이 37.6~42.2%,
+        #   최소 15.1% 로 **554차 사고(33.1%)보다 나빠진다.** 점추정+구조만 쓰면
+        #   중앙 72.2%(0850) / 86.5%(0930) 다. 밴드는 면이라 잘려도 읽힌다.
+        self._full_y_note = None
+        if self._full_session_x:
+            _mlv = self._model_axis_levels()
+            if _mlv:
+                _ulo, _uhi = min(lo, min(_mlv)), max(hi, max(_mlv))
+                _occ = (hi - lo) / max(_uhi - _ulo, 1e-9)
+                if _occ >= self.FULL_Y_MIN_OCCUPANCY:
+                    lo, hi = _ulo, _uhi
+                else:
+                    # 폴백은 반드시 드러낸다(계측 4원칙 ④) — 조용히 안 늘리면
+                    # 「버튼이 안 먹는다」로 읽힌다.
+                    self._full_y_note = (
+                        "Y 확장 보류 — 모델 범위가 너무 넓어 캔들이 %.0f%% 로 눌린다"
+                        " (하한 %.0f%%). 모델 선은 가장자리 캐럿으로 표시."
+                        % (_occ * 100, self.FULL_Y_MIN_OCCUPANCY * 100))
         pad = max((hi - lo) * 0.08, 0.2)
         lo -= pad
         hi += pad
@@ -9547,6 +9577,7 @@ class MinuteChartCanvas(QWidget):
         self._draw_axes(painter, QRectF(plot.left(), plot.top(), plot.width(),
                                         _axis_bottom - plot.top()),
                         candles, lo, hi, padded_count)
+        self._draw_full_y_note(painter, plot)
         _t_cross = _t2.monotonic();  self._draw_crosshair_and_tooltip(painter, plot, candles, lo, hi)
         _t_end = _t2.monotonic()
 
@@ -11505,6 +11536,29 @@ class MinuteChartCanvas(QWidget):
         except Exception:
             pass
 
+    def _draw_full_y_note(self, painter: QPainter, plot: QRectF):
+        """[591차] Y 확장이 **보류됐다는 사실**을 적는다.
+
+        조용히 안 늘리면 「버튼이 안 먹는다」로 읽힌다(계측 4원칙 ④).
+        위쪽은 롱금지·잠정·마감구간 배너가 이미 쓰므로 **아래쪽 왼편**에 쓴다.
+        """
+        _note = getattr(self, "_full_y_note", None)
+        if not _note:
+            return
+        try:
+            painter.save()
+        except Exception:
+            return
+        try:
+            painter.setFont(QFont("Malgun Gothic", 8, QFont.Bold))
+            painter.setPen(QColor("#D29922"))
+            _y = plot.bottom() - S.p(6)
+            painter.drawText(QPointF(plot.left() + S.p(6), _y), "■ " + _note)
+        except Exception as _e:
+            logger.debug("[ChartDBG] _draw_full_y_note 예외: %s", _e)
+        finally:
+            painter.restore()
+
     @staticmethod
     def _axis_label_slots(count, stride, step, left, min_gap):
         """x축에 **실제로 찍을** (봉 인덱스, x) 목록. 왼→오 순서로 돌려준다.
@@ -11629,6 +11683,36 @@ class MinuteChartCanvas(QWidget):
     def set_full_session_x(self, on: bool):
         self._full_session_x = bool(on)
         self.update()
+
+    # ── [MW0601 591차] Y 축에 넣을 맥점 모델 레벨 ────────────────────
+    def _model_axis_levels(self):
+        """거리모델 점추정 + 구조모델 레벨. **80% 밴드는 일부러 뺀다**(paintEvent 주석 참조).
+
+        빈 리스트는 「그날 산출 없음」이고 `_pre_levels is None` 은 「미조회」다 —
+        축을 안 늘린다는 결과는 같지만 뜻이 다르다(계측 4원칙 ②).
+        """
+        L = self._pre_levels
+        if not L:
+            return []
+        out = []
+        for _k in ("dist_high", "dist_low"):
+            _v = L.get(_k)
+            if _v is not None:
+                try:
+                    _f = float(_v)
+                    if _f > 0:
+                        out.append(_f)
+                except (TypeError, ValueError):
+                    pass
+        for _k in ("struct_up", "struct_down"):
+            for _item in (L.get(_k) or []):
+                try:
+                    _f = float(_item[0] if isinstance(_item, (list, tuple)) else _item)
+                    if _f > 0:
+                        out.append(_f)
+                except (TypeError, ValueError, IndexError):
+                    pass
+        return out
 
     def _full_session_slots(self) -> int:
         """이 세션의 전체 봉 슬롯 수. 만기일은 조기 마감이라 더 짧다.
@@ -12063,13 +12147,22 @@ class MinuteChartDialog(QDialog):
         # 🔴 레이어 토글이 **아니다.** 무엇을 그리느냐가 아니라 가로 격자를 어디까지
         #   잡느냐를 바꾼다. 그래서 `_OV_SPEC` 에 넣지 않고 따로 세운다.
         # 켜면 장 초반 화면 대부분이 빈칸이 되므로 기본값은 끈 상태다(사용자 결정).
-        self._btn_fullx = QPushButton("⇥ 15:45 격자")
+        # 기호는 이 UI에서 이미 쓰는 계열(■·▲▼)로 맞춘다 — 폰트에 없는 글자는
+        # 두부(□)가 되고(`_no_long_mark` 참조) 버튼 라벨의 두부는 기능을 통째로 가린다.
+        # ⚠ `⛶`(U+26F6)도 Malgun Gothic 에 **글리프는 있다**(QRawFont 실측 2026-09-16).
+        #   그걸 피한 것은 렌더 위험 때문이 아니라 기존 기호 계열과 맞추기 위해서다.
+        self._btn_fullx = QPushButton("▣ 하루 전체")
         self._btn_fullx.setCheckable(True)
         self._btn_fullx.setChecked(False)
         self._btn_fullx.setToolTip(
-            "x축을 마감(15:45)까지 미리 잡는다 — 하루 진행률이 보이고 가로 스케일이 안 흔들린다.\n"
-            "끄면 마지막 봉 +10봉까지만 잡는다(기본).\n"
-            "줌 중에는 적용되지 않는다."
+            "하루 전체 모습 — 가로·세로를 한꺼번에 잡는다.\n"
+            "  · x축: 마감(15:45)까지 미리 격자를 잡는다\n"
+            "  · y축: 맥점 거리모델 점추정 + 구조모델 범위까지 넓힌다\n"
+            "        (실제 봉과의 **합집합** — 모델 범위만 쓰면 캔들이 잘린다)\n"
+            "  · 가격모델·구조모델 레이어를 함께 켠다 — 축을 늘린 이유가 보여야 한다\n"
+            "08:50 1차 → 09:30 2차로 모델이 갱신되면 세로 폭도 함께 좁아진다.\n"
+            "⚠ 80% 밴드는 축에 넣지 않는다 — 넣으면 캔들이 세로의 15~42%로 눌린다.\n"
+            "⚠ 줌 중에는 적용되지 않는다."
         )
         self._btn_fullx.setStyleSheet(
             f"QPushButton{{background:{C['bg3']};color:{C['text2']};"
@@ -12077,7 +12170,7 @@ class MinuteChartDialog(QDialog):
             f"padding:5px 12px;font-size:{S.f(10)}px;font-weight:600;}}"
             f"QPushButton:checked{{color:{C['cyan']};border-color:{C['cyan']};}}"
         )
-        self._btn_fullx.toggled.connect(self._chart.set_full_session_x)
+        self._btn_fullx.toggled.connect(self._on_full_session_toggled)
         bar.addWidget(self._btn_fullx)
         self._ov_note = QLabel("")
         self._ov_note.setStyleSheet(f"color:{C['text2']};font-size:{S.f(10)}px;")
@@ -12087,6 +12180,23 @@ class MinuteChartDialog(QDialog):
         bar.addWidget(self._peter_note)
         bar.addStretch(1)
         return bar
+
+    # ── [MW0601 591차] 「하루 전체」 토글 ──────────────────────────────
+    #
+    # 🔴 켤 때 **가격모델·구조모델 레이어를 함께 켠다**(사용자 결정 2026-09-16).
+    #   이 버튼은 y축을 그 두 모델 범위까지 넓히는데, 레이어가 꺼져 있으면
+    #   **축을 늘린 원인이 화면에 없다** — 사용자는 설명 없는 빈 공간을 본다.
+    # 🔴 끌 때는 **되돌리지 않는다.** 껐다 켰다 하는 사이 사용자가 직접 조정한
+    #   레이어 상태를 덮어쓰면 그쪽이 더 놀랍다. 끄는 것은 축만 되돌린다.
+    _FULL_SESSION_LAYERS = ("price", "struct")
+
+    def _on_full_session_toggled(self, on: bool):
+        if on:
+            for _k in self._FULL_SESSION_LAYERS:
+                _b = self._ov_btn.get(_k)
+                if _b is not None and not _b.isChecked():
+                    _b.setChecked(True)      # toggled → _on_overlay_toggled 가 캔버스에 반영
+        self._chart.set_full_session_x(on)
 
     # ── [MW0601 590차] 하단 이동바 ────────────────────────────────────
     #
@@ -15700,6 +15810,18 @@ class DashboardAdapter:
     def update_premarket_levels(self, stages: dict) -> None:
         """[MW0601 534차] 당일 맥점(거리·구조) 패널 갱신 — 관측 전용."""
         self._win.entry_panel.update_premarket_levels(stages)
+        # ── [MW0601 591차] 1분봉 차트의 레벨도 함께 갱신한다 ──────────────────
+        # 종전에는 `_apply_premarket_levels()` 가 **리로드 때만** 불렸다
+        # (`reload_today` · `_apply_reload_result`). 09:30 에는 리로드가 없으므로
+        # 2차 산출이 DB 에 들어가도 차트는 1차를 계속 들고 있었다 —
+        # 「하루 전체」 y축이 1차 폭에 머물러 **2차 모습이 영영 안 나온다.**
+        # `main._push_premarket_levels()` 가 매 스테이지 뒤에 여기를 부른다.
+        try:
+            _dlg = self._win._minute_chart_dialog
+            if getattr(_dlg, "_live_mode", True):
+                _dlg._apply_premarket_levels()
+        except Exception:
+            pass
 
     def update_manual_levels(self, row) -> None:
         """[MW0601 542차] 수동 맥점 산출 결과 갱신 — 관측 전용.

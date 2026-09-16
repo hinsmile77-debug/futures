@@ -141,7 +141,10 @@ def test_full_session_x_defaults_off_and_is_toggleable():
     src = _dash_src()
     assert "self._full_session_x = False" in src, "기본값은 꺼짐이어야 한다(사용자 결정)"
     assert "def set_full_session_x(self, on: bool):" in src
-    assert "self._btn_fullx.toggled.connect(self._chart.set_full_session_x)" in src
+    # [591차] 버튼 → 캔버스 사이에 `_on_full_session_toggled` 가 끼었다(모델 레이어 동반 ON).
+    # 배선이 끊기지 않았는지는 **경유지와 종착지 둘 다** 확인한다.
+    assert "self._btn_fullx.toggled.connect(self._on_full_session_toggled)" in src
+    assert "self._chart.set_full_session_x(on)" in src
 
 
 def test_padded_count_single_source():
