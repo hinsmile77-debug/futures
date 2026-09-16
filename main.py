@@ -897,6 +897,9 @@ class TradingSystem:
         self._db_writer_closed: bool = False
         # [565차] 전 거래일 차트 TR 보충 1회 플래그 (08:41~08:44 스케줄러 틱)
         self._chart_backfill_done: bool = False
+        # [589차] **당일** 마감 체결(15:45) 차트 TR 보충 1회 플래그 (15:46~15:48 틱).
+        #   명시 초기화 — getattr 폴백 금지(계측 4원칙 ④).
+        self._chart_backfill_today_done: bool = False
         self._const_out_refit_until = None           # ConstOut 트리거 쿨다운 (30분)
         self._const_out_heavy_cooldown_until = None  # ConstOut 직후 heavy 작업 유예 (3분)
         self._price_momentum_refit_until = None      # D_PRICE_MOMENTUM 쿨다운 (20분)
@@ -4575,11 +4578,8 @@ class TradingSystem:
             self._premarket_levels_0850_done = True
             self._compute_premarket_levels("0850")
 
-        # 대시보드 차트 갱신 (선택적)
-        try:
-            self.dashboard.minute_chart_candle_closed(candle)
-        except Exception:
-            pass
+        # [MW0601 589차] 차트 갱신 호출은 `_on_candle_closed` 선두로 **일원화**됐다.
+        #   여기서 또 부르면 같은 봉이 두 번 들어간다(무해하지만 중복).
 
     def _compute_premarket_levels(self, stage: str) -> None:
         """[MW0601 534차] 당일 맥점 예측 1단계 산출 → DB 굳히기 → 로그 → 대시보드.
@@ -4707,6 +4707,20 @@ class TradingSystem:
         except Exception:
             pass
 
+        # ── [MW0601 589차] 차트 피드도 모든 분기보다 **앞** ────────────────────
+        # 종전엔 force-exit 가드(아래) 뒤에 있어 15:10~15:34 봉이 **화면에만** 안 붙었다
+        # (DB 에는 위 `_persist_session_bar` 로 이미 들어가 있었다 — 실측 2026-09-16
+        # POST_FORCE_EXIT 25봉 적재 / 차트는 15:09 에서 정지). 가드의 원 의도는
+        # 「예측 파이프라인 중단」이지 「화면 정지」가 아니다 — 471차 F-1 과 같은 유형.
+        # `flush_stale_bar` 로 늦게 오는 15:34 봉은 `is_market_open`(≤15:35) 가드에도
+        # 걸리므로, 그 **둘 다보다 앞**이어야 화면에 붙는다.
+        # 표시 전용이라 판단·주문에 영향이 없다. 실패해도 파이프라인을 막지 않는다.
+        # 순서 불변식은 tests/test_589_chart_feed_before_guards.py 가 고정한다.
+        try:
+            self.dashboard.minute_chart_candle_closed(candle)
+        except Exception as _ce:
+            logger.debug("[ChartWarn] candle_closed 예외 무시: %s", _ce)
+
         # ── 프리장 처리 경로 (08:45~09:00) ──────────────────────────
         # 진입 없이 scaler warmup · 피처 검증 · GapOffset 사전 설정만 수행
         if is_pre_market(now):
@@ -4811,10 +4825,8 @@ class TradingSystem:
                     "[GapOffset] 프리장 사전 설정 확인 → 본장 첫 분봉 재설정 스킵", "INFO"
                 )
 
-        try:
-            self.dashboard.minute_chart_candle_closed(candle)
-        except Exception as _ce:
-            logger.debug("[ChartWarn] candle_closed 예외 무시: %s", _ce)
+        # [MW0601 589차] 차트 갱신은 이 함수 **선두**에서 이미 끝났다 —
+        #   여기 있던 호출이 force-exit 가드 뒤라 15:10~15:34 가 화면에 안 붙었다.
         try:
             self.run_minute_pipeline(candle)
             self._pipeline_fatal_streak = 0
@@ -12827,7 +12839,9 @@ class TradingSystem:
             logger.warning("[DailyCloseUI] 대시보드 갱신 실패: %s", _dc_ui_e)
 
     def _schedule_shutdown(self) -> None:
-        """자동 종료 15초 예약 — 반드시 메인 Qt 스레드에서 실행.
+        """자동 종료 예약 — 반드시 메인 Qt 스레드에서 실행.
+
+        [589차] 기본 15초. 단 당일 마감구간 보충(15:46)이 아직이면 그 뒤로 미룬다.
 
         _shutdown_sig.request 시그널(QueuedConnection)을 통해 호출되므로
         DailyClose 스레드에서 emit() 해도 이 메서드는 메인 이벤트 루프에서 실행된다.
@@ -12836,9 +12850,29 @@ class TradingSystem:
             log_manager.system("오늘 자동 종료가 이미 실행되어 자동 종료 예약을 생략합니다.", "WARNING")
             self.dashboard.append_sys_log("오늘 자동 종료 이력 감지 — 자동 종료 예약 생략")
             return
-        log_manager.system("자동 종료 예약 — 15초 후 Qt 이벤트 루프 종료")
-        self.dashboard.append_sys_log("자동 종료 예약 — 15초 후 프로그램 종료")
-        QTimer.singleShot(15_000, self._auto_shutdown)
+        # ── [MW0601 589차] 당일 마감구간 보충(15:46)이 아직이면 그 뒤로 미룬다 ──
+        # `daily_close`(15:40 시작)가 6분 안에 끝나면 15:46 틱이 오기 전에 프로세스가
+        # 죽어 보충이 영영 안 돈다. **수명 연장이 목적이 아니라 보충 1회 보장**이다 —
+        # 최악이어도 15:47:15 라 EOD 재학습(`EOD_RETRAIN_SCHEDULE_HM="1550"`)보다 앞이다.
+        # ⚠ 그 상수를 바꾸면 여기 15:47 도 함께 본다.
+        _delay_ms = 15_000
+        try:
+            from utils.time_utils import is_expiry_day as _is_exp_s
+            _nw_s = datetime.datetime.now()
+            if (not self._chart_backfill_today_done
+                    and is_trading_day(_nw_s) and not _is_exp_s(_nw_s)):
+                _left_s = (datetime.datetime.combine(_nw_s.date(), datetime.time(15, 47))
+                           - _nw_s).total_seconds()
+                if 0 < _left_s < 600:
+                    _delay_ms = int(_left_s * 1000) + 15_000
+                    log_manager.system(
+                        "자동 종료 지연 — 당일 마감구간 보충(15:46) 대기 %.0f초" % _left_s,
+                        "INFO")
+        except Exception as _asd_e:
+            logger.warning("[AutoShutdown] 보충 대기 계산 실패 (무해, 기본 15초): %s", _asd_e)
+        log_manager.system("자동 종료 예약 — %.0f초 후 Qt 이벤트 루프 종료" % (_delay_ms / 1000.0))
+        self.dashboard.append_sys_log("자동 종료 예약 — %.0f초 후 프로그램 종료" % (_delay_ms / 1000.0))
+        QTimer.singleShot(_delay_ms, self._auto_shutdown)
 
     def _auto_shutdown(self) -> None:
         """일일 마감 완료 후 자동 프로그램 종료 — Qt 이벤트 루프 종료."""
@@ -13891,6 +13925,45 @@ class TradingSystem:
                     _rd_fl.flush_stale_bar(now)
         except Exception as _fl_e:
             logger.warning("[CybosRT-FLUSH] 마감 봉 플러시 실패 (무해): %s", _fl_e)
+
+        # ── [MW0601 589차] **당일** 마감 체결(15:45) 차트 TR 보충 ─────────────
+        # 565차 Phase 3 와 **같은 함수**를 `prev` 가 아니라 `today` 로 한 번 더 부른다.
+        # 실시간 구독은 15:40 에 그대로 끊긴다 — 폐기된 Phase 2(수명 +6분)의 부활이
+        # 아니다. 바뀌는 것은 「언제 차트를 조회하나」 하나뿐이다.
+        #
+        # 실측 근거(2026-09-16 15:47, --dry-run): `chart=411 existing=410 inserted=1`
+        #   — 차트 TR 이 **당일 15:47 에** 15:45 봉을 준다. 익일까지 기다릴 이유가 없었다.
+        # 실패해도 익일 08:41 보충(위 블록)이 그대로 메운다 — 순수 가산이다.
+        # BlockRequest 는 COM 콜백 밖(스케줄러 틱)이다 — 절대원칙 §4.
+        # ⚠ `is_expiry_day` 는 main.py 상단 import 에 없다 — 위 550차 블록과 같이 지역 import.
+        try:
+            from utils.time_utils import is_expiry_day as _is_exp_t
+            if (
+                not self._chart_backfill_today_done
+                and is_trading_day(now)
+                and datetime.time(15, 46) <= now.time() < datetime.time(15, 49)
+                and not _is_exp_t(now)   # 만기일은 15:20 최종 체결 — 15:45 봉이 없다
+                and self.broker is not None and self.broker.is_connected
+            ):
+                self._chart_backfill_today_done = True
+                from config.settings import SESSION_BARS_ENABLED as _sb_on2
+                if _sb_on2:
+                    from collection.cybos.chart_backfill import backfill_day as _bf_day
+                    _stt = _bf_day(now.date())
+                    if _stt is not None:
+                        log_manager.system(
+                            "[SessionBackfill] 당일 마감구간 보충 — chart=%d existing=%d "
+                            "inserted=%d open_fixed=%d mismatch=%d"
+                            % (_stt["chart"], _stt["existing"], _stt["inserted"],
+                               _stt["open_fixed"], _stt["mismatch"]),
+                            "WARNING" if _stt["mismatch"] else "INFO",
+                        )
+                        if _stt["inserted"]:
+                            # 열려 있는 당일 차트가 스스로 15:45 를 집게 한다.
+                            self.dashboard.minute_chart_reload()
+        except Exception as _cbt_e:
+            logger.warning(
+                "[SessionBackfill] 당일 보충 실패 (무해 — 익일 08:41 이 메운다): %s", _cbt_e)
 
         # [A] 08:45 얼리버드 warmup — scaler age > EARLY_WARMUP_MIN_AGE_HOURS 시 선행 갱신
         # 커버: 전날 P8 실패 / 휴장일 / 중간 멈춤 / 주말 등 원인 무관 모든 노후화 케이스

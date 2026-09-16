@@ -8650,6 +8650,20 @@ def peter_save(session_date: str, offset: float, raw_lv: str, raw_tr: str):
 class MinuteChartCanvas(QWidget):
     RIGHT_PADDING_BARS = 10
 
+    # ── [MW0601 589차] 「전일정」 x축 — 격자를 마감(15:45)까지 미리 잡는다 ──────
+    #
+    # 기본은 **꺼짐**이다. 켜면 장 초반에 화면 대부분이 빈칸이 되므로 사용자가
+    # 필요할 때만 버튼으로 켠다(사용자 결정 2026-09-16).
+    #
+    # 슬롯 수는 세션 정의(`utils/time_utils.classify_session`)에서 나온 값이며
+    # 2026-09-16 차트 TR 실측(`chart=411`)과 **정확히 일치**한다:
+    #   PRE_MARKET 08:45~08:59 15 + REGULAR 09:00~15:09 370
+    #   + POST_FORCE_EXIT 15:10~15:34 25 + CLOSE_FILL 15:45 1  = 411
+    # 만기일은 15:20 최종 체결로 끝난다: 15 + 370 + (15:10~15:19) 10 + 1 = 396.
+    # ⚠ 15:35~15:44 는 체결이 없어 **봉 자체가 없다** — 슬롯도 없다(계측 4원칙 ②).
+    FULL_SESSION_SLOTS_REGULAR = 411
+    FULL_SESSION_SLOTS_EXPIRY = 396
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._closed_candles = []
@@ -8692,6 +8706,10 @@ class MinuteChartCanvas(QWidget):
         # 거래 스팬은 **기본 켜짐** — 567차 이전부터 그리던 것이라 끄면 퇴행이다.
         self._ov = {"struct": False, "price": False, "trade_mireuk": True,
                     "peter_lv": False, "trade_peter": False}
+        # [589차] 전일정 x축 토글 — 기본 꺼짐. 명시 초기화(계측 4원칙 ④).
+        self._full_session_x = False
+        # 그린 프레임의 padded_count. 크로스헤어가 **같은 값**을 써야 봉과 어긋나지 않는다.
+        self._padded_count_cur = 1
         # 피터 사료 — 붙여넣은 것만 있다. 없으면 **없는 것**이지 0 이 아니다.
         self._peter_levels = []
         self._peter_trades = []
@@ -8937,7 +8955,8 @@ class MinuteChartCanvas(QWidget):
         end_idx = total_count - self._view_offset
         start_idx = max(0, end_idx - visible_count)
         candles = candles[start_idx:end_idx]
-        padded_count = max(len(candles) + self.RIGHT_PADDING_BARS, 1)
+        padded_count = self._compute_padded_count(candles, total_count)
+        self._padded_count_cur = padded_count
 
         left = S.p(58)
         top = S.p(22)
@@ -10866,7 +10885,9 @@ class MinuteChartCanvas(QWidget):
             return
 
         count = len(candles)
-        padded_count = max(count + self.RIGHT_PADDING_BARS, 1)
+        # [589차] 그린 프레임과 **같은 값**을 쓴다 — 따로 계산하면 전일정 x축에서
+        #   커서가 가리키는 봉이 한 칸씩 어긋난다.
+        padded_count = max(self._padded_count_cur, 1)
         step = plot.width() / padded_count
         candle_right = plot.left() + step * count
         if self._hover_pos.x() > candle_right:
@@ -11013,6 +11034,41 @@ class MinuteChartCanvas(QWidget):
         if key in self._ov:
             self._ov[key] = bool(on)
             self.update()
+
+    # ── [MW0601 589차] 전일정 x축 ────────────────────────────────────
+    def set_full_session_x(self, on: bool):
+        self._full_session_x = bool(on)
+        self.update()
+
+    def _full_session_slots(self) -> int:
+        """이 세션의 전체 봉 슬롯 수. 만기일은 조기 마감이라 더 짧다.
+
+        ⚠ 세션 날짜는 **캔버스가 갖고 있지 않다**(`_session_date` 는 다이얼로그 속성).
+          봉에서 뽑는다 — 봉이 없으면 일반일로 본다.
+        """
+        try:
+            if self._closed_candles:
+                from utils.time_utils import is_expiry_day as _is_exp
+                _d = self._coerce_dt(self._closed_candles[0]["ts"])
+                if _d is not None and _is_exp(_d):
+                    return self.FULL_SESSION_SLOTS_EXPIRY
+        except Exception:
+            pass
+        return self.FULL_SESSION_SLOTS_REGULAR
+
+    def _compute_padded_count(self, candles, total_count: int) -> int:
+        """x축 슬롯 수. **paintEvent 와 크로스헤어가 반드시 같은 값을 써야 한다** —
+        따로 계산하면 커서 위치와 봉이 어긋난다(종전엔 두 곳이 같은 식을 복사하고 있었다).
+
+        🔴 줌 중에는 전일정 격자를 적용하지 않는다. 적용하면 확대가 무력화된다
+          (보이는 봉이 몇 개든 격자가 411 로 고정돼 버린다).
+        """
+        _pad = max(len(candles) + self.RIGHT_PADDING_BARS, 1)
+        if not self._full_session_x:
+            return _pad
+        if len(candles) < total_count:     # 줌·패닝 중
+            return _pad
+        return max(_pad, self._full_session_slots())
 
     def _state_is_past_session(self):
         """이 세션의 당일 중앙값·분위수가 **확정됐는가**.
@@ -11375,6 +11431,26 @@ class MinuteChartDialog(QDialog):
         )
         self._btn_peter.clicked.connect(self._open_peter_input)
         bar.addWidget(self._btn_peter)
+        # ── [MW0601 589차] 전일정 x축 토글 — 기본 꺼짐 ────────────────────────
+        # 🔴 레이어 토글이 **아니다.** 무엇을 그리느냐가 아니라 가로 격자를 어디까지
+        #   잡느냐를 바꾼다. 그래서 `_OV_SPEC` 에 넣지 않고 따로 세운다.
+        # 켜면 장 초반 화면 대부분이 빈칸이 되므로 기본값은 끈 상태다(사용자 결정).
+        self._btn_fullx = QPushButton("⇥ 15:45 격자")
+        self._btn_fullx.setCheckable(True)
+        self._btn_fullx.setChecked(False)
+        self._btn_fullx.setToolTip(
+            "x축을 마감(15:45)까지 미리 잡는다 — 하루 진행률이 보이고 가로 스케일이 안 흔들린다.\n"
+            "끄면 마지막 봉 +10봉까지만 잡는다(기본).\n"
+            "줌 중에는 적용되지 않는다."
+        )
+        self._btn_fullx.setStyleSheet(
+            f"QPushButton{{background:{C['bg3']};color:{C['text2']};"
+            f"border:1px solid {C['border']};border-radius:7px;"
+            f"padding:5px 12px;font-size:{S.f(10)}px;font-weight:600;}}"
+            f"QPushButton:checked{{color:{C['cyan']};border-color:{C['cyan']};}}"
+        )
+        self._btn_fullx.toggled.connect(self._chart.set_full_session_x)
+        bar.addWidget(self._btn_fullx)
         self._ov_note = QLabel("")
         self._ov_note.setStyleSheet(f"color:{C['text2']};font-size:{S.f(10)}px;")
         bar.addWidget(self._ov_note)
@@ -15264,6 +15340,23 @@ def _adapter_set_minute_chart_post_reload_hook(self, hook):
     self._win._minute_chart_dialog._post_reload_hook = hook
 
 
+def _adapter_minute_chart_reload(self):
+    """[MW0601 589차] 외부에서 차트 DB 리로드를 요청한다(당일 마감구간 보충 직후).
+
+    🔴 복기 모드면 **아무것도 하지 않는다** — 사용자가 고른 과거 날짜를 오늘로
+      덮어쓰면 보고 있던 화면이 말없이 바뀐다. 중복 진입은 `_reload_running` 이 막는다.
+    ⚠ `_start_reload_thread` 는 위젯을 만지므로 **메인 Qt 스레드**에서만 부른다
+      (호출처 `_scheduler_tick` 이 메인이다).
+    """
+    try:
+        _dlg = self._win._minute_chart_dialog
+        if not getattr(_dlg, "_live_mode", True):
+            return
+        _dlg._start_reload_thread()
+    except Exception:
+        pass
+
+
 def _adapter_push_direction_live(self, decision: dict, ts: str) -> None:
     """파이프라인 실시간 앙상블 결과를 방향카드에 즉시 반영 (DB 폴링 우회)."""
     try:
@@ -15282,6 +15375,7 @@ DashboardAdapter.minute_chart_record_exit = _adapter_minute_chart_record_exit
 DashboardAdapter.minute_chart_sync_active_position = _adapter_minute_chart_sync_active_position
 DashboardAdapter.minute_chart_clear_active_position = _adapter_minute_chart_clear_active_position
 DashboardAdapter.set_minute_chart_post_reload_hook = _adapter_set_minute_chart_post_reload_hook
+DashboardAdapter.minute_chart_reload = _adapter_minute_chart_reload
 DashboardAdapter.push_direction_live = _adapter_push_direction_live
 
 
