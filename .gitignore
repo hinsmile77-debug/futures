@@ -113,8 +113,20 @@ start_mireuk_CREON.bat
 !.claude/skills/
 !.claude/commands/
 
+
 # 증거 다이제스트는 재생성 가능 (점검리포트는 커밋 대상)
 docs/정기점검/매일점검/evidence_*.md
 
 # 수집기 실행 부산물 (Cowork 예약 세션이 리포 루트에 남긴다)
 collect_stderr.txt
+
+# [peter-feed] 피터 사료 — **원본 텍스트만** 버전관리한다
+#   피터가 한 말은 PC 와 무관하므로 두 PC 가 공유한다. 반면 peter_levels.db 와
+#   offset 은 **내 계약과의 차이**라 PC 의 속성이다 — 옮기면 MW0602 가 조용히
+#   틀린 가격을 그린다(596차). DB 는 각 PC 가 이 텍스트로 재생성한다.
+#   git 은 제외된 디렉터리 안으로 들어가지 않으므로 상위부터 열어야 한다.
+#   `!data/` 로 문을 열고 `data/*` 로 다시 닫은 뒤 이 한 폴더만 연다 —
+#   위쪽의 data/db/ · data/raw/ 규칙은 `data/*` 가 그대로 덮으므로 영향 없다.
+!data/
+data/*
+!data/peter_feed/

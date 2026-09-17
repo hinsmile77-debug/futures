@@ -8400,9 +8400,22 @@ def _as_num(v):
 #   오프셋이 날마다 다르다(실측 09-14 −4.00 · 09-11 −4.47 · 09-04 −0.01).
 #   그래서 오프셋은 **사용자가 그날 값을 넣는다** — 추정하지 않는다.
 _PT_N = r'(\d{3,4}(?:\.\d{1,2})?)'
+# [602차] 「돌파」 진입의 앞부분 — 방향어(상향/하향/하방)와 어미를 한 곳에 모은다.
+_PT_BRK = r'\s*(?:상향|하향|하방)?\s*돌파\s*(?:시|할\s*때|하면|하면서)?\s*(?:다시\s*)?'
 PETER_RULES = [
     ('level_pub', re.compile(r'([123])\s*차\s*(?:저항선|지지선)\s*' + _PT_N), True),
-    ('entry_brk', re.compile(_PT_N + r'\s*돌파\s*시?\s*(?:매수|재매수)'), False),
+    # ── [MW0601 602차] 돌파 진입 — **매도가 없었다** ─────────────────────────
+    #   종전 규칙은 `돌파 시 (매수|재매수)` 로 매수 전용이었다. 그런데 그는 하방을
+    #   같은 어법으로 말한다 — 실측: 「1062 돌파시 매도」(09-17 09:16) ·
+    #   「1085하향 돌파시 매도」(08-26 12:48) · 「1050 하방돌파할때 매도」(08-31 09:31).
+    #   이것들이 전부 손절선만 남고 **진입이 통째로 빠져** 08-26·08-31 이 「지시 0건」
+    #   이었다. 어미도 넓힌다(`돌파시`/`돌파할때`/`돌파하면`, `다시`·`재`).
+    #   🔴 매도는 **`entry_sell` 로 낸다** — 새 kind 를 만들면 `side` 판정
+    #     (`"S" if kind == "entry_sell"`)·색·라벨을 전부 따라 고쳐야 하고, 하나라도
+    #     빠뜨리면 **매도가 매수로 그려진다.** 방향이 틀리는 것보다 칩에 「돌파」
+    #     두 글자가 빠지는 편이 낫다.
+    ('entry_brk',  re.compile(_PT_N + _PT_BRK + r'(?:재)?매수(?!\s*체결)'), False),
+    ('entry_sell', re.compile(_PT_N + _PT_BRK + r'(?:재)?매도(?!\s*체결)'), False),
     ('entry_dip', re.compile(_PT_N + r'\s*(?:까지\s*내려오면|맥점\s*부근\s*오면|부근\s*오면|오면)\s*매수'), False),
     ('entry_dip', re.compile(_PT_N + r'\s*매수\s*맥점'), False),
     # [MW0601 588차 A단계] 조건 없이 값만 말하는 지시 — 실측으로 빠져 있던 형태.
@@ -8453,10 +8466,23 @@ _PT_TRADE = re.compile(
 
 
 def parse_peter_text(text: str, offset: float = 0.0):
-    """트윗 원문 → 레벨 목록. `offset` 은 **정규 → 미륵이 계약** 보정값이다."""
+    # 🔴 raw 문자열이다 — 아래 설명에 `\s*` · `\d{3,4}` 같은 정규식이 그대로 들어간다.
+    #   보통 문자열로 두면 파이썬이 `\s` 를 이스케이프로 읽어 DeprecationWarning 을
+    #   내고(3.12 부터는 오류다), 설명이 실제 패턴과 달라 보인다.
+    r"""트윗 원문 → 레벨 목록. `offset` 은 **정규 → 미륵이 계약** 보정값이다.
+
+    🔴 [602차] **한 줄씩** 본다. 종전에는 원문 전체를 통째로 정규식에 넣었는데,
+      패턴 안의 `\s*` 가 줄바꿈까지 먹어 **두 트윗이 이어붙었다.** 실측 09-17:
+          「1052 청산가」(09:46)  +  「1065 돌파시 다시 매도」(10:10)
+      이 `청산가\s*(\d{3,4})` 에 걸려 **있지도 않은 「목표 1065」** 를 만들었다.
+      호출부가 블록을 `"\n"` 으로 이어 주고 블록 자체는 `" ".join` 된 한 줄이므로,
+      줄 단위로 끊으면 블록 경계와 정확히 일치한다 — 없는 말을 짓지 않는다.
+    """
     hits, seen = [], set()
+    _lines = [l for l in (text or "").splitlines() if l.strip()]
     for kind, rx, is_pub in PETER_RULES:
-        for m in rx.finditer(text or ""):
+      for _ln in _lines:
+        for m in rx.finditer(_ln):
             g = [x for x in m.groups() if x is not None]
             if not g:
                 continue
@@ -8464,7 +8490,8 @@ def parse_peter_text(text: str, offset: float = 0.0):
             if key in seen:
                 continue
             seen.add(key)
-            rec = {'kind': kind, 'level': float(g[-1]), 'at': m.start()}
+            rec = {'kind': kind, 'level': float(g[-1]),
+                   'at': _lines.index(_ln) * 10000 + m.start()}
             if is_pub:
                 rec['rank'] = int(g[0]); rec['level'] = float(g[1])
             rec['level_adj'] = rec['level'] + float(offset or 0.0)
