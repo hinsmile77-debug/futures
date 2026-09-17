@@ -139,7 +139,14 @@ def test_other_day_reload_resets_zoom():
     c._view_offset = 100
     c.reset_session(_bars(180, day="2026-09-15"), [])
     assert c._view_offset == 0, "날짜가 바뀌면 초기화해야 한다 — 남의 날 위치를 물려받으면 안 된다"
-    assert c._visible_count == 180
+    # 🔴 [598차] **의미로 묻는다 — 인코딩으로 묻지 않는다.**
+    #   종전에는 `_visible_count == 180` 이었다. 그 단언은 「전부 보임」을 **그 순간의
+    #   봉 수로 굳히는 것**을 요구하는 셈이었고, 그렇게 굳으면 다음 봉이 붙는 순간
+    #   창 모드로 오판돼 「하루 전체」가 저절로 풀렸다(598차 원인).
+    #   이제 「전부 보임」은 센티넬 0 이다. 검사해야 할 것은 저장 형태가 아니라
+    #   **다 보이는가**이므로 그렇게 묻는다 — 어느 인코딩이든 통과한다.
+    assert c._view_visible() == 180, "날짜가 바뀌었으면 전부 보여야 한다"
+    assert c._view_is_full(), "전부 보이는 상태여야 한다(줌·패닝 아님)"
 
 
 def test_preserved_offset_is_clamped_when_day_shrinks():
