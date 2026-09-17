@@ -294,7 +294,11 @@ class EnsembleDecision:
         self.calibrator = None   # main.py에서 horizon_calibrator 주입 (3m 분포 기반)
         # 앙상블 전용 보정기: 앙상블 conf 분포를 직접 학습 (3m 분포 미스매치 해소)
         # 100건 이상 누적 전: self.calibrator(3m) fallback
-        self.ensemble_calibrator = PredictionCalibrator(method="platt")
+        # [MW0601 600차 / F-11] 로그 접두 `[Calibration:ensemble]` — 모듈 공유 logger 를
+        # 쓰는 다른 보정기(호라이즌 6개·극단성)와 구분한다. 동작 무변경.
+        self.ensemble_calibrator = PredictionCalibrator(
+            method="platt", name="ensemble"
+        )
         # 호라이즌 상수 출력 감지 — (direction, confidence) 이력 + 현재 stuck 상태
         self._hz_conf_hist: Dict[str, deque] = {
             h: deque(maxlen=self._CONST_OUT_N) for h in HORIZONS

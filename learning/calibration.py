@@ -22,6 +22,28 @@ from typing import Optional, List
 
 logger = logging.getLogger("LEARNING")
 
+class _TaggedCalibLogger(logging.LoggerAdapter):
+    """[MW0601 600차 / F-11] `[Calibration]` 접두를 인스턴스 이름이 붙은 것으로 갈아끼운다.
+
+    호출부 메시지는 **한 글자도 고치지 않는다** — 여기서 선두 토큰만 치환한다.
+    `name` 이 비면 치환하지 않으므로 출력이 종전과 **바이트 단위로 동일**하다(하위호환).
+
+    왜 필요한가: 이 모듈의 `logger` 는 모듈 단위라 앙상블·호라이즌 6개·극단성 보정기가
+    전부 `[Calibration]` 하나를 공유했다. 그래서 2026-09-17 딥다이브가 축퇴 전이
+    1,591회를 앙상블 보정기 단독인 것처럼 집계하는 오류를 냈다(그날 리포트 제2부-E §7).
+    ⚠ 로그 문자열 전용 — 판정·저장·보정 동작에 관여하지 않는다.
+    """
+
+    _BASE = "[Calibration]"
+
+    def process(self, msg, kwargs):
+        tag = (self.extra or {}).get("tag") or self._BASE
+        if tag != self._BASE and isinstance(msg, str) and msg.startswith(self._BASE):
+            msg = tag + msg[len(self._BASE):]
+        return msg, kwargs
+
+
+
 try:
     from sklearn.isotonic import IsotonicRegression
     from sklearn.linear_model import LogisticRegression
@@ -105,12 +127,29 @@ class PredictionCalibrator:
     #   그 결정(하한 인하 vs 보정 함수형 교체)은 §9 사전등록 대상이라 코드가 임의로
     #   내리지 않는다 — ensemble_decision._check_conf_floor_consistency()가 경보만 남긴다.
 
-    def __init__(self, method: str = "platt"):
+    def __init__(self, method: str = "platt", name: str = ""):
         """
         Args:
             method: "platt" (기본, 파라미터 안정) | "isotonic" (샘플 많을 때)
+            name:   [MW0601 600차 / F-11] 로그 식별자. 빈 문자열이면 종전과 동일하게
+                    접두 없이 찍힌다(하위호환 — 기존 호출부를 깨지 않는다).
+
+        **왜 name 이 필요한가** — 이 모듈의 `logger` 는 모듈 단위라
+        `ensemble_calibrator` · `horizon_calibrator`(호라이즌 6개) ·
+        `extremity_corrector` 등 **여러 인스턴스가 `[Calibration]` 태그를 공유**한다.
+        그래서 2026-09-17 채점기 딥다이브가 축퇴 전이 1,591회를 앙상블 보정기
+        **단독 수치인 것처럼** 집계하는 오류를 냈다(그날 리포트 제2부-E §7 자체 정정).
+        어느 보정기가 낸 로그인지 로그만으로 분리할 수 없는 것은 계측 결함이며,
+        계측 4원칙 ③(탈락·출처 가시화) 계열이다.
+        ⚠ 판정·저장·보정 동작은 일절 바뀌지 않는다. **로그 문자열 전용**이다.
         """
         self.method    = method
+        # 접두는 만들 때 한 번만 조립한다(매 로그 호출마다 분기하지 않는다).
+        self._log_tag  = ("[Calibration:%s]" % name) if name else "[Calibration]"
+        self.name      = name
+        # 이 인스턴스의 모든 로그는 이것을 통해 나간다(클래스 본문에 `logger.` 직접
+        # 호출이 남아 있으면 접두가 빠지므로, test_600 이 그것을 검사한다).
+        self._log      = _TaggedCalibLogger(logger, {"tag": self._log_tag})
         self._fitted   = False
         self._n        = 0
 
@@ -176,7 +215,7 @@ class PredictionCalibrator:
                 outs = [float(v) for v in self._model.predict_proba(X_probe)[:, 1]]
             return (max(outs) - min(outs)), max(outs)
         except Exception as e:
-            logger.debug("[Calibration] span 측정 실패 (무해): %s", e)
+            self._log.debug("[Calibration] span 측정 실패 (무해): %s", e)
             return None, None
 
     def _measure_auc(self):
@@ -197,7 +236,7 @@ class PredictionCalibrator:
             from sklearn.metrics import roc_auc_score
             return float(roc_auc_score(labels, np.array(list(self._probs))))
         except Exception as e:
-            logger.debug("[Calibration] AUC 측정 실패 (무해): %s", e)
+            self._log.debug("[Calibration] AUC 측정 실패 (무해): %s", e)
             return None
 
     def _evaluate_degeneracy(self):
@@ -277,7 +316,7 @@ class PredictionCalibrator:
                 self._fitted = False
                 self._transition_steps = 0
                 if not _prev_degen:
-                    logger.warning(
+                    self._log.warning(
                         "[Calibration] 축퇴 감지 — %s (기준 auc<%.2f and span<%.3f, "
                         "기저율=%.4f n=%d) → 보정 미적용, raw 통과%s",
                         _detail, self.DEGENERATE_AUC_MIN, self.DEGENERATE_SPAN_MIN,
@@ -285,11 +324,11 @@ class PredictionCalibrator:
                         " [기존 fitted 해제]" if _was_fitted else "",
                     )
                 else:
-                    logger.debug("[Calibration] 축퇴 지속 — %s (n=%d)", _detail, len(probs))
+                    self._log.debug("[Calibration] 축퇴 지속 — %s (n=%d)", _detail, len(probs))
                 return
 
             if _prev_degen:
-                logger.info(
+                self._log.info(
                     "[Calibration] 축퇴 해소 — %s (n=%d) → 보정 재적용", _detail, len(probs)
                 )
             self._degenerate = False
@@ -303,16 +342,16 @@ class PredictionCalibrator:
                 self._fitted = False
                 self._transition_steps = 0
                 if not _prev_unreach:
-                    logger.warning(
+                    self._log.warning(
                         "[Calibration] 하한 도달불가 — %s (%s, 기저율=%.4f n=%d) → 보정 "
                         "미적용, raw 통과. 축퇴 가드와 별개 사유다(auc/span은 정상 범위).",
                         _ureason, _detail, float(labels.mean()), len(probs),
                     )
                 else:
-                    logger.debug("[Calibration] 도달불가 지속 — %s (n=%d)", _ureason, len(probs))
+                    self._log.debug("[Calibration] 도달불가 지속 — %s (n=%d)", _ureason, len(probs))
                 return
             if _prev_unreach:
-                logger.info(
+                self._log.info(
                     "[Calibration] 도달불가 해소 — %s (n=%d) → 보정 재적용", _ureason, len(probs)
                 )
             self._unreachable = False
@@ -321,10 +360,10 @@ class PredictionCalibrator:
             if not self._fitted:
                 self._transition_steps = 20
             self._fitted = True
-            logger.debug(f"[Calibration] {self.method} 보정 완료 (n={len(probs)})")
+            self._log.debug(f"[Calibration] {self.method} 보정 완료 (n={len(probs)})")
 
         except Exception as e:
-            logger.warning(f"[Calibration] fit 오류: {e}")
+            self._log.warning(f"[Calibration] fit 오류: {e}")
 
     def calibrate(self, raw_prob: float) -> float:
         """
@@ -395,7 +434,15 @@ class PredictionCalibrator:
 
     def save(self, path: str) -> bool:
         """보정 모델 + 누적 데이터를 디스크에 저장 (joblib)."""
-        if not _SKLEARN_OK or not self._fitted:
+        if not _SKLEARN_OK:
+            return False
+        # [MW0602 485차 F-1] `not self._fitted` 게이트 제거 — 모델 계수와 누적 표본은
+        # 수명이 다른 데이터인데 한 게이트에 묶여 있어, 마감 시각에 축퇴/도달불가
+        # 상태면 그날 쌓인 표본까지 통째로 버려졌다(2026-08-12~21 7거래일 무저장,
+        # 0821 리포트 1-1). 이제 fit 상태와 무관하게 저장하고, 상태 3키를 payload에
+        # 실어 load()가 그대로 복원한다. 한 번도 fit된 적 없어 _model 자체가 없는
+        # 경우만 종전대로 저장하지 않는다.
+        if self._model is None:
             return False
         try:
             import joblib
@@ -405,10 +452,19 @@ class PredictionCalibrator:
                 "labels":  list(self._labels),
                 "n":       self._n,
                 "method":  self.method,
+                # [MW0601 600차 / F-10] 저장 시점 상태 — 구버전 저장본에는 이 3키가
+                # 없다 → load()에서 fitted=True 폴백(구버전은 fitted일 때만 저장됐으므로
+                # 종전 동작 보존).
+                # ⚠ 원 커밋(dev 2356820)은 여기에 clean_probs/clean_labels/artifact_n
+                #   (MW0602 461차 산물) 3키도 함께 실었으나, **이 브랜치에는 그 속성이
+                #   없어** 이식에서 제외했다. 넣으면 저장 시 AttributeError 로 죽는다.
+                "fitted":      self._fitted,
+                "degenerate":  self._degenerate,
+                "unreachable": self._unreachable,
             }, path, protocol=4)
             return True
         except Exception as e:
-            logger.warning("[Calibration] save 실패: %s", e)
+            self._log.warning("[Calibration] save 실패: %s", e)
             return False
 
     def load(self, path: str) -> bool:
@@ -419,7 +475,14 @@ class PredictionCalibrator:
             import joblib
             state = joblib.load(path)
             self._model  = state["model"]
-            self._fitted = True
+            # [MW0602 485차 F-1] 저장 시점 상태 복원 — 무조건 True로 세우면(구현)
+            # 축퇴 상태로 저장된 보정기가 다음 기동에 fitted로 되살아난다(1-7).
+            # 구버전 저장본(키 없음)은 True 폴백 — 구버전은 fitted일 때만 저장됐다.
+            # 아래 축퇴/도달불가 재평가는 fitted를 **내리기만** 하고 올리지 않으므로
+            # False로 복원되면 calibrate()가 raw 통과(현행 보수적 폴백)로 시작한다.
+            self._fitted      = bool(state.get("fitted", True))
+            self._degenerate  = bool(state.get("degenerate", False))
+            self._unreachable = bool(state.get("unreachable", False))
             self._n      = state.get("n", 0)
             for p in state.get("probs", []):
                 self._probs.append(p)
@@ -434,7 +497,7 @@ class PredictionCalibrator:
                 self._degenerate = True
                 self._fitted = False
                 self._transition_steps = 0
-                logger.warning(
+                self._log.warning(
                     "[Calibration] 복원한 보정기가 축퇴 상태 — %s (n=%d) → 보정 "
                     "미적용으로 시작, raw 통과. 표본이 새로 쌓여 순위변별력이 "
                     "회복되면 fit()에서 자동 재적용된다.",
@@ -451,7 +514,7 @@ class PredictionCalibrator:
                     self._unreachable = True
                     self._fitted = False
                     self._transition_steps = 0
-                    logger.warning(
+                    self._log.warning(
                         "[Calibration] 복원한 보정기가 하한 도달불가 — %s (%s, n=%d) → "
                         "보정 미적용으로 시작, raw 통과. 축퇴(auc/span)와 별개 사유이며, "
                         "표본이 쌓여 출력상한이 하한 위로 올라오면 fit()에서 자동 재적용된다.",
@@ -459,7 +522,7 @@ class PredictionCalibrator:
                     )
                 else:
                     self._unreachable = False
-            logger.info(
+            self._log.info(
                 "[Calibration] 보정기 복원 완료 (n=%d method=%s fitted=%s degenerate=%s "
                 "unreachable=%s %s)",
                 self._n, self.method, self._fitted, self._degenerate,
@@ -467,7 +530,7 @@ class PredictionCalibrator:
             )
             return True
         except Exception as e:
-            logger.warning("[Calibration] load 실패: %s", e)
+            self._log.warning("[Calibration] load 실패: %s", e)
             return False
 
     @property
@@ -513,7 +576,10 @@ class MultiHorizonCalibrator:
     """호라이즌별 독립 보정기 묶음"""
 
     def __init__(self, horizons: List[str], method: str = "platt"):
-        self.calibrators = {h: PredictionCalibrator(method=method) for h in horizons}
+        # [MW0601 600차 / F-11] 호라이즌명을 로그 접두로 — `[Calibration:1m]` 형태.
+        self.calibrators = {
+            h: PredictionCalibrator(method=method, name=h) for h in horizons
+        }
 
     def record(self, horizon: str, raw_prob: float, correct: bool):
         if horizon in self.calibrators:
