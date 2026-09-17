@@ -150,6 +150,7 @@ def test_trend_sql_counts_positions_not_legs(tmp_path, monkeypatch):
 
     PositionTracker 쪽만 고치면 "오늘 마감"과 "추이 차트의 오늘"이 어긋난다.
     """
+    import datetime
     import sqlite3
     import utils.db_utils as U
 
@@ -162,12 +163,19 @@ def test_trend_sql_counts_positions_not_legs(tmp_path, monkeypatch):
     # fetch_trend_daily 는 정확도 병합을 위해 daily_stats 도 읽는다
     con.execute("""create table daily_stats(
         date text primary key, sgd_accuracy real, verified_count int)""")
+    # [MW0601 601차 후속 / O-i6] 날짜를 **상대로** 잡는다.
+    # 종전에는 `2026-08-10` 을 박아 뒀는데 `fetch_trend_daily(30)` 은
+    # 최근 30일창만 돌려준다. 그래서 시간이 지나자 이 테스트가
+    # `KeyError: '2026-08-10'` 으로 깨졌다 — **코드 회귀가 아니라
+    #   픽스처가 달력을 타는 구조**였다(2026-09-17 실측 확정).
+    # ⚠ 조용히 빨간색으로 남는 테스트는 스위트 전체의 신호를 죽인다.
+    _day = (datetime.datetime.now() - datetime.timedelta(days=2)).strftime("%Y-%m-%d")
     rows = [
         # A: 3계약 → -3.04×2 + 0.70×1 = -5.38pt → 패 (구 코드는 2건·1승1패로 셌다)
-        ("2026-08-10 09:58:00", "2026-08-10 10:01:29", 2, -3.04, -306940),
-        ("2026-08-10 09:58:00", "2026-08-10 10:06:54", 1, +0.70, +33530),
+        (_day + " 09:58:00", _day + " 10:01:29", 2, -3.04, -306940),
+        (_day + " 09:58:00", _day + " 10:06:54", 1, +0.70, +33530),
         # B: 단일 레그 이익
-        ("2026-08-10 10:28:00", "2026-08-10 10:30:59", 1, +4.58, +227523),
+        (_day + " 10:28:00", _day + " 10:30:59", 1, +4.58, +227523),
     ]
     for ets, xts, q, pts, krw in rows:
         con.execute(
@@ -179,7 +187,7 @@ def test_trend_sql_counts_positions_not_legs(tmp_path, monkeypatch):
     con.close()
     monkeypatch.setattr(U, "TRADES_DB", str(db))
 
-    out = {r["date"]: r for r in U.fetch_trend_daily(30)}["2026-08-10"]
+    out = {r["date"]: r for r in U.fetch_trend_daily(30)}[_day]
     assert out["trades"] == 2, "3레그 → 2포지션"
     assert (out["wins"], out["losses"]) == (1, 1)
     assert out["pnl_krw"] == pytest.approx(-45887)   # 레그 합은 그대로

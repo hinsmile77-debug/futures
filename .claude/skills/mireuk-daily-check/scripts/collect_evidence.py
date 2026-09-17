@@ -133,6 +133,17 @@ DEFAULT_CONFIG = {
         "[Shutdown]", "자동 종료", "기동 복원",
         "PSI",
     ],
+    # [MW0601 601차 후속 / F-6] 패턴별 제외 토큰 — 같은 줄에 이 문자열이
+    # 있으면 **그 패턴의 매칭으로 치지 않는다**(다른 패턴은 계속 본다).
+    # 계기: 대시보드가 스톨 감지 시 `logs/mainstall_traceback_<date>.log 참조`
+    # 라는 **파일명을 언급하는** WARN 줄을 남기는데, 매칭이 대소문자
+    # 무시 부분일치라 그 줄이 `Traceback` 버킷에 들어가 §11 적신호
+    # "크래시/메모리 계열"을 띄웠다(2026-09-17 이상점 1-7).
+    # ⚠ 제외는 **파일명 접두사로 좁게** 잡는다 — 진짜 트레이스백
+    #   (`Traceback (most recent call last):`)은 그대로 잡혀야 한다.
+    "quote_exclude_by_pattern": {
+        "Traceback": ["mainstall_traceback_"],
+    },
     # 거래일 요약 — 이름있는 그룹으로 뽑는다. 로그 문구가 바뀌면 여기만 고치면 된다.
     "day_summary_patterns": {
         "entry_check": r"\[진입체크\]\s*(?P<dir>\S+)\s+(?P<qty>\d+)계약\s+(?P<grade>[A-Z]급(?:\(원시[A-Z]\))?)\s*\|\s*(?P<checks>[^|]+?)\s*\|\s*conf=(?P<conf>[\d.]+)%",
@@ -937,8 +948,13 @@ class LogDigest(object):
             self.by_level_tag.setdefault((level, tag), []).append(entry)
 
         up = line.upper()
+        _q_excl = self.cfg.get("quote_exclude_by_pattern", {})
         for pat in self.cfg["always_quote_patterns"]:
             if pat.upper() in up:
+                # [MW0601 601차 후속 / F-6] 제외 토큰이 같은 줄에 있으면
+                # 이 패턴은 건너뛰고 **다음 패턴을 계속 본다**(break 아니라 continue).
+                if any(x.upper() in up for x in _q_excl.get(pat, ())):
+                    continue
                 bucket = self.quoted.setdefault(pat, [])
                 if len(bucket) < 8:
                     bucket.append(entry)

@@ -577,9 +577,14 @@ FOR /F "usebackq" %%T IN (`powershell -NoProfile -Command "(Get-Date).Hour*60+(G
 IF NOT DEFINED _EXIT_MIN SET "_EXIT_MIN=!_LAUNCH_MIN!"
 SET /A "_RUNTIME_MIN=!_EXIT_MIN! - !_LAUNCH_MIN!"
 IF !_RUNTIME_MIN! LSS 0 SET "_RUNTIME_MIN=0"
+REM [MW0601 601cha F-15] Peek the normal-exit flag for the message below.
+REM  Read-only peek - the authoritative read+delete stays further down.
+REM  Without it the runtime log said "crash" even on a clean shutdown.
+SET "_EXIT_KIND=일시적 크래시"
+IF EXIST "data\_exit_normally" SET "_EXIT_KIND=정상 종료"
 IF !_RUNTIME_MIN! GTR 5 (
     SET "_RESTART_CNT=0"
-    CALL :L "[AUTO-RESTART] main.py 가 !_RUNTIME_MIN!분 실행됨 -- 일시적 크래시, 카운터 초기화."
+    CALL :L "[AUTO-RESTART] main.py 가 !_RUNTIME_MIN!분 실행됨 -- !_EXIT_KIND!, 카운터 초기화."
 )
 
 IF NOT DEFINED _RESTART_CNT SET "_RESTART_CNT=0"

@@ -15439,7 +15439,8 @@ class TradingSystem:
 
         # 연결 감시 — 끊김 시 슬랙 CRITICAL 알림 후 재연결
         if not self.broker.is_connected:
-            logger.error("[System] 키움 연결 끊김 — 재연결 시도")
+            logger.error("[System] %s 연결 끊김 — 재연결 시도",
+                         getattr(self.broker, "name", "브로커"))
             notify_connection_lost(getattr(self.broker, "name", "브로커"))
             self._restart_cause = "AUTO_DISCONNECT"
             self.connect_broker()
