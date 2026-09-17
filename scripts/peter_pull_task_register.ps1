@@ -1,5 +1,4 @@
-# -*- coding: utf-8 -*-
-# ============================================================
+﻿# ============================================================
 #  peter_pull_task_register.ps1 -- MW0602 에 「피터 사료 수신」 작업 등록
 #
 #  평일 16:30 에 scripts\peter_pull_MW0602.bat 를 돌린다.
@@ -15,6 +14,24 @@
 #  해제:
 #     schtasks /Delete /TN "피터 사료 수신" /F
 # ============================================================
+
+# ── BOM 자가진단 ────────────────────────────────────────────────────────
+#  이 파일은 **UTF-8 BOM(EF BB BF)으로 저장돼 있어야 한다.**
+#  Windows PowerShell 5.1(powershell.exe)은 BOM 없는 .ps1 을 UTF-8 이 아니라
+#  **현재 ANSI 코드페이지(한국어 Windows = CP949)로 읽는다.** 그러면 아래
+#  작업 이름 '피터 사료 수신' 이 깨진 채 등록되고, 나중에
+#  `schtasks /Query /TN "피터 사료 수신"` 이 "없는 작업"이라고 답한다 —
+#  등록은 성공했는데 찾을 수가 없는, 제일 나쁜 종류의 고장이다.
+#  (pwsh 7 은 BOM 없어도 UTF-8 로 읽으므로 거기선 안 드러난다.)
+#  🔴 BOM 은 파일 **내용**이라 git 이 그대로 나른다. 이 커밋에 BOM 이 들어
+#    있는 한 어느 PC 에서 체크아웃·체리픽해도 따라간다. 편집기에서 저장할 때
+#    "UTF-8(BOM 없음)"으로 바꾸지 말 것.
+$canary = '피터'
+if ($canary.Length -ne 2) {
+    Write-Warning "이 .ps1 이 UTF-8 로 읽히지 않았다 - 파일 맨 앞 BOM(EF BB BF)이 사라진 것으로 보인다."
+    Write-Warning "그대로 등록하면 작업 이름이 깨져서 schtasks 로 찾을 수 없게 된다."
+    throw "BOM 없음 - 등록을 중단한다. 파일을 'UTF-8 with BOM' 으로 다시 저장하거나 pwsh 7 로 실행할 것."
+}
 
 $ErrorActionPreference = 'Stop'
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path

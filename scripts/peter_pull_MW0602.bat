@@ -1,4 +1,4 @@
-﻿@ECHO OFF
+@ECHO OFF
 SETLOCAL EnableDelayedExpansion
 CHCP 65001 >NUL
 TITLE Peter Feed Pull (MW0602)
