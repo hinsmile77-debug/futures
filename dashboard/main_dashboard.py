@@ -9004,15 +9004,27 @@ def parse_peter_orders(text: str, offset: float = 0.0, session_date: str = ""):
             return
         # 날짜 가드 — 어제 트윗을 붙였는데 오늘로 찍히면 안 된다
         _other = bool(ymd and _sd and ymd != _sd)
-        if _PT_RESULT.search(_raw):
-            results.append({"raw": _raw, "hm": hm, "other_day": _other})
-            return
         _lv = parse_peter_text(_raw, _off)
         _en = None
         for _h in _lv:
             if _h["kind"] in PETER_ENTRY_KINDS:
                 _en = _h
                 break
+        # ── [MW0601 597차] 결과 판정은 **진입 레벨이 없을 때만** 한다 ──────────
+        #
+        # 종전에는 `_PT_RESULT` 만 보고 갈랐다. 그런데 그의 지시는 문장 끝이
+        # 「…손절」로 끝나는 경우가 아주 많다 —
+        #     「998 매수 맥점. 993 이탈시 손절」 · 「1094매수 1088 손절」
+        # 이것들이 전부 **결과로 빠져** 화면에서 사라졌다. 8월 사료 13일치를
+        # 넣고 나서야 드러났다(실측 2026-09-17): 08-04 는 지시 0건 · 레벨선 0개,
+        # 08-14 는 결과 7건 · 08-24 는 결과 9건으로 대부분이 결과통에 들어갔다.
+        # 🔴 가르는 기준은 **그 줄이 앞으로 할 일을 말하는가**다. 진입 레벨이
+        #   들어 있으면 그건 지시다 — 끝에 손절이 붙어 있어도 마찬가지다.
+        #   체결 보고(「1085-7에서 매수 체결」)는 진입 규칙의 `(?!\s*체결)`
+        #   부정 전방탐색이 이미 걸러내므로 여기서 결과로 남는다.
+        if _en is None and _PT_RESULT.search(_raw):
+            results.append({"raw": _raw, "hm": hm, "other_day": _other})
+            return
         if _en is None:
             # ── [MW0601 594차] 「예고」 — 진입은 없고 목표·손절만 말한 지시 ──
             #
