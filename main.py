@@ -18611,6 +18611,163 @@ def _persist_crash_signatures(base_path, keep, out_path=None, full=None):
         return 0
 
 
+# ════════════════════════════════════════
+# [MW0602 577차 후속 / F-3] 조용한 종료의 "원인"을 남긴다
+# ════════════════════════════════════════
+# 2026-09-17 12:21:43 에 본체가 원인 로그 한 줄 없이 멈췄다. 크래시는 아니었다 —
+# `[CLEAN EXIT]` 마커가 정상으로 찍혔다. 즉 **누군가 정상 종료를 요청했는데,
+# 그 "누군가"를 적는 자리가 없었다.** 230차 faulthandler 는 *크래시*를 남기고
+# atexit 마커는 *정상 종료였다는 사실*을 남기지만, 둘 다 **이유**는 말하지 않는다.
+#
+# 여기서 잡는 경로는 둘이다(리포트 F-3 원안 그대로 — 그 이상 넓히지 않는다):
+#   ① `sys.excepthook`  — 메인 스레드 미포착 예외. PyQt5 는 슬롯 안 미포착 예외에
+#      대해 excepthook 을 먼저 부른 뒤 프로세스를 죽인다. 그 마지막 한 줄을 받는다.
+#   ② Qt `aboutToQuit` / `lastWindowClosed` — 이벤트 루프 종료 요청. 그 시점의
+#      **파이썬 스택**을 같이 남긴다. 코드가 `quit()` 을 불렀으면 호출부가 찍히고,
+#      창 닫힘·WM_CLOSE 같은 Qt 내부 경로면 스택이 이벤트 루프에서 끝난다 —
+#      그 차이 자체가 판별 근거다.
+#
+# 🔴 **종료 로직은 건드리지 않는다.** 훅은 기록만 하고 원래 동작에 위임한다.
+#    시그널 핸들러(SIGTERM 등)는 **일부러 넣지 않았다** — 그것은 기본 종료 동작을
+#    바꾸는 일이라 "로깅만"이라는 F-3 의 전제를 벗어난다.
+#
+# 계측 4원칙:
+#   ② 미측정 != 0 — 아무 경로도 안 잡히면 `[CLEAN EXIT] ... reason=미기록` 이다.
+#      공란으로 두면 "원인 없음"으로 읽힌다.
+#   ④ 폴백 가시화 — 기록부는 `getattr(..., default)` 로 읽지 않는다. 모듈 전역에
+#      **명시 초기화**하고, 비어 있는 상태를 `미기록` 이라는 값으로 드러낸다.
+
+#: 이번 프로세스에서 포착한 종료 사유. 명시 초기화(계측 4원칙 ④) — 비어 있으면
+#: "아직 아무 종료 경로도 안 지나갔다"는 뜻이며 `미기록` 으로 렌더한다.
+_SHUTDOWN_REASONS = []
+
+#: 사유 로그 경로. crash_fault.log 와 **따로** 둔다 — 그쪽은 8MB 로테이션 대상이라
+#: 며칠이면 사라지는데, 종료 사유는 드물게 생기고 오래 봐야 한다.
+_SHUTDOWN_REASON_PATH = os.path.join("logs", "shutdown_reason.log")
+
+
+def _record_shutdown_reason(kind, detail=""):
+    """종료 요청 한 건을 기록한다. **예외를 절대 밖으로 내지 않는다.**
+
+    Qt 시그널 슬롯·excepthook 안에서 불린다. 그 자리에서 예외가 나면 종료 경로
+    자체를 망가뜨리므로(PyQt5 는 슬롯 예외에 프로세스를 죽인다) 통째로 감싸다.
+    ⚠ 시각은 ASCII 로만 만든다 — 이 env 의 로케일 코덱은 ASCII 라 `strftime`
+      포맷에 한글을 넣으면 UnicodeEncodeError 가 난다(CLAUDE.md 557차).
+    """
+    try:
+        import io       as _io_sr
+        import datetime as _dt_sr
+        stamp = _dt_sr.datetime.now().isoformat(timespec="seconds")
+        one = "%s %s" % (kind, detail) if detail else kind
+        one = " ".join(one.split())          # 스택 개행 제거 — 한 사건 한 줄
+        if len(one) > 900:
+            one = one[:900] + " ...(절단)"    # 탈락 가시화(계측 4원칙 ③)
+        _SHUTDOWN_REASONS.append(one)
+        try:
+            os.makedirs("logs", exist_ok=True)
+            with _io_sr.open(_SHUTDOWN_REASON_PATH, "a", encoding="utf-8") as _f:
+                _f.write(u"[%s] PID=%d %s\n" % (stamp, os.getpid(), one))
+                _f.flush()
+                try:
+                    os.fsync(_f.fileno())    # 죽는 중이다 — OS 캐시를 믿지 않는다
+                except Exception:
+                    pass
+        except Exception:
+            pass                             # 파일이 안 돼도 메모리 기록은 남는다
+    except Exception:
+        pass
+
+
+def _shutdown_reason_summary():
+    """`[CLEAN EXIT]` 줄에 붙일 한 줄. 비어 있으면 `미기록`(계측 4원칙 ②)."""
+    try:
+        if not _SHUTDOWN_REASONS:
+            return "미기록"
+        if len(_SHUTDOWN_REASONS) == 1:
+            return _SHUTDOWN_REASONS[0]
+        # 여러 경로가 겹치면(예: 예외 → aboutToQuit) 첫 원인이 진짜 원인이다.
+        return "%s (외 %d건)" % (_SHUTDOWN_REASONS[0], len(_SHUTDOWN_REASONS) - 1)
+    except Exception:
+        return "미기록"
+
+
+def _install_shutdown_reason_hooks(app=None):
+    """종료 사유 기록 훅을 건다. **종료 동작은 바꾸지 않는다** — 기록만 하고
+    원래 핸들러에 그대로 위임한다(F-3 원안).
+
+    ① `sys.excepthook` — 메인 스레드 미포착 예외. PyQt5 는 슬롯 안 미포착 예외에
+       대해 excepthook 을 먼저 부른 뒤 프로세스를 죽인다.
+    ② Qt `aboutToQuit` / `lastWindowClosed` — 이벤트 루프 종료 요청. 그 시점의
+       **파이썬 스택**을 함께 남긴다. 코드가 `quit()` 을 불렀으면 호출부가 찍히고,
+       창 닫힘·WM_CLOSE 같은 Qt 내부 경로면 스택이 이벤트 루프에서 끝난다 —
+       그 차이 자체가 판별 근거다.
+
+    ⚠ 시그널 핸들러(SIGTERM 등)는 **일부러 넣지 않았다** — 기본 종료 동작을
+      바꾸는 일이라 "로깅만"이라는 F-3 의 전제를 벗어난다.
+
+    반환: 실제로 걸린 훅 이름 리스트. 호출부가 이것을 로그에 찍는다 —
+    **못 건 훅이 있으면 그 사실이 보여야** 한다(계측 4원칙 ③ 탈락 가시화).
+    """
+    import sys       as _sys_h
+    import traceback as _tb_h
+
+    installed = []
+
+    # ── ① 메인 스레드 미포착 예외 ────────────────────────────────────
+    try:
+        _prev_hook = _sys_h.excepthook
+
+        def _hook(etype, evalue, etb):
+            try:
+                last = "위치불명"
+                try:
+                    frames = _tb_h.extract_tb(etb)
+                    if frames:
+                        fr = frames[-1]
+                        last = "%s:%s %s" % (os.path.basename(fr[0]), fr[1], fr[2])
+                except Exception:
+                    pass
+                _record_shutdown_reason(
+                    "excepthook",
+                    "%s: %s @ %s" % (getattr(etype, "__name__", etype), evalue, last),
+                )
+            except Exception:
+                pass
+            return _prev_hook(etype, evalue, etb)     # 원래 동작에 위임
+
+        _sys_h.excepthook = _hook
+        installed.append("excepthook")
+    except Exception:
+        pass
+
+    # ── ② 이벤트 루프 종료 요청 ──────────────────────────────────────
+    def _make_quit_handler(nm):
+        def _on_quit():
+            try:
+                stack = _tb_h.format_stack()[:-1]     # 이 핸들러 자신은 뺀다
+                if stack:
+                    tail = " <- ".join(
+                        s.strip().split("\n")[0] for s in stack[-4:]
+                    )
+                else:
+                    tail = "스택없음"
+                _record_shutdown_reason("qt:" + nm, tail)
+            except Exception:
+                pass
+        return _on_quit
+
+    if app is not None:
+        for _signame in ("aboutToQuit", "lastWindowClosed"):
+            try:
+                _sig = getattr(app, _signame)
+                _sig.connect(_make_quit_handler(_signame))
+                installed.append("qt:" + _signame)
+            except Exception:
+                pass
+
+    return installed
+
+
 def _rotate_crash_log(path, rotate_mb=None, keep=None):
     """[MW0602 436차] crash_fault.log 크기 기반 로테이션 — 기동 시 1회.
 
@@ -18760,13 +18917,24 @@ def main():
                 _fh.cancel_dump_traceback_later()   # 행 감지 타이머 해제
                 _fault_file.write(
                     f"[CLEAN EXIT] {_dt_fh.datetime.now().isoformat(timespec='seconds')}"
-                    f"  PID={_pid}\n"
+                    f"  PID={_pid}"
+                    # [MW0602 577차 후속 / F-3] 아무 경로도 안 잡혔으면 `미기록` 이다 —
+                    # 공란으로 두면 "원인 없음"으로 읽힌다(계측 4원칙 ②).
+                    f"  reason={_shutdown_reason_summary()}\n"
                 )
                 _fault_file.flush()
                 _fault_file.close()
             except Exception:
                 pass
         _atexit.register(_fault_atexit)
+
+        # ── ④ [MW0602 577차 후속 / F-3] 종료 "사유" 훅 ────────────────
+        # ③은 *정상 종료였다는 사실*만 남긴다. 그 앞에 **누가 요청했는지**를 받는다.
+        _sr_installed = _install_shutdown_reason_hooks(_qt_app)
+        logger.info(
+            "[ShutdownReason] 훅 설치 | %s | file=%s",
+            ",".join(_sr_installed) or "없음", _SHUTDOWN_REASON_PATH,
+        )
 
         logger.info(
             "[FaultHandler] 활성화 | file=%s PID=%d | "

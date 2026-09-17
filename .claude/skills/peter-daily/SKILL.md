@@ -112,11 +112,41 @@ description: 피터리(@PeterLeejoa)의 당일 선물매매 트윗을 수집해 
 | 오프셋 저장 거부 | 정규 10100 미수집 | 15:52 이후에 다시 |
 | 장중 트윗이 통째로 없다 | 그가 지웠다 | `_raw` 에 남은 것만 쓰고 **그 사실을 적는다** |
 
-## 다른 PC(MW0602)
+## 다른 PC(MW0602) — `peter-feed` 브랜치가 유일한 통로
+
+**MW0601 이 올리고 MW0602 가 받는다**(2026-09-17 사용자 결정). 사료는 코드
+브랜치를 타지 않는다 — 두 PC 의 코드 브랜치가 다르고(MW0601=`v9-dev` ·
+MW0602=`dev`), 매일 쌓이는 사료가 코드 브랜치를 타면 CLAUDE.md 가 요구하는
+체리픽 기록이 사료 체리픽으로 뒤덮인다.
 
 `_lv/_tr` 텍스트와 `_raw/*.jsonl` 만 공유한다 — **피터가 한 말은 PC 와 무관하다.**
 `peter_levels.db` 와 `offset` 은 **내 계약과의 차이**라 PC 의 속성이다. 옮기면
-조용히 틀린 가격을 그린다. 받는 쪽은 이렇게 자기 DB 를 만든다:
+조용히 틀린 가격을 그린다(596차).
+
+### 보내는 쪽(MW0601)
+
 ```
+python tools/peter_feed_push.py --push
+```
+
+### 받는 쪽(MW0602)
+
+```
+git fetch origin peter-feed
+git restore --source=origin/peter-feed --worktree -- data/peter_feed/
 python tools/peter_build_day.py --rebuild-all
 ```
+
+🔴 **`git checkout origin/peter-feed -- data/peter_feed/` 를 쓰지 마라.**
+`checkout <ref> -- <path>` 는 **`.gitignore` 와 무관하게 인덱스에도 올린다** —
+실측으로 확인했다. 그러면 다음 커밋에 사료가 코드 브랜치로 되돌아와 고아
+브랜치를 둔 의미가 사라지고, 그 사실이 `git status` 를 유심히 보지 않으면
+드러나지 않는다. `git restore --worktree` 는 작업본만 바꾼다.
+
+⚠ MW0602 에서 `peter_feed_push.py` 는 **실패하는 것이 정상이다**
+(`data/peter_feed/` 가 `.gitignore` 대상 → `git add` 가 exit 1).
+받기 전용 PC 이기 때문이며, 조용히 빈 트리를 올리지 않는다는 뜻이기도 하다.
+
+⚠ 오프셋은 **받지 않고 각자 잰다.** 월물 교체 구간에서 PC 간 차이가 크다 —
+MW0602 실측(오전 150봉): 08-14~08-31 `±0.04` 이내인데 09-16 `-4.24` ·
+09-17 `-4.53`. 이 폭이 596차가 오전 창 실측으로 바꾼 이유다.

@@ -3,6 +3,387 @@
 
 ---
 
+## 2026-09-17 (MW0602 577차 후속 — MW0601 602차 체리픽 · F-3 배선 · 피터 DB 합류)
+
+### 1. 체리픽 기록 (CLAUDE.md 「멀티PC 작업 컨벤션」 의무 기록)
+
+| 원 커밋 sha | 원 PC / 브랜치 | 가져온 이유 |
+|---|---|---|
+| `c114420` → `76d6bcf` | MW0601 / `v9-dev` (602차) | 피터 사료 수집 자동화 1단계. `tools/peter_capture.py`·`peter_build_day.py`·`peter_month_report.py`, `.claude/skills/peter-daily/`, 파서 결함 2건 수정(돌파 매도 누락 · 레벨의 트윗 경계 누수)과 그 회귀 테스트. MW0602 도 같은 복기 화면을 쓰므로 도구·파서는 공유해야 한다. |
+| `562f096` → `fc43d66` | MW0601 / `v9-dev` (602차 후속) | `tools/peter_feed_push.py` — 사료를 코드 브랜치가 아닌 `peter-feed` 고아 브랜치로 보내는 푸시 도구. 사료가 코드 브랜치를 타면 이 체리픽 기록 자체가 사료 체리픽으로 뒤덮인다는 것이 도입 이유다. |
+
+**충돌 2건과 그 해소**
+
+- **`.gitignore`** — MW0601 쪽 기존 줄이 **cp949 mojibake** 상태로 들어왔다
+  (`# ���� ��������Ʈ�� ...`). HEAD 의 정상 UTF-8 줄(`evidence_*.md` ·
+  `collect_stderr.txt`)을 살리고 peter-feed 블록만 취했다. ⚠ **깨진 쪽을 받았으면
+  그 줄은 영영 매칭되지 않는 무효 규칙이 된다** — 조용히 증거 다이제스트가 커밋된다.
+  `!data/` + `data/*` + `!data/peter_feed/` 재개방이 기존 규칙을 훼손하지 않는지
+  `git check-ignore` 로 확인했다(`data/db/trades.db`·`data/raw`·`data/models` 모두
+  여전히 제외, `data/peter_feed/` 만 열림).
+- **`dev_memory/DECISION_LOG.md`** — 양쪽이 파일 머리에 append 한 위치 충돌.
+  둘 다 보존하고 MW0602 577차를 위, MW0601 602차를 아래로 뒀다. 삽입한 구분선이
+  bare LF 로 들어가 CRLF 로 정규화했다([[feedback_heredoc_and_crlf_pitfalls]]).
+
+**체리픽이 막혔던 경로도 남긴다** — 첫 시도가 로컬 더티 파일(`DECISION_LOG.md`)로
+중단됐는데 그것이 `.git/sequencer` 를 남겨 두 번째 시도가 *"cherry-pick is already
+in progress"* 로 막혔다. `git cherry-pick --quit` 으로 정리한 뒤, 겹치는 파일
+하나만 좁게 stash 해서 진행했다(`main.py`·`NEXT_TODO.md` 는 체리픽 대상과
+겹치지 않아 더티인 채로 둬도 무방했다).
+
+### 2. 🔴 F-3 이 정의만 있고 호출부가 0곳이었다 — 죽은 계측
+
+이 세션 이전에 작성돼 있던 F-3 구현분(`_record_shutdown_reason` ·
+`_shutdown_reason_summary`)은 **어디에서도 불리지 않았다.** `sys.excepthook` 설치도,
+`aboutToQuit` 연결도, `[CLEAN EXIT]` 줄에 사유를 붙이는 부분도 없었다.
+
+즉 **F-3 이 잡으려던 바로 그 결함과 같은 계열이었다** — CLAUDE.md 계측 4원칙 ④ 가
+적은 `_entry_horizon_pre`(읽기 2곳·할당 0곳) · FP-CRITICAL 죽은 게이트(2개월 PSI=0.0) ·
+TOX 죽은 섀도(한 달)와 같은 형태다. 배포됐다면 12:21 과 같은 조용한 종료가 또 나도
+`reason=` 자리가 아예 없었다.
+
+**배선한 것**(F-3 원안 범위 그대로, 그 이상 넓히지 않았다)
+
+- `_install_shutdown_reason_hooks(app)` 신설 — `sys.excepthook` 체인(기록 후 **원래
+  훅에 위임**) + Qt `aboutToQuit`·`lastWindowClosed` 연결(그 시점 파이썬 스택 동반).
+- `main()` 의 faulthandler 블록 ③ 바로 뒤에서 호출하고, **걸린 훅 목록을 로그로
+  남긴다**(`[ShutdownReason] 훅 설치 | excepthook,qt:aboutToQuit,...`) —
+  못 건 훅이 있으면 그 사실이 보여야 한다(계측 4원칙 ③).
+- `[CLEAN EXIT]` 줄에 `reason={_shutdown_reason_summary()}` 부착. 아무 경로도 안
+  잡히면 공란이 아니라 **`미기록`** 이다(계측 4원칙 ②).
+
+🔴 **종료 로직은 건드리지 않았다.** 시그널 핸들러(SIGTERM 등)는 **일부러 넣지
+않았다** — 기본 종료 동작을 바꾸는 일이라 「로깅만」이라는 F-3 전제를 벗어난다.
+`test_4` 가 이것을 AST 로 고정한다.
+
+**회귀 가드**: `tests/test_577_shutdown_reason_hooks.py` 9건.
+`main.py` 는 임포트 불가(모듈 최상단에서 QApplication 생성)라 이 리포 관례대로
+소스에서 정의만 떼어 exec 하고, `test_9` 는 **offscreen 으로 진짜 이벤트 루프를
+돌려** `app.quit()` 이 실제로 기록되는지 본다([[feedback_pyqt_offscreen_testing]]) —
+connect 성사 여부는 정적 검사로 알 수 없기 때문이다.
+
+### 3. 🔴 그 F-3 구현분이 `main.py` 를 구문 오류 상태로 두고 있었다
+
+배선하기 전에 먼저 고쳐야 했다. `main.py` 가 `py_compile` 에서 죽었다:
+
+```
+File "main.py", line 18669
+    _f.write(u"[%s] PID=%d %s
+                            ^
+SyntaxError: EOL while scanning string literal
+```
+
+`\n` 이 **실제 개행으로 치환돼** 문자열이 끊겼다 —
+[[feedback_heredoc_and_crlf_pitfalls]] 가 적은 그 함정이다(편집 스크립트에서
+백슬래시 소실). **이 상태로 본체를 띄웠으면 즉시 죽었다.** 한 줄로 복원하고
+`py_compile` 통과를 확인했다.
+
+⚠ 그래서 이번 세션의 편집은 전부 **따옴표 친 heredoc → 바이트/`newline=''` 모드**로
+했고, 매 편집 뒤 `py_compile` 과 CRLF 혼재(bare LF 0) 를 확인했다.
+
+### 4. 🔴 사용자 결정 — 사료는 `peter-feed` 가 유일한 통로다
+
+**"MW0601 이 peter-feed 에 데이터를 올려 놓고 MW0602 와 공유한다"**(2026-09-17).
+602차 후속의 원안대로 사료를 코드 브랜치에서 뺀다.
+
+**왜 결정이 필요했나.** `git checkout origin/peter-feed -- data/peter_feed/` 는
+**no-op 이었다** — 트리 해시가 `dev HEAD` 와 완전히 같다(`cdc24fde2634…`, 32파일).
+602차 본편(`76d6bcf`)이 이미 사료를 코드 브랜치에 실어 왔기 때문이고, 그래서
+`dev` · `v9-dev` · `peter-feed` 가 **같은 사료를 3중으로** 들고 있었다.
+본편과 후속이 서로 어긋난 상태였다.
+
+#### 🔴 받는 명령이 틀렸다 — `checkout` 은 `.gitignore` 와 무관하게 인덱스에 올린다
+
+이것이 이번 배선의 핵심이다. 사료를 untrack 하고 `.gitignore` 로 닫아도,
+`git checkout <ref> -- <path>` 로 받으면 **그 파일들이 인덱스에 올라간다.**
+무시 규칙은 *명시된 경로*에는 적용되지 않기 때문이다. 그러면 다음 커밋에 사료가
+코드 브랜치로 되돌아오고, 고아 브랜치를 둔 의미가 통째로 사라진다 —
+게다가 `git status` 를 유심히 보지 않으면 **드러나지 않는다.**
+
+격리 리포에서 실측했다(추정이 아니다):
+
+| 명령 | 작업본 | 인덱스 |
+|---|---|---|
+| `git checkout peter-feed -- data/peter_feed/` | 받아짐 | 🔴 **`A` 로 스테이징됨** |
+| `git restore --source=peter-feed --worktree -- data/peter_feed/` | 받아짐 | ✅ 건드리지 않음 |
+
+**배선한 것**
+
+- `git rm -r --cached data/peter_feed/` — `dev` 에서 32파일 **untrack**(작업본 유지).
+- `.gitignore` — 602차가 연 `!data/` + `data/*` + `!data/peter_feed/` **3줄 제거**.
+  위쪽 `data/`(21행)가 다시 덮는다. 제거 이유와 올바른 받기 명령을 주석으로 남겼다.
+- `.claude/skills/peter-daily/SKILL.md` 「다른 PC」 절을 보내는 쪽/받는 쪽으로
+  나눠 다시 썼다 — `checkout` 금지를 🔴 로 명시.
+
+⚠ **`peter_feed_push.py` 는 이제 MW0602 에서 실패하는 것이 정상이다**
+(`git add` 가 무시 경로에 **exit 1**). 확인해 보니 도구가 `rc` 를 검사해 즉시
+`SystemExit` 한다 — **조용히 빈 트리를 올려 사료를 지우는 일은 없다.**
+받기 전용 PC 라 이 실패가 곧 설계대로다. (실측: `인덱스 구성 실패: … ignored by
+one of your .gitignore files`)
+
+#### DB 는 받지 않고 각자 잰다(596차)
+
+`peter_levels.db` 와 offset 은 **내 계약과의 차이**라 PC 의 속성이고, 옮기면 받는
+쪽이 조용히 틀린 가격을 그린다. 텍스트로 재생성했다:
+
+```
+python tools/peter_build_day.py --rebuild-all
+→ 재생성 15일 · 건너뜀 0일
+```
+
+오프셋 실측(오전 150봉): 08-04 `-2.00` · 08-11~13 `-2.7~-2.8` · 08-14~08-31
+`±0.04` 이내 · 09-16 `-4.24` · 09-17 `-4.53`. **월물 교체 구간에서 크게 벌어진다** —
+596차가 "오프셋은 하루 안에서도 움직인다"며 오전 창 실측으로 바꾼 이유가 이 폭이다.
+
+⚠ 2026-08-18 은 `_tr.txt` 가 **0바이트**다 — 체결 시각이 트윗에 없는 날이라 비워
+둔 것이며 "거래 0건"이 아니다(계측 4원칙 ②). 도구가 일부러 안 채운다.
+
+### 커밋 대기
+
+`main.py`(F-3 배선 + 구문 오류 수정), `tests/test_577_shutdown_reason_hooks.py`,
+`.gitignore`(peter-feed 3줄 제거), `data/peter_feed/**` **삭제 32건**(untrack —
+작업본은 남는다), `.claude/skills/peter-daily/SKILL.md`(받기 절차),
+`dev_memory/DECISION_LOG.md`·`NEXT_TODO.md`,
+`docs/정기점검/매일점검/MW0602-20260917-점검리포트.md`.
+`data/db/peter_levels.db` 와 `data/peter_feed/**` 는 이제 `.gitignore` 대상이라
+커밋하지 않는다(전자는 PC 속성 · 후자는 `peter-feed` 브랜치 소관).
+
+---
+
+## 2026-09-17 (MW0602 577차 — 장후 일일 점검: 종합 완성본)
+
+### 증상
+
+장후(EOD+P8, 15:40~15:52) 종합 점검. 당일 순손익 -50,076원(브로커 net, 포지션 5건·승3패2·
+승률60%). P0 0건. P1 1건 지속(1-2, 12:21 main.py 원인불명 조용한 재기동 29초 — 오후 재발
+없음). 절대원칙 6종 전부 준수, EOD/P8 둘 다 성공(`horizons_replaced=6/6`,
+`[P8] 스케일러 재적합 완료`).
+
+### 원인 / 관측
+
+- 3원 대사(로그 `[Position] 진입` / `ensemble_decisions.entry_executed=1` /
+  `trades COUNT(DISTINCT entry_ts)`) 5=5=5 일치, 관측 훼손 없음.
+- 케이스 딥다이브 5건: 승 3건(CASE-01·02·04) 전부 요인 A(방향적중), 패 2건(CASE-03·05)
+  전부 요인 E(손절 체결이 의도 손절폭을 142.7%·162.4%로 초과) — `trades.tp1_reached`로
+  `하드스톱` 승패 정확히 분리(evidence_map §8-4 절차).
+- CASE-01은 앙상블(LONG) vs 3m 단일호라이즌 예측(DOWN)이 반대 방향이었는데 앙상블 쪽이
+  승리 — 기존 §12 `앙상블_단일호라이즌_방향대조`(0909 O-76) 관측축에 사례 1건 추가.
+- 313차 다섯 갈래 전부 적용: 관측 거래일 1일뿐 + drop-worst(CASE-05 제외) 시 순손익
+  부호가 -50,076→+91,928로 반전 — **"손절 미준수가 오늘 결과의 원인"이라고 결론 내리지
+  않는다.** 기존 NEXT_TODO "O-8(매 장후, 누적)" 채널에 오늘 표본(1.427 / 1.624)만 추가.
+
+### 결정
+
+- 신규 P0/P1/P2 Fix 없음. 신규 게이트·차단 로직 제안 없음(제5부 두 방안 모두 관측 누적만,
+  코드·설정 무변경).
+- F-3(main.py 종료 원인 로깅)·G-2(session_restart_intraday CLEAN EXIT 구분)는 장중 절
+  계획 그대로 이월 — 이 세션(점검 예약)은 코드 변경·커밋을 하지 않는다(SKILL.md §6).
+- 이상점 1-1(CORE 워밍업 축퇴)·1-3(진입차단 2_confidence 비중 52.8%→36.3%)은 ✅ 해소로
+  종결.
+
+### Why
+
+- 계측 4원칙 ①(단위 명시): 손익·승패는 전부 포지션 단위로 집계(레그 9건과 혼동 없음),
+  MDD·net 등 참고 지표에 자본대비/peak대비 병기.
+- 313차 원칙: 관측 1거래일·이상치 1건이 결과를 좌우하는 상태에서 "원인"을 단정하면
+  417차·372차가 이미 반증한 것과 같은 사후과적합 오류를 반복하게 된다.
+- 함정①(이미 반영된 사안 재제안 금지): F-4·F-5(MW0601 599차 체리픽, `fd487e7`)는 오늘
+  이미 커밋 반영된 것을 확인했으므로 신규 Fix로 다시 올리지 않았다. G-3(손절 준수율
+  채널 신설)도 기존 NEXT_TODO "[G-3 후속]" 항목이 있음을 확인해 신규 제안 대신 표본만
+  추가했다.
+
+### How to apply
+
+- 다음 장후 세션은 `dev_memory/NEXT_TODO.md`의 "O-8 (매 장후, 누적)"에 그날 진짜 손절
+  건의 실현÷의도 비율을 계속 추가할 것. min_samples 도달 시 캠페인 채널([G-3후속]) 신설
+  검토(주간회의 소관, 사전등록 기준 결과 보고 조정 금지).
+- F-3(원인 로깅)은 사용자 승인 시 장후 이후 세션에서 착수.
+
+### 검증
+
+- **라이브 미검증** 항목: F-3(계획만, 미구현) · G-2(계획만, 미구현). 착수 후 다음 재기동
+  발생 시 로그 출현 여부로 검증.
+- 오늘 관측 자체는 로그+DB 직접 조회로 검증 완료(3원 대사 일치, exit_reason vs
+  tp1_reached 대조 완료).
+
+### 병행 세션
+
+당일 이 브랜치(`dev`)에 MW0601 커밋 다수(`[MW0601]` 태그, 599차 체리픽 포함)와 MW0602
+자체 커밋(574차·574차 후속)이 섞여 있었음(`git --no-optional-locks log --since` 확인).
+`docs/정기점검/매일점검/`에 MW0601 자체 점검 리포트·증거 3종이 동일 날짜로 함께 존재하나
+**MW0602의 관측이 아니므로 이 리포트에 인용하지 않았다**(PC 폴더/파일명 규약으로 출처
+구분 확인). `.git/index.lock` 시작·렌더 2점 확인 모두 없음 — 이 세션은 락을 만들지 않음.
+
+---
+
+## 2026-09-17 (MW0602 576차 — 장중 일일 점검)
+
+### 증상
+
+장중(09:00~12:41) 관측 중 신규 P0/P2 없음. **P1 신규 1건**: 12:21:29~12:21:58
+사이 약 29초간 `main.py`(PID 2544)가 원인 로그 없이 조용히 종료됐다가
+런처(`start_mireuk.bat`)의 AUTO-RESTART로 재기동(PID 3336)됨.
+
+### 확인 사항
+
+- 진입 5건 전수 확인: `[진입체크]` 로그 5건 모두 `vwap✅` — 절대원칙 3(VWAP
+  미통과 강제 X) 위반 없음.
+- 매분 루프 커버리지 09:00~12:41 **222/222분(100%)**, 10분 이상 공백 0건.
+- `logs/crash_fault.log.1`(구 PID 2544) 꼬리: `[TS] 12:21:04 beat_age=4s
+  strikes=0`, `[TS] 12:21:34 beat_age=4s strikes=0`, `[CLEAN EXIT]
+  2026-09-17T12:21:43 PID=2544` — 워치독 하트비트 정상(밀림 없음), 종료 마커도
+  **정상 종료**(`atexit` 경로) 확인. `crash_fault.log`(신 PID 3336) `[START]
+  2026-09-17T12:22:01`.
+- `logs/crash_signatures.log`에 2026-09-17 항목 **0건** — 이번 종료는
+  크래시 서명 수집 대상이 아니다(정상 종료라서 기대대로. 494차 F-9/F-10
+  설계와 일치 — `[SIG]` 원천만 크래시로 센다).
+- `logs/Mireuk_batch/launcher_20260917_084001_12655.log`에서 `[GUARD]`
+  태그는 08:40 최초 기동 1회만 등장 — 12:21 재시작 구간에는 GUARD 로직이
+  개입하지 않음. 기존 `F-1`(런처 GUARD `!=` 오판정) 이슈와는 **무관한
+  별개 현상**.
+- 12:21:29(마지막 정상 로그, `[IndexPoll] state=OK`)부터 12:21:43(CLEAN
+  EXIT)까지 launcher 로그에 **트레이스백·에러 메시지 전혀 없음** — 종료
+  트리거를 알 수 있는 로그가 시스템에 없다.
+- 재시작 직후 `[WarmupRetrain] 세션 재시작 감지 → GBM 즉시 재학습 예약`이
+  발동해 12:22:23~12:22:47(23.8초) 6/6 호라이즌 경량 재학습 정상 완료,
+  `[EntryGate] 사이즈 제한 해제 (×0.6 → ×1.0)` 정상 처리.
+- 재시작 당시 보유 포지션 없음(직전 포지션 11:10:33 청산 완료, 다음 진입
+  없음) — 실거래 영향 없음.
+- 사이저 산출(3계약) vs 실제 진입(최대 2계약) 괴리 오늘도 재현 — 기존
+  `2-1`(0909) 원인 규명(증거금 캡) 그대로, 신규 아님.
+- 차단 53건 중 `2_confidence`(신뢰도 미달) 28건(52.8%) — 확인 필요로만
+  등록, 하루치 표본으로 결론 내지 않음(313차 원칙).
+
+### 결정
+
+**F-3 신설(P1)**: `main.py` 종료 시 원인(예외 최상위 삼킴 / 외부 종료
+신호 / Qt aboutToQuit 등)을 남기는 로깅을 추가한다. 장후 이후 별도
+세션에서 구현 — 장중 코드 변경 금지 원칙 준수.
+**G-2 제안**: 수집기 §12 `session_restart_intraday` 파생 지표에
+CLEAN EXIT 여부 구분 축을 추가(수집기 스크립트 단위 작업, 프로덕션
+코드 무변경, 이번 주 우선순위).
+
+### Why
+
+원인 불명 조용한 종료는 오늘은 포지션 미보유 구간에 일어나 무해했지만,
+포지션 보유 중 재발하면 손절·청산 신호를 29초 이상 못 내는 무방비
+구간이 생긴다. 진짜 크래시(세그폴트)는 배제됐고(`[CLEAN EXIT]` 정상
+마커) 워치독 프리즈도 아니다(`beat_age` 밀림 없음) — 남은 것은
+"무엇이 정상 종료를 요청했는가"이며 이를 답할 로그가 없다는 계측
+공백 자체가 문제다(계측 4원칙 ③·④ 계열).
+
+### How to apply
+
+- F-3: `main.py`의 `_fault_atexit()`(18710행 부근) 또는 최상위 `main()`
+  진입점에 `sys.excepthook` + Qt `aboutToQuit` 핸들러 추가, 종료 사유를
+  `crash_fault.log` 또는 별도 `shutdown_reason.log`에 기록.
+- G-2: `.claude/skills/mireuk-daily-check/scripts/collect_evidence.py`의
+  `session_restart_intraday` 파생 로직에서 재시작 직전 `crash_fault.log*`
+  의 `[CLEAN EXIT]` 마커 유무를 대조해 `N건(장중M·CLEAN)` /
+  `N건(장중M·강제)`로 분리 표기.
+
+### 검증
+
+- `python .claude/skills/mireuk-daily-check/scripts/collect_evidence.py
+  --phase intra --pc MW0602 --skill-rev 2026-08-26e --out-auto` 정상 실행 —
+  `evidence_MW0602-20260917_intra.md`(91.9KB) 생성 확인.
+- `grep -n "진입체크" logs/20260917_TRADE.log` — 5건 전수 `vwap✅` 확인.
+- `grep -n "\[GUARD\]" logs/Mireuk_batch/launcher_20260917_084001_12655.log`
+  — 08:40 구간 1회만 등장, 12:21 재시작 구간 0건 확인.
+- `grep -n "2026-09-17" logs/crash_signatures.log` — 0건 확인.
+- F-3·G-2는 **미구현**(계획만) — 다음 세션에서 실제 배선 후 재검증 필요.
+
+### 병행 세션
+
+- 이 세션 시작 전 당일 커밋 8건(07:14~07:54, 전부 `[MW####]` 태그) —
+  전부 이 점검 세션(12:41 시작) 이전에 완료, 병행 충돌 없음.
+- `ls -lt docs/정기점검/매일점검/` 확인 결과 오늘 산출물은 이 세션이 만든
+  `MW0602-20260917-점검리포트.md`(장중 절 append)·
+  `evidence_MW0602-20260917_intra.md`가 전부 — 별도 딥다이브 문서 없음.
+
+커밋 대기: `docs/정기점검/매일점검/MW0602-20260917-점검리포트.md`,
+`dev_memory/DECISION_LOG.md`, `dev_memory/NEXT_TODO.md`(이번 갱신분).
+증거 파일은 `.gitignore` 대상이라 제외.
+
+---
+
+## 2026-09-17 (MW0602 575차 — 장전 일일 점검)
+
+### 증상
+
+없음 — 신규 이상점 0건. 장전 자격 판정: **정상**.
+
+### 확인 사항
+
+- git 브랜치 `dev` 확인, 미커밋 0건(EOL 차이 제외 측정), 당일 커밋 7건 — 전부
+  `[MW####]` 태그 확인(07:14~07:54, MW0602 574차·574차 후속 + MW0601 체리픽 5건,
+  이 점검 세션 시작 전에 완료된 것).
+- `.git/index.lock` 시작 시점 **없음**(수집기 §2 2점 샘플).
+- 설정 불변식(`config/settings.py`) 24행 전부 `일치`. 차단 게이트 인벤토리
+  32개 중 8개 꺼짐 — 전부 기존 기록(CB3_P4·FP_CRITICAL·TOXICITY_SEVERE_SPREAD
+  등)이거나 기능토글이며 새로 꺼진 것 없음.
+- 스킬 정본 rev `2026-08-26e`(664줄) — 사본 대조 `일치`.
+- 기동: `py37_32` 환경 확인(런처 로그), 모델 6호라이즌 로드 성공
+  (`[Model] Nm 로드 성공`×6), RF 6호라이즌 `ready=True`, Cybos
+  `connect=Y/Y balance=Y/Y`(모의투자 서버), 매크로 레짐=NEUTRAL, 옵션체인
+  `PCR=0.637 ATM_PCR=0.502 GEX=91.00B` 정상 로드.
+- 전일(09-16) EOD+P8 성공 확인: `data/session_state.json`
+  `p8_last_success_date`=`eod_retrain_ok_date`=`2026-09-16`,
+  `data/eod_retrain_done_20260916.txt` `horizons_replaced: 6/6`.
+- CORE 워밍업 축퇴(above_vwap 등, 08:45:28 4/6) → 08:47:57부터 `above_vwap` 1개로
+  좁혀짐 → **09:00:58 개장 시점 0/6 완전 해소** 확인(§12 `CORE축퇴_개장해소`
+  기존 추적 축, 494차 G-1).
+- 런처 GUARD 발화(기존 main.py 프로세스 감지 → 종료 → 재기동) — `F-1` 기존
+  이슈(`O-17` P1 기록 완료), **16일째 사용자 결정 대기**. 재승격하지 않음.
+- 메인 스레드 블로킹 1건(08:41:34, 6281ms) — 최근 3거래일 같은 구간
+  (2907·2719·3063ms) 대비 약 2배지만 기동 직후(모델로드·보정기 복원) 1회성이고
+  CB⑤(`CB_PIPE_PAUSE_MS=5000`, 파이프라인 경과시간 기준)와 단위가 달라 미계상.
+  매매 영향 없음(장 시작 전).
+- 장전 점검 자체가 **개장 1분 16초 후**에 실행됨(다이제스트 §11-10, 마진 −76초).
+  그 사이 진입 0건(`앙상블: dir=+0 conf=0.0% grade=X`) 확인 — 판단에 영향 없음.
+- 코드 검색으로 `OPT10080` 사용 0건 확인 — 선물 분봉 TR 규정 위반 없음.
+
+### 결정
+
+새 Fix·고도화 없음. 기존 열린 항목(`F-1` 런처 GUARD·`F-2` 장전 예약시각·
+`1-2` RF 1m 모델 교체 보류·`test_457_fallback_visibility` 실패) 전부 지속 —
+재론 없이 그대로 이월.
+
+### Why
+
+모든 관측이 기존에 규명·등록된 패턴과 일치하거나 개장 전 자연 해소됐다.
+신규 근본원인 조사가 필요한 항목이 없다.
+
+### How to apply
+
+해당 없음 — 장전 점검은 코드를 변경하지 않는다(라이브 프로세스 운영 중).
+
+### 검증
+
+- `python .claude/skills/mireuk-daily-check/scripts/collect_evidence.py --phase pre
+  --pc MW0602 --skill-rev 2026-08-26e --out-auto` 정상 실행 —
+  `evidence_MW0602-20260917_pre.md`(76.6KB) 생성 확인.
+- 로그 직접 대조: `logs/20260917_SIGNAL.log`(CORE준비도) ·
+  `logs/Mireuk_batch/launcher_20260917_084001_12655.log`(GUARD·모델로드·Cybos
+  Capability) · `logs/20260917_WARN.log`(메인스레드 블로킹) ·
+  `logs/retrain_eod_20260916.log`(RF 1m 보류 지속 확인) ·
+  `data/session_state.json`.
+- `grep -rn "OPT10080" --include=*.py .` — 0건.
+
+### 병행 세션
+
+- 오늘 07:14~07:54에 이미 7개 커밋(MW0602 574차·574차 후속, MW0601 체리픽 5건)이
+  있었으나 전부 이 점검 세션 시작(09:00) **이전**에 완료된 것으로 확인 — 병행
+  충돌 없음. `ls -lt docs/정기점검/매일점검/` 확인 결과 오늘 날짜 산출물은
+  이 세션이 만든 `MW0602-20260917-점검리포트.md`·`evidence_MW0602-20260917_pre.md`가
+  유일.
+
+커밋 대기: `docs/정기점검/매일점검/MW0602-20260917-점검리포트.md`,
+`dev_memory/DECISION_LOG.md`(이번 갱신분). `NEXT_TODO.md`는 오늘 신규 항목이
+없어 변경하지 않음. 증거 파일은 `.gitignore` 대상이라 커밋 목록에서 제외.
+
+---
+
 ## 2026-09-17 (MW0601 602차 — 돌파 매도가 없었다 · 레벨이 트윗 경계를 넘었다) — 🟢 **구현 완료**
 
 ### 어떻게 드러났나 — 당일(09-17) 사료를 처음 자동으로 넣어 보다가

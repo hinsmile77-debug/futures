@@ -120,13 +120,16 @@ docs/정기점검/매일점검/evidence_*.md
 # 수집기 실행 부산물 (Cowork 예약 세션이 리포 루트에 남긴다)
 collect_stderr.txt
 
-# [peter-feed] 피터 사료 — **원본 텍스트만** 버전관리한다
-#   피터가 한 말은 PC 와 무관하므로 두 PC 가 공유한다. 반면 peter_levels.db 와
-#   offset 은 **내 계약과의 차이**라 PC 의 속성이다 — 옮기면 MW0602 가 조용히
-#   틀린 가격을 그린다(596차). DB 는 각 PC 가 이 텍스트로 재생성한다.
-#   git 은 제외된 디렉터리 안으로 들어가지 않으므로 상위부터 열어야 한다.
-#   `!data/` 로 문을 열고 `data/*` 로 다시 닫은 뒤 이 한 폴더만 연다 —
-#   위쪽의 data/db/ · data/raw/ 규칙은 `data/*` 가 그대로 덮으므로 영향 없다.
-!data/
-data/*
-!data/peter_feed/
+# [peter-feed] 피터 사료는 **이 브랜치에 두지 않는다** — 고아 브랜치 `peter-feed` 가
+#   유일한 통로다(MW0601 이 올리고 MW0602 가 받는다, 2026-09-17 사용자 결정).
+#   그래서 위쪽 `data/` 규칙을 **열지 않는다** — 602차가 잠시 열었던
+#   `!data/` + `data/*` + `!data/peter_feed/` 3줄은 여기서 제거됐다.
+#
+#   🔴 받을 때 `git checkout` 을 쓰지 마라. `checkout <ref> -- <path>` 는
+#   **.gitignore 와 무관하게 인덱스에 올린다**(실측 확인) — 그러면 다음 커밋에
+#   사료가 코드 브랜치로 되돌아와 고아 브랜치를 둔 의미가 사라진다.
+#   작업본만 받는다:
+#       git fetch origin peter-feed
+#       git restore --source=origin/peter-feed --worktree -- data/peter_feed/
+#       python tools/peter_build_day.py --rebuild-all
+#   `peter_levels.db` 와 offset 은 PC 의 속성이라 받지 않는다(596차).
