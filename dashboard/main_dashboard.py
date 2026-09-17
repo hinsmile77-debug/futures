@@ -9291,6 +9291,13 @@ class MinuteChartCanvas(QWidget):
     #   107 스테이지-일 중 1일에서 발동한다.
     FULL_Y_MIN_OCCUPANCY = 0.40
 
+    # [MW0601 598차] 모델 최대/최소 **바깥**으로 더 주는 여백(모델 폭 대비).
+    #   「하루 전체」는 조망이 목적이라, 모델 선이 화면 테두리에 딱 붙으면
+    #   그 위/아래로 더 갈 수 있다는 사실이 안 읽힌다(사용자 결정 2026-09-17).
+    #   ⚠ 이 여백이 적용되면 아래의 일반 8% 여백은 **건너뛴다** — 둘 다 걸면
+    #     두 번 밀려 캔들이 필요 이상으로 눌린다.
+    FULL_Y_MODEL_MARGIN = 0.12
+
     # [MW0601 590차] 시야(줌·위치)가 바뀌면 알린다 — 하단 이동바가 듣는다.
     #   (total, visible, offset). ⚠ 절대원칙 §4 의 「콜백 내 emit 금지」와 **무관**하다 —
     #   그건 COM 콜백 얘기고 이건 Qt 위젯 이벤트다.
@@ -9313,6 +9320,11 @@ class MinuteChartCanvas(QWidget):
         # [555차 후속2 / P1] 이번 paint 의 Y축 범위. `paintEvent` 가 매번 채운다.
         # 🔴 `__init__` 에서 명시 초기화한다 — 기본값 폴백으로 읽으면 첫 paint 전에
         #   「축 안」으로 조용히 오판한다(계측 4원칙 ④).
+        # [MW0601 598차] 「하루 전체」 보류 사유. `__init__` 에서 명시 초기화한다 —
+        #   `getattr(self, "_x", None)` 로만 읽으면 미설정이 조용히 「없음」이 된다
+        #   (계측 4원칙 ④).
+        self._full_y_note = None
+        self._full_x_note = None
         self._axis_lo = None
         self._axis_hi = None
         self._visible_count = 0
@@ -9410,13 +9422,19 @@ class MinuteChartCanvas(QWidget):
         _prev_day = self._view_day(_prev_candles)
         _new_day = self._view_day(self._closed_candles)
         _keep = bool(_prev_day and _new_day and _prev_day == _new_day and _prev_total > 0)
+        # 🔴 [MW0601 598차] `_visible_count == 0` 은 「전부 보임」 **센티넬**이다.
+        #   종전에는 양쪽 분기가 다 그것을 **그 순간의 봉 수로 굳혔다**(2026-05-08
+        #   `0af5939` 이래). 굳히면 다음 봉이 붙는 순간 `보이는 봉 < 전체 봉` 이
+        #   되고, 589차 가드가 그것을 「줌 중」으로 읽어 **「하루 전체」가 저절로
+        #   풀렸다.** 줌을 안 했는데도 그랬다 — `_view_is_full()` 주석 참조.
         if _keep:
-            self._visible_count = min(max(self._visible_count or total,
-                                          self._min_visible_count), max(total, 1))
+            if self._visible_count:                 # 줌 중일 때만 범위를 맞춘다
+                self._visible_count = min(max(self._visible_count,
+                                              self._min_visible_count), max(total, 1))
             self._view_offset = self._clamp_view_offset(
                 self._view_offset, total, self._view_visible(total))
         else:
-            self._visible_count = max(total, self._min_visible_count)
+            self._visible_count = 0                 # 전부 보임 — 숫자로 굳히지 않는다
             self._view_offset = 0
         self._hover_pos = None
         self._dragging = False
@@ -9628,6 +9646,13 @@ class MinuteChartCanvas(QWidget):
         candles = candles[start_idx:end_idx]
         padded_count = self._compute_padded_count(candles, total_count)
         self._padded_count_cur = padded_count
+        # [MW0601 598차] 가로 격자를 보류했으면 **그 사실을 남긴다**(계측 4원칙 ④).
+        #   Y 쪽은 591차부터 보류 사유를 적고 있었는데 x 는 조용했다 — 그래서
+        #   사용자에게는 「버튼이 저절로 꺼졌다」로 보였다.
+        self._full_x_note = None
+        if self._full_session_x and not self._view_is_full():
+            self._full_x_note = ("가로 전일정 격자 보류 — 줌·패닝 중"
+                                 " (더블클릭하면 전체보기로 돌아온다)")
 
         left = S.p(58)
         top = S.p(22)
@@ -9675,24 +9700,41 @@ class MinuteChartCanvas(QWidget):
         # 🔴 **80% 밴드는 넣지 않는다.** 넣으면 캔들 세로 점유율 중앙이 37.6~42.2%,
         #   최소 15.1% 로 **554차 사고(33.1%)보다 나빠진다.** 점추정+구조만 쓰면
         #   중앙 72.2%(0850) / 86.5%(0930) 다. 밴드는 면이라 잘려도 읽힌다.
+        #
+        # 🔴 **[MW0601 598차] 봉이 아직 거기까지 안 갔어도 넓힌다**(사용자 결정
+        #   2026-09-17). 591차에는 이 자리가 **거부권**이었다 — 점유율이 하한 미달이면
+        #   확장을 통째로 취소했다. 그 규칙은 「봉이 아직 안 간 곳은 안 보여준다」와
+        #   같은 말이고, 그건 이 버튼의 목적과 **정면으로 어긋난다.** 「하루 전체」는
+        #   조망이다: 모델이 가리키는 데까지 미리 열어 두지 않으면 하루가 어디로 갈
+        #   수 있는지가 화면에 없다.
+        #   ⇒ `FULL_Y_MIN_OCCUPANCY` 는 이제 **거부권이 아니라 표기 임계**다.
+        #     눌린 정도는 계속 화면이 말한다(계측 4원칙 ④) — 값만 조용히 바뀌는 게
+        #     아니라 **무엇을 하는 상수인지**가 바뀌었다.
+        #   ⚠ 좁게 보고 싶으면 「하루 전체」를 끈다 — 그때는 이 블록 자체가 안 돈다.
         self._full_y_note = None
+        _y_model_padded = False
         if self._full_session_x:
             _mlv = self._model_axis_levels()
             if _mlv:
+                _clo, _chi = lo, hi                      # 봉 범위 — 점유율 계산용
                 _ulo, _uhi = min(lo, min(_mlv)), max(hi, max(_mlv))
-                _occ = (hi - lo) / max(_uhi - _ulo, 1e-9)
+                # 모델 **바깥**으로 마진 — 테두리에 딱 붙으면 더 갈 수 있다는 게 안 읽힌다
+                _m = max((_uhi - _ulo) * self.FULL_Y_MODEL_MARGIN, 0.5)
+                lo, hi = _ulo - _m, _uhi + _m
+                _y_model_padded = True
+                _occ = (_chi - _clo) / max(hi - lo, 1e-9)
                 if _occ >= self.FULL_Y_MIN_OCCUPANCY:
-                    lo, hi = _ulo, _uhi
+                    self._full_y_note = None
                 else:
-                    # 폴백은 반드시 드러낸다(계측 4원칙 ④) — 조용히 안 늘리면
-                    # 「버튼이 안 먹는다」로 읽힌다.
                     self._full_y_note = (
-                        "Y 확장 보류 — 모델 범위가 너무 넓어 캔들이 %.0f%% 로 눌린다"
-                        " (하한 %.0f%%). 모델 선은 가장자리 캐럿으로 표시."
+                        "조망 우선 — 모델 범위가 넓어 캔들이 세로의 %.0f%% 다"
+                        " (표기 기준 %.0f%%). 좁게 보려면 「하루 전체」를 끈다."
                         % (_occ * 100, self.FULL_Y_MIN_OCCUPANCY * 100))
-        pad = max((hi - lo) * 0.08, 0.2)
-        lo -= pad
-        hi += pad
+        if not _y_model_padded:
+            # 모델 마진을 이미 줬으면 **두 번 밀지 않는다** — 캔들만 더 눌린다.
+            pad = max((hi - lo) * 0.08, 0.2)
+            lo -= pad
+            hi += pad
         # 축 밖 판정용 — 마커 그리기 함수들이 참조한다.
         self._axis_lo, self._axis_hi = lo, hi
 
@@ -9758,6 +9800,7 @@ class MinuteChartCanvas(QWidget):
                                         _axis_bottom - plot.top()),
                         candles, lo, hi, padded_count)
         self._draw_full_y_note(painter, plot)
+        self._draw_full_x_note(painter, plot)
         _t_cross = _t2.monotonic();  self._draw_crosshair_and_tooltip(painter, plot, candles, lo, hi)
         _t_end = _t2.monotonic()
 
@@ -9794,8 +9837,12 @@ class MinuteChartCanvas(QWidget):
         else:
             new_count = min(total, int(current * 1.22) + 1)
 
-        self._visible_count = max(self._min_visible_count, min(new_count, total))
-        self._view_offset = self._clamp_view_offset(self._view_offset, total, self._visible_count)
+        _vc = max(self._min_visible_count, min(new_count, total))
+        # [598차] 다 보이게 줌아웃했으면 **숫자가 아니라 센티넬**로 되돌린다.
+        #   숫자로 남기면 다음 봉이 붙는 순간 저절로 창 모드가 된다(E1 과 같은 함정).
+        self._visible_count = 0 if _vc >= total else _vc
+        self._view_offset = self._clamp_view_offset(self._view_offset, total,
+                                                    self._view_visible(total))
         self._emit_view()
         self.update()
         event.accept()
@@ -9852,8 +9899,7 @@ class MinuteChartCanvas(QWidget):
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.LeftButton:
-            total = len(self._closed_candles) + (1 if self._live_candle else 0)
-            self._visible_count = max(total, self._min_visible_count)
+            self._visible_count = 0      # [598차] 전부 보임 — 숫자로 굳히지 않는다
             self._view_offset = 0
             self._emit_view()
             self.update()
@@ -11801,6 +11847,23 @@ class MinuteChartCanvas(QWidget):
         total = self._view_total() if total is None else total
         return min(max(self._visible_count or total, self._min_visible_count), max(total, 1))
 
+    def _view_is_full(self) -> bool:
+        """화면이 **하루 전체**를 담고 있는가. 「사용자가 줌·패닝했는가」의 반대다.
+
+        🔴 `len(보이는 봉) < 전체 봉` 으로 판정하면 안 된다 — 589차가 그렇게 짰고
+          6일간 틀렸다. `_visible_count` 가 리로드 때 **그 순간 봉 수로 굳던** 값이라
+          (2026-05-08 `0af5939` 이래), 봉이 **하나만 더 붙어도** 그 조건이 참이 됐다.
+          줌한 적이 없는데 「하루 전체」가 저절로 풀린 원인이 이것이다.
+          실측: 봉 120 → 121 에서 x 격자 411 → 130.
+
+        ⚠ `_visible_count >= _view_total()` 도 「전부」로 친다. 센티넬(0)로 되돌리는
+          경로를 598차가 모두 막았지만, 숫자로 굳은 상태가 어디선가 들어와도
+          **뜻이 같으면 같게 판정해야** 한다(형태가 아니라 의미로 묻는다).
+        """
+        if self._view_offset > 0:
+            return False
+        return (not self._visible_count) or self._visible_count >= self._view_total()
+
     def _anchor_after_growth(self, prev_total: int):
         """total 이 늘었을 때 보던 구간을 붙든다. **offset==0 이면 아무것도 안 한다.**"""
         if self._view_offset <= 0:
@@ -11827,6 +11890,30 @@ class MinuteChartCanvas(QWidget):
             self.sig_view_changed.emit(total, self._view_visible(total), self._view_offset)
         except Exception:
             pass
+
+    def _draw_full_x_note(self, painter: QPainter, plot: QRectF):
+        """[598차] 가로 전일정 격자가 **보류됐다는 사실**을 적는다.
+
+        Y 쪽은 591차부터 사유를 적고 있었는데 x 는 조용히 풀렸다 — 그래서
+        「버튼이 저절로 꺼졌다」로 읽혔다(계측 4원칙 ④). Y 노트 **한 줄 위**에
+        쓴다(둘이 동시에 뜰 수 있다).
+        """
+        _note = self._full_x_note
+        if not _note:
+            return
+        try:
+            painter.save()
+        except Exception:
+            return
+        try:
+            painter.setFont(QFont("Malgun Gothic", 8, QFont.Bold))
+            painter.setPen(QColor("#D29922"))
+            _y = plot.bottom() - S.p(6) - S.p(11)
+            painter.drawText(QPointF(plot.left() + S.p(6), _y), "■ " + _note)
+        except Exception as _e:
+            logger.debug("[ChartDBG] _draw_full_x_note 예외: %s", _e)
+        finally:
+            painter.restore()
 
     def _draw_full_y_note(self, painter: QPainter, plot: QRectF):
         """[591차] Y 확장이 **보류됐다는 사실**을 적는다.
@@ -12033,11 +12120,16 @@ class MinuteChartCanvas(QWidget):
 
         🔴 줌 중에는 전일정 격자를 적용하지 않는다. 적용하면 확대가 무력화된다
           (보이는 봉이 몇 개든 격자가 411 로 고정돼 버린다).
+
+        ⚠ [598차] 「줌 중인가」를 `len(candles) < total_count` 로 **파생**시키지
+          않는다. 호출부에서 `candles` 는 이미 보이는 구간으로 잘려 넘어오므로,
+          그 조건의 실제 뜻은 「창이 좁은가」였고 봉이 하나만 늘어도 참이 됐다.
+          `_view_is_full()` 에게 **상태를 직접 묻는다.**
         """
         _pad = max(len(candles) + self.RIGHT_PADDING_BARS, 1)
         if not self._full_session_x:
             return _pad
-        if len(candles) < total_count:     # 줌·패닝 중
+        if not self._view_is_full():       # 줌·패닝 중
             return _pad
         return max(_pad, self._full_session_slots())
 
