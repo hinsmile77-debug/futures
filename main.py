@@ -9057,9 +9057,49 @@ class TradingSystem:
                 # 발동 조건은 불변이고 로그 분모만 정직해진다(system_health 참조).
                 core_measured=bool(_gap_core_checks),
             )
+            # [MW0601 599차 / F-4] GAP_OPEN 봉별 1줄 — 09:05 판정의 **입력**을 남긴다.
+            # 종전에는 `_gap_pipe_delayed` 를 계산해 넘기고 버려서, 어느 봉이 왜
+            # conf_max 에서 빠졌는지가 어디에도 안 남았다. 2026-09-17 조사가
+            # `[PipePerf] total` 8일치를 교차대조해야 1000ms 경계를 찾을 수 있었던 이유다.
+            # (계측 4원칙 ③ 탈락 가시화 — 필터는 제외 개수·사유를 남긴다)
+            try:
+                _gap_elapsed_ms = (time.perf_counter() - _pipe_t0) * 1000
+                log_manager.signal(
+                    "[SHS-EKS-Bar] GAP_OPEN #%d 경과=%.0fms delayed=%s policy_blocked=%s "
+                    "conf=%.1f%% core측정=%s core통과=%s → conf_max 산입=%s"
+                    % (
+                        self.system_health._gap_open_bar_count,
+                        _gap_elapsed_ms,
+                        _gap_pipe_delayed,
+                        _gap_horizon_blocked,
+                        confidence * 100,
+                        bool(_gap_core_checks),
+                        _core_all_ok,
+                        (not _gap_pipe_delayed) and (not _gap_horizon_blocked),
+                    )
+                )
+            except Exception as _gb_e:          # 계측이 파이프라인을 깨뜨리지 않는다
+                logger.debug("[SHS-EKS-Bar] 로그 실패 (무시): %s", _gb_e)
         elif not self.system_health._eks_evaluated:
+            # [MW0601 599차 / F-4] 보정기 상태를 판정 로그에 동반시킨다.
+            # 판정에는 관여하지 않는다(로그 전용 — system_health 참조).
+            # `conf_floor_state` 는 main.py:8156 이 이미 쓰는 것과 같은 속성이다.
+            _eks_cfs = _eks_out_max = _eks_auc = None
+            try:
+                _ens = getattr(self, "ensemble", None)
+                if _ens is not None:
+                    _eks_cfs = getattr(_ens, "conf_floor_state", None)
+                    _cal_o = getattr(_ens, "ensemble_calibrator", None)
+                    if _cal_o is not None:
+                        _eks_out_max = getattr(_cal_o, "output_max", None)
+                        _eks_auc = getattr(_cal_o, "rank_auc", None)
+            except Exception as _cf_e:          # 계측이 판정을 막지 않는다
+                logger.debug("[SHS-EKS] 보정기 상태 조회 실패 (무시): %s", _cf_e)
             _eks_fired = self.system_health.evaluate_early_kill_switch(
                 gap_open_mc=get_zone_min_confidence("GAP_OPEN"),
+                conf_floor_state=_eks_cfs,
+                calib_output_max=_eks_out_max,
+                calib_auc=_eks_auc,
             )
             if _eks_fired:
                 from utils.notify import notify_kill_switch as _nks
@@ -9071,6 +9111,11 @@ class TradingSystem:
                 log_manager.system(
                     "[SHS-EKS] Early Kill Switch 발동 — 일시 관망 "
                     f"conf_max={_shs_d['gap_open_conf_max']*100:.1f}% bars={_shs_d['gap_open_bars']} "
+                    # [MW0601 599차 / F-4] conf_max 의 분모와 제외 사유를 같은 줄에.
+                    # conf측정=0 이면 conf_max 는 측정값이 아니라 초기값(0.0)이다.
+                    f"(delayed={_shs_d['gap_open_delayed']} "
+                    f"policy={_shs_d['gap_open_policy_blocked']} "
+                    f"conf측정={_shs_d['gap_open_conf_measured']}) "
                     "→ 스케일러·conf 회복 시 자동 재개 (09:20부터 30분 간격 평가)",
                     "CRITICAL",
                 )
@@ -11111,6 +11156,9 @@ class TradingSystem:
             entry_blocked=_shs_state["entry_blocked"],
             kill_switch=_shs_state["kill_switch_active"],
             eks_reason=getattr(self.system_health, "_eks_reason", ""),
+            # [MW0601 599차 / G-2] 11:30 마감 경과 시 배지를 "오늘 종료"로 가른다.
+            # 임계는 safety/system_health.py 가 단일 출처다(대시보드에 복제하지 않는다).
+            recovery_closed=_shs_state["eks_recovery_closed"],
         )
         self.dashboard.update_shadow_badge(
             state        = self.shadow_session.state,

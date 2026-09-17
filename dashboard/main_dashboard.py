@@ -14133,7 +14133,8 @@ class MireukDashboard(QMainWindow):
             "  ≥ 80  : 정상 (녹색)\n"
             "  60~79 : 주의 (파랑)\n"
             "  < 60  : 진입 차단 (주황)\n"
-            "  EKS   : 일시 관망 (자동 재개 대기) (빨강)\n\n"
+            "  EKS   : 관망일 — 11:30까지 자동 회복 평가 중 (빨강)\n"
+            "  EKS   : 오늘 종료 — 자동 재개 없음, 수동 진입만 (빨강)\n\n"
             "감점 요소:\n"
             "  재시작 1회 = -8점 (최대 -40)\n"
             "  z경고 피처 1개 = -2.5점 (최대 -25)\n"
@@ -16013,7 +16014,8 @@ class DashboardAdapter:
             lbl.setVisible(False)
 
     def update_shs_badge(
-        self, shs: float, entry_blocked: bool, kill_switch: bool, eks_reason: str = ""
+        self, shs: float, entry_blocked: bool, kill_switch: bool, eks_reason: str = "",
+        recovery_closed: bool = False,
     ) -> None:
         """SHS 배지 색상·텍스트 갱신 (매분 파이프라인에서 호출).
 
@@ -16027,9 +16029,24 @@ class DashboardAdapter:
             return
         if kill_switch:
             # [C3] 원인 있으면 "관망일" 아래 2줄로 표시
-            text = f"⛔ 관망일\n{eks_reason}" if eks_reason else "⛔ 관망일"
+            # [MW0601 599차 / G-2] 11:30(EKS_RECOVERY_DEADLINE) 이후에는 재평가가
+            # 스케줄되지 않으므로 "일시"도 "자동 재개 대기"도 **거짓**이 된다.
+            # 2026-09-15~17 3일 연속으로 화면이 온종일 "재개 대기"라고 말했다.
+            # ⚠ 표시만 갈린다 — 차단 동작은 recovery_closed 와 무관하게 동일하다.
+            if recovery_closed:
+                text = (f"⛔ 오늘 종료\n{eks_reason}" if eks_reason else "⛔ 오늘 종료")
+                tip = (
+                    "Early Kill Switch — 오늘 자동 재개 없음 (수동 진입만 가능)\n"
+                    "11:30 회복 평가 마감이 지나 재평가가 더 이상 스케줄되지 않습니다.\n"
+                    "내일 개장 시 초기화됩니다."
+                )
+            else:
+                text = f"⛔ 관망일\n{eks_reason}" if eks_reason else "⛔ 관망일"
+                tip = (
+                    "Early Kill Switch 발동 — 자동 진입 차단 중\n"
+                    "11:30까지 30분 간격으로 자동 회복 평가가 진행됩니다."
+                )
             bg, fg = C["red"], "#fff"
-            tip = "Early Kill Switch 발동 — 자동 진입 차단 중"
             lbl.setWordWrap(True)
             lbl.setMinimumWidth(S.p(90))
         elif entry_blocked:
