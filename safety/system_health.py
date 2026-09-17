@@ -76,6 +76,16 @@ class SystemHealthScore:
         self._gap_open_bar_count:            int   = 0
         self._gap_open_delayed_count:        int   = 0   # [P2] 파이프라인 지연으로 conf 제외된 봉 수
         self._gap_open_policy_blocked_count: int   = 0   # [P3] HORIZON_TIME_POLICY [] 차단 봉 수
+        # [MW0601 599차 / F-5] conf_max 에 **실제로 반영된** 봉 수.
+        # `_gap_open_conf_max` 의 초기값이 0.0 이라 "재지 않았다"와 "재보니 0.0"이
+        # 같은 값으로 표현된다(계측 4원칙 ② 미측정 ≠ 0). 459차가 CORE 쪽에
+        # `_gap_open_core_measured_count` 분모를 붙인 것과 같은 조치를 conf 쪽에도 한다.
+        # ⚠ **판정식은 바꾸지 않는다** — `_is_cold_start` 는 여전히
+        #   `_gap_open_conf_max == 0.0` 을 본다. 이 카운터는 **계상·로그 전용**이다.
+        #   둘은 동치가 아니다("쟀는데 conf 가 정확히 0.0"인 봉에서 갈린다).
+        #   그 경우의 라이브 빈도를 먼저 세고, 표본이 쌓인 뒤에 판정식을 논한다
+        #   (459차가 발동 조건을 그대로 둔 것과 같은 보수적 순서).
+        self._gap_open_conf_measured_count:  int   = 0
 
         # EKS 상태
         self._eks_evaluated:          bool  = False
@@ -140,6 +150,9 @@ class SystemHealthScore:
             self._gap_open_policy_blocked_count += 1
         else:
             self._gap_open_conf_max = max(self._gap_open_conf_max, float(conf))
+            # [MW0601 599차 / F-5] 이 봉이 conf_max 에 **실제로 반영됐다** — 분모 계상.
+            # 로그·조회 전용이며 판정식(`_is_cold_start`)은 건드리지 않는다.
+            self._gap_open_conf_measured_count += 1
         if core_measured:
             self._gap_open_core_measured_count += 1
         if core_all_passed:
@@ -147,17 +160,89 @@ class SystemHealthScore:
 
     # ── EKS 판정 ────────────────────────────────────────────────
 
-    def evaluate_early_kill_switch(self, gap_open_mc: float = EKS_CONF_THRESHOLD) -> bool:
+    @staticmethod
+    def _format_calib_context(
+        conf_floor_state: "str | None",
+        calib_output_max: "float | None",
+        calib_auc: "float | None",
+        gap_open_mc: float,
+    ) -> str:
+        """[MW0601 599차 / F-4] 발동선과 보정기 출력상한을 **같은 줄에서** 비교 가능하게 만든다.
+
+        계측 4원칙 ②를 따라 "속성 없음"·"못 쟀음"·"실제 값"을 서로 다른 문자열로 쓴다.
+        셋을 0 이나 N/A 하나로 뭉뚱그리지 않는다(523차 `[ConfFloorGuard]` auc 표기와 같은 규약).
+
+        ⚠ 이 함수는 **문자열만 만든다.** 판정에 쓰이는 값을 여기서 파생하지 않는다.
+        """
+        if conf_floor_state is None and calib_output_max is None:
+            return "보정기=미전달"
+        _state = conf_floor_state or "미전달"
+        if calib_output_max is None:
+            _out = "상한=미측정"
+            _verdict = ""
+        else:
+            _trigger = max(0.0, float(gap_open_mc) - EKS_TRIGGER_MARGIN)
+            _out = "상한=%.1f%%" % (float(calib_output_max) * 100)
+            # 상한이 발동선보다 낮으면 conf 가 무엇이든 발동선을 넘을 수 없다 —
+            # 그 경우 이 판정은 시장이 아니라 보정기 상태를 잰 것이다.
+            _verdict = (
+                " ⇒ 구조적 도달불가(상한<발동선 — 이 판정은 시장이 아니라 보정기를 잰 것)"
+                if float(calib_output_max) < _trigger
+                else " ⇒ 도달가능"
+            )
+        if calib_auc is None:
+            _auc = "auc=미측정"
+        else:
+            _auc = "auc=%.3f" % float(calib_auc)
+        return "보정기 %s %s state=%s%s" % (_out, _auc, _state, _verdict)
+
+    def evaluate_early_kill_switch(
+        self,
+        gap_open_mc: float = EKS_CONF_THRESHOLD,
+        conf_floor_state: "str | None" = None,
+        calib_output_max: "float | None" = None,
+        calib_auc: "float | None" = None,
+    ) -> bool:
         """
         09:05 최초 비-GAP_OPEN 분봉에서 1회 호출.
         gap_open_mc: GAP_OPEN zone DynMC min_conf (main.py에서 전달). 미전달 시 fallback 0.45.
         GAP_OPEN 바가 1개 이상 있을 때만 판정.
         Returns: True if kill switch fired.
+
+        [MW0601 599차 / F-4] conf_floor_state·calib_output_max·calib_auc 는
+        **로그 전용 참고값**이다 — 판정에 일절 관여하지 않는다(기본 None이면
+        `보정기=미전달` 로 찍힐 뿐 동작은 종전과 동일).
+
+        도입 이유: 2026-09-15~17 EKS 3일 연속 발동 때 `conf_max=34.4%` 가
+        소수점까지 같았는데, 그 값이 **시장 관측이 아니라 보정기 출력상한에
+        갇힌 값**(09:00 상한 0.3479 · span 0.0063 · auc 0.550 이 9월 내내 동일)
+        이라는 사실이 이 로그 어디에도 없었다. 같은 분에 `[ConfFloorGuard]` 가
+        "어떤 신호도 자동진입 하한을 넘을 수 없다"를 이미 찍고 있었는데도
+        EKS 는 그것을 모른 채 판정했다 — 두 계측이 같은 사실을 보고도 서로를
+        모르는 상태(계측 4원칙 ④ 폴백 가시화 · ⑤ 대사는 모든 축).
+        근거: `docs/정기점검/매일점검/MW0601-20260917-점검리포트.md` 이상점 1-4.
         """
         if self._eks_evaluated:
             return self._eks_active
 
         self._eks_evaluated = True
+
+        # [599차 F-4] 모든 분기가 같은 꼬리를 달도록 한 번만 만든다.
+        # 발동 분기가 delayed/policy 카운트를 안 찍어서, 2026-09-17 조사가
+        # `[PipePerf]` 8일치를 교차대조해야 원인을 좁힐 수 있었다.
+        _gap_txt = (
+            "bars=%d (delayed=%d policy=%d conf측정=%d) core측정=%d봉"
+            % (
+                self._gap_open_bar_count,
+                self._gap_open_delayed_count,
+                self._gap_open_policy_blocked_count,
+                self._gap_open_conf_measured_count,
+                self._gap_open_core_measured_count,
+            )
+        )
+        _calib_txt = self._format_calib_context(
+            conf_floor_state, calib_output_max, calib_auc, gap_open_mc
+        )
 
         if self._gap_open_bar_count < EKS_MIN_BARS:
             import datetime as _dt_mod
@@ -167,15 +252,18 @@ class SystemHealthScore:
                 # (판단 근거 없으므로 관망 선언하지 않음)
                 logger.info(
                     "[SHS-EKS] 재시작 후 GAP_OPEN 봉 없음 (09:15 이후) — EKS 미발동 확정"
+                    " | %s | %s",                                   # [599차 F-4]
+                    _gap_txt, _calib_txt,
                 )
                 return False
             # 09:15 이전이면 기존대로 유예 (이후 GAP_OPEN 봉 수집 가능)
             logger.warning(
                 "[SHS-EKS] EKS 판정 유예 — GAP_OPEN 봉 부족 "
-                "(%d봉 < 최소 %d봉) conf_max=%.1f%%",
+                "(%d봉 < 최소 %d봉) conf_max=%.1f%% | %s | %s",      # [599차 F-4]
                 self._gap_open_bar_count,
                 EKS_MIN_BARS,
                 self._gap_open_conf_max * 100,
+                _gap_txt, _calib_txt,
             )
             return False
 
@@ -206,7 +294,7 @@ class SystemHealthScore:
             logger.warning(
                 "[SHS-EKS] Early Kill Switch 발동 "
                 "conf_max=%.1f%% < 발동선=%.1f%%(mc=%.1f%%-margin%.1f%%p) "
-                "core_pass=0/%d봉(측정 %d봉) "
+                "core_pass=0/%d봉(측정 %d봉) | %s | %s "          # [599차 F-4]
                 "→ 일시 관망 (09:20부터 30분 간격 자동 회복 평가, 마감 11:30)",
                 self._gap_open_conf_max * 100,
                 _eks_trigger_mc * 100,
@@ -214,15 +302,18 @@ class SystemHealthScore:
                 EKS_TRIGGER_MARGIN * 100,
                 self._gap_open_bar_count,
                 self._gap_open_core_measured_count,
+                _gap_txt, _calib_txt,
             )
         elif _is_cold_start:
             logger.info(
                 "[SHS-EKS] EKS 미발동 — cold-start "
                 "(conf_max=0%% delayed=%d policy_blocked=%d / %d봉) "
-                "HORIZON_TIME_POLICY 차단 또는 active_horizons 초기화 지연으로 판단",
+                "HORIZON_TIME_POLICY 차단 또는 active_horizons 초기화 지연으로 판단"
+                " | %s | %s",                                      # [599차 F-4]
                 self._gap_open_delayed_count,
                 self._gap_open_policy_blocked_count,
                 self._gap_open_bar_count,
+                _gap_txt, _calib_txt,
             )
         elif (
             self._gap_open_conf_max < gap_open_mc
@@ -232,26 +323,48 @@ class SystemHealthScore:
             logger.warning(
                 "[SHS-EKS] EKS 미발동 — 마진 내 근소 미달 "
                 "conf_max=%.1f%% mc=%.1f%% (발동선=%.1f%%, margin=%.1f%%p) "
-                "core_pass=0/%d봉(측정 %d봉)",
+                "core_pass=0/%d봉(측정 %d봉) | %s | %s",          # [599차 F-4]
                 self._gap_open_conf_max * 100,
                 gap_open_mc * 100,
                 _eks_trigger_mc * 100,
                 EKS_TRIGGER_MARGIN * 100,
                 self._gap_open_bar_count,
                 self._gap_open_core_measured_count,
+                _gap_txt, _calib_txt,
             )
         else:
             logger.info(
-                "[SHS-EKS] EKS 미발동. conf_max=%.1f%% mc=%.1f%% core_pass=%d/%d봉(측정 %d봉)",
+                "[SHS-EKS] EKS 미발동. conf_max=%.1f%% mc=%.1f%% core_pass=%d/%d봉(측정 %d봉)"
+                " | %s | %s",                                      # [599차 F-4]
                 self._gap_open_conf_max * 100,
                 gap_open_mc * 100,
                 self._gap_open_core_pass_count,
                 self._gap_open_bar_count,
                 self._gap_open_core_measured_count,
+                _gap_txt, _calib_txt,
             )
         return self._eks_active
 
     # ── EKS 회복 ────────────────────────────────────────────────
+
+    def is_eks_recovery_closed(self, now: "datetime.datetime | None" = None) -> bool:
+        """[MW0601 599차 / G-2] 오늘 EKS 자동 재개 기회가 **끝났는가**.
+
+        `EKS_RECOVERY_DEADLINE`(11:30)을 지나면 `can_attempt_recovery()` 가 더는
+        True 를 돌려주지 않는다 — 즉 그 시점부터는 "기다리면 풀릴 관망"이 아니라
+        **당일 확정된 관망**이다. 대시보드 배지가 이 둘을 구분하지 못해
+        11:30 이후에도 "자동 재개 대기"라고 표시하고 있었다(2026-09-15~17 3일 연속).
+
+        ⚠ **판정에 관여하지 않는다 — 표시 전용이다.** 여기서 True 를 돌려준다고
+        진입이 더 막히거나 덜 막히지 않는다. 차단 여부는 `_eks_active` 하나다.
+        ⚠ 임계를 대시보드에 복제하지 않기 위해 **여기가 단일 출처**다.
+           `can_attempt_recovery()` 와 같은 상수를 본다.
+        근거: `docs/정기점검/매일점검/MW0601-20260917-점검리포트.md` 이상점 1-6.
+        """
+        if not self._eks_active:
+            return False
+        _now = now or datetime.datetime.now()
+        return _now.time() >= EKS_RECOVERY_DEADLINE
 
     def can_attempt_recovery(self, now: "datetime.datetime") -> bool:
         """EKS 회복 시도 가능 여부: 활성·마감·간격 체크.
@@ -372,6 +485,16 @@ class SystemHealthScore:
             "gap_open_bars":          self._gap_open_bar_count,
             "gap_open_core_measured": self._gap_open_core_measured_count,  # [459차 F2]
             "gap_open_policy_blocked": self._gap_open_policy_blocked_count,
+            # [MW0601 599차 / F-4] delayed 는 노출된 적이 없어 대시보드·알림이
+            # "왜 그 봉이 빠졌는지"를 볼 수 없었다. policy_blocked 만 있으면
+            # 제외 사유 두 갈래 중 한쪽만 보인다(계측 4원칙 ③ 탈락 가시화).
+            "gap_open_delayed": self._gap_open_delayed_count,
+            # [MW0601 599차 / F-5] conf_max 의 분모. 0 이면 conf_max 는 측정값이
+            # 아니라 초기값(0.0)이다 — 계측 4원칙 ②.
+            "gap_open_conf_measured": self._gap_open_conf_measured_count,
+            # [MW0601 599차 / G-2] 오늘 자동 재개 기회가 끝났는가(표시 전용).
+            # ⚠ 이 키만 시각에 의존한다 — 같은 상태라도 11:30 전후로 값이 바뀐다.
+            "eks_recovery_closed": self.is_eks_recovery_closed(),
         }
 
     # ── 일일 리셋 ────────────────────────────────────────────────
@@ -385,6 +508,7 @@ class SystemHealthScore:
         self._gap_open_bar_count            = 0
         self._gap_open_delayed_count        = 0
         self._gap_open_policy_blocked_count = 0
+        self._gap_open_conf_measured_count  = 0   # [599차 F-5]
         self._eks_evaluated            = False
         self._eks_active               = False
         self._eks_recovery_count       = 0
