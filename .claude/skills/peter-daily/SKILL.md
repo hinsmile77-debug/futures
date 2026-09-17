@@ -95,6 +95,18 @@ description: 피터리(@PeterLeejoa)의 당일 선물매매 트윗을 수집해 
    🔴 **문서는 출력이지 입력이 아니다.** 문서를 고쳤다면 `_lv/_tr` 과 DB 에 먼저
      반영하고 다시 낸다 — 아니면 다음 재생성에서 사라진다.
 
+10. **올린다.** 여기까지 안 하면 MW0602 는 아무것도 못 받는다.
+    ```
+    python tools/peter_feed_push.py --push
+    ```
+    🔴 `--push` 를 빼면 **로컬 브랜치만 갱신되고 origin 에 안 간다.** 기본값이
+      그렇다 — 실수로 올리지 않기 위한 설계인데, 매일 도는 절차에서는 반대로
+      **빠뜨리기 쉬운 곳**이다. 사료가 안 올라가면 저쪽 차트는 어제에 멈춰 있다.
+    🔴 코드(파서 규칙 등)는 여기 안 실린다. `peter-feed` 는 `data/peter_feed/`
+      만 드는 고아 브랜치다. 파서를 고쳤으면 `dev` 체리픽은 **따로** 한다 —
+      사료는 자동으로 흘려보내도 되지만 규칙 변경은 사람이 판단한다.
+
+
 ### C. 보고 (짧게)
 
 - 지시·예고·결과·미분류·거래 건수와 오프셋(오전 n봉)
@@ -131,20 +143,39 @@ python tools/peter_feed_push.py --push
 
 ### 받는 쪽(MW0602)
 
+🔴 **git 은 우체국이 아니라 사서함이다.** MW0601 이 푸시해도 이쪽 작업 폴더는
+그대로다. 그리고 파일이 와도 차트가 읽는 것은 `peter_levels.db` 이지 텍스트가
+아니다 — **받는 것과 반영하는 것은 다른 일이다.** 둘을 한 번에 하는 것이:
+
+```
+python tools/peter_pull.py          # fetch -> data/peter_feed 만 받기 -> DB 재생성
+python tools/peter_pull.py --dry    # 무엇이 바뀔지만 본다
+```
+
+MW0602 는 이것을 평일 16:30 에 자동으로 돌린다
+(`scripts\peter_pull_MW0602.bat`, 등록은 `scripts\peter_pull_task_register.ps1`).
+16:30 인 이유는 **저쪽 정규 10100 수집과 이쪽 푸시가 둘 다 끝난 뒤**여야 오프셋을
+잴 수 있어서다. 아직이면 그날은 이유를 찍고 건너뛴다 — 0 으로 채우지 않는다.
+
+도구 없이 손으로 할 때는 이 세 줄이다:
+
 ```
 git fetch origin peter-feed
 git restore --source=origin/peter-feed --worktree -- data/peter_feed/
 python tools/peter_build_day.py --rebuild-all
 ```
 
-🔴 **`git checkout origin/peter-feed -- data/peter_feed/` 를 쓰지 마라.**
+🔴 **손으로 할 때 `git checkout origin/peter-feed -- data/peter_feed/` 를 쓰지 마라.**
 `checkout <ref> -- <path>` 는 **`.gitignore` 와 무관하게 인덱스에도 올린다** —
 실측으로 확인했다. 그러면 다음 커밋에 사료가 코드 브랜치로 되돌아와 고아
 브랜치를 둔 의미가 사라지고, 그 사실이 `git status` 를 유심히 보지 않으면
 드러나지 않는다. `git restore --worktree` 는 작업본만 바꾼다.
+⚠ `peter_pull.py` 는 `checkout` 을 쓰지만 **바로 뒤에 `git reset -- <path>` 로
+인덱스를 되돌린다**(`tools/peter_pull.py:174-175`). 도구는 안전하다 — 위 금지는
+손으로 칠 때의 이야기다.
 
 ⚠ MW0602 에서 `peter_feed_push.py` 는 **실패하는 것이 정상이다**
-(`data/peter_feed/` 가 `.gitignore` 대상 → `git add` 가 exit 1).
+(`data/peter_feed/` 가 `.gitignore` 대상 -> `git add` 가 exit 1).
 받기 전용 PC 이기 때문이며, 조용히 빈 트리를 올리지 않는다는 뜻이기도 하다.
 
 ⚠ 오프셋은 **받지 않고 각자 잰다.** 월물 교체 구간에서 PC 간 차이가 크다 —
