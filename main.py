@@ -170,6 +170,7 @@ from strategy.risk.toxicity_gate import ToxicityGate
 from strategy.runtime.broker_runtime_service import BrokerRuntimeService
 from strategy.runtime.execution_governor import ExecutionGovernor
 from strategy.runtime.session_recovery_service import SessionRecoveryService
+from strategy.runtime.session_replay_service import SessionReplayService   # [614차]
 from strategy.profit_guard import ProfitGuard, ProfitGuardConfig
 from learning.calibration import (
     MultiHorizonCalibrator, MultiHorizonExtremityCorrector, compute_extremity_hinge,
@@ -668,6 +669,8 @@ class TradingSystem:
         self.broker_runtime_service = BrokerRuntimeService()
         self.execution_governor = ExecutionGovernor()
         self.session_recovery_service = SessionRecoveryService()
+        # [MW0601 614차] 기동 시 당일 데이터 재생(장후 복기 / 장중 복원).
+        self.session_replay_service = SessionReplayService()
 
         # 핵심 컴포넌트
         self.regime_classifier      = RegimeClassifier()
@@ -15250,6 +15253,16 @@ class TradingSystem:
 
         # 세션 카운터 증가 + 당일 거래/패널 복원 (Day 3 서비스 단일 호출)
         self.session_recovery_service.restore_on_startup(self)
+
+        # [MW0601 614차] 당일(또는 최근 거래일) 데이터를 DB 에서 패널로 되살린다.
+        #
+        # 🔴 `restore_on_startup` 이 못 덮는 구간을 메운다. 그쪽은 자가학습·효과검증·
+        #    성장추이·손익추이 4패널과 당일 `trades` 를 복원하지만, **수급·예측·
+        #    체인·RV-IV 는 전부 라이브 push 에만 의존**해서 장후 기동이면 영영 비고
+        #    장중 재기동이면 기동 시각까지의 구간이 사라진다.
+        # ⚠ 수집 게이트(`is_market_open`)는 **건드리지 않는다** — 장외에 TR 을 때리는
+        #    것과 화면을 채우는 것은 다른 문제다. 표시 경로만 되살린다.
+        self.session_replay_service.schedule(self)
 
         # [MW0601 534차] 오늘 이미 굳힌 맥점 단계를 대시보드에 복원 — 장중 재기동
         # 시에도 화면이 **굳힌 값 그대로**를 보게 한다(가이드 §4).
