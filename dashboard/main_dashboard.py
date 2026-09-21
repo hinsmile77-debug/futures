@@ -10199,6 +10199,22 @@ class MinuteChartCanvas(QWidget):
     # 건드리지 않는다 — 가격모델은 청록, 구조모델은 회색 그대로다
     # (584차: 「회색은 구조모델 전용」). 스테이지는 농도와 선모양으로만 가른다.
     PRE_STAGE_DIM = 0.45          # 이전 스테이지 농도(최신 대비)
+
+    # ── [MW0601 610차] 면의 **경계를 선으로 긋는다** ────────────────────────
+    #
+    # 🔴 선으로 그린 값은 잘 갈리는데 **면으로 그린 값은 경계가 안 읽힌다**
+    #   (사용자 지적 2026-09-21). 50%·80% 띠는 채움 알파가 26·14 라 이웃한 띠와
+    #   배경 사이의 휘도차가 한 자리수다 — 어디서 끝나는지 눈이 못 잡는다.
+    #   채움은 그대로 두고 **위·아래 변에 1px 선**을 얹는다.
+    # ⚠ 변 알파는 점추정(255)보다 **뚜렷이 낮게** 잡는다. 같은 굵기·같은 색으로
+    #   같은 밝기면 띠 경계가 「또 하나의 점추정 값」으로 읽힌다.
+    PRICE_BAND_EDGE_ALPHA = {"50": 130, "80": 95}
+
+    # 🔴 **면의 농도 규칙을 선에 그대로 먹이면 안 된다.** 면은 겹치면 탁해지므로
+    #   이전 스테이지를 0.45 까지 낮추지만, 선은 겹치지 않는다 — 같은 비율을
+    #   먹이면 그냥 **안 보이게만** 된다(실측: 08:50 변 돌출 3~4 로 배경과 구분 불가).
+    #   스테이지는 **선모양**(실선/점선)이 이미 말하므로 변은 살짝만 낮춘다.
+    PRE_STAGE_EDGE_DIM = 0.75
     PRE_STAGE_BAND_DIM = 0.45     # 가격모델 띠는 면이라 더 조심 — 같은 비율로 낮춘다
 
     def _iter_pre_stages(self):
@@ -10236,6 +10252,7 @@ class MinuteChartCanvas(QWidget):
                 _dim = 1.0 if _latest else self.PRE_STAGE_DIM
                 _bdim = 1.0 if _latest else self.PRE_STAGE_BAND_DIM
                 _sg = str(L.get("stage") or "")
+                _bands = []
                 painter.setPen(Qt.NoPen)
                 for _k, _a in (("80", 14), ("50", 26)):
                     for _side in ("high", "low"):
@@ -10243,12 +10260,40 @@ class MinuteChartCanvas(QWidget):
                         _a1 = L.get("%s%s_hi" % (_side, _k))
                         if _a0 is None or _a1 is None:
                             continue
-                        y0 = self._price_to_y(max(_a0, _a1), plot, lo, hi)
-                        y1 = self._price_to_y(min(_a0, _a1), plot, lo, hi)
+                        _pt, _pb = max(_a0, _a1), min(_a0, _a1)
+                        y0 = self._price_to_y(_pt, plot, lo, hi)
+                        y1 = self._price_to_y(_pb, plot, lo, hi)
                         col = QColor(base); col.setAlpha(max(1, int(_a * _bdim)))
                         painter.setBrush(col)
                         painter.drawRect(QRectF(plot.left(), y0, plot.width(),
                                                 max(1.0, y1 - y0)))
+                        _bands.append((_k, _pt, y0, _pb, y1))
+                # [610차] 변 — 채움을 다 깐 **뒤에** 긋는다. 50% 띠는 80% 띠 안에
+                #   들어가므로, 섞어 그리면 나중 채움이 앞선 변을 덮는다.
+                painter.setBrush(Qt.NoBrush)
+                # 🔴 1px 가로선은 **번지면 손해만 본다**(581차). 안티에일리어싱을 끄고
+                #   픽셀 격자에 맞춰(`floor+0.5`) 한 줄에 또렷하게 앉힌다. 안 그러면
+                #   같은 잉크가 두 줄에 나뉘어 봉우리가 절반이 된다.
+                _aa_on = painter.testRenderHint(QPainter.Antialiasing)
+                painter.setRenderHint(QPainter.Antialiasing, False)
+                _edim = 1.0 if _latest else self.PRE_STAGE_EDGE_DIM
+                for _k, _pt, y0, _pb, y1 in _bands:
+                    _ec = QColor(base)
+                    _ec.setAlpha(max(6, int(self.PRICE_BAND_EDGE_ALPHA[_k] * _edim)))
+                    _ep = QPen(_ec); _ep.setWidth(1)
+                    _ep.setStyle(Qt.SolidLine if _latest else Qt.DotLine)
+                    painter.setPen(_ep)
+                    # 🔴 축 밖 가격에는 변을 긋지 않는다. `_price_to_y` 가 [0,1] 로
+                    #   클램프하므로 선을 그으면 **없는 경계를 가장자리에 있는 것처럼**
+                    #   만든다 — 면은 잘려도 「더 간다」로 읽히지만 선은 값을 주장한다
+                    #   (계측 4원칙 ④).
+                    for _pv, _yv in ((_pt, y0), (_pb, y1)):
+                        if self._is_off_axis(_pv):
+                            continue
+                        _ys = float(int(_yv)) + 0.5          # 픽셀 격자에 앉힌다
+                        painter.drawLine(QPointF(plot.left(), _ys),
+                                         QPointF(plot.right(), _ys))
+                painter.setRenderHint(QPainter.Antialiasing, _aa_on)
                 # 점추정 — 최신은 실선, 이전은 점선. 색은 같다(모델 정체성).
                 painter.setBrush(Qt.NoBrush)
                 for _key, _tag in (("dist_high", "가격 고"), ("dist_low", "가격 저")):
@@ -11207,7 +11252,7 @@ class MinuteChartCanvas(QWidget):
     _LEGEND_SPEC = (
         ("#3FB950", "매수 공격 / 목표"), ("#F85149", "매도 공격 / 손절"),
         ("#58A6FF", "ΔOI 신규"), ("#D29922", "ΔOI 청산 · 롱 금지"),
-        ("#C2CCD6", "구조모델"), ("#BC8CFF", "피터맥점"), ("#39C5CF", "가격모델 밴드"),
+        ("#C2CCD6", "구조모델"), ("#BC8CFF", "피터맥점"), ("#39C5CF", "가격모델 밴드 — 변 = 50%·80% 경계"),
         ("#8B949E", "회색 띠 = 활성 문턱 미달(상태 안 붙음)"),
         # [609차] 색은 **모델**을 말하고 농도·선모양은 **스테이지**를 말한다.
         #   규칙을 안 적으면 옅은 선을 「흐린 구조모델」로 오독한다.
