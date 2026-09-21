@@ -132,6 +132,13 @@ class WeeklyOptionFlow:
         self.last_elapsed_ms: float = 0.0
         self.last_error: str = ""
         self._fail_streak = 0
+        # 성공 로그 — 매분 INFO 는 하루 390줄이라 과하고, DEBUG 만 쓰면
+        # DATA 로그에 DEBUG 가 기록되지 않아(실측 0건) **돌고 있는지 자체를 못 본다.**
+        # 그래서 하루 첫 성공 1회 + 이후 주기적으로만 INFO 를 남긴다.
+        # 계측 4원칙 ②의 취지 — "미측정"과 "정상"을 로그에서 구분할 수 있어야 한다.
+        self._last_info_ts: Optional[float] = None
+        self._info_every_sec: float = 1800.0     # 30분
+        self._logged_first_today: Optional[str] = None   # YYYY-MM-DD
 
     # ── COM ──────────────────────────────────────────────────────────────
     def _get_obj(self):
@@ -253,7 +260,24 @@ class WeeklyOptionFlow:
                 (" 외 %d건" % (len(errors) - 3)) if len(errors) > 3 else "",
             )
         elif ok:
-            logger.debug("[OptionFlow] stored=%d elapsed=%.0fms", stored, elapsed)
+            now_mono = time.time()
+            first_today = (self._logged_first_today != today)
+            due = (self._last_info_ts is None
+                   or (now_mono - self._last_info_ts) >= self._info_every_sec)
+            if first_today or due:
+                self._logged_first_today = today
+                self._last_info_ts = now_mono
+                # 무엇을 몇 개 담았는지까지 남긴다 — "일치"만 찍으면 범위를
+                # 오해한다(계측 4원칙 ⑤).
+                logger.info(
+                    "[OptionFlow] stored=%d rows elapsed=%.0fms "
+                    "상품=%d 주체=%d 최신봉=%s%s",
+                    stored, elapsed, len(self.products), len(self.investors),
+                    max((r[1] for r in rows), default="-"),
+                    " (오늘 첫 수집)" if first_today else "",
+                )
+            else:
+                logger.debug("[OptionFlow] stored=%d elapsed=%.0fms", stored, elapsed)
         return {
             "ok": ok, "stored": stored, "elapsed_ms": elapsed,
             "errors": errors, "fail_streak": self._fail_streak,
