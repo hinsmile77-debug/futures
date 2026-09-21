@@ -23,6 +23,7 @@ from ensure_cybos_login import ensure_cybos_login
 FUTURES_PT_VALUE = 250_000       # 1pt = 250,000원 (KOSPI200 옵션)
 OPTION_MULTIPLIER = 250_000      # KOSPI200 옵션 승수
 SPOT_SCALE = 1.0                 # GEX 스케일 (운영 정의 필요시 조정)
+GREEK_PCT = 100.0                # [612차] OptionMst Greeks 는 백분율 — 실수로 환산
 
 # OptionMst GetHeaderValue 인덱스 맵 (2026-05-13 검증 완료)
 HV_PRICE       = 93   # 현재가 ✅
@@ -30,8 +31,8 @@ HV_VOLUME      = 97   # 누적체결수량 ✅
 HV_OI          = 99   # 현재 미결제약정 ✅
 HV_OI_PREV     = 37   # 전일 미결제약정 ✅
 HV_OI_STATE    = 100  # OI 구분 (미검증, 0=전일확정/1=당일잠정/2=당일확정)
-HV_DELTA       = 109  # Delta ✅ (백분율, ÷100)
-HV_GAMMA       = 110  # Gamma ✅ (백분율, ÷100)
+HV_DELTA       = 109  # Delta ✅ — 백분율. `GREEK_PCT`로 나눠 쓴다(612차)
+HV_GAMMA       = 110  # Gamma ✅ — 백분율. `GREEK_PCT`로 나눠 쓴다(612차)
 HV_THETA       = 111  # Theta ✅
 HV_VEGA        = 112  # Vega (미검증)
 HV_RHO         = 113  # Rho ✅
@@ -166,8 +167,13 @@ def fetch_option_mst_snapshot(option_mst_obj, code: str) -> Dict[str, Any]:
         snapshot["oi"]         = _safe_int(option_mst_obj.GetHeaderValue(HV_OI))
         snapshot["oi_prev"]    = _safe_int(option_mst_obj.GetHeaderValue(HV_OI_PREV))
         snapshot["oi_state"]   = _safe_str(option_mst_obj.GetHeaderValue(HV_OI_STATE))
-        snapshot["delta"]      = _safe_float(option_mst_obj.GetHeaderValue(HV_DELTA))
-        snapshot["gamma"]      = _safe_float(option_mst_obj.GetHeaderValue(HV_GAMMA))
+        # [MW0601 612차] 백분율 → 실수. 종전에는 주석만 "(÷100)"이고 나누지 않아
+        # 이 스크립트의 GEX 도 프로덕션과 같이 100배였다.
+        # 근거: 이 스크립트가 남긴 `data/option_metrics.json`(2026-05-14) 자체가 증거다 —
+        #   delta 범위 −52.63~+59.43(= 0~100 축), ATM gamma 0.2100 vs BS 이론 0.002018.
+        # ⚠ 그 파일은 **정정 전 세대**다. 새로 돌리면 delta·gamma 가 1/100 로 나온다.
+        snapshot["delta"]      = _safe_float(option_mst_obj.GetHeaderValue(HV_DELTA)) / GREEK_PCT
+        snapshot["gamma"]      = _safe_float(option_mst_obj.GetHeaderValue(HV_GAMMA)) / GREEK_PCT
         snapshot["theta"]      = _safe_float(option_mst_obj.GetHeaderValue(HV_THETA))
         snapshot["vega"]       = _safe_float(option_mst_obj.GetHeaderValue(HV_VEGA))
         snapshot["rho"]        = _safe_float(option_mst_obj.GetHeaderValue(HV_RHO))

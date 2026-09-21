@@ -1626,9 +1626,30 @@ class AccountInfoPanel(QWidget):
 # 패널 2: 다이버전스 지수 + 포지션 매트릭스
 # ────────────────────────────────────────────────────────────
 class DivergencePanel(QWidget):
+    """
+    [MW0601 612차 후속5] 이 패널은 **두 경로**로 갱신된다.
+      · 분봉 파이프라인(`run_minute_pipeline`) — 매분, 단 **15:09 에 끝난다**
+      · 수급 QTimer(`_fetch_investor_data`) — 60초, 장중 내내
+    종전에는 앞의 것만 있어서 15:09 이후 화면이 그 순간 상태로 얼어붙었다.
+    그날 마지막 틱이 하필 실패 상태였으면 하루 종일 그 실패가 남는다.
+    """
+
+    # [MW0601 612차 후속3] `_DIV_NEUTRAL_BAND` 제거 — 「다이버전스」 카드가
+    # 사라져 쓰이지 않는다(사용자 「완전 제거」 결정). 612차가 39거래일 실측
+    # (|div| p25=1,059)으로 ±10 → ±1,000 으로 보정했던 값이며, 카드를 되살릴
+    # 일이 생기면 `dev_memory/DECISION_LOG.md` 2026-09-21 612차 후속 항목의
+    # 그 근거를 다시 쓸 것.
+
     def __init__(self):
         super().__init__()
         self._build()
+        # [612차 후속5] 신선도 칩 자가 갱신 — 데이터 push 와 **무관하게** 늙는다.
+        # 갱신이 끊겨도 칩이 계속 늙어야 「멈췄다」가 화면에 보인다.
+        # 10초면 초 단위 표기에 충분하고 비용은 라벨 하나 다시 그리기다.
+        self._age_timer = QTimer(self)
+        self._age_timer.setInterval(10_000)
+        self._age_timer.timeout.connect(self._render_age_chip)
+        self._age_timer.start()
 
     def _build(self):
         lay = QVBoxLayout(self)
@@ -1637,51 +1658,76 @@ class DivergencePanel(QWidget):
         self.panel_status_label = mk_label("", C['text2'], 8)
         self.option_status_label = mk_label("", C['text2'], 8)
 
-        lay.addWidget(mk_label("외인-개인 다이버전스 지수 (역발상 핵심 신호)", C['orange'], 9, True))
+        # ══════════════════════════════════════════════════════════════
+        # [MW0601 612차 후속3] 패널 재구성 — 사용자 지시 2026-09-21
+        #
+        #  ① 바이어스 미터 2행(개인/외인 방향 풋·콜) **삭제**
+        #  ② 「선물 투자자 수급」을 **맨 위로**
+        #  ③ 「투자자 포지션 매트릭스」를 **개인 옵션 6종 시초 대비 증감 시계열**로 교체
+        #
+        # 🔴 왜 매트릭스를 통째로 바꾸나 — 611차가 개인의 주무대를 잘못 보고
+        #    있었음을 실측으로 보였다. 종전 8칸은 전부 `CpSvrNew7221` 의
+        #    **금액 축 월물** 콜/풋인데, 개인의 옵션 거래는 **위클리에 집중**돼 있다
+        #    (계약수 기준 611차 20.4배, 2026-09-21 14:51 실측 월위클리 콜 +9,491 vs
+        #     먼스리 콜 −147 — 약 65배). 즉 종전 매트릭스는 개인 흐름을
+        #    **구조적으로 못 보는 자리**를 보고 있었다.
+        #
+        # ⚠ 함께 사라진 것(사용자 결정 「완전 제거」):
+        #    역발상 신호 · 다이버전스 · 콜·풋 합계 · 외인/개인 콜·풋 순매수 4칸.
+        #    수집과 피처(`foreign_retail_divergence` 등)는 **그대로 살아 있다** —
+        #    사라진 것은 화면 표시뿐이다.
+        # ══════════════════════════════════════════════════════════════
+
+        # ── ① 선물 투자자 수급 (맨 위) ─────────────────────────────────
+        #
+        # 🔴 [MW0601 612차] 섹션 제목이 "(계약수)"였는데 이 그리드에는 **축이 셋**
+        #    섞여 있다 — 계측 4원칙 ① 위반이었다. 단위는 **섹션이 아니라 카드마다** 박는다.
+        #    · 투자자 3칸 = 7221 열 30/31/32, 순매수 **금액**(백만원 → 억원 표시)
+        #    · 프로그램 2칸 = CpSvr8111 idx19·idx37, 순매수 체결**금액**(백만원)
+        #    · 미결제약정   = FutureCurOnly, **계약수**
+        _fut_hdr = QHBoxLayout()
+        _fut_hdr.addWidget(mk_label("선물 투자자 수급", C['cyan'], 9, True))
+        _fut_hdr.addStretch()
+        self.fut_age_lbl = mk_label("수급 ——", C['text2'], 8)
+        self.fut_age_lbl.setToolTip(
+            "마지막 수급 TR 수신 이후 경과.\n"
+            "180초를 넘으면 주황 — 화면 숫자가 그만큼 낡았다는 뜻이다.\n"
+            "(원천 실패 시 직전값이 유지되므로 값만 봐서는 구분되지 않는다)"
+        )
+        _fut_hdr.addWidget(self.fut_age_lbl)
+        lay.addLayout(_fut_hdr)
         lay.addWidget(self.panel_status_label)
-
-        # 바이어스 미터
-        for label, attr_prefix, lcol, rcol, ltext, rtext in [
-            ("개인 방향", "rt", C['green'], C['red'], "풋↑", "콜↑"),
-            ("외인 방향", "fi", C['red'],   C['green'], "풋↑", "콜↑"),
-        ]:
-            row = QHBoxLayout()
-            row.addWidget(mk_label(label, C['text2'], 9))
-            row.addWidget(mk_label(ltext, lcol, 9))
-            bar_l = mk_prog(lcol, 10)
-            bar_r = mk_prog(rcol, 10)
-            setattr(self, f"{attr_prefix}_put_bar", bar_l)
-            setattr(self, f"{attr_prefix}_call_bar", bar_r)
-            mid_frame = QFrame()
-            mid_lay = QHBoxLayout(mid_frame)
-            mid_lay.setContentsMargins(0, 0, 0, 0)
-            mid_lay.setSpacing(1)
-            mid_lay.addWidget(bar_l)
-            mid_lay.addWidget(bar_r)
-            row.addWidget(mid_frame, 3)
-            row.addWidget(mk_label(rtext, rcol, 9))
-            lay.addLayout(row)
-
-        lay.addWidget(mk_sep())
-
-        # 선물 투자자 수급 섹션 (Cybos Plus 네이티브 — 계약수/미결제)
-        lay.addWidget(mk_label("선물 투자자 수급 (계약수)", C['cyan'], 9, True))
         fut_grid = QGridLayout()
         fut_grid.setSpacing(2)
+        _TIP_FUT = (
+            "CpSysDib.CpSvrNew7221 선물 행(ri=2) 투자자별 순매수 **금액**.\n"
+            "원천 열 30/31/32(개인·외인·기관, 백만원)를 100으로 나눠 억원으로 쓴다.\n"
+            "⚠ 계약수에 가격을 곱한 환산값이 아니다 — 원천이 직접 주는 값이다.\n"
+            "검증: RAW 덤프 11개·5거래일·33개 비율에서 금액÷계약이 지수×250,000과\n"
+            "0.5% 이내 일치(정규 KOSPI200 승수. 우리 매매 미니 50,000 이 아니다).\n"
+            "매분 check_amount_consistency() 가 이 비율을 재대사한다(612차 후속2)."
+        )
+        _TIP_PROG = (
+            "Dscbo1.CpSvr8111 — 차익 idx19 / 비차익 idx37 = 순매수 체결'금액'.\n"
+            "단위 백만원 (명세 §4-3, HTS 8221 대조 2.7% 이내 일치).\n"
+            "⚠ 계약수가 아니다. 투자자별 분해도 없다(451차)."
+        )
+        _TIP_OI = "Dscbo1.FutureCurOnly 실시간 틱의 미결제약정 — 계약수."
         _fut_cards = [
-            ("외인 선물 순매수", "fut_fi",   C['blue']),
-            ("개인 선물 순매수", "fut_rt",   C['red']),
-            ("기관 선물 순매수", "fut_inst", C['purple']),
-            ("프로그램 차익",    "prog_arb",    C['green']),
-            ("프로그램 비차익",  "prog_nonarb", C['orange']),
-            ("미결제약정",       "open_int",    C['cyan']),
+            ("외인 선물 순매수 (억원)", "fut_fi",   C['blue'],   _TIP_FUT),
+            ("개인 선물 순매수 (억원)", "fut_rt",   C['red'],    _TIP_FUT),
+            ("기관 선물 순매수 (억원)", "fut_inst", C['purple'], _TIP_FUT),
+            ("프로그램 차익 (백만원)",   "prog_arb",    C['green'],  _TIP_PROG),
+            ("프로그램 비차익 (백만원)", "prog_nonarb", C['orange'], _TIP_PROG),
+            ("미결제약정 (계약)",       "open_int",    C['cyan'],   _TIP_OI),
         ]
-        for i, (title, attr, col) in enumerate(_fut_cards):
+        for i, (title, attr, col, tip) in enumerate(_fut_cards):
             ff = QFrame()
             ff.setStyleSheet(
                 f"QFrame{{background:{C['bg2']};border:1px solid {C['border']};"
                 f"border-radius:4px;}}"
             )
+            ff.setToolTip(tip)
             ffl = QVBoxLayout(ff)
             ffl.setContentsMargins(4, 2, 4, 2)
             ffl.setSpacing(0)
@@ -1694,43 +1740,27 @@ class DivergencePanel(QWidget):
 
         lay.addWidget(mk_sep())
 
-        # 포지션 카드 (2×4 그리드)
-        lay.addWidget(mk_label("투자자 포지션 매트릭스", C['blue'], 9, True))
-        pos_grid = QGridLayout()
-        pos_grid.setSpacing(2)
-        positions = [
-            ("개인 콜매수",   "rt_call",   C['red']),
-            ("개인 풋매수",   "rt_put",    C['green']),
-            ("개인 양매수",   "rt_strd",   C['text2']),
-            ("역발상 신호",   "contrarian",C['orange']),
-            ("외인 콜순매수", "fi_call",   C['green']),
-            ("외인 풋순매수", "fi_put",    C['red']),
-            ("외인 양매도",   "fi_strangle",C['text2']),
-            ("다이버전스",    "div_score", C['orange']),
-        ]
-        for i, (title, attr, col) in enumerate(positions):
-            f = QFrame()
-            f.setStyleSheet(
-                f"QFrame{{background:{C['bg2']};border:1px solid {C['border']};"
-                f"border-radius:4px;}}"
+        # ── ③ 투자자 포지션 매트릭스 → 개인 옵션 6종 증감 시계열 ─────────
+        try:
+            from dashboard.panels.option_flow_delta_chart import (
+                OptionFlowDeltaChart,
             )
-            fl = QVBoxLayout(f)
-            fl.setContentsMargins(4, 2, 4, 2)
-            fl.setSpacing(0)
-            t = mk_label(title, C['text2'], 8)
-            v = mk_val_label("——", col, 12)
-            fl.addWidget(t)
-            fl.addWidget(v)
-            setattr(self, f"pos_{attr}_val", v)
-            pos_grid.addWidget(f, i // 4, i % 4)
-        lay.addLayout(pos_grid)
+            self.option_flow_chart = OptionFlowDeltaChart()
+            lay.addWidget(self.option_flow_chart)
+        except Exception as _e:
+            # 위젯 로드 실패가 패널 전체를 못 만들게 하지 않는다.
+            logger.warning("[Dashboard] OptionFlowDeltaChart 로드 실패: %s", _e)
+            self.option_flow_chart = None
+            lay.addWidget(mk_label(
+                "개인 옵션 증감 차트 로드 실패 — 로그 확인", C['red'], 8))
 
         lay.addWidget(mk_sep())
-        # 옵션 구간별 거래량
-        lay.addWidget(mk_label("옵션 구간별 거래량 (ITM·ATM·OTM)", C['cyan'], 9, True))
+        # 옵션 투자자 순매수 비중 (거래량이 아니다 — 612차)
+        lay.addWidget(mk_label("옵션 투자자 순매수 비중 (ITM·ATM·OTM)", C['cyan'], 9, True))
         lay.addWidget(self.option_status_label)
         lay.addWidget(mk_label(
-            "※ ITM/OTM 투자자별 구간 데이터는 Cybos API가 행사가 단위로 제공하지 않아 수집 불가 "
+            "※ 값은 거래량이 아니라 투자자별 **순매수 절대값 비중**이다. "
+            "ITM/OTM은 CpSvrNew7221이 행사가 단위로 주지 않아 수집 불가 "
             "(전량 ATM으로 집계) — N/A 표시",
             C['text2'], 7,
         ))
@@ -1761,10 +1791,14 @@ class DivergencePanel(QWidget):
 
         # ── 옵션 체인 스냅샷 (OptionMst 5분 폴링) ─────────────────
         self._chain_refresh_ts = 0.0
-        self._chain_interval_sec = 300  # 5분
+        # [MW0601 612차] 종전에는 300 하드코딩이라 `OptionChainSnapshot(refresh_interval_min=)`
+        # 을 바꾸면 게이지가 조용히 거짓말을 했다. `set_chain_interval()`로 실제값을 받는다.
+        self._chain_interval_sec = 300  # 기본 5분 — 런타임에 실제 주기로 덮어쓴다
 
         hdr_row = QHBoxLayout()
-        hdr_row.addWidget(mk_label("옵션 체인 스냅샷  (OptionMst 5분 폴링)", C['green'], 9, True))
+        self.chain_hdr_lbl = mk_label(
+            "옵션 체인 스냅샷  (OptionMst 5분 폴링)", C['green'], 9, True)
+        hdr_row.addWidget(self.chain_hdr_lbl)
         hdr_row.addStretch()
         self.chain_time_lbl   = mk_label("갱신: ——", C['text2'], 8)
         self.chain_status_lbl = mk_label("● 미수집", C['text2'], 8)
@@ -1795,8 +1829,8 @@ class DivergencePanel(QWidget):
 
         # 1행: 체인 PCR | ATM PCR | GEX
         _row0 = [
-            ("체인 PCR",  "chain_pcr",  C['orange'], "풋/콜 OI"),
-            ("ATM PCR",   "atm_pcr",    C['blue'],   "ATM 행사가"),
+            ("근월 ATM±30pt PCR", "chain_pcr", C['orange'], "풋/콜 OI · 24종목"),
+            ("ATM PCR",   "atm_pcr",    C['blue'],   "최근접 행사가 1개"),
             ("GEX",       "gex_bn",     C['purple'], "딜러 감마"),
         ]
         # 2행: ATM 콜 OI | ATM 풋 OI | (빈칸)
@@ -1864,16 +1898,37 @@ class DivergencePanel(QWidget):
         self.option_status_label.setText(
             "" if option_supported else div.get("option_flow_reason", "Option flow unavailable")
         )
-        self.rt_put_bar.setValue(int(max(0, -div['rt_bias']) * 50))
-        self.rt_call_bar.setValue(int(max(0, div['rt_bias']) * 50))
-        self.fi_put_bar.setValue(int(max(0, -div['fi_bias']) * 50))
-        self.fi_call_bar.setValue(int(max(0, div['fi_bias']) * 50))
+        # [MW0601 612차 후속3] 바이어스 미터 2행 삭제 (사용자 지시).
+        # 612차가 ×50→×100 스케일과 포화 표기를 고쳤던 그 위젯이다. 지시에 따라
+        # 표시를 걷어냈고, `rt_bias`/`fi_bias` 계산은 `get_panel_data()` 에 그대로
+        # 남아 있다(다른 소비처가 생기면 바로 쓸 수 있게).
 
         # ── 선물 투자자 수급 갱신 ────────────────────────────────
-        def _fmt_contracts(v):
+        # [MW0601 612차] 포맷터를 축별로 쪼갠다. 출력 문자열은 같지만 **호출부에서
+        # 축이 보여야** 한다 — 612차 이전에는 금액 2칸도 `_fmt_contracts`가 찍었고,
+        # 그 이름이 "계약수" 섹션 제목과 맞물려 오독을 보증했다(계측 4원칙 ①).
+        def _fmt_signed(v):
             if v is None:
                 return "——"
             return f"{int(v):+,}" if v != 0 else "0"
+
+        _fmt_contracts = _fmt_signed     # 계약수 축 (FutureCurOnly OI)
+        _fmt_amount_mn = _fmt_signed     # 금액 축, 백만원 (8111 idx19·idx37)
+
+        # [MW0601 612차 후속2] 선물 투자자 수급은 **억원**으로 표시한다.
+        # 원천(7221 열 30/31/32)이 백만원으로 주므로 100 으로 나눈다.
+        # ⚠ `None` 과 0 을 구분한다 — 안 온 것을 0억으로 그리면 안 된다(계측 4원칙 ②).
+        def _fmt_eok(v_mn):
+            if v_mn is None:
+                return "——"
+            try:
+                eok = float(v_mn) / 100.0
+            except Exception:
+                return "——"
+            if eok == 0:
+                return "0"
+            # 1억 미만은 소수 1자리까지 — 프리장 초반 작은 값이 전부 "0"으로 뭉개진다
+            return f"{eok:+,.1f}" if abs(eok) < 100 else f"{eok:+,.0f}"
 
         fi_fut   = div.get("foreign_futures_net")
         rt_fut   = div.get("retail_futures_net")
@@ -1884,12 +1939,42 @@ class DivergencePanel(QWidget):
 
         fut_supported = div.get("futures_supported", False)
 
+        # ── 신선도 칩 ─────────────────────────────────────────────
+        # [MW0601 612차 후속5] 원점(절대시각)만 보관하고 **칩은 스스로 늙게** 한다.
+        # 종전에는 push 시점의 `age_sec` 를 화면에 박아뒀다 — 갱신이 끊기면 칩도
+        # 함께 얼어 「수급 15초 전」이 영원히 남았다. 낡음을 알리려던 표시가
+        # 낡음을 감춘 셈이다(2026-09-21 실측: 분봉 파이프라인이 15:09 에 정상
+        # 종료하면서 패널 전체가 그 순간 상태로 정지 — 그런데 화면은 15초 전).
+        _ep = div.get("last_fetch_epoch")
+        if _ep is not None:
+            self._fut_fetch_epoch = float(_ep)
+        elif div.get("age_sec") is not None:
+            import time as _t0
+            self._fut_fetch_epoch = _t0.time() - float(div.get("age_sec") or 0.0)
+        self._render_age_chip()
+
+        # [612차] 559차 `*_measured` 를 카드별로 반영 — "아직 안 왔다"(대기)와
+        # "실측 0계약"(0)을 구분한다. 플래그 자체가 없으면(키움 경로 등) 종전 동작.
+        def _measured(key):
+            v = div.get(key + "_measured")
+            return True if v is None else bool(v)
+
+        # [MW0601 612차 후속2] 선물 3칸은 **억원** 축이다(원천 백만원 ÷ 100).
+        # 계약수 키(`*_futures_net`)는 `div_score` 등 다른 소비처가 계속 쓰므로 남는다.
+        # 금액 미측정 시에는 계약수로 대체하지 **않는다** — 축이 섞이면 오독이 된다.
+        fi_amt   = div.get("foreign_futures_amt_mn")
+        rt_amt   = div.get("retail_futures_amt_mn")
+        inst_amt = div.get("institution_futures_amt_mn")
+
         if fut_supported or fi_fut or rt_fut or inst_fut:
-            self.fut_fut_fi_val.setText(_fmt_contracts(fi_fut))
-            self.fut_fut_rt_val.setText(_fmt_contracts(rt_fut))
-            self.fut_fut_inst_val.setText(_fmt_contracts(inst_fut))
-            fi_col  = C['green'] if (fi_fut or 0) > 0 else C['red'] if (fi_fut or 0) < 0 else C['text2']
-            rt_col  = C['green'] if (rt_fut or 0) > 0 else C['red'] if (rt_fut or 0) < 0 else C['text2']
+            self.fut_fut_fi_val.setText(
+                _fmt_eok(fi_amt) if _measured("foreign_futures_amt") else "대기")
+            self.fut_fut_rt_val.setText(
+                _fmt_eok(rt_amt) if _measured("retail_futures_amt") else "대기")
+            self.fut_fut_inst_val.setText(
+                _fmt_eok(inst_amt) if _measured("institution_futures_amt") else "대기")
+            fi_col  = C['green'] if (fi_amt or 0) > 0 else C['red'] if (fi_amt or 0) < 0 else C['text2']
+            rt_col  = C['green'] if (rt_amt or 0) > 0 else C['red'] if (rt_amt or 0) < 0 else C['text2']
             self.fut_fut_fi_val.setStyleSheet(
                 f"color:{fi_col};font-size:{S.f(13)}px;font-weight:bold;"
             )
@@ -1901,10 +1986,16 @@ class DivergencePanel(QWidget):
             self.fut_fut_rt_val.setText("대기")
             self.fut_fut_inst_val.setText("대기")
 
-        prog_supported = div.get("program_supported", False)
-        if prog_supported or arb is not None:
-            self.fut_prog_arb_val.setText(_fmt_contracts(arb))
-            self.fut_prog_nonarb_val.setText(_fmt_contracts(nonarb))
+        # 🔴 [MW0601 612차 후속5] 종전 조건 `prog_supported or arb is not None` 은
+        # **사실상 항상 참**이었다 — `_program_arb` 는 `__init__`/`reset_daily` 에서
+        # 0 으로 초기화되므로 `arb` 가 `None` 인 경우가 없다. 그래서 수집 실패 중에도
+        # `대기` 대신 **`0`** 이 떴다(2026-09-21 15:08 재기동 직후 실측).
+        # 「아직 못 받았다」와 「실측 0원」이 화면에서 같아지는 계측 4원칙 ② 위반이다.
+        # ⇒ `program_supported` 만 본다. 원천이 못 왔으면 0 을 그리지 않는다.
+        prog_supported = bool(div.get("program_supported", False))
+        if prog_supported:
+            self.fut_prog_arb_val.setText(_fmt_amount_mn(arb))
+            self.fut_prog_nonarb_val.setText(_fmt_amount_mn(nonarb))
         else:
             self.fut_prog_arb_val.setText("대기")
             self.fut_prog_nonarb_val.setText("대기")
@@ -1914,33 +2005,15 @@ class DivergencePanel(QWidget):
         else:
             self.fut_open_int_val.setText("——")
 
-        # ── 옵션 기반 포지션 매트릭스 ────────────────────────────
-        if option_supported:
-            self.pos_rt_call_val.setText(f"{div.get('rt_call',0):,}")
-            self.pos_rt_put_val.setText(f"{div.get('rt_put',0):,}")
-            self.pos_rt_strd_val.setText(f"{div.get('rt_strd',0):,}")
-            self.pos_fi_call_val.setText(f"{div.get('fi_call',0):+,}")
-            self.pos_fi_put_val.setText(f"{div.get('fi_put',0):+,}")
-            self.pos_fi_strangle_val.setText(f"{div.get('fi_strangle',0):+,}")
-        else:
-            self.pos_rt_call_val.setText("--")
-            self.pos_rt_put_val.setText("--")
-            self.pos_rt_strd_val.setText("--")
-            self.pos_fi_call_val.setText("--")
-            self.pos_fi_put_val.setText("--")
-            self.pos_fi_strangle_val.setText("--")
-        contrarian = div.get('contrarian','중립')
-        # 역발상: 개인 매수 우위 → 하락신호(빨간), 개인 매도 우위 → 상승신호(초록)
-        col = C['green'] if '매도' in contrarian else C['red'] if '매수' in contrarian else C['text2']
-        self.pos_contrarian_val.setText(contrarian)
-        self.pos_contrarian_val.setStyleSheet(f"color:{col};font-size:{S.f(13)}px;font-weight:bold;")
+        # [MW0601 612차 후속3] 「투자자 포지션 매트릭스」 8칸 전부 삭제 (사용자 지시).
+        #   · 옵션 콜/풋 순매수 4칸 + 콜·풋 합계 2칸
+        #     → 개인 옵션 6종 증감 시계열(`option_flow_chart`)로 대체.
+        #       종전 4칸은 7221 **월물 금액** 축이라 개인의 주무대(위클리)를 못 봤다.
+        #   · 역발상 신호 · 다이버전스 2칸 → **완전 제거**(사용자 결정).
+        # ⚠ 수집·피처는 살아 있다 — `get_panel_data()` 의 해당 키도 그대로다.
+        #   사라진 것은 화면 표시뿐이다.
 
-        score = div.get('div_score', 0)
-        col2  = C['green'] if score > 10 else C['red'] if score < -10 else C['text2']
-        self.pos_div_score_val.setText(f"{score:+.0f}")
-        self.pos_div_score_val.setStyleSheet(f"color:{col2};font-size:{S.f(14)}px;font-weight:bold;")
-
-        # 옵션 구간별 거래량 갱신
+        # 옵션 투자자 순매수 비중 갱신 (612차: "거래량" 아님)
         # zones = {"ITM": {"외인": pct, "개인": pct, "기관": pct}, "ATM": {...}, "OTM": {...}}
         zones = div.get("zones", {})
         for zone in ["ITM", "ATM", "OTM"]:
@@ -1954,7 +2027,7 @@ class DivergencePanel(QWidget):
                     b.setValue(0)
                     vl.setText("--")
                 elif zone in ("ITM", "OTM"):
-                    # Cybos CpSvrNew7212는 투자자별 콜/풋 순매수를 행사가 단위로
+                    # Cybos CpSvrNew7221은 투자자별 콜/풋 순매수를 행사가 단위로
                     # 세분화하지 않음 — 구조적으로 항상 0이라 "0%"로 표시하면
                     # 실측 데이터처럼 오인될 수 있어 N/A로 구분 표시.
                     b.setValue(0)
@@ -1966,6 +2039,50 @@ class DivergencePanel(QWidget):
 
         # freshness 게이지 매분 갱신
         self._tick_chain_freshness()
+
+    # [612차 후속5] 마지막 수급 수신 절대시각(epoch). None = 아직 한 번도 안 옴.
+    _fut_fetch_epoch = None
+
+    def _render_age_chip(self) -> None:
+        """신선도 칩을 **지금 시각 기준**으로 다시 그린다.
+
+        `update_data()` 뿐 아니라 패널 자체 타이머(10초)에서도 호출된다 —
+        갱신이 끊겨도 칩은 계속 늙어야 「멈췄다」가 화면에 보인다.
+        """
+        import time as _t
+        ep = self._fut_fetch_epoch
+        if ep is None:
+            self.fut_age_lbl.setText("수급 ——")
+            self.fut_age_lbl.setStyleSheet(
+                f"color:{C['text2']};font-size:{S.f(8)}px;")
+            return
+        age = max(0.0, _t.time() - ep)
+        stale = age > 180.0
+        if age < 60:
+            txt = "수급 %d초 전" % int(age)
+        else:
+            txt = "수급 %d분 %02d초 전" % (int(age // 60), int(age % 60))
+        # 10분을 넘으면 빨강 — 「그냥 좀 낡음」과 「멈춤」을 색으로 가른다.
+        col = C['red'] if age > 600 else (C['orange'] if stale else C['text2'])
+        self.fut_age_lbl.setText(txt)
+        self.fut_age_lbl.setStyleSheet(
+            f"color:{col};font-size:{S.f(8)}px;"
+            + ("font-weight:bold;" if stale else "")
+        )
+
+    def set_chain_interval(self, interval_sec: int) -> None:
+        """[MW0601 612차] 신선도 게이지 주기를 수집기 실제 설정과 맞춘다."""
+        try:
+            iv = int(interval_sec)
+        except Exception:
+            return
+        if iv <= 0 or iv == self._chain_interval_sec:
+            return
+        self._chain_interval_sec = iv
+        self.chain_fresh_bar.setRange(0, iv)
+        self.chain_hdr_lbl.setText(
+            "옵션 체인 스냅샷  (OptionMst %d분 폴링)" % max(1, round(iv / 60.0))
+        )
 
     def _tick_chain_freshness(self) -> None:
         import time as _time
@@ -15316,6 +15433,13 @@ class DashboardAdapter:
         self.dashboard.btn_kill  (QPushButton 참조)
     """
 
+    # [MW0601 612차] 다이버전스 패널 예외 스로틀 타임스탬프.
+    # `getattr(self, "_x", 기본값)`으로 런타임 상태를 읽지 않는다 —
+    # 계측 4원칙 ④ / tests/test_457_fallback_visibility.py.
+    _div_panel_err_ts = 0.0
+    # [612차 후속3] 개인 옵션 증감 차트 예외 스로틀 — 같은 이유로 클래스 속성.
+    _flow_chart_err_ts = 0.0
+
     def __init__(self):
         app = QApplication.instance() or QApplication(sys.argv)
         app.setStyle("Fusion")
@@ -15964,9 +16088,50 @@ class DashboardAdapter:
         """당일 진입 통계 갱신"""
         self._win.entry_panel.update_stats(trades, wins, pnl_pts)
 
+    def update_option_flow_delta(self, payload: dict) -> None:
+        """[MW0601 612차 후속3] 개인 옵션 6종 시초 대비 증감 시계열 주입.
+
+        `WeeklyOptionFlow.get_individual_session_delta()` 결과를 그대로 받는다.
+        조회는 수급 QTimer 경로가 하므로 **여기서 DB 를 열지 않는다.**
+        """
+        try:
+            ch = getattr(self._win.div_panel, "option_flow_chart", None)
+            if ch is not None:
+                ch.update_flow(payload)
+        except Exception as exc:
+            import time as _t
+            _now = _t.time()
+            if _now - self._flow_chart_err_ts >= 300.0:
+                self._flow_chart_err_ts = _now
+                logger.warning(
+                    "[Dashboard] 개인 옵션 증감 차트 갱신 예외 (5분 스로틀): %s", exc)
+
     def update_divergence(self, div_data: dict):
-        """다이버전스 패널 업데이트"""
-        self._win.div_panel.update_data(div_data)
+        """다이버전스 패널 업데이트.
+
+        [MW0601 612차] 예외 안전망. 이 호출은 `main.run_minute_pipeline()` 안에서
+        try 없이 이뤄지므로, 표시 계층의 예외 하나가 **매분 파이프라인 전체**를
+        끊는다(이웃한 `update_option_chain`·`update_rv_iv_spread`는 이미 감싸져
+        있는데 여기만 비어 있었다). 다만 조용히 삼키지는 않는다 — 5분 스로틀
+        WARNING 으로 남긴다(계측 4원칙 ④).
+        """
+        try:
+            self._win.div_panel.update_data(div_data)
+        except Exception as exc:
+            import time as _t
+            _now = _t.time()
+            if _now - self._div_panel_err_ts >= 300.0:
+                self._div_panel_err_ts = _now
+                logger.warning(
+                    "[Dashboard] 다이버전스 패널 갱신 예외 (5분 스로틀): %s", exc,
+                )
+
+    def set_option_chain_interval(self, interval_sec: int) -> None:
+        """[MW0601 612차] 신선도 게이지 주기 주입 — 기동 시 1회."""
+        try:
+            self._win.div_panel.set_chain_interval(interval_sec)
+        except Exception:
+            pass
 
     def update_option_chain(self, chain_feats: dict) -> None:
         """옵션 체인 스냅샷 패널 업데이트"""
@@ -15983,17 +16148,73 @@ class DashboardAdapter:
         except Exception:
             pass
 
-    # ±1B 이내를 플립 경계(GEX 중립선 근접)로 판정
-    _GEX_FLIP_THRESHOLD = 1.0
+    # ── [MW0601 612차] 감마플립 경계 — 당일 분포 적응형 ────────────────────
+    #
+    # 🔴 고정 B값으로는 못 잰다. GEX 는 만기 잔존일에 따라 **구조적으로** 스케일이
+    #    변한다 — 실측(39거래일 n=1,445, ÷100 정정 후): 2026-09-10 월물 만기일 37B
+    #    vs 09-15 0.0015B, **25,000배**. p10=0.23 · p50=1.15 · p90=13.3 · max 38.2B.
+    #    종전 ±1.0B 를 정정된 스케일에 그대로 두면 **47.3%가 「감마플립」**이 된다.
+    #    539차 `ATR_MIN_ENTRY`(절대 pt 고정 임계인데 ATR 이 지수 수준에 비례)와
+    #    같은 함정이라, 절대값이 아니라 **그날 자신의 분포**로 판정한다.
+    #
+    # ⚠ 표시 전용이다 — 진입·청산 어디에도 쓰이지 않는다.
+    # 🔴 **분위수(p25) 그 자체를 쓰면 안 된다** — 구현 중 실측으로 확인했다.
+    #    p25 는 정의상 **매일 25%를 플립으로 만든다.** 33거래일 검증에서 일별 플립
+    #    비율이 25.5~32.4% 로 고정됐고, 09-10 월물 만기일(중앙값 25.7B)에는
+    #    **19.0B 를 「중립선 근접」이라 불렀다.** 분포의 하위 25%와 "0 에 가깝다"는
+    #    전혀 다른 말이다.
+    # ⇒ 같은 「당일 분포 적응형」이되 **중앙값 대비 비율**로 잰다. 그러면 "그날
+    #    치고도 유난히 작다"만 걸린다. 같은 33거래일 실측:
+    #      · 평탄한 날 23일 → 플립 **0%** (09-10 만기일·09-21 포함)
+    #      · GEX 가 실제로 0 으로 붕괴한 날만 발화 —
+    #        08-19 45.9% · 08-31 20.9% · 09-02 20.0% · 09-15 17.1% · 09-16 16.7%
+    #      · 전체 1,445 표본 중 약 4.7%
+    _GEX_FLIP_MEDIAN_RATIO = 0.25   # |GEX| ≤ 0.25 × 그날 중앙값 → 중립선 근접
+    _GEX_FLIP_MIN_SAMPLES  = 5      # 이 미만이면 중앙값이 불안정 → 부트스트랩
+    _GEX_FLIP_BOOTSTRAP_BN = 0.25   # 표본 부족 시 폴백 ≈ 0.25 × 39거래일 중앙값(1.15B)
+    _GEX_SAMPLE_CAP        = 200    # 하루 최대 표본(5분 주기면 78개 — 여유)
+
+    # `getattr(self, "_x", 기본값)` 금지(계측 4원칙 ④) — 클래스 속성으로 명시 초기화
+    _gex_day = None            # 표본을 모으고 있는 거래일 (YYYY-MM-DD)
+    _gex_samples = ()          # 그날 |GEX| 표본 (tuple, 인스턴스에서 list 로 교체)
+
+    def _gex_flip_threshold(self, gex_bn: float) -> tuple:
+        """오늘 |GEX| 분포에서 플립 경계를 구한다. (임계, 표본수, 폴백여부) 반환."""
+        import datetime as _d
+        today = _d.date.today().isoformat()
+        if self._gex_day != today:
+            # 날짜가 바뀌면 스스로 리셋한다 — 별도 일일 훅에 의존하지 않는다.
+            self._gex_day = today
+            self._gex_samples = []
+        samples = self._gex_samples
+        if not isinstance(samples, list):        # 클래스 기본값(tuple) 첫 교체
+            samples = []
+            self._gex_samples = samples
+        samples.append(abs(gex_bn))
+        if len(samples) > self._GEX_SAMPLE_CAP:
+            del samples[0]
+        n = len(samples)
+        if n < self._GEX_FLIP_MIN_SAMPLES:
+            return self._GEX_FLIP_BOOTSTRAP_BN, n, True
+        ordered = sorted(samples)
+        mid = n // 2
+        median = ordered[mid] if n % 2 else 0.5 * (ordered[mid - 1] + ordered[mid])
+        return self._GEX_FLIP_MEDIAN_RATIO * median, n, False
 
     def _update_gamma_badge(self, chain_feats: dict) -> None:
         """헤더 감마 배지를 GEX 부호/크기로 갱신.
 
         상태 판정:
-          opt_chain_available == 0  → 미수집, 이전 상태 유지
-          |gex_bn| < ±1B            → 감마플립 (GEX 중립선 근처, 방향 전환 주의)
-          gex_sign < 0              → 감마스퀴즈 (딜러 숏감마, 추세 가속)
-          gex_sign > 0              → 중립 (딜러 감마롱, 변동성 억제)
+          opt_chain_available == 0        → 미수집, 이전 상태 유지
+          |gex_bn| ≤ 0.25 × 그날 중앙값   → 감마플립 (중립선 근접, 방향 전환 주의)
+          gex_sign < 0                    → 감마스퀴즈 (딜러 숏감마, 추세 가속)
+          gex_sign > 0                    → 중립 (딜러 감마롱, 변동성 억제)
+
+        [612차] 절대 ±1.0B → **당일 중앙값 대비 비율**. 위 `_GEX_FLIP_*` 주석 참조
+        (분위수 p25 를 그대로 쓰면 매일 25%가 강제로 플립이 된다 — 실측으로 기각).
+        표본 5개 미만이면 부트스트랩 임계를 쓰며, **그 사실을 툴팁에 남긴다**
+        (계측 4원칙 ④ — 폴백이 쓰였으면 그 사실을 남겨라). 재기동하면 표본이
+        비므로 장중에도 부트스트랩 구간이 다시 생긴다.
         """
         lbl = getattr(self._win, "lbl_gamma", None)
         if lbl is None:
@@ -16003,8 +16224,9 @@ class DashboardAdapter:
 
         gex_bn   = float(chain_feats.get("opt_gex_bn",   0) or 0)
         gex_sign = float(chain_feats.get("opt_gex_sign", 0) or 0)
+        thr, n, boot = self._gex_flip_threshold(gex_bn)
 
-        if abs(gex_bn) < self._GEX_FLIP_THRESHOLD:
+        if abs(gex_bn) <= thr:
             state, bg, fg = "감마플립",   C["yellow"], "#000"
         elif gex_sign < 0:
             state, bg, fg = "감마스퀴즈", C["orange"], "#fff"
@@ -16012,6 +16234,15 @@ class DashboardAdapter:
             state, bg, fg = "중립",       C["bg3"],    C["text2"]
 
         lbl.setText(state)
+        lbl.setToolTip(
+            "GEX %+.3fB | 플립 경계 %.3fB (%s, 오늘 표본 %d개)\n"
+            "경계 = 그날 |GEX| 중앙값의 %d%% — GEX 는 만기 잔존일에 따라\n"
+            "스케일이 수천 배 변해 고정 B값으로는 잴 수 없다(612차).\n"
+            "표시 전용 — 진입·청산 판단에는 쓰이지 않는다."
+            % (gex_bn, thr,
+               "부트스트랩 폴백" if boot else "당일 중앙값 기준",
+               n, int(self._GEX_FLIP_MEDIAN_RATIO * 100))
+        )
         lbl.setStyleSheet(
             f"background:{bg};color:{fg};border-radius:{S.p(3)}px;"
             f"font-size:{S.f(11)}px;font-weight:bold;padding:1px 6px;"
