@@ -89,8 +89,28 @@ class SessionReplayService:
             if not payload:
                 logger.info("[Replay] %s 원천 없음 — 패널을 건드리지 않는다", date)
                 return
-            from PyQt5.QtCore import QTimer
-            QTimer.singleShot(0, lambda: self._apply(system, mode, date, payload))
+            # 🔴 **넘기기 직전에 남긴다.** 614차 초판은 여기서 주입이 조용히
+            #    사라졌는데 로그가 한 줄도 없어 "돌긴 했나"조차 알 수 없었다.
+            #    이 줄이 있으면 다음에 같은 일이 나도 **어디까지 갔는지** 보인다
+            #    (계측 4원칙 ④ — 폴백·실패가 쓰였으면 그 사실을 남겨라).
+            logger.info("[Replay] %s %s — %d패널 수집, 메인 스레드로 넘긴다 [%s]",
+                        mode, date, len(payload), " ".join(sorted(payload)))
+            # 🔴 **여기는 워커 스레드다 — `QTimer.singleShot` 을 쓰면 안 된다.**
+            #
+            # 타이머는 호출한 스레드에 붙는데 이 스레드에는 Qt 이벤트 루프가 없어
+            # **한 번도 발화하지 않는다.** 예외도 로그도 없이 조용히 사라진다.
+            #
+            # 614차 초판이 정확히 이걸로 죽었다 — 2026-09-21 16:41 재기동에서
+            # `[Replay]` 로그가 **한 줄도** 남지 않았고 화면은 10행 전부 「미수집」
+            # 이었다. 504차 후속이 `_restore_panels_worker` 에서 **같은 함수·같은
+            # 유형**을 이미 겪고 고쳐뒀는데(그때는 기동 시 4패널이 복원된 적이
+            # 없었다는 게 전 기간 로그 전수 확인으로 드러났다) 그 교훈을 놓쳤다.
+            #
+            # ⇒ 304차 후속이 만들고 490차 F-L 이 helper 로 감싼 통로를 그대로 쓴다.
+            #   `_apply` 가 메인 스레드에서 돌기 시작하면 그 안의 단계별
+            #   `singleShot` 은 정상 동작한다.
+            system._dashboard_call(
+                lambda: self._apply(system, mode, date, payload))
         except Exception as exc:                                # noqa: BLE001
             logger.warning("[Replay] 수집 실패(무시): %s", exc, exc_info=True)
 
