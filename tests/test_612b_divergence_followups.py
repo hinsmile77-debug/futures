@@ -156,13 +156,22 @@ def test_9_panel_data_carries_freshness_and_measured():
 
 
 def test_10_panel_renders_age_and_waits_on_unmeasured():
+    """🔴 [613차 갱신] 칩의 **자리**가 바뀌었다(카드 섹션 → 차트 헤더).
+
+    613차가 「선물 투자자 수급」 6카드를 시계열로 옮기면서 그 섹션이 사라졌다.
+    칩만 남기면 무엇의 나이인지 알 수 없어 차트 헤더로 이사했다 —
+    **계산·주기·색 기준은 그대로다.**
+
+    `*_measured` 소비처도 함께 이동했다. 카드가 없으니 "대기"를 그릴 곳이
+    없고, 대신 **원천 보존**(`get_futures_raw_fields`)이 미측정 키를 아예
+    만들지 않는 것으로 같은 구분을 지킨다
+    (`tests/test_613_futures_flow_series.py::test_2`).
+    """
     src = _src(_DASH)
-    assert "fut_age_lbl" in src, "신선도 칩이 없다 — 멈춘 값이 살아 있는 값으로 보인다"
+    assert "set_age_text(" in src, "신선도 칩이 없다 — 멈춘 값이 살아 있는 값으로 보인다"
     assert 'div.get("age_sec")' in src
-    assert 'div.get(key + "_measured")' in src, (
-        "559차 measured 플래그가 패널에 배선되지 않았다 — "
-        "프리장 미수신과 실측 0계약이 구분되지 않는다"
-    )
+    assert "_fut_fetch_epoch" in src, (
+        "612차 후속5 의 절대시각 원점이 사라졌다 — 칩이 함께 얼어붙는다")
 
 
 # ── P2: 죽은 임계 3종 ─────────────────────────────────────────────────────
@@ -406,14 +415,24 @@ def test_27_amount_axis_has_its_own_measured_flag():
 
 
 def test_28_panel_cards_show_eok_not_contracts():
+    """🔴 [613차 갱신] 이 테스트가 고정하던 표시가 **사라졌다.**
+
+    612차 후속2 는 선물 3칸을 억원 축으로 그리게 했다. 613차 지시로 그 카드
+    자체가 시계열로 바뀌었고, 사용자 결정에 따라 남은 「외인 선물 순매수」 행은
+    **계약 축**이다(백필이 계약수만 가능하고 옵션 6행·미결제와 축이 맞는다).
+    ⇒ 억원 포맷터(`_fmt_eok`)의 소비처가 없어 함께 사라졌다. 회귀가 아니다.
+
+    ⚠ **원천의 금액 축은 그대로 살아 있다** — `foreign_futures_amt_mn` 등은
+      수집·대사(`check_amount_consistency`)·원천 보존에 계속 쓰인다. 억원으로
+      되돌릴 일이 생기면 그 값을 그대로 쓰면 된다.
+    """
     src = _src(_DASH)
-    for t in ("외인 선물 순매수 (억원)", "개인 선물 순매수 (억원)",
-              "기관 선물 순매수 (억원)"):
-        assert t in src, "카드 제목이 억원 축이 아니다: %s" % t
-    assert "def _fmt_eok" in src
-    assert '_fmt_eok(fi_amt) if _measured("foreign_futures_amt")' in src, (
-        "금액 미측정 시 계약수로 대체하면 축이 섞인다"
-    )
+    assert "외인 선물 순매수 (억원)" not in src, (
+        "613차가 걷어낸 카드가 되살아났다 — 그렇다면 이 테스트를 다시 쓸 것")
+    inv = _src(os.path.join(_ROOT, "collection", "cybos", "investor_data.py"))
+    assert '"foreign_futures_amt_mn"' in inv, "원천의 금액 축까지 지워졌다"
+    assert "def check_amount_consistency" in inv, (
+        "금액 축 대사(계측 4원칙 ⑤)가 사라졌다")
     # [612차 후속3] 다이버전스 카드는 제거됐다 — 축 혼동 대상 자체가 사라졌다.
     assert "다이버전스 (계약)" not in src
 

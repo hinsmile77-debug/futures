@@ -49,38 +49,55 @@ def test_1_futures_section_title_does_not_claim_contracts_for_mixed_grid():
 
 
 def test_2_program_cards_carry_amount_unit_in_title():
-    """프로그램 차익·비차익 카드 제목에 금액 단위가 박혀 있어야 한다."""
-    src = _src(_DASH)
-    for title in ("프로그램 차익 (백만원)", "프로그램 비차익 (백만원)"):
-        assert title in src, f"카드 제목에 단위가 없다: {title!r}"
+    """🔴 [613차 갱신] 카드가 **시계열 행**이 됐다 — 단위 표기 의무는 그대로다.
+
+    612차의 요점은 "축이 섞인 그리드에서 단위는 섹션이 아니라 **칸마다** 박는다"
+    였다(계측 4원칙 ①). 613차가 카드를 차트 행으로 옮겼으므로, 이제 그 의무는
+    **행 라벨**이 진다 — `_paint()` 가 라벨 아래에 `(계약)`/`(백만원)`을 그린다.
+    """
+    from collection.cybos.futures_flow_series import DASHBOARD_PRODUCTS
+
+    units = dict((k, u) for k, _lab, u in DASHBOARD_PRODUCTS)
+    assert units["prog_arb"] == "백만원" and units["prog_nonarb"] == "백만원"
+    chart = _src(os.path.join(_ROOT, "dashboard", "panels",
+                              "option_flow_delta_chart.py"))
+    assert '"(%s)" % unit' in chart, "행 라벨에 단위가 그려지지 않는다"
 
 
 def test_3_every_card_title_carries_its_unit():
-    """모든 카드 제목에 단위가 박혀 있어야 한다 — 이 그리드는 축이 섞여 있다.
+    """🔴 [613차 갱신] 모든 **행**이 자기 단위를 갖는다.
 
-    ⚠ 선물 3칸은 612차 후속2 에서 **계약 → 억원**으로 바뀌었다
-      (원천 7221 열 30/31/32 가 금액을 직접 준다). 미결제약정만 계약 축으로 남는다.
+    612차 후속2 는 선물 3칸을 억원으로 바꿨는데, 613차 사용자 결정으로 남은
+    「외인 선물 순매수」 행은 **계약 축**이다(백필이 계약수만 가능하고, 옵션
+    6행·미결제와 축이 맞는다). 개인·기관 2칸은 표시에서 빠졌다.
+    ⇒ 단위가 섞인 화면이라는 사실은 그대로이므로 **행마다** 단위를 요구한다.
     """
-    src = _src(_DASH)
-    for title in (
-        "외인 선물 순매수 (억원)",
-        "개인 선물 순매수 (억원)",
-        "기관 선물 순매수 (억원)",
-        "미결제약정 (계약)",
-    ):
-        assert title in src, f"카드 제목에 단위가 없다: {title!r}"
+    from collection.cybos.futures_flow_series import DASHBOARD_PRODUCTS
+
+    units = dict((k, u) for k, _lab, u in DASHBOARD_PRODUCTS)
+    assert units == {"open_int": "계약", "fut_fi": "계약",
+                     "prog_arb": "백만원", "prog_nonarb": "백만원"}
+    for _k, _lab, u in DASHBOARD_PRODUCTS:
+        assert u, "단위 없는 행이 있다: %s" % _lab
 
 
 def test_4_program_values_use_amount_formatter_not_contract_formatter():
-    """호출부에서도 축이 보여야 한다 — 금액 칸을 `_fmt_contracts`로 찍지 말 것."""
+    """🔴 [613차 갱신] 축별 포맷터의 소비처가 사라졌다 — 카드가 없다.
+
+    612차는 금액 칸을 `_fmt_contracts` 로 찍던 것을 `_fmt_amount_mn` 으로 갈라
+    **호출부에서 축이 보이게** 했다. 613차는 그 칸들을 시계열로 옮겼고, 값은
+    provider 가 단위와 **함께** 실어 보낸다(`unit` 키) — 포맷터 이름 대신
+    데이터가 축을 들고 다니는 구조라 오히려 강해졌다.
+
+    회귀 방지: 걷어낸 카드가 되살아나면 이 단언이 깨져 이 테스트를 다시 쓰게 된다.
+    """
     src = _src(_DASH)
     for attr in ("fut_prog_arb_val", "fut_prog_nonarb_val"):
-        m = re.search(re.escape(attr) + r"\.setText\((_fmt_[a-z_]+)\(", src)
-        assert m, f"{attr}.setText(_fmt_*(...)) 호출을 찾지 못했다"
-        assert m.group(1) == "_fmt_amount_mn", (
-            "%s 가 %s 로 찍힌다 — 금액 축이므로 `_fmt_amount_mn` 이어야 한다"
-            % (attr, m.group(1))
-        )
+        assert attr not in src, "613차가 걷어낸 카드가 되살아났다: %s" % attr
+    from collection.cybos.futures_flow_series import get_futures_session_delta
+    import inspect
+    body = inspect.getsource(get_futures_session_delta)
+    assert "_pack(" in body, "payload 조립 경로가 사라졌다"
 
 
 def test_5_removed_option_matrix_leaves_no_orphan_widgets():

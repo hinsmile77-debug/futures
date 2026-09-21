@@ -388,6 +388,10 @@ class WeeklyOptionFlow:
             last_times.append(last_t)
             out["products"][key] = {
                 "label":         labels[key],
+                # [613차] 단위를 payload 에 싣는다 — 같은 차트에 선물 수급
+                # 4행(계약·백만원)이 합류해 **화면의 축이 섞였다.** 단위는
+                # 섹션이 아니라 행마다 박혀야 한다(계측 4원칙 ①).
+                "unit":          "계약",
                 "baseline":      base_v,
                 "baseline_time": base_t,
                 "value":         last_v,
