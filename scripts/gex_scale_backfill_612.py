@@ -63,7 +63,10 @@ CHUNK = 2000
 
 # 이 시각 이후에 쓰인 행은 이미 정정된 코드의 산물이므로 건드리지 않는다.
 # (612차 배포 시각을 여기 박는다 — 배포 후 첫 실행 전에 실제 값으로 갱신할 것)
-FIX_DEPLOYED_AT = "2026-09-21 15:35:00"
+# 실측으로 특정한 정정 시점 — 첫 «정정된» 워커 완료가 14:31:18 이었다
+# (GEX 291.32B → 3.19B, 14:25:55 재기동이 ÷100 코드를 물고 온 뒤 첫 실행).
+# 그 분봉(14:31)은 아직 직전 캐시값을 실었을 수 있어 **다음 분**을 컷오프로 둔다.
+FIX_DEPLOYED_AT = "2026-09-21 14:32:00"
 
 
 def _tables(con):
@@ -152,17 +155,18 @@ def mark_discontinuity(n_raw, n_hz):
         "학습 피처셋에 미포함이라 train/serve skew 없음. "
         "⚠ 2026-09-21 이전 opt_gex_bn 시계열과 직접 비교 금지." % (n_raw, n_hz)
     )
+    # ⚠ 실제 스키마는 (version, event_type, event_at, message, note) 다.
+    #   처음엔 `ts/detail` 로 짐작해 썼다가 `--apply` 에서 마커만 실패했다
+    #   (정정 자체는 성공). **스키마를 짐작하지 말 것** — 461차·501차 선례를
+    #   `select sql from sqlite_master` 로 먼저 확인한다.
     try:
         con = sqlite3.connect(REG_DB)
-        con.execute("""
-            CREATE TABLE IF NOT EXISTS strategy_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ts TEXT, event_type TEXT, detail TEXT
-            )""")
         cur = con.execute(
-            "INSERT INTO strategy_events(ts, event_type, detail) VALUES (?,?,?)",
-            (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-             "METRIC_REDEFINITION", note),
+            "INSERT INTO strategy_events(version, event_type, event_at, message, note) "
+            "VALUES (?,?,?,?,?)",
+            (None, "METRIC_REDEFINITION",
+             datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+             note[:400], "근거: dev_memory/DECISION_LOG.md 2026-09-21(612차 후속)"),
         )
         con.commit()
         eid = cur.lastrowid
