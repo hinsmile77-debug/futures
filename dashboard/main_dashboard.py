@@ -9395,6 +9395,9 @@ class MinuteChartCanvas(QWidget):
         #   paintEvent 시작에서 비우고 모든 칩이 같은 목록을 본다.
         self._chip_rects = []
         self._pre_levels = None
+        # [609차] 그날 스테이지 전부(오래된 것 먼저). 빈 리스트는 「없음」이고
+        #   `_pre_levels is None` 은 여전히 「미조회」다 — 둘을 가른다.
+        self._pre_stages = []
         # 레이어 토글. 기본은 **전부 꺼짐** — 화면은 빼는 것도 설계다(원칙 6).
         # 거래 스팬은 **기본 켜짐** — 567차 이전부터 그리던 것이라 끄면 퇴행이다.
         self._ov = {"struct": False, "price": False, "trade_mireuk": True,
@@ -10185,12 +10188,38 @@ class MinuteChartCanvas(QWidget):
     PRICE_MODEL_COLOR = "#39C5CF"
     STRUCT_MODEL_COLOR = "#C2CCD6"
 
+    # ── [MW0601 609차] 08:50 1차와 09:30 2차를 **함께** 그린다 ──────────────
+    #
+    # 🔴 두 스테이지는 **교체 관계가 아니다.** 종전에는 조회가
+    #   `ORDER BY computed_at DESC LIMIT 1` 이라 09:30 이 올라오는 순간 08:50 이
+    #   화면에서 지워졌다 — 그날 아침에 무엇을 보고 매매했는지가 사라진다.
+    #   DB 에는 두 행이 처음부터 다 있었다(실측 2026-09-21: 09-15~09-21 매일 2행).
+    #
+    # 가름은 **색상(모델) × 농도·선모양(스테이지)** 두 축이다. 색은 모델 정체성이라
+    # 건드리지 않는다 — 가격모델은 청록, 구조모델은 회색 그대로다
+    # (584차: 「회색은 구조모델 전용」). 스테이지는 농도와 선모양으로만 가른다.
+    PRE_STAGE_DIM = 0.45          # 이전 스테이지 농도(최신 대비)
+    PRE_STAGE_BAND_DIM = 0.45     # 가격모델 띠는 면이라 더 조심 — 같은 비율로 낮춘다
+
+    def _iter_pre_stages(self):
+        """그날 장전 레벨을 **산출 순서대로**(오래된 것 먼저) 돌려준다.
+
+        ⚠ `_pre_stages` 가 비면 `_pre_levels` 한 건으로 떨어진다. 단건만 주입하는
+          경로(테스트·구버전 호출)가 그대로 돌게 하려는 폴백이며, **없음을 0으로
+          위장하지 않는다** — 없으면 빈 리스트다(계측 4원칙 ②).
+        """
+        if self._pre_stages:
+            return list(self._pre_stages)
+        return [self._pre_levels] if self._pre_levels else []
+
     def _draw_price_model(self, painter: QPainter, plot: QRectF, lo: float, hi: float):
         """가격모델 — 고·저 점추정과 50%/80% 구간. 면이라 **가장 아래**에 깐다."""
-        if not self._ov.get("price") or not self._pre_levels:
+        if not self._ov.get("price"):
+            return
+        _stages = self._iter_pre_stages()
+        if not _stages:
             return
         try:
-            L = self._pre_levels
             base = QColor(self.PRICE_MODEL_COLOR)
             painter.save()
         except Exception as _e:
@@ -10200,33 +10229,44 @@ class MinuteChartCanvas(QWidget):
         #   건너뛰면 painter 상태가 남아 **이후 레이어 전부가 오염된다**
         #   (실측: QPainter::end 가 "ended with 2 saved states" 경고를 냈다).
         try:
-            painter.setPen(Qt.NoPen)
-            for _k, _a in (("80", 14), ("50", 26)):
-                for _side in ("high", "low"):
-                    _a0 = L.get("%s%s_lo" % (_side, _k))
-                    _a1 = L.get("%s%s_hi" % (_side, _k))
-                    if _a0 is None or _a1 is None:
+            # 오래된 스테이지부터 — **최신이 위에 얹힌다.** 순서를 뒤집으면 08:50 이
+            #   09:30 을 덮어 「최신이 안 보인다」가 된다.
+            for _i, L in enumerate(_stages):
+                _latest = (_i == len(_stages) - 1)
+                _dim = 1.0 if _latest else self.PRE_STAGE_DIM
+                _bdim = 1.0 if _latest else self.PRE_STAGE_BAND_DIM
+                _sg = str(L.get("stage") or "")
+                painter.setPen(Qt.NoPen)
+                for _k, _a in (("80", 14), ("50", 26)):
+                    for _side in ("high", "low"):
+                        _a0 = L.get("%s%s_lo" % (_side, _k))
+                        _a1 = L.get("%s%s_hi" % (_side, _k))
+                        if _a0 is None or _a1 is None:
+                            continue
+                        y0 = self._price_to_y(max(_a0, _a1), plot, lo, hi)
+                        y1 = self._price_to_y(min(_a0, _a1), plot, lo, hi)
+                        col = QColor(base); col.setAlpha(max(1, int(_a * _bdim)))
+                        painter.setBrush(col)
+                        painter.drawRect(QRectF(plot.left(), y0, plot.width(),
+                                                max(1.0, y1 - y0)))
+                # 점추정 — 최신은 실선, 이전은 점선. 색은 같다(모델 정체성).
+                painter.setBrush(Qt.NoBrush)
+                for _key, _tag in (("dist_high", "가격 고"), ("dist_low", "가격 저")):
+                    v = L.get(_key)
+                    if v is None:
                         continue
-                    y0 = self._price_to_y(max(_a0, _a1), plot, lo, hi)
-                    y1 = self._price_to_y(min(_a0, _a1), plot, lo, hi)
-                    col = QColor(base); col.setAlpha(_a)
-                    painter.setBrush(col)
-                    painter.drawRect(QRectF(plot.left(), y0, plot.width(), max(1.0, y1 - y0)))
-            # 점추정 — 실선 1px + 우측 값
-            painter.setBrush(Qt.NoBrush)
-            for _key, _tag in (("dist_high", "가격 고"), ("dist_low", "가격 저")):
-                v = L.get(_key)
-                if v is None:
-                    continue
-                if self._is_off_axis(v):
-                    continue
-                y = self._price_to_y(v, plot, lo, hi)
-                _pen = QPen(base); _pen.setWidth(1)
-                painter.setPen(_pen)
-                painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
-                painter.setFont(QFont("Consolas", 8))
-                painter.drawText(QPointF(plot.right() - S.p(96), y - S.p(3)),
-                                 "%s %.2f" % (_tag, v))
+                    if self._is_off_axis(v):
+                        continue
+                    y = self._price_to_y(v, plot, lo, hi)
+                    _lc = QColor(base); _lc.setAlpha(int(255 * _dim))
+                    _pen = QPen(_lc); _pen.setWidth(1)
+                    if not _latest:
+                        _pen.setStyle(Qt.DotLine)
+                    painter.setPen(_pen)
+                    painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
+                    painter.setFont(QFont("Consolas", 8))
+                    painter.drawText(QPointF(plot.right() - S.p(124), y - S.p(3)),
+                                     "%s %s %.2f" % (_sg or "?", _tag, v))
         except Exception as _e:
             logger.debug("[ChartDBG] _draw_price_model 예외: %s", _e)
         finally:
@@ -10234,45 +10274,90 @@ class MinuteChartCanvas(QWidget):
 
     def _draw_struct_model(self, painter: QPainter, plot: QRectF, lo: float, hi: float):
         """구조모델 — 매물대·전일저·갭하변 등 후보 레벨. 점선 + 라벨 칩."""
-        if not self._ov.get("struct") or not self._pre_levels:
+        if not self._ov.get("struct"):
+            return
+        _stages = self._iter_pre_stages()
+        if not _stages:
             return
         try:
-            L = self._pre_levels
-            col = QColor(self.STRUCT_MODEL_COLOR)
+            base = QColor(self.STRUCT_MODEL_COLOR)
             painter.save()
         except Exception as _e:
             logger.debug("[ChartDBG] _draw_struct_model 진입 예외: %s", _e)
             return
         try:
             _off_up, _off_dn = [], []
-            for _key in ("struct_up", "struct_down"):
-                for _item in (L.get(_key) or []):
-                    try:
-                        lv = float(_item[0])
-                        tags = _item[1] if len(_item) > 1 else []
-                    except Exception:
-                        continue
-                    if self._is_off_axis(lv):
-                        (_off_up if lv > (self._axis_hi or 0) else _off_dn).append(lv)
-                        continue
+
+            def _rows(L):
+                """(레벨, 태그) 목록 — 축 밖은 캐럿 목록에 담고 건너뛴다."""
+                out = []
+                for _key in ("struct_up", "struct_down"):
+                    for _item in (L.get(_key) or []):
+                        try:
+                            lv = float(_item[0])
+                            tags = _item[1] if len(_item) > 1 else []
+                        except Exception:
+                            continue
+                        if self._is_off_axis(lv):
+                            (_off_up if lv > (self._axis_hi or 0) else _off_dn).append(lv)
+                            continue
+                        out.append((lv, tags))
+                return out
+
+            # 1차 패스 — 선과 캡. 오래된 스테이지부터라 **최신이 위에 얹힌다.**
+            _drawn = []
+            for _i, L in enumerate(_stages):
+                _latest = (_i == len(_stages) - 1)
+                _dim = 1.0 if _latest else self.PRE_STAGE_DIM
+                col = QColor(base); col.setAlpha(int(255 * _dim))
+                _rs = _rows(L)
+                _drawn.append((L, col, _latest, _rs))
+                for lv, _tags in _rs:
                     y = self._price_to_y(lv, plot, lo, hi)
-                    _pen = QPen(col); _pen.setWidth(1); _pen.setStyle(Qt.DashLine)
+                    _pen = QPen(col); _pen.setWidth(1)
+                    _pen.setStyle(Qt.DashLine if _latest else Qt.DotLine)
                     painter.setPen(_pen)
                     painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
                     # 양 끝 캡 — 선이 캔들에 묻혀도 끝은 보인다
                     painter.setPen(Qt.NoPen); painter.setBrush(col)
                     for xx in (plot.left(), plot.right() - 2):
                         painter.drawRect(QRectF(xx, y - 3, 2.5, 6))
-                    _txt = "%g  %s" % (lv, " · ".join(str(t) for t in tags)[:34])
-                    painter.setFont(QFont("Consolas", 8))
-                    self._draw_label_chip(painter, plot.left() + S.p(5), y - S.p(20),
-                                          _txt, QColor(13, 17, 23, 225), col, True)
+
+            # 2차 패스 — 칩은 **레벨당 하나**다.
+            #
+            # 🔴 스테이지마다 칩을 찍으면 같은 가격에 칩 두 개가 겹쳐 왼쪽이 붐비고,
+            #   `_place_chip` 이 자리를 못 찾아 일부가 **소리 없이 사라진다**. 게다가
+            #   두 스테이지가 같은 매물대를 가리키면 글자까지 똑같다. 그래서 합쳐서
+            #   「0850·0930」으로 적는다 — 어느 스테이지가 이 가격을 말했는지가
+            #   칩 하나에 다 들어간다.
+            _merged = {}
+            for L, col, _latest, _rs in _drawn:       # 오래된 것부터 — 최신이 덮는다
+                _sg = str(L.get("stage") or "?")
+                for lv, tags in _rs:
+                    _e = _merged.setdefault(round(lv, 2),
+                                            {"lv": lv, "sg": [], "tags": tags,
+                                             "col": col, "new": False})
+                    if _sg not in _e["sg"]:
+                        _e["sg"].append(_sg)
+                    _e["tags"] = tags                 # 태그·색은 최신 것을 쓴다
+                    _e["col"] = col
+                    _e["new"] = _e["new"] or _latest
+            # 🔴 최신을 포함한 레벨부터 자리를 잡는다. `_place_chip` 은 먼저 온 쪽에
+            #   자리를 주므로, 순서를 뒤집으면 09:30 칩이 밀려난다(584차의 그 자리).
+            painter.setFont(QFont("Consolas", 8))
+            for _e in sorted(_merged.values(), key=lambda d: (not d["new"], d["lv"])):
+                y = self._price_to_y(_e["lv"], plot, lo, hi)
+                _txt = "%s %g  %s" % ("·".join(_e["sg"]), _e["lv"],
+                                      " · ".join(str(t) for t in _e["tags"])[:30])
+                self._draw_label_chip(painter, plot.left() + S.p(5), y - S.p(20),
+                                      _txt, QColor(13, 17, 23, 225), _e["col"], True)
+
             # 축 밖은 가장자리 캐럿으로 — 클램프해서 가장자리 가격인 척하면 안 된다
             for _lst, _up in ((_off_up, True), (_off_dn, False)):
                 if not _lst:
                     continue
                 _y = plot.top() + S.p(6) if _up else plot.bottom() - S.p(6)
-                self._draw_off_axis_caret(painter, plot.right() - S.p(14), _y, col, above=_up)
+                self._draw_off_axis_caret(painter, plot.right() - S.p(14), _y, base, above=_up)
         except Exception as _e:
             logger.debug("[ChartDBG] _draw_struct_model 예외: %s", _e)
         finally:
@@ -11124,6 +11209,9 @@ class MinuteChartCanvas(QWidget):
         ("#58A6FF", "ΔOI 신규"), ("#D29922", "ΔOI 청산 · 롱 금지"),
         ("#C2CCD6", "구조모델"), ("#BC8CFF", "피터맥점"), ("#39C5CF", "가격모델 밴드"),
         ("#8B949E", "회색 띠 = 활성 문턱 미달(상태 안 붙음)"),
+        # [609차] 색은 **모델**을 말하고 농도·선모양은 **스테이지**를 말한다.
+        #   규칙을 안 적으면 옅은 선을 「흐린 구조모델」로 오독한다.
+        ("#7C8B93", "옅은 점선 = 08:50 1차 · 진한 파선/실선 = 09:30 2차"),
     )
 
     def _draw_legend(self, painter: QPainter, rect: QRectF):
@@ -12081,9 +12169,14 @@ class MinuteChartCanvas(QWidget):
         self._thr_o     = _r["thr_o"]
         self._state_n   = _r.get("n", 0)   # 뒤집힘률 조회용 표본 크기
 
-    def set_premarket_levels(self, levels):
-        """장전 레벨 주입. `None` 은 **미조회**다 — 「그날 없음」과 가르려고 남긴다."""
+    def set_premarket_levels(self, levels, stages=None):
+        """장전 레벨 주입. `None` 은 **미조회**다 — 「그날 없음」과 가르려고 남긴다.
+
+        `stages` 는 그날 산출 전부(오래된 것 먼저). 안 주면 `levels` 한 건만 쓴다 —
+        단건 주입 호출부를 깨지 않으려는 것이다(609차).
+        """
         self._pre_levels = levels
+        self._pre_stages = list(stages or [])
         self.update()
 
     def set_peter(self, levels, trades, orders=None, aux=None):
@@ -12115,27 +12208,29 @@ class MinuteChartCanvas(QWidget):
         빈 리스트는 「그날 산출 없음」이고 `_pre_levels is None` 은 「미조회」다 —
         축을 안 늘린다는 결과는 같지만 뜻이 다르다(계측 4원칙 ②).
         """
-        L = self._pre_levels
-        if not L:
-            return []
         out = []
-        for _k in ("dist_high", "dist_low"):
-            _v = L.get(_k)
-            if _v is not None:
-                try:
-                    _f = float(_v)
-                    if _f > 0:
-                        out.append(_f)
-                except (TypeError, ValueError):
-                    pass
-        for _k in ("struct_up", "struct_down"):
-            for _item in (L.get(_k) or []):
-                try:
-                    _f = float(_item[0] if isinstance(_item, (list, tuple)) else _item)
-                    if _f > 0:
-                        out.append(_f)
-                except (TypeError, ValueError, IndexError):
-                    pass
+        # [609차] 두 스테이지를 다 그리므로 축도 **둘을 다 덮어야** 한다.
+        #   한쪽만 덮으면 08:50 선이 축 밖으로 밀려 캐럿으로만 남는다.
+        for L in self._iter_pre_stages():
+            if not L:
+                continue
+            for _k in ("dist_high", "dist_low"):
+                _v = L.get(_k)
+                if _v is not None:
+                    try:
+                        _f = float(_v)
+                        if _f > 0:
+                            out.append(_f)
+                    except (TypeError, ValueError):
+                        pass
+            for _k in ("struct_up", "struct_down"):
+                for _item in (L.get(_k) or []):
+                    try:
+                        _f = float(_item[0] if isinstance(_item, (list, tuple)) else _item)
+                        if _f > 0:
+                            out.append(_f)
+                    except (TypeError, ValueError, IndexError):
+                        pass
         return out
 
     def _full_session_slots(self) -> int:
@@ -12954,8 +13049,17 @@ class MinuteChartDialog(QDialog):
                  "low50_lo", "low50_hi", "low80_lo", "low80_hi",
                  "struct_up", "struct_down", "train_n", "rhat_scale", "warnings")
 
-    def _load_premarket_levels(self, session_date: str):
-        """그날 장전 레벨 1건. 같은 날 여러 stage 가 있으면 **최신 산출**을 쓴다."""
+    def _load_premarket_stages(self, session_date: str):
+        """그날 장전 레벨 **전부**, 산출 순서대로(오래된 것 먼저).
+
+        🔴 [609차] 종전에는 `ORDER BY computed_at DESC LIMIT 1` 이었다. 그래서
+          09:30 2차가 올라오는 순간 08:50 1차가 화면에서 **지워졌다** — 그날 아침에
+          무엇을 보고 있었는지가 사라진다. DB 에는 두 행이 처음부터 다 있었다
+          (실측 2026-09-21: 09-15~09-21 매일 `0850`·`0930` 2행).
+
+        `None` 은 **미조회**(경로·조회 실패), `[]` 는 「그날 산출 없음」이다.
+        섞으면 안 된다(계측 4원칙 ②).
+        """
         import json as _json
         try:
             from config.settings import DB_DIR
@@ -12966,39 +13070,62 @@ class MinuteChartDialog(QDialog):
         try:
             _rows = fetchall(
                 _db,
-                "SELECT * FROM premarket_levels WHERE date=? ORDER BY computed_at DESC LIMIT 1",
+                "SELECT * FROM premarket_levels WHERE date=? ORDER BY computed_at ASC",
                 (session_date,),
             )
         except Exception as _e:
             logger.debug("[ChartDBG] 장전레벨 조회 실패: %s", _e)
             return None
-        if not _rows:
-            return {}                      # 그날 산출이 없다 — **미조회가 아니다**
-        _r = dict(_rows[0])
-        _out = {"stage": _r.get("stage")}
-        for _k in self._PRE_KEYS:
-            _v = _r.get(_k)
-            if _k in ("struct_up", "struct_down", "warnings"):
-                try:
-                    _v = _json.loads(_v) if _v else []
-                except Exception:
-                    _v = []
-            _out[_k] = _v
+        _out = []
+        for _row in (_rows or []):
+            _r = dict(_row)
+            _d = {"stage": _r.get("stage")}
+            for _k in self._PRE_KEYS:
+                _v = _r.get(_k)
+                if _k in ("struct_up", "struct_down", "warnings"):
+                    try:
+                        _v = _json.loads(_v) if _v else []
+                    except Exception:
+                        _v = []
+                _d[_k] = _v
+            _out.append(_d)
         return _out
 
+    def _load_premarket_levels(self, session_date: str):
+        """그날 장전 레벨 **최신 1건**. `_load_premarket_stages` 의 마지막 행이다.
+
+        호출부 호환을 위해 남긴다 — 그리기는 609차부터 스테이지 전부를 쓴다.
+        """
+        _st = self._load_premarket_stages(session_date)
+        if _st is None:
+            return None                    # 미조회
+        if not _st:
+            return {}                      # 그날 산출이 없다 — **미조회가 아니다**
+        return _st[-1]
+
     def _apply_premarket_levels(self):
-        _lv = self._load_premarket_levels(self._session_date)
-        self._chart.set_premarket_levels(_lv)
+        _st = self._load_premarket_stages(self._session_date)
+        _lv = None if _st is None else (_st[-1] if _st else {})
+        self._chart.set_premarket_levels(_lv, _st or [])
         try:
-            if _lv is None:
+            if _st is None:
                 _t = "장전레벨 미조회"
-            elif not _lv:
+            elif not _st:
                 _t = "장전레벨 없음 (그날 미산출)"
             else:
-                _n = len(_lv.get("struct_up") or []) + len(_lv.get("struct_down") or [])
-                _t = "장전레벨 %s · 구조 %d개" % (_lv.get("stage") or "?", _n)
-                if _lv.get("warnings"):
-                    _t += " · ⚠%d" % len(_lv["warnings"])
+                # [609차] 스테이지마다 개수를 따로 적는다. 합치면 09:30 이 08:50 을
+                #   덮은 건지 나란히 있는 건지 문구만 보고는 알 수 없다.
+                _parts = []
+                _warn = 0
+                for _s in _st:
+                    _n = len(_s.get("struct_up") or []) + len(_s.get("struct_down") or [])
+                    _parts.append("%s %d개" % (_s.get("stage") or "?", _n))
+                    _warn += len(_s.get("warnings") or [])
+                _t = "장전레벨 구조 " + " · ".join(_parts)
+                if len(_st) > 1:
+                    _t += "  (옅은 점선 = 이전 스테이지)"
+                if _warn:
+                    _t += " · ⚠%d" % _warn
             self._ov_note.setText(_t)
         except Exception as _e:
             logger.debug("[ChartDBG] 장전레벨 문구 실패: %s", _e)
