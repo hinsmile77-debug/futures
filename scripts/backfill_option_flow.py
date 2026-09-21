@@ -95,6 +95,37 @@ def wait_for_quota(verbose: bool = False) -> None:
             return
 
 
+def require_cybos_connection():
+    """Cybos 접속 상태를 먼저 확인한다 — 미연결이면 기다리지 않고 끊는다.
+
+    🔴 `wait_for_quota` 는 잔여 한도가 모자라면 기다린다. 그런데 **미연결일 때도
+       `GetLimitRemainCount` 는 0 을 준다** — 원천이 「미측정」과 「소진」을 같은
+       값으로 표현한다(계측 4원칙 ②: 미측정 != 0). 그대로 두면 페이지마다 60초
+       상한을 다 쓰고, 15페이지면 15분을 조용히 버린 뒤 `순증 0행` 만 남는다.
+       접속은 한도와 달리 **기다린다고 회복되지 않으므로** 여기서 끊는다.
+
+    실측 근거(MW0602 2026-09-21): 비승격 실행이 10분 30초 동안 DB 행 증가 0.
+    Cybos Plus(coStarter)가 승격으로 돌아 UIPI 가 막은 것이었고, 비승격 프로세스는
+    자기 DibServer 를 새로 띄워 `U-CYBOS가 서버에 접속되어 있지 않습니다` 로 전량
+    실패했다. 미륵이 런처가 스스로 UAC 승격하는 이유와 같다.
+
+    Returns:
+        "" 이면 정상. 아니면 사람이 읽을 사유 문자열.
+    """
+    try:
+        from win32com.client import Dispatch
+        cyb = Dispatch("CpUtil.CpCybos")
+        connected = int(cyb.IsConnect)
+    except Exception as exc:
+        return "CpCybos COM 을 열지 못했다: %s" % exc
+    if not connected:
+        return ("Cybos Plus 에 접속돼 있지 않다 (IsConnect=0).\n"
+                "    - Cybos Plus 가 로그인돼 있는지 확인할 것\n"
+                "    - Cybos 가 승격으로 돌면 이 스크립트도 **관리자 권한**이어야 한다\n"
+                "      (UIPI: 비승격 프로세스는 자기 DibServer 를 새로 띄우고 전량 실패한다)")
+    return ""
+
+
 def _hhmm(t: datetime.time) -> int:
     return t.hour * 100 + t.minute
 
@@ -146,6 +177,12 @@ def main() -> int:
     print("  type3 시각: %s%s" % (pages[:6], " …" if len(pages) > 6 else ""))
     if args.dry_run:
         return 0
+
+    # 🔴 한도 대기 루프에 들어가기 전에 접속부터 확인한다 — 위 함수 주석 참조.
+    _conn_err = require_cybos_connection()
+    if _conn_err:
+        print("  중단 — %s" % _conn_err)
+        return 2
 
     # 사전 상태
     def _span():
