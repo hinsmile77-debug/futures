@@ -32,6 +32,9 @@ _CHART = os.path.join(_ROOT, "dashboard", "panels", "option_flow_delta_chart.py"
 _DASH = os.path.join(_ROOT, "dashboard", "main_dashboard.py")
 
 
+_QAPP = None    # QApplication 을 붙들어 두는 자리(아래 주석 참조)
+
+
 def _src(path):
     return io.open(path, encoding="utf-8").read()
 
@@ -357,3 +360,31 @@ def test_23_row_height_is_elastic():
     assert _Plot.MIN_ROW_H < _Plot.MAX_ROW_H
     assert "def row_height" in _src(_CHART)
     assert "QSizePolicy.Expanding" in _src(_CHART)
+
+
+def test_24_row_height_fills_available_space():
+    """🔴 [615차] 상한이 낮으면 비운 세로가 차트 아래 **빈칸**으로 남는다.
+
+    614차 라이브 화면 실측(2026-09-21): 가용 세로가 행당 약 103px 인데 상한 64 가
+    640px 에서 잘라 아래 약 390px 이 빈 채였다. 아래 블록을 압축해 얻은 세로가
+    시인성으로 가지 못하고 그냥 사라진 것이다(613·615차 지시의 정반대).
+    """
+    import os as _os
+    _os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt5.QtWidgets import QApplication
+    # ⚠ **반환값을 붙들어야 한다.** `QApplication.instance() or QApplication([])`
+    #   처럼 버리면 즉시 GC 돼 프로세스가 통째로 죽는다(실행 중 실제로 죽었다).
+    global _QAPP
+    _QAPP = QApplication.instance() or QApplication([])
+    from dashboard.panels.option_flow_delta_chart import _ALL_ROWS, _Plot
+
+    pl = _Plot()
+    # 실사용 높이에서 행이 그 높이를 **거의 다 쓴다**
+    pl.setFixedHeight(1030)
+    r = pl.row_height()
+    used = r * len(_ALL_ROWS) + _Plot.AXIS_H + 2 * _Plot.PAD_V
+    assert r >= 95, "행이 가용 세로를 안 쓴다(상한이 다시 낮아졌다): %d" % r
+    assert used >= 1030 - len(_ALL_ROWS), "아래에 빈칸이 남는다: %d/1030" % used
+    # 작은 창에서는 하한을 지킨다
+    pl.setFixedHeight(200)
+    assert pl.row_height() == _Plot.MIN_ROW_H
