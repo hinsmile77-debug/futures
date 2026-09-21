@@ -131,11 +131,32 @@ def test_5_live_width_did_not_widen_to_all_64():
 
 
 def test_6_dashboard_shows_wait_when_amount_unmeasured():
-    """금액이 미측정이면 화면은 0 이 아니라 「대기」여야 한다."""
+    """🔴 [613차 갱신] 「대기」를 그리던 카드가 사라졌다 — 구분은 더 앞으로 갔다.
+
+    612차는 미측정 금액을 0 이 아니라 「대기」로 그리게 했다. 613차는 그 카드를
+    시계열로 옮겼고, 이제 같은 구분을 **두 겹**으로 지킨다:
+      ① 원천 보존이 미측정 키를 아예 만들지 않는다(`get_futures_raw_fields`)
+      ② 차트가 관측 없는 행에 0 이 아니라 「미수집」을 적는다
+    즉 화면에 도달하기 전에 걸러지므로 종전보다 이르다.
+    """
     dash = os.path.join(_ROOT, "dashboard", "main_dashboard.py")
     with open(dash, "r", encoding="utf-8") as f:
         src = f.read()
-    assert '_fmt_eok(fi_amt) if _measured("foreign_futures_amt") else "대기"' in src
+    assert "_fmt_eok" not in src, (
+        "613차가 걷어낸 억원 카드가 되살아났다 — 그렇다면 이 테스트를 다시 쓸 것")
+    chart = os.path.join(_ROOT, "dashboard", "panels",
+                         "option_flow_delta_chart.py")
+    with open(chart, "r", encoding="utf-8") as f:
+        csrc = f.read()
+    assert '"미수집"' in csrc, "관측 없는 행이 0 으로 그려진다(계측 4원칙 ②)"
+
+    from collection.cybos.investor_data import CybosInvestorData
+    inv = CybosInvestorData(None)
+    inv._futures_supported = True
+    inv._futures_seen.add("foreign")           # 계약만 왔다
+    inv._futures["foreign"] = 4953
+    out = inv.get_futures_raw_fields()
+    assert "foreign_amt_mn" not in out, "미측정 금액이 0 으로 만들어졌다"
 
 
 # ── [612차 후속5] 첫 호출(RAW 덤프) 경로는 세션당 1회라 테스트를 빠져나간다 ──
@@ -232,7 +253,15 @@ def test_9_program_cards_wait_when_unsupported():
     assert "if prog_supported or arb is not None:" not in src, (
         "수집 실패 중에도 프로그램 카드에 0 이 뜬다(계측 4원칙 ②)"
     )
-    assert "prog_supported = bool(div.get(\"program_supported\", False))" in src
+    # 🔴 [613차 갱신] 프로그램 카드가 시계열 행이 됐다. 그 행의 원천은
+    # `raw_program_trade` 이고, **행이 없는 분은 점을 찍지 않는다** — 수집
+    # 실패 중 0 이 뜨지 않는다는 612차 후속5 의 요구는 그 구조가 대신 지킨다.
+    assert "fut_prog_arb_val" not in src, (
+        "613차가 걷어낸 프로그램 카드가 되살아났다 — 그렇다면 이 테스트를 다시 쓸 것")
+    fl = os.path.join(_ROOT, "collection", "cybos", "futures_flow_series.py")
+    with open(fl, "r", encoding="utf-8") as f:
+        fsrc = f.read()
+    assert "if _ARB_IDX in f:" in fsrc, "없는 필드를 0 으로 채우는 경로가 생겼다"
 
 
 def test_10_restart_holes_are_shortened():

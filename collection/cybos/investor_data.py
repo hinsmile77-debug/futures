@@ -269,6 +269,34 @@ class CybosInvestorData:
         """
         return dict(self._program_fields)
 
+    def get_futures_raw_fields(self) -> Dict[str, int]:
+        """[MW0601 613차] `CpSvrNew7221` 선물 행 원값 (보존 저장용).
+
+        🔴 **미측정이면 키를 만들지 않는다.** `self._futures`/`_futures_amt` 는
+        이월 폴백 때문에 항상 값이 있으므로, 그대로 덤프하면 "받은 적 없는 0"이
+        실측 0으로 굳는다 — 451차가 폐기한 그 형태다(계측 4원칙 ②).
+        `_is_measured`/`_is_amt_measured` 가 참인 키만 싣고, 어느 것도 없으면
+        **빈 dict**를 돌려준다(호출부는 빈 dict를 저장하지 않는다).
+
+        단위를 키 이름에 박는다(계측 4원칙 ①) — `_qty`=계약, `_mn`=백만원.
+        """
+        out: Dict[str, int] = {}
+        _name = {"foreign": "foreign", "individual": "retail",
+                 "institution": "institution"}
+        for key in INVESTOR_KEYS:
+            nm = _name.get(key, key)
+            if self._is_measured(key):
+                out["%s_net_qty" % nm] = int(self._futures.get(key, 0))
+            if self._is_amt_measured(key):
+                out["%s_amt_mn" % nm] = int(self._futures_amt.get(key, 0))
+        if not out:
+            # 계약도 금액도 한 번도 안 온 상태. OI 만 있어도 행을 만들지 않는다 —
+            # 이 테이블의 정체는 "7221 선물 행"이고, OI 는 그 행에 얹힌 부가 축이다.
+            return {}
+        if self._open_interest:
+            out["open_interest"] = int(self._open_interest)
+        return out
+
     # [MW0601 612차 후속2] 정규 KOSPI200 선물 승수(원/pt).
     # 🔴 **우리 매매 종목(미니 A05·50,000)의 승수가 아니다.** 7221 선물 행은
     #    시장 전체 수급이라 정규 계약 기준이다. `active_contract_spec()` 으로

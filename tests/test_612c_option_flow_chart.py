@@ -139,9 +139,14 @@ def test_8_default_scale_is_per_row_not_shared():
 
 
 def test_9_per_row_axis_is_labelled():
-    """행마다 눈금이 다르므로 그 사실을 화면에 박아야 한다."""
+    """행마다 눈금이 다르므로 그 사실을 화면에 박아야 한다.
+
+    [613차] 표기 위치가 바뀌었다 — 오른쪽 아래 「누계 N · ±M」 한 줄로 합쳐졌다
+    (누계는 걷어낸 6카드가 보여주던 값이다). **의도는 그대로다.**
+    """
     src = _src(_CHART)
-    assert "축 ±%s" in src, "행별 축 표기가 없다 — 행 간 높이 비교 오독을 부른다"
+    assert "±%s" in src, "행별 축 표기가 없다 — 행 간 높이 비교 오독을 부른다"
+    assert "누계 %s" in src, "누계 표기가 없다 — 걷어낸 카드의 절대 수준이 사라진다"
 
 
 def test_10_nonzero_never_rounds_to_invisible():
@@ -242,9 +247,18 @@ def test_15_gui_thread_does_not_open_the_db():
 
 
 def test_16_futures_section_precedes_the_chart():
-    """「선물 투자자 수급」이 맨 위 (사용자 지시 ②)."""
+    """🔴 [613차 갱신] 이 테스트가 고정하던 지시가 **바뀌었다.**
+
+    612차 지시 ②는 「선물 투자자 수급」 카드 섹션을 맨 위에 두는 것이었다.
+    613차 지시는 그 6카드를 걷어내고 4종을 차트 행으로 옮기라는 것이라,
+    카드 섹션 자체가 없다 — 옛 단언(`mk_label("선물 투자자 수급"`)은 성립할 수
+    없다. **지시가 바뀐 것이지 회귀가 아니다.**
+
+    남은 불변식은 순서다: 차트가 「옵션 순매수 비중」보다 위에 있어야 한다.
+    """
     src = _src(_DASH)
-    i_fut = src.index('mk_label("선물 투자자 수급"')
+    assert 'mk_label("선물 투자자 수급"' not in src, (
+        "613차가 걷어낸 카드 섹션이 되살아났다 — 그렇다면 이 테스트를 다시 쓸 것")
     i_chart = src.index("self.option_flow_chart = OptionFlowDeltaChart()")
-    i_zone = src.index('mk_label("옵션 투자자 순매수 비중')
-    assert i_fut < i_chart < i_zone, "패널 섹션 순서가 지시와 다르다"
+    i_zone = src.index('mk_label("옵션 순매수 비중')
+    assert i_chart < i_zone, "패널 섹션 순서가 지시와 다르다"

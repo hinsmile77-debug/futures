@@ -2023,6 +2023,36 @@ def init_raw_data_db():
         )
     """)
 
+    # [MW0601 613차] 선물 투자자 수급 **원값** 보존 — `raw_investor_futures`.
+    #
+    # 🔴 왜 지금 만드는가: 지금까지 이 값은 **어디에도 남지 않았다.**
+    #   `CpSvrNew7221` 선물 행(ri=2)의 계약수(열 2/5/8)·금액(열 30/31/32)은
+    #   화면에 떠 있는 동안만 존재하고 사라진다. `raw_features`에 있는
+    #   `foreign_futures_net`은 **로그압축된 피처**(sign·log1p(|x|/1000))이지
+    #   원값이 아니다. 451차가 8111에서 겪은 것과 같은 형태다 —
+    #   원시를 보존하면 파생은 언제든 소급해 만들 수 있고, 반대는 불가능하다.
+    #
+    # 추가 COM 호출은 **0이다.** `_probe_investor_tr`가 이미 매분 이 행을 읽고 있고,
+    # 여기서는 방금 받아온 값을 저장만 한다.
+    #
+    # `src` 컬럼 — 'live'(실측 수신) | 'derived'(백필로 역산). 백필 행이 실측처럼
+    #   보이면 안 된다(계측 4원칙 ②). `scripts/backfill_investor_futures.py` 참조.
+    # `fields` JSON 키(단위를 이름에 박는다 — 계측 4원칙 ①):
+    #   foreign_net_qty / retail_net_qty / institution_net_qty        (계약)
+    #   foreign_amt_mn  / retail_amt_mn  / institution_amt_mn         (백만원)
+    #   open_interest                                                 (계약)
+    #   *_measured                                                    (0/1)
+    # 용량: 약 370행/일 × 250일 × ~300B ≈ 28MB/년.
+    execute(RAW_DATA_DB, """
+        CREATE TABLE IF NOT EXISTS raw_investor_futures (
+            ts         TEXT NOT NULL,
+            fields     TEXT NOT NULL,
+            src        TEXT NOT NULL DEFAULT 'live',
+            created_at TEXT DEFAULT (datetime('now', 'localtime')),
+            PRIMARY KEY (ts)
+        )
+    """)
+
     # v9 처방 P1 (mireuki_v9_최종설계안_2026-07-03.md §2-2): 트리플 배리어 라벨 저장.
     # 기존 학습 라벨(_path_conditioned_label)과 병렬 비교/검증용 — scripts/build_triple_barrier_labels.py
     execute(RAW_DATA_DB, """
@@ -2178,6 +2208,31 @@ def save_program_trade_raw(ts: str, market: str, fields: Dict[str, int]) -> bool
         RAW_DATA_DB,
         "INSERT OR REPLACE INTO raw_program_trade (ts, market, fields) VALUES (?, ?, ?)",
         (ts, str(market), json.dumps(fields, ensure_ascii=False, sort_keys=True)),
+    )
+    return True
+
+
+def save_investor_futures_raw(ts: str, fields: Dict[str, int],
+                              src: str = "live") -> bool:
+    """[MW0601 613차] `CpSvrNew7221` 선물 행 원값을 `raw_investor_futures`에 보존.
+
+    ts     — 'YYYY-MM-DD HH:MM:SS' (분 단위로 내림한 값. 호출부 책임)
+    fields — {"foreign_net_qty": 6761, "foreign_amt_mn": 1878, ...}
+    src    — 'live'(실측) | 'derived'(백필 역산)
+
+    반환: 저장했으면 True, 입력이 비어 건너뛰었으면 False.
+
+    🔴 **빈 dict는 저장하지 않는다.** `save_program_trade_raw`와 같은 이유다 —
+    원천이 안 준 것을 빈 JSON으로 남기면 읽는 사람이 "그 시각엔 수급이 0이었다"로
+    오독한다. **행이 없는 것과 0인 것은 다르다**(451차, 계측 4원칙 ②).
+    """
+    if not fields:
+        return False
+    execute(
+        RAW_DATA_DB,
+        "INSERT OR REPLACE INTO raw_investor_futures (ts, fields, src) "
+        "VALUES (?, ?, ?)",
+        (ts, json.dumps(fields, ensure_ascii=False, sort_keys=True), str(src)),
     )
     return True
 

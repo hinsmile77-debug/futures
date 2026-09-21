@@ -65,6 +65,7 @@ from utils.db_utils import (
     save_shap_scores,
     save_regime_at, purge_old_regime_history,
     save_program_trade_raw,
+    save_investor_futures_raw,          # [MW0601 613차] 7221 선물 행 원값 보존
 )
 from config.settings import (
     TRADES_DB, DB_DIR, HORIZONS, HORIZON_DIR, PARTIAL_EXIT_RATIOS,
@@ -835,6 +836,11 @@ class TradingSystem:
         # [451차 Phase 1-1] raw_program_trade 보존 로그 1회성 플래그 (60초 주기 로그 폭주 방지)
         self._program_raw_logged = False
         self._program_raw_err_logged = False
+        # [MW0601 613차] raw_investor_futures 보존 로그 1회성 플래그.
+        # 명시 초기화 — 런타임 상태를 기본값 폴백으로 읽지 않는다(계측 4원칙 ④).
+        self._investor_raw_logged = False
+        self._investor_raw_err_logged = False
+        self._futures_flow_err_logged = False
         self.pcr_store          = PCRStore()
         self.option_chain_snap  = OptionChainSnapshot(
             chain_cache_path="data/option_chain.json",
@@ -4660,6 +4666,13 @@ class TradingSystem:
                 oi = getattr(rt, "_last_oi", 0)
                 if oi > 0:
                     self.investor_data._open_interest = oi
+            # [MW0601 613차] 선물 수급 원값 보존 — **OI 동기화 뒤**여야 한다.
+            # 앞에 두면 그 분의 `open_interest` 가 한 틱 낡은 값으로 저장된다.
+            self._save_investor_futures_raw(now)
+            # [MW0601 613차] 선물 수급 4종 시계열을 패널로 민다 — **저장 뒤**여야
+            # 방금 분이 화면에 실린다. 조회는 여기서 한다(GUI 스레드가 DB 를 열면
+            # paint 가 막힌다 — 옵션 차트와 같은 관례).
+            self._push_futures_flow_series()
             # [MW0601 611차 후속] 보조 수집은 **핵심 로직 뒤**에서 부른다.
             # 611차 원판은 이 호출이 OI 동기화보다 앞에 있었고, 거기서 난 NameError가
             # 그 뒤 전부를 막아 **OI 동기화가 4분간 끊겼다**. 보조 데이터가 핵심
@@ -4790,6 +4803,64 @@ class TradingSystem:
             if not self._program_raw_err_logged:
                 self._program_raw_err_logged = True
                 logger.warning("[ProgramRaw] 원천 보존 실패(이후 무시): %s", e, exc_info=True)
+
+    def _save_investor_futures_raw(self, now: datetime.datetime) -> None:
+        """[MW0601 613차] CpSvrNew7221 선물 행 원값을 `raw_investor_futures`에 보존.
+
+        **추가 COM 호출은 0이다** — 방금 `fetch_all()` 이 받아온 값을 저장만 한다.
+
+        왜 필요한가: 이 값은 지금까지 **어디에도 남지 않았다.** `raw_features` 의
+        `foreign_futures_net` 은 로그압축된 피처지 원값이 아니고, 화면은 현재값
+        하나만 보여준다. 그래서 「외인 선물 순매수 시계열」을 그리려는 순간
+        과거가 전무했다 — 451차가 8111 에서 겪은 것과 같은 형태다.
+
+        ⚠ `_save_program_trade_raw` 와 같이 **어떤 예외도 밖으로 내보내지 않는다.**
+          보존은 부가 기능이고, 이것 때문에 수급 수집이 흔들려서는 안 된다.
+        """
+        try:
+            inv = getattr(self, "investor_data", None)
+            if inv is None or not hasattr(inv, "get_futures_raw_fields"):
+                return
+            fields = inv.get_futures_raw_fields()
+            if not fields:
+                # 미측정(프리장·조회 실패). **빈 행을 남기지 않는다.**
+                return
+            ts = now.replace(second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+            saved = save_investor_futures_raw(ts, fields, "live")
+            if saved and not self._investor_raw_logged:
+                self._investor_raw_logged = True
+                logger.info(
+                    "[InvestorRaw] raw_investor_futures 보존 시작 — ts=%s 키 %d개 "
+                    "(세션 1회 로그)", ts, len(fields),
+                )
+        except Exception as e:
+            if not self._investor_raw_err_logged:
+                self._investor_raw_err_logged = True
+                logger.warning(
+                    "[InvestorRaw] 원천 보존 실패(이후 무시): %s", e, exc_info=True)
+
+    def _push_futures_flow_series(self) -> None:
+        """[MW0601 613차] 선물 수급 4종 증감 시계열을 대시보드로 민다.
+
+        걷어낸 「선물 투자자 수급」 6카드를 대체하는 표시 경로다. 조회 3건은
+        전부 PK(ts) 범위 스캔이고 하루치가 약 390행씩이라 수 ms 다.
+
+        ⚠ **예외를 밖으로 내보내지 않는다.** 표시용 보조 경로가 수급 수집을
+          흔들면 안 된다(611차 후속이 실증한 배치 원칙).
+        ⚠ 실패를 조용히 삼키지도 않는다 — 세션 1회 WARNING(계측 4원칙 ④).
+        """
+        if self.dashboard is None:
+            return
+        try:
+            from collection.cybos.futures_flow_series import (
+                get_futures_session_delta,
+            )
+            self.dashboard.update_futures_flow_delta(get_futures_session_delta())
+        except Exception as e:
+            if not self._futures_flow_err_logged:
+                self._futures_flow_err_logged = True
+                logger.warning(
+                    "[FuturesFlow] 시계열 push 실패(이후 무시): %s", e, exc_info=True)
 
     def _poll_kospi200_index(self) -> None:
         """[260704 감사 P2] KOSPI200 현물지수 + VKOSPI 1분 폴링 — QTimer 콜백.

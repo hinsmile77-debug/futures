@@ -1783,113 +1783,79 @@ class DivergencePanel(QWidget):
         #    사라진 것은 화면 표시뿐이다.
         # ══════════════════════════════════════════════════════════════
 
-        # ── ① 선물 투자자 수급 (맨 위) ─────────────────────────────────
+        # ── ① 선물 투자자 수급 6카드 → **시계열로 이관** [MW0601 613차] ──
         #
-        # 🔴 [MW0601 612차] 섹션 제목이 "(계약수)"였는데 이 그리드에는 **축이 셋**
-        #    섞여 있다 — 계측 4원칙 ① 위반이었다. 단위는 **섹션이 아니라 카드마다** 박는다.
-        #    · 투자자 3칸 = 7221 열 30/31/32, 순매수 **금액**(백만원 → 억원 표시)
-        #    · 프로그램 2칸 = CpSvr8111 idx19·idx37, 순매수 체결**금액**(백만원)
-        #    · 미결제약정   = FutureCurOnly, **계약수**
-        _fut_hdr = QHBoxLayout()
-        _fut_hdr.addWidget(mk_label("선물 투자자 수급", C['cyan'], 9, True))
-        _fut_hdr.addStretch()
-        self.fut_age_lbl = mk_label("수급 ——", C['text2'], 8)
-        self.fut_age_lbl.setToolTip(
-            "마지막 수급 TR 수신 이후 경과.\n"
-            "180초를 넘으면 주황 — 화면 숫자가 그만큼 낡았다는 뜻이다.\n"
-            "(원천 실패 시 직전값이 유지되므로 값만 봐서는 구분되지 않는다)"
-        )
-        _fut_hdr.addWidget(self.fut_age_lbl)
-        lay.addLayout(_fut_hdr)
+        # 🔴 카드를 지운 것이 아니라 **형식을 바꾼 것이다**(사용자 지시 2026-09-21).
+        #    종전 6칸은 각각 현재값 하나만 보여줬다 — 하루의 흐름을 못 봤다.
+        #    그중 4종(미결제약정·외인 선물 순매수·프로그램 차익·비차익)이 아래
+        #    증감 시계열의 행으로 들어갔고, 개인·기관 선물 순매수 2칸은 지시대로
+        #    표시에서 빠졌다.
+        #
+        # ⚠ **수집·저장·피처는 그대로 살아 있다.** `get_panel_data()` 의
+        #   `retail_futures_amt_mn` 등도 그대로다 — 사라진 것은 화면 표시뿐이다.
+        #   되살릴 일이 생기면 `_FUT_ROWS` 에 2행을 더하면 된다(원천이 같다).
+        #
+        # ⚠ 신선도 칩(`fut_age_lbl`)은 **차트 헤더로 옮겼다**. 그 섹션의 내용이
+        #   전부 차트로 갔는데 칩만 남으면 무엇의 나이인지 알 수 없다.
         lay.addWidget(self.panel_status_label)
-        fut_grid = QGridLayout()
-        fut_grid.setSpacing(2)
-        _TIP_FUT = (
-            "CpSysDib.CpSvrNew7221 선물 행(ri=2) 투자자별 순매수 **금액**.\n"
-            "원천 열 30/31/32(개인·외인·기관, 백만원)를 100으로 나눠 억원으로 쓴다.\n"
-            "⚠ 계약수에 가격을 곱한 환산값이 아니다 — 원천이 직접 주는 값이다.\n"
-            "검증: RAW 덤프 11개·5거래일·33개 비율에서 금액÷계약이 지수×250,000과\n"
-            "0.5% 이내 일치(정규 KOSPI200 승수. 우리 매매 미니 50,000 이 아니다).\n"
-            "매분 check_amount_consistency() 가 이 비율을 재대사한다(612차 후속2)."
-        )
-        _TIP_PROG = (
-            "Dscbo1.CpSvr8111 — 차익 idx19 / 비차익 idx37 = 순매수 체결'금액'.\n"
-            "단위 백만원 (명세 §4-3, HTS 8221 대조 2.7% 이내 일치).\n"
-            "⚠ 계약수가 아니다. 투자자별 분해도 없다(451차)."
-        )
-        _TIP_OI = "Dscbo1.FutureCurOnly 실시간 틱의 미결제약정 — 계약수."
-        _fut_cards = [
-            ("외인 선물 순매수 (억원)", "fut_fi",   C['blue'],   _TIP_FUT),
-            ("개인 선물 순매수 (억원)", "fut_rt",   C['red'],    _TIP_FUT),
-            ("기관 선물 순매수 (억원)", "fut_inst", C['purple'], _TIP_FUT),
-            ("프로그램 차익 (백만원)",   "prog_arb",    C['green'],  _TIP_PROG),
-            ("프로그램 비차익 (백만원)", "prog_nonarb", C['orange'], _TIP_PROG),
-            ("미결제약정 (계약)",       "open_int",    C['cyan'],   _TIP_OI),
-        ]
-        for i, (title, attr, col, tip) in enumerate(_fut_cards):
-            ff = QFrame()
-            ff.setStyleSheet(
-                f"QFrame{{background:{C['bg2']};border:1px solid {C['border']};"
-                f"border-radius:4px;}}"
-            )
-            ff.setToolTip(tip)
-            ffl = QVBoxLayout(ff)
-            ffl.setContentsMargins(4, 2, 4, 2)
-            ffl.setSpacing(0)
-            ffl.addWidget(mk_label(title, C['text2'], 8))
-            fv = mk_val_label("——", col, 12)
-            ffl.addWidget(fv)
-            setattr(self, f"fut_{attr}_val", fv)
-            fut_grid.addWidget(ff, i // 3, i % 3)
-        lay.addLayout(fut_grid)
 
-        lay.addWidget(mk_sep())
-
-        # ── ③ 투자자 포지션 매트릭스 → 개인 옵션 6종 증감 시계열 ─────────
+        # ── ② 개인 옵션 6종 + 선물 수급 4종 증감 시계열 ──────────────────
         try:
             from dashboard.panels.option_flow_delta_chart import (
                 OptionFlowDeltaChart,
             )
             self.option_flow_chart = OptionFlowDeltaChart()
-            lay.addWidget(self.option_flow_chart)
+            # 🔴 stretch=1 — 아래에서 비운 세로를 이 차트가 받아야 한다.
+            #    (613차 지시: 하단 카드의 여유를 상단 시인성으로 옮길 것)
+            lay.addWidget(self.option_flow_chart, 1)
         except Exception as _e:
             # 위젯 로드 실패가 패널 전체를 못 만들게 하지 않는다.
             logger.warning("[Dashboard] OptionFlowDeltaChart 로드 실패: %s", _e)
             self.option_flow_chart = None
             lay.addWidget(mk_label(
-                "개인 옵션 증감 차트 로드 실패 — 로그 확인", C['red'], 8))
+                "옵션·선물 증감 차트 로드 실패 — 로그 확인", C['red'], 8))
 
         lay.addWidget(mk_sep())
-        # 옵션 투자자 순매수 비중 (거래량이 아니다 — 612차)
-        lay.addWidget(mk_label("옵션 투자자 순매수 비중 (ITM·ATM·OTM)", C['cyan'], 9, True))
-        lay.addWidget(self.option_status_label)
-        lay.addWidget(mk_label(
-            "※ 값은 거래량이 아니라 투자자별 **순매수 절대값 비중**이다. "
-            "ITM/OTM은 CpSvrNew7221이 행사가 단위로 주지 않아 수집 불가 "
-            "(전량 ATM으로 집계) — N/A 표시",
-            C['text2'], 7,
-        ))
+        # ── ③ 옵션 투자자 순매수 비중 — ATM 한 줄로 압축 [613차] ─────────
+        #
+        # 🔴 종전에는 ITM·ATM·OTM 3프레임 × 3투자자 = 9행이었는데, **ITM·OTM 은
+        #    구조적으로 영원히 N/A 다** — `CpSvrNew7221` 이 투자자별 콜/풋을
+        #    행사가 단위로 주지 않아 전량 ATM 으로 집계된다. 즉 화면의 2/3 가
+        #    상시 "N/A"를 그리느라 세로를 먹고 있었다. ATM 한 줄로 접는다.
+        # ⚠ **계측은 그대로다.** `update_data()` 의 zones 루프도 그대로 돌고,
+        #   ITM/OTM 위젯만 없다(`getattr(...) is None` 가드가 이미 있다).
+        #   원천이 행사가 축을 주기 시작하면 이 블록을 되돌리면 된다.
+        _oz_hdr = QHBoxLayout()
+        _oz_hdr.setSpacing(4)
+        _oz_lbl = mk_label("옵션 순매수 비중 · ATM", C['cyan'], 9, True)
+        _oz_lbl.setToolTip(
+            "값은 거래량이 아니라 투자자별 **순매수 절대값 비중**이다(612차).\n"
+            "ITM/OTM은 CpSvrNew7221이 행사가 단위로 주지 않아 수집 불가 —\n"
+            "전량 ATM으로 집계되므로 화면에서도 ATM 한 줄만 둔다(613차).\n"
+            "0% 가 아니라 **측정하지 않는다**는 뜻이다(계측 4원칙 ②)."
+        )
+        _oz_hdr.addWidget(_oz_lbl)
+        _oz_na = mk_label("ITM·OTM 원천 미제공", C['text2'], 7)
+        _oz_hdr.addWidget(_oz_na)
+        _oz_hdr.addStretch()
+        _oz_hdr.addWidget(self.option_status_label)
+        lay.addLayout(_oz_hdr)
+
+        # ITM/OTM 은 위젯을 만들지 않는다 — `update_data()` 가 None 을 건너뛴다.
+        for zone in ("ITM", "OTM"):
+            for inv in ("외인", "개인", "기관"):
+                setattr(self, f"oz_{zone}_{inv}", None)
         zone_lay = QHBoxLayout()
-        zone_lay.setSpacing(2)
-        for zone in ["ITM", "ATM", "OTM"]:
-            zf = QFrame()
-            zf.setStyleSheet(f"background:{C['bg2']};border:1px solid {C['border']};border-radius:4px;")
-            zfl = QVBoxLayout(zf)
-            zfl.setContentsMargins(4, 3, 4, 3)
-            zfl.setSpacing(1)
-            zfl.addWidget(mk_label(zone, C['text'], 10, True, Qt.AlignCenter))
-            for inv, col in [("외인",C['blue']),("개인",C['red']),("기관",C['purple'])]:
-                hr = QHBoxLayout()
-                hr.setSpacing(2)
-                hr.addWidget(mk_label(inv, C['text2'], 8))
-                b = mk_prog(col, 6)
-                b.setValue(0)
-                hr.addWidget(b, 2)
-                vl = mk_label("—%", col, 8)
-                setattr(self, f"oz_{zone}_{inv}", (b, vl))
-                hr.addWidget(vl)
-                zfl.addLayout(hr)
-            zone_lay.addWidget(zf)
+        zone_lay.setSpacing(6)
+        for inv, col in [("외인", C['blue']), ("개인", C['red']),
+                         ("기관", C['purple'])]:
+            zone_lay.addWidget(mk_label(inv, C['text2'], 8))
+            b = mk_prog(col, 6)
+            b.setValue(0)
+            zone_lay.addWidget(b, 2)
+            vl = mk_label("—%", col, 8)
+            zone_lay.addWidget(vl)
+            setattr(self, f"oz_ATM_{inv}", (b, vl))
         lay.addLayout(zone_lay)
 
         lay.addWidget(mk_sep())
@@ -1900,7 +1866,11 @@ class DivergencePanel(QWidget):
         # 을 바꾸면 게이지가 조용히 거짓말을 했다. `set_chain_interval()`로 실제값을 받는다.
         self._chain_interval_sec = 300  # 기본 5분 — 런타임에 실제 주기로 덮어쓴다
 
+        # [MW0601 613차] 헤더 줄 + 신선도 줄을 **한 줄로 합친다.**
+        # 세로 한 줄(약 16px)을 상단 시계열로 넘기는 것이 이 블록의 목적이다.
+        # 표시 항목은 하나도 줄이지 않았다 — 배치만 바뀐다.
         hdr_row = QHBoxLayout()
+        hdr_row.setSpacing(4)
         self.chain_hdr_lbl = mk_label(
             "옵션 체인 스냅샷  (OptionMst 5분 폴링)", C['green'], 9, True)
         hdr_row.addWidget(self.chain_hdr_lbl)
@@ -1909,10 +1879,9 @@ class DivergencePanel(QWidget):
         self.chain_status_lbl = mk_label("● 미수집", C['text2'], 8)
         hdr_row.addWidget(self.chain_time_lbl)
         hdr_row.addWidget(self.chain_status_lbl)
-        lay.addLayout(hdr_row)
 
         # freshness bar: 5분(300s) 카운트다운 — 가득 찰수록 신선
-        fresh_row = QHBoxLayout()
+        fresh_row = hdr_row
         fresh_row.addWidget(mk_label("신선도", C['text2'], 8))
         self.chain_fresh_bar = QProgressBar()
         self.chain_fresh_bar.setRange(0, self._chain_interval_sec)
@@ -1924,7 +1893,8 @@ class DivergencePanel(QWidget):
             f"border-radius:3px;}}"
             f"QProgressBar::chunk{{background:{C['text2']};border-radius:3px;}}"
         )
-        fresh_row.addWidget(self.chain_fresh_bar, 1)
+        self.chain_fresh_bar.setMaximumWidth(S.p(110))
+        fresh_row.addWidget(self.chain_fresh_bar)
         self.chain_fresh_lbl = mk_label("——", C['text2'], 8)
         fresh_row.addWidget(self.chain_fresh_lbl)
         lay.addLayout(fresh_row)
@@ -1932,68 +1902,37 @@ class DivergencePanel(QWidget):
         chain_grid = QGridLayout()
         chain_grid.setSpacing(2)
 
-        # 1행: 체인 PCR | ATM PCR | GEX
-        _row0 = [
-            ("근월 ATM±30pt PCR", "chain_pcr", C['orange'], "풋/콜 OI · 24종목"),
-            ("ATM PCR",   "atm_pcr",    C['blue'],   "최근접 행사가 1개"),
-            ("GEX",       "gex_bn",     C['purple'], "딜러 감마"),
+        # [MW0601 613차] 8칸을 3행 → **2행 × 4열**로 재배치하고, 부제(sub)는
+        # 카드 툴팁으로 내린다. 카드 한 장의 높이가 (제목+값+부제) 3줄에서
+        # 2줄이 되고 행도 하나 줄어 — 이 블록만 약 70px 을 상단 시계열에 넘긴다.
+        # ⚠ **표시 항목은 하나도 빠지지 않았다.** 부제는 툴팁에 그대로 있다.
+        _chain_cards = [
+            ("근월 ATM±30pt PCR", "chain_pcr",    C['orange'], "풋/콜 OI · 24종목"),
+            ("ATM PCR",           "atm_pcr",      C['blue'],   "최근접 행사가 1개"),
+            ("GEX",               "gex_bn",       C['purple'], "딜러 감마"),
+            ("ATM 콜 OI",         "atm_call_oi",  C['green'],  ""),
+            ("ATM 풋 OI",         "atm_put_oi",   C['red'],    ""),
+            ("실현변동성(RV)",    "rv_ann",       C['cyan'],   "30분·연율화 %"),
+            ("VKOSPI(IV)",        "iv_vkospi",    C['orange'], "30일·KRX 지수"),
+            ("RV-IV 스프레드",    "rv_iv_spread", C['text2'],
+             "기간축 다름 — 상시 음수"),
         ]
-        # 2행: ATM 콜 OI | ATM 풋 OI | (빈칸)
-        _row1 = [
-            ("ATM 콜 OI", "atm_call_oi", C['green'], ""),
-            ("ATM 풋 OI", "atm_put_oi",  C['red'],   ""),
-        ]
-        for col_i, (title, attr, col, sub) in enumerate(_row0):
+        for _i, (title, attr, col, sub) in enumerate(_chain_cards):
             cf = QFrame()
             cf.setStyleSheet(
-                f"QFrame{{background:{C['bg2']};border:1px solid {C['border']};border-radius:4px;}}"
+                f"QFrame{{background:{C['bg2']};border:1px solid {C['border']};"
+                f"border-radius:4px;}}"
             )
-            cfl = QVBoxLayout(cf)
-            cfl.setContentsMargins(4, 2, 4, 2)
-            cfl.setSpacing(0)
-            cfl.addWidget(mk_label(title, C['text2'], 8))
-            cv = mk_val_label("——", col, 12)
-            cfl.addWidget(cv)
             if sub:
-                cfl.addWidget(mk_label(sub, C['text2'], 7))
-            setattr(self, f"chain_{attr}_val", cv)
-            chain_grid.addWidget(cf, 0, col_i)
-
-        for col_i, (title, attr, col, sub) in enumerate(_row1):
-            cf = QFrame()
-            cf.setStyleSheet(
-                f"QFrame{{background:{C['bg2']};border:1px solid {C['border']};border-radius:4px;}}"
-            )
+                cf.setToolTip(sub)
             cfl = QVBoxLayout(cf)
-            cfl.setContentsMargins(4, 2, 4, 2)
+            cfl.setContentsMargins(4, 1, 4, 1)
             cfl.setSpacing(0)
             cfl.addWidget(mk_label(title, C['text2'], 8))
             cv = mk_val_label("——", col, 12)
             cfl.addWidget(cv)
             setattr(self, f"chain_{attr}_val", cv)
-            chain_grid.addWidget(cf, 1, col_i)
-
-        # 3행: 실현변동성(RV) | VKOSPI(IV) | RV-IV 스프레드 (328차)
-        _row2 = [
-            ("실현변동성(RV)", "rv_ann",       C['cyan'],   "30분·연율화 %"),
-            ("VKOSPI(IV)",     "iv_vkospi",    C['orange'], "30일·KRX 지수"),
-            ("RV-IV 스프레드", "rv_iv_spread", C['text2'],  "기간축 다름 — 상시 음수"),
-        ]
-        for col_i, (title, attr, col, sub) in enumerate(_row2):
-            cf = QFrame()
-            cf.setStyleSheet(
-                f"QFrame{{background:{C['bg2']};border:1px solid {C['border']};border-radius:4px;}}"
-            )
-            cfl = QVBoxLayout(cf)
-            cfl.setContentsMargins(4, 2, 4, 2)
-            cfl.setSpacing(0)
-            cfl.addWidget(mk_label(title, C['text2'], 8))
-            cv = mk_val_label("——", col, 12)
-            cfl.addWidget(cv)
-            if sub:
-                cfl.addWidget(mk_label(sub, C['text2'], 7))
-            setattr(self, f"chain_{attr}_val", cv)
-            chain_grid.addWidget(cf, 2, col_i)
+            chain_grid.addWidget(cf, _i // 4, _i % 4)
 
         lay.addLayout(chain_grid)
 
@@ -2008,41 +1947,12 @@ class DivergencePanel(QWidget):
         # 표시를 걷어냈고, `rt_bias`/`fi_bias` 계산은 `get_panel_data()` 에 그대로
         # 남아 있다(다른 소비처가 생기면 바로 쓸 수 있게).
 
-        # ── 선물 투자자 수급 갱신 ────────────────────────────────
-        # [MW0601 612차] 포맷터를 축별로 쪼갠다. 출력 문자열은 같지만 **호출부에서
-        # 축이 보여야** 한다 — 612차 이전에는 금액 2칸도 `_fmt_contracts`가 찍었고,
-        # 그 이름이 "계약수" 섹션 제목과 맞물려 오독을 보증했다(계측 4원칙 ①).
-        def _fmt_signed(v):
-            if v is None:
-                return "——"
-            return f"{int(v):+,}" if v != 0 else "0"
-
-        _fmt_contracts = _fmt_signed     # 계약수 축 (FutureCurOnly OI)
-        _fmt_amount_mn = _fmt_signed     # 금액 축, 백만원 (8111 idx19·idx37)
-
-        # [MW0601 612차 후속2] 선물 투자자 수급은 **억원**으로 표시한다.
-        # 원천(7221 열 30/31/32)이 백만원으로 주므로 100 으로 나눈다.
-        # ⚠ `None` 과 0 을 구분한다 — 안 온 것을 0억으로 그리면 안 된다(계측 4원칙 ②).
-        def _fmt_eok(v_mn):
-            if v_mn is None:
-                return "——"
-            try:
-                eok = float(v_mn) / 100.0
-            except Exception:
-                return "——"
-            if eok == 0:
-                return "0"
-            # 1억 미만은 소수 1자리까지 — 프리장 초반 작은 값이 전부 "0"으로 뭉개진다
-            return f"{eok:+,.1f}" if abs(eok) < 100 else f"{eok:+,.0f}"
-
-        fi_fut   = div.get("foreign_futures_net")
-        rt_fut   = div.get("retail_futures_net")
-        inst_fut = div.get("institution_futures_net")
-        arb      = div.get("program_arb_net")
-        nonarb   = div.get("program_nonarb_net")
-        oi       = div.get("open_interest")
-
-        fut_supported = div.get("futures_supported", False)
+        # ── 선물 투자자 수급 → **시계열로 이관** [MW0601 613차] ─────────
+        # 카드 6칸이 사라졌으므로 여기서 값을 그릴 곳이 없다. 그 4종은
+        # `option_flow_chart` 가 DB 에서 직접 읽어 그린다(수급 QTimer 경로가
+        # 분당 1회 `update_futures_flow()` 로 민다).
+        # ⚠ **`div` 의 키는 아무것도 지우지 않았다** — `div_score`·피처·다른
+        #   소비처가 그대로 쓴다. 여기서 사라진 것은 setText 뿐이다.
 
         # ── 신선도 칩 ─────────────────────────────────────────────
         # [MW0601 612차 후속5] 원점(절대시각)만 보관하고 **칩은 스스로 늙게** 한다.
@@ -2050,6 +1960,7 @@ class DivergencePanel(QWidget):
         # 함께 얼어 「수급 15초 전」이 영원히 남았다. 낡음을 알리려던 표시가
         # 낡음을 감춘 셈이다(2026-09-21 실측: 분봉 파이프라인이 15:09 에 정상
         # 종료하면서 패널 전체가 그 순간 상태로 정지 — 그런데 화면은 15초 전).
+        # [613차] 칩의 자리는 차트 헤더로 옮겼다. 계산·갱신 주기는 그대로다.
         _ep = div.get("last_fetch_epoch")
         if _ep is not None:
             self._fut_fetch_epoch = float(_ep)
@@ -2057,58 +1968,6 @@ class DivergencePanel(QWidget):
             import time as _t0
             self._fut_fetch_epoch = _t0.time() - float(div.get("age_sec") or 0.0)
         self._render_age_chip()
-
-        # [612차] 559차 `*_measured` 를 카드별로 반영 — "아직 안 왔다"(대기)와
-        # "실측 0계약"(0)을 구분한다. 플래그 자체가 없으면(키움 경로 등) 종전 동작.
-        def _measured(key):
-            v = div.get(key + "_measured")
-            return True if v is None else bool(v)
-
-        # [MW0601 612차 후속2] 선물 3칸은 **억원** 축이다(원천 백만원 ÷ 100).
-        # 계약수 키(`*_futures_net`)는 `div_score` 등 다른 소비처가 계속 쓰므로 남는다.
-        # 금액 미측정 시에는 계약수로 대체하지 **않는다** — 축이 섞이면 오독이 된다.
-        fi_amt   = div.get("foreign_futures_amt_mn")
-        rt_amt   = div.get("retail_futures_amt_mn")
-        inst_amt = div.get("institution_futures_amt_mn")
-
-        if fut_supported or fi_fut or rt_fut or inst_fut:
-            self.fut_fut_fi_val.setText(
-                _fmt_eok(fi_amt) if _measured("foreign_futures_amt") else "대기")
-            self.fut_fut_rt_val.setText(
-                _fmt_eok(rt_amt) if _measured("retail_futures_amt") else "대기")
-            self.fut_fut_inst_val.setText(
-                _fmt_eok(inst_amt) if _measured("institution_futures_amt") else "대기")
-            fi_col  = C['green'] if (fi_amt or 0) > 0 else C['red'] if (fi_amt or 0) < 0 else C['text2']
-            rt_col  = C['green'] if (rt_amt or 0) > 0 else C['red'] if (rt_amt or 0) < 0 else C['text2']
-            self.fut_fut_fi_val.setStyleSheet(
-                f"color:{fi_col};font-size:{S.f(13)}px;font-weight:bold;"
-            )
-            self.fut_fut_rt_val.setStyleSheet(
-                f"color:{rt_col};font-size:{S.f(13)}px;font-weight:bold;"
-            )
-        else:
-            self.fut_fut_fi_val.setText("대기")
-            self.fut_fut_rt_val.setText("대기")
-            self.fut_fut_inst_val.setText("대기")
-
-        # 🔴 [MW0601 612차 후속5] 종전 조건 `prog_supported or arb is not None` 은
-        # **사실상 항상 참**이었다 — `_program_arb` 는 `__init__`/`reset_daily` 에서
-        # 0 으로 초기화되므로 `arb` 가 `None` 인 경우가 없다. 그래서 수집 실패 중에도
-        # `대기` 대신 **`0`** 이 떴다(2026-09-21 15:08 재기동 직후 실측).
-        # 「아직 못 받았다」와 「실측 0원」이 화면에서 같아지는 계측 4원칙 ② 위반이다.
-        # ⇒ `program_supported` 만 본다. 원천이 못 왔으면 0 을 그리지 않는다.
-        prog_supported = bool(div.get("program_supported", False))
-        if prog_supported:
-            self.fut_prog_arb_val.setText(_fmt_amount_mn(arb))
-            self.fut_prog_nonarb_val.setText(_fmt_amount_mn(nonarb))
-        else:
-            self.fut_prog_arb_val.setText("대기")
-            self.fut_prog_nonarb_val.setText("대기")
-
-        if oi:
-            self.fut_open_int_val.setText(f"{int(oi):,}")
-        else:
-            self.fut_open_int_val.setText("——")
 
         # [MW0601 612차 후속3] 「투자자 포지션 매트릭스」 8칸 전부 삭제 (사용자 지시).
         #   · 옵션 콜/풋 순매수 4칸 + 콜·풋 합계 2칸
@@ -2158,11 +2017,14 @@ class DivergencePanel(QWidget):
         갱신이 끊겨도 칩은 계속 늙어야 「멈췄다」가 화면에 보인다.
         """
         import time as _t
+        # [613차] 칩이 차트 헤더로 이사했다. 차트 로드 실패 시 칩도 없으므로
+        # 조용히 넘어간다 — 칩이 없다고 패널이 죽으면 안 된다.
+        ch = self.option_flow_chart
+        if ch is None or not hasattr(ch, "set_age_text"):
+            return
         ep = self._fut_fetch_epoch
         if ep is None:
-            self.fut_age_lbl.setText("수급 ——")
-            self.fut_age_lbl.setStyleSheet(
-                f"color:{C['text2']};font-size:{S.f(8)}px;")
+            ch.set_age_text("수급 ——", "ok")
             return
         age = max(0.0, _t.time() - ep)
         stale = age > 180.0
@@ -2170,13 +2032,8 @@ class DivergencePanel(QWidget):
             txt = "수급 %d초 전" % int(age)
         else:
             txt = "수급 %d분 %02d초 전" % (int(age // 60), int(age % 60))
-        # 10분을 넘으면 빨강 — 「그냥 좀 낡음」과 「멈춤」을 색으로 가른다.
-        col = C['red'] if age > 600 else (C['orange'] if stale else C['text2'])
-        self.fut_age_lbl.setText(txt)
-        self.fut_age_lbl.setStyleSheet(
-            f"color:{col};font-size:{S.f(8)}px;"
-            + ("font-weight:bold;" if stale else "")
-        )
+        # 🔴 색 기준은 그대로다 — 180초 경고 / 600초 멈춤. 자리만 옮겼다.
+        ch.set_age_text(txt, "stop" if age > 600 else ("warn" if stale else "ok"))
 
     def set_chain_interval(self, interval_sec: int) -> None:
         """[MW0601 612차] 신선도 게이지 주기를 수집기 실제 설정과 맞춘다."""
@@ -16706,6 +16563,26 @@ class DashboardAdapter:
                 self._flow_chart_err_ts = _now
                 logger.warning(
                     "[Dashboard] 개인 옵션 증감 차트 갱신 예외 (5분 스로틀): %s", exc)
+
+    def update_futures_flow_delta(self, payload: dict) -> None:
+        """[MW0601 613차] 선물 수급 4종 시초 대비 증감 시계열 주입.
+
+        `futures_flow_series.get_futures_session_delta()` 결과를 그대로 받는다.
+        조회는 수급 QTimer 경로가 하므로 **여기서 DB 를 열지 않는다.**
+        같은 차트의 옵션 6행과 **경로가 분리돼 있다** — 한쪽이 실패해도
+        다른 쪽 행이 지워지지 않는다.
+        """
+        try:
+            ch = getattr(self._win.div_panel, "option_flow_chart", None)
+            if ch is not None and hasattr(ch, "update_futures_flow"):
+                ch.update_futures_flow(payload)
+        except Exception as exc:
+            import time as _t
+            _now = _t.time()
+            if _now - self._flow_chart_err_ts >= 300.0:
+                self._flow_chart_err_ts = _now
+                logger.warning(
+                    "[Dashboard] 선물 수급 증감 차트 갱신 예외 (5분 스로틀): %s", exc)
 
     def update_divergence(self, div_data: dict):
         """다이버전스 패널 업데이트.
