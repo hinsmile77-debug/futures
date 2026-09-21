@@ -4618,13 +4618,17 @@ class TradingSystem:
             # _system_info_throttled(600s)가 로그 폭주를 막으므로 108차 우려는 이미 해소됨.
             self.investor_data.fetch_all(include_program=True)
             self._save_program_trade_raw(now)
-            self._fetch_weekly_option_flow(now)
             # FutureCurOnly 틱에서 실시간으로 수집된 미결제약정 동기화
             rt = getattr(self, "realtime_data", None)
             if rt is not None:
                 oi = getattr(rt, "_last_oi", 0)
                 if oi > 0:
                     self.investor_data._open_interest = oi
+            # [MW0601 611차 후속] 보조 수집은 **핵심 로직 뒤**에서 부른다.
+            # 611차 원판은 이 호출이 OI 동기화보다 앞에 있었고, 거기서 난 NameError가
+            # 그 뒤 전부를 막아 **OI 동기화가 4분간 끊겼다**. 보조 데이터가 핵심
+            # 경로를 막는 배치는 그 자체가 결함이다.
+            self._fetch_weekly_option_flow(now)
         except Exception as e:
             apply_error_policy(
                 system=self,
@@ -4656,24 +4660,25 @@ class TradingSystem:
           다만 조용히 삼키지는 않는다(계측 4원칙 ④): 수집기 자신이 연속 실패를
           세어 `[OptionFlow]` WARNING 을 낸다.
         """
-        if not getattr(settings, "WEEKLY_OPTION_FLOW_ENABLED", False):
-            return
+        # ⚠ 설정 모듈의 이름은 `runtime_settings` 다(main.py:115).
+        #   `settings` 로 썼다가 NameError 가 났다 — 611차 원판의 실제 사고.
         try:
-            hh, mm = str(getattr(settings, "WEEKLY_OPTION_FLOW_START_AFTER", "09:02")).split(":")
+            if not getattr(runtime_settings, "WEEKLY_OPTION_FLOW_ENABLED", False):
+                return
+            hh, mm = str(getattr(runtime_settings,
+                                 "WEEKLY_OPTION_FLOW_START_AFTER", "09:02")).split(":")
             if now.time() < datetime.time(int(hh), int(mm)):
                 return
-        except Exception:
-            pass
-        min_iv = float(getattr(settings, "WEEKLY_OPTION_FLOW_MIN_INTERVAL_SEC", 55.0))
-        last = self._wof_last_ts
-        if last is not None and (now - last).total_seconds() < min_iv:
-            return
-        try:
+            min_iv = float(getattr(runtime_settings,
+                                   "WEEKLY_OPTION_FLOW_MIN_INTERVAL_SEC", 55.0))
+            last = self._wof_last_ts
+            if last is not None and (now - last).total_seconds() < min_iv:
+                return
             flow = self._weekly_option_flow
             if flow is None:
                 from collection.cybos.weekly_option_flow import WeeklyOptionFlow
-                flow = WeeklyOptionFlow(
-                    getattr(settings, "WEEKLY_OPTION_FLOW_DB", "data/db/option_flow.db"))
+                flow = WeeklyOptionFlow(getattr(
+                    runtime_settings, "WEEKLY_OPTION_FLOW_DB", "data/db/option_flow.db"))
                 self._weekly_option_flow = flow
             flow.fetch_and_store()
             self._wof_last_ts = now
