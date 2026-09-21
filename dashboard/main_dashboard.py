@@ -13892,6 +13892,16 @@ class MireukDashboard(QMainWindow):
         self.lbl_shadow.setWordWrap(True)
         self.lbl_shadow.setToolTip(_ss_tip)
 
+        # ── [MW0601 614차] 세션 재생(복원/복기) 배지 ──────────────────────
+        # 🔴 이 배지가 이 기능의 **안전장치**다. 장후에 DB 에서 되살린 값은
+        #    라이브와 화면에서 똑같이 생겼다 — 배지가 없으면 612차 후속5 가 고친
+        #    사고("멈춘 값이 살아 있는 값으로 보인다")를 **의도적으로 재현**하는 꼴이 된다.
+        # ⚠ 장중 재기동 복원에서는 라이브가 곧 덮으므로 배지를 띄우지 않는다 —
+        #    그때 배지를 남기면 반대로 살아 있는 값을 죽은 값처럼 보이게 한다.
+        self.lbl_replay = mk_badge("", C['purple'], "#fff", 9)
+        self.lbl_replay.setVisible(False)
+        self.lbl_replay.setToolTip("")
+
         # ── [234차] 종목변경 재시작 배지 ─────────────────────────
         self.lbl_code_change = mk_badge("⚠ 종목변경됨 — 재시작", C['orange'], "#fff", 9)
         self.lbl_code_change.setVisible(False)
@@ -14260,6 +14270,7 @@ class MireukDashboard(QMainWindow):
         header.addWidget(self._pg_box)  # [545차] ProfitGuard L1~L4 배지 (CB 오른쪽)
         header.addWidget(self.lbl_shs)        # SHS / EKS badge
         header.addWidget(self.lbl_shadow)     # ShadowSession 상태 배지
+        header.addWidget(self.lbl_replay)       # [614차] 세션 재생(복기) 배지
         header.addWidget(self.lbl_code_change)  # [234차] 종목변경 재시작 배지
         header.addWidget(clk_frame)
         header.addLayout(res_box)
@@ -15343,6 +15354,63 @@ class DashboardAdapter:
     # [612차 후속3] 개인 옵션 증감 차트 예외 스로틀 — 같은 이유로 클래스 속성.
     _flow_chart_err_ts = 0.0
 
+    # ── [MW0601 614차] 세션 재생(복원/복기) ────────────────────────────────
+    #
+    # 🔴 **라이브가 이긴다.** 이것이 이 기능의 유일하고 가장 중요한 불변식이다.
+    #
+    # 장중 재기동 복원은 DB 에서 **과거 값**을 읽어 넣는다. 그런데 기동 직후에는
+    # 라이브 push 도 동시에 들어온다(분봉 콜백 · 수급 60초 타이머 · 체인 워커).
+    # 복원이 조금 늦게 도착하면 **더 새로운 라이브 값을 더 오래된 DB 값으로
+    # 덮어쓴다** — 화면이 조용히 과거로 되돌아가고, 아무 예외도 나지 않는다.
+    #
+    # 그래서 라이브 경로가 패널을 갱신하면 그 키를 여기 남기고, 재생은 그 키를
+    # **건드리지 않는다.** 시간 비교가 아니라 "라이브가 왔는가"로 판단한다 —
+    # 재생 payload 에는 신뢰할 수 있는 단일 시각이 없기 때문이다(원천마다 끝난
+    # 시각이 다르다: raw_features 15:08 vs raw_program_trade 15:34).
+    _replay_live_keys: set = None      # None = 아직 한 번도 라이브가 안 옴
+    _replay_injecting = False          # 재생이 스스로 부른 갱신인가
+    _replay_badge_on = False           # 복기 배지가 떠 있는가
+
+    def mark_live(self, key: str) -> None:
+        """라이브 경로가 이 패널을 갱신했음을 남긴다(재생 차단용).
+
+        🔴 재생 자신의 주입도 같은 `update_*` 를 타므로 여기로 들어온다.
+        `_replay_injecting` 으로 그 둘을 가른다 — 구분하지 않으면 재생이
+        스스로를 "라이브가 왔다"로 기록하고 방금 단 복기 배지를 즉시 지운다.
+        """
+        if self._replay_live_keys is None:
+            self._replay_live_keys = set()
+        self._replay_live_keys.add(key)
+        if self._replay_injecting:
+            return
+        # 라이브가 돌아왔다 — 복기 배지를 내린다. 장이 열렸는데 「복기」가 남아
+        # 있으면 살아 있는 값을 죽은 값처럼 보이게 한다(반대 방향의 같은 사고).
+        if self._replay_badge_on:
+            self.set_replay_badge("")
+
+    def replay_begin(self) -> None:
+        self._replay_injecting = True
+
+    def replay_end(self) -> None:
+        self._replay_injecting = False
+
+    def replay_should_inject(self, key: str) -> bool:
+        """재생이 이 패널을 건드려도 되는가 — 라이브가 이미 왔으면 False."""
+        return not (self._replay_live_keys or set()).__contains__(key)
+
+    def set_replay_badge(self, text: str, tip: str = "") -> None:
+        """복기 배지. `text` 가 비면 숨긴다(장중 복원은 배지를 띄우지 않는다)."""
+        try:
+            lbl = getattr(self._win, "lbl_replay", None)
+            if lbl is None:
+                return
+            lbl.setText("  %s  " % text if text else "")
+            lbl.setToolTip(tip)
+            lbl.setVisible(bool(text))
+            self._replay_badge_on = bool(text)
+        except Exception as exc:                                # noqa: BLE001
+            logger.debug("[Replay] 배지 갱신 스킵: %s", exc)
+
     def __init__(self):
         app = QApplication.instance() or QApplication(sys.argv)
         app.setStyle("Fusion")
@@ -15886,12 +15954,14 @@ class DashboardAdapter:
                 code   = self.realtime_data.code,
             )
         """
+        self.mark_live("price")   # [614차] 라이브가 이긴다
         self._win.update_price(price, change, code)
 
     def update_prediction(self, price: float, preds: dict, params: dict,
                           conf: float = None, corr: str = "", min_conf: float = 0.58,
                           bar_ages: dict = None):
         """멀티 호라이즌 예측 패널 업데이트"""
+        self.mark_live("prediction")   # [614차] 라이브가 이긴다
         self._win.pred_panel.update_data(price, preds, params, conf, corr, min_conf=min_conf,
                                          bar_ages=bar_ages)
 
@@ -15997,6 +16067,7 @@ class DashboardAdapter:
         `WeeklyOptionFlow.get_individual_session_delta()` 결과를 그대로 받는다.
         조회는 수급 QTimer 경로가 하므로 **여기서 DB 를 열지 않는다.**
         """
+        self.mark_live("option_flow")   # [614차] 라이브가 이긴다
         try:
             ch = getattr(self._win.div_panel, "option_flow_chart", None)
             if ch is not None:
@@ -16017,6 +16088,7 @@ class DashboardAdapter:
         같은 차트의 옵션 6행과 **경로가 분리돼 있다** — 한쪽이 실패해도
         다른 쪽 행이 지워지지 않는다.
         """
+        self.mark_live("futures_flow")   # [614차] 라이브가 이긴다
         try:
             ch = getattr(self._win.div_panel, "option_flow_chart", None)
             if ch is not None and hasattr(ch, "update_futures_flow"):
@@ -16038,6 +16110,7 @@ class DashboardAdapter:
         있는데 여기만 비어 있었다). 다만 조용히 삼키지는 않는다 — 5분 스로틀
         WARNING 으로 남긴다(계측 4원칙 ④).
         """
+        self.mark_live("divergence")   # [614차] 라이브가 이긴다
         try:
             self._win.div_panel.update_data(div_data)
         except Exception as exc:
@@ -16058,6 +16131,7 @@ class DashboardAdapter:
 
     def update_option_chain(self, chain_feats: dict) -> None:
         """옵션 체인 스냅샷 패널 업데이트"""
+        self.mark_live("option_chain")   # [614차] 라이브가 이긴다
         try:
             self._win.div_panel.update_option_chain(chain_feats)
         except Exception:
@@ -16066,6 +16140,7 @@ class DashboardAdapter:
 
     def update_rv_iv_spread(self, features: dict) -> None:
         """RV-IV 스프레드 카드 업데이트 (328차, 매분 STEP4 이후 호출)"""
+        self.mark_live("rv_iv")   # [614차] 라이브가 이긴다
         try:
             self._win.div_panel.update_rv_iv(features)
         except Exception:
