@@ -1870,9 +1870,9 @@ class DivergencePanel(QWidget):
 
         # 3행: 실현변동성(RV) | VKOSPI(IV) | RV-IV 스프레드 (328차)
         _row2 = [
-            ("실현변동성(RV)", "rv_ann",       C['cyan'],   "연율화 %"),
-            ("VKOSPI(IV)",     "iv_vkospi",    C['orange'], "KRX 지수"),
-            ("RV-IV 스프레드", "rv_iv_spread", C['text2'],  "RV−IV"),
+            ("실현변동성(RV)", "rv_ann",       C['cyan'],   "30분·연율화 %"),
+            ("VKOSPI(IV)",     "iv_vkospi",    C['orange'], "30일·KRX 지수"),
+            ("RV-IV 스프레드", "rv_iv_spread", C['text2'],  "기간축 다름 — 상시 음수"),
         ]
         for col_i, (title, attr, col, sub) in enumerate(_row2):
             cf = QFrame()
@@ -2042,6 +2042,9 @@ class DivergencePanel(QWidget):
 
     # [612차 후속5] 마지막 수급 수신 절대시각(epoch). None = 아직 한 번도 안 옴.
     _fut_fetch_epoch = None
+    # [612차 후속6] RV-IV 스프레드의 당일 분포 — 색 기준. 날짜가 바뀌면 리셋한다.
+    _rviv_day = None
+    _rviv_day_spreads = ()
 
     def _render_age_chip(self) -> None:
         """신선도 칩을 **지금 시각 기준**으로 다시 그린다.
@@ -2178,6 +2181,12 @@ class DivergencePanel(QWidget):
         basis_data 병합으로, "realized_vol_ann"/"rv_iv_spread"/"rv_iv_spread_ready"는
         feature_builder.py의 RV-IV 계산 블록에서 채워진다.
         """
+        import datetime as _d
+        _today = _d.date.today().isoformat()
+        if self._rviv_day != _today or not isinstance(self._rviv_day_spreads, list):
+            self._rviv_day = _today
+            self._rviv_day_spreads = []
+
         rv_ann  = float(features.get("realized_vol_ann", 0.0) or 0.0)
         vkospi  = float(features.get("vkospi", 0.0) or 0.0)
         spread  = float(features.get("rv_iv_spread", 0.0) or 0.0)
@@ -2187,11 +2196,48 @@ class DivergencePanel(QWidget):
         self.chain_iv_vkospi_val.setText(f"{vkospi:.2f}" if vkospi > 0 else "——")
 
         if ready:
-            # RV > IV: 시장이 변동성을 과소평가(저평가) → green. RV < IV: 과대평가(고평가) → red.
-            spread_col = C['green'] if spread > 0 else (C['red'] if spread < 0 else C['text2'])
+            # 🔴 [MW0601 612차 후속6] **부호로 「과소/과대평가」를 읽으면 안 된다.**
+            #
+            # 종전 색 규칙은 `spread > 0 → 초록(시장이 변동성 과소평가)` 이었는데,
+            # 실측상 그 조건이 거의 성립하지 않는다 — 2026-09-01~09-21 ready 표본
+            # **5,433건 중 양수가 193건(3.55%)**, 일별 중앙값 −18.8 ~ −29.6 으로
+            # **양수인 날이 하루도 없다**(RV 중앙 13~26 vs IV 중앙 39~50).
+            #
+            # 시장 신호가 아니라 **기간축 불일치의 산물**이다:
+            #   RV  = 1분봉 30개(=**30분**) 실현변동성
+            #   IV  = VKOSPI(**30일** 내재변동성)
+            # 30분 realized 가 30일 implied 보다 구조적으로 낮은 것은 당연하다
+            # (분산위험 프리미엄 + 시간 스케일 + 야간 갭 미포함).
+            #
+            # ⇒ 부호 색을 걷어내고 **그날 자기 분포 대비**로 칠한다 — 감마 배지와
+            #   같은 처방이다(612차 후속). 절대 부호는 정보가 없고, 「오늘치고
+            #   유난히 벌어졌나/좁혀졌나」는 정보가 있다.
+            # ⚠ 근본 해결은 RV 창을 IV 기간과 맞추거나 카드를 재설계하는 것이다 —
+            #   NEXT_TODO 612-5 에 등록.
+            self._rviv_day_spreads.append(spread)
+            if len(self._rviv_day_spreads) > 400:
+                del self._rviv_day_spreads[0]
+            _n = len(self._rviv_day_spreads)
+            if _n >= 10:
+                _srt = sorted(self._rviv_day_spreads)
+                _med = _srt[_n // 2]
+                # 그날 중앙값보다 넓어짐(더 음수) = 빨강, 좁혀짐 = 초록.
+                spread_col = (C['green'] if spread > _med
+                              else C['red'] if spread < _med else C['text2'])
+                _tip = "오늘 중앙 %+.2f 대비 %s" % (
+                    _med, "좁혀짐" if spread > _med else "벌어짐")
+            else:
+                spread_col = C['text2']
+                _tip = "표본 %d/10 — 기준 산출 전" % _n
             self.chain_rv_iv_spread_val.setText(f"{spread:+.2f}")
             self.chain_rv_iv_spread_val.setStyleSheet(
                 f"color:{spread_col};font-size:{S.f(12)}px;font-weight:bold;"
+            )
+            self.chain_rv_iv_spread_val.setToolTip(
+                "RV(30분 실현) − IV(VKOSPI, 30일 내재).\n"
+                "⚠ 기간축이 달라 **거의 항상 음수**다 — 실측 2026-09 양수 3.55%.\n"
+                "   부호로 「시장이 변동성을 과대평가」라고 읽지 말 것.\n"
+                "색은 절대 부호가 아니라 **오늘 분포 대비**다: " + _tip
             )
         else:
             self.chain_rv_iv_spread_val.setText("——")
