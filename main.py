@@ -616,6 +616,12 @@ class TradingSystem:
         self.entry_horizon_recalibrator = EntryHorizonRecalibrator()
         self.atr_multiple_recalibrator = ATRMultipleRecalibrator()
         self.investor_data     = self.broker.create_investor_data()  # connect_broker 후 api 주입
+        # [MW0601 2026-09-21] 위클리 옵션 수급 수집기 상태 — **명시 초기화한다.**
+        # 계측 4원칙 ④: getattr 폴백으로 런타임 상태를 읽지 않는다.
+        # (tests/test_457_fallback_visibility.py 가 이 규약을 전수 검사한다)
+        self._weekly_option_flow = None     # 지연 생성 (COM Dispatch 비용)
+        self._wof_last_ts = None            # None = 아직 한 번도 수집 안 함
+        self._wof_warned = False
         # [451차 Phase 1-1] raw_program_trade 보존 로그 1회성 플래그 (60초 주기 로그 폭주 방지)
         self._program_raw_logged = False
         self._program_raw_err_logged = False
@@ -3902,6 +3908,7 @@ class TradingSystem:
             # _system_info_throttled(600s)가 로그 폭주를 막으므로 108차 우려는 이미 해소됨.
             self.investor_data.fetch_all(include_program=True)
             self._save_program_trade_raw(now)
+            self._fetch_weekly_option_flow(now)
             # FutureCurOnly 틱에서 실시간으로 수집된 미결제약정 동기화
             rt = getattr(self, "realtime_data", None)
             if rt is not None:
@@ -3927,6 +3934,44 @@ class TradingSystem:
                 )
             else:
                 logger.debug("[LiveDBG] _fetch_investor_data 완료 %.0fms", _elapsed_ms)
+
+    def _fetch_weekly_option_flow(self, now: datetime.datetime) -> None:
+        """[MW0601 2026-09-21] 위클리/먼스리 옵션·현물 투자자 수급 수집 (CpSvrNew7222).
+
+        수급 타이머(`_fetch_investor_data`)에 얹혀 돈다 — **추가 타이머를 만들지 않는다.**
+        그 타이머는 이미 COM 콜백 체인 밖(QTimer)이라 절대원칙 §4 를 지킨다.
+
+        ⚠ **이 수집이 실패해도 파이프라인은 그대로 간다.** 예외를 여기서 삼키고
+          로그만 남긴다 — 수급 보조 데이터 때문에 매분 파이프라인이 죽으면 안 된다.
+          다만 조용히 삼키지는 않는다(계측 4원칙 ④): 수집기 자신이 연속 실패를
+          세어 `[OptionFlow]` WARNING 을 낸다.
+        """
+        if not getattr(settings, "WEEKLY_OPTION_FLOW_ENABLED", False):
+            return
+        try:
+            hh, mm = str(getattr(settings, "WEEKLY_OPTION_FLOW_START_AFTER", "09:02")).split(":")
+            if now.time() < datetime.time(int(hh), int(mm)):
+                return
+        except Exception:
+            pass
+        min_iv = float(getattr(settings, "WEEKLY_OPTION_FLOW_MIN_INTERVAL_SEC", 55.0))
+        last = self._wof_last_ts
+        if last is not None and (now - last).total_seconds() < min_iv:
+            return
+        try:
+            flow = self._weekly_option_flow
+            if flow is None:
+                from collection.cybos.weekly_option_flow import WeeklyOptionFlow
+                flow = WeeklyOptionFlow(
+                    getattr(settings, "WEEKLY_OPTION_FLOW_DB", "data/db/option_flow.db"))
+                self._weekly_option_flow = flow
+            flow.fetch_and_store()
+            self._wof_last_ts = now
+        except Exception as e:
+            # 첫 실패만 남긴다 — 매분 반복이라 폭주를 막는다.
+            if not self._wof_warned:
+                self._wof_warned = True
+                logger.warning("[OptionFlow] 수집기 기동 실패(이후 로그 억제): %s", e)
 
     def _save_program_trade_raw(self, now: datetime.datetime) -> None:
         """[MW0601 451차 Phase 1-1] CpSvr8111 원천 56필드를 `raw_program_trade`에 보존.

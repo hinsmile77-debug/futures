@@ -7603,3 +7603,24 @@ TICKUI_TRACE_ENABLED = False
 TICKUI_HEARTBEAT_SEC = 60.0
 LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+# ─────────────────────────────────────────────────────────────────────────
+# [MW0601 2026-09-21] 위클리/먼스리 옵션 · 현물 투자자 수급 수집 (CpSvrNew7222)
+#
+# 왜: 종전 경로(CpSvrNew7221 ri=3/ri=4)는 **정규 월물 · 금액 단위 · 외국인만**이라
+#     개인 옵션 흐름의 주무대인 **위클리**를 구조적으로 못 본다.
+#     2026-09-21 실측 — 계약수 기준 (월)위클리 5,575 vs 먼스리 273, **20.4배**.
+#
+# 시장코드는 같은 날 키움 화면 캡처를 정답지로 앵커 대조해 확정했다(값 불일치 0건).
+#   '&'(월)풋 · '?'(월)콜 · 'R'(목)풋 · 'Q'(목)콜 · 'F'먼스리풋 · 'E'먼스리콜 · 'B'현물
+#   ⚠ (월)위클리는 공식 명세 A~Z 밖의 특수문자다 — 명세만으로는 못 찾는다.
+#
+# 비용 실측: 첫 Dispatch 만 ~1,100ms, 이후 요청 5~7ms. 7상품×3주체=21요청 ≈ 150ms.
+#            7222 는 type1(시세) 한도(15초당 60건)를 쓴다 — 라이브와 공유하므로 여유를 둔다.
+WEEKLY_OPTION_FLOW_ENABLED = True
+WEEKLY_OPTION_FLOW_DB = "data/db/option_flow.db"
+# 매분 수집하지 않고 N초 스로틀. _fetch_investor_data(수급 타이머)에 얹혀 돈다.
+WEEKLY_OPTION_FLOW_MIN_INTERVAL_SEC = 55.0
+# 이 시각 이전에는 수집하지 않는다 — 09:00~09:02 는 7221 에서 7초+ 블로킹이 실증된
+# 서버 피크 구간이다(main.py:_fetch_investor_data 주석).
+WEEKLY_OPTION_FLOW_START_AFTER = "09:02"
