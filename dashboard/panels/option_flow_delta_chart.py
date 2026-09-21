@@ -120,10 +120,12 @@ class _Plot(QWidget):
     VALUE_W = 96
     # [613차] 고정 ROW_H → 하한. 실제 높이는 가용 세로에서 계산한다.
     MIN_ROW_H = 26
-    # 상한이 낮으면 **비운 공간이 차트 아래 빈칸으로 남는다** — 아래에서 걷어낸
-    # 세로를 상단 시인성으로 옮기는 것이 613차 지시의 요점이라 넉넉히 준다.
+    # 🔴 상한이 낮으면 **비운 공간이 차트 아래 빈칸으로 남는다.**
+    # 614차 라이브 화면 실측(2026-09-21): 가용 세로가 행당 약 103px 인데 상한
+    # 64 가 640px 에서 잘라 **아래 약 390px 이 빈 채로** 남았다. 아래에서 걷어낸
+    # 세로를 시인성으로 돌리는 것이 613·615차 지시의 요점이므로 상한을 푼다.
     # (그래도 상한은 둔다 — 대형 모니터에서 한 행이 화면을 다 먹지 않게)
-    MAX_ROW_H = 64
+    MAX_ROW_H = 160
     PAD_V = 5
     AXIS_H = 16
 
@@ -214,8 +216,11 @@ class _Plot(QWidget):
             d = self._products.get(key)
 
             # 그룹 경계 — 단위가 바뀌는 자리다. 선 하나로 그것을 알린다.
-            if prev_group is not None and group != prev_group:
-                p.setPen(QPen(QColor(_COL["border"]), 1))
+            # 행 경계는 그보다 옅게 — 행이 커지면 인접 행의 막대가 서로 붙어
+            # 보여 어느 행 것인지 헷갈린다(615차, 행 103px 실측).
+            if prev_group is not None:
+                same = group == prev_group
+                p.setPen(QPen(QColor(_COL["bg3"] if same else _COL["border"]), 1))
                 p.drawLine(2, top - 1, w - 2, top - 1)
             prev_group = group
 
@@ -223,12 +228,14 @@ class _Plot(QWidget):
             unit = (d or {}).get("unit")
             p.setFont(f_lab)
             p.setPen(QPen(QColor(_COL["muted"])))
-            p.drawText(QRectF(2, top, self.LABEL_W - 6, row_h * 0.62),
+            # 🔴 위치를 **행 비율이 아니라 0선(mid) 기준**으로 잡는다.
+            #    비율로 두면 행이 커질수록 라벨이 0선에서 멀어져 어느 행의
+            #    것인지 눈으로 잇기 어려워진다(행 103px 실측에서 확인).
+            p.drawText(QRectF(2, mid - 17, self.LABEL_W - 6, 16),
                        Qt.AlignBottom | Qt.AlignRight, label)
             if unit:
                 p.setFont(f_sub)
-                p.drawText(QRectF(2, top + row_h * 0.58, self.LABEL_W - 6,
-                                  row_h * 0.42),
+                p.drawText(QRectF(2, mid + 1, self.LABEL_W - 6, 13),
                            Qt.AlignTop | Qt.AlignRight, "(%s)" % unit)
 
             # 0선
@@ -239,14 +246,17 @@ class _Plot(QWidget):
                 # 미수집 — 0 으로 그리지 않고 그렇게 적는다(계측 4원칙 ②).
                 p.setFont(f_lab)
                 p.setPen(QPen(QColor(_COL["muted"])))
-                p.drawText(QRectF(x0, top, x1 - x0, row_h),
+                p.drawText(QRectF(x0, mid - 8, x1 - x0, 16),
                            Qt.AlignCenter, "미수집")
                 continue
 
             series: List[Tuple[str, int]] = d["series"]
             scale_max = (shared_max.get(group, 1) if self._shared
                          else max(1, max(abs(int(v)) for _t, v in series)))
-            half = row_h // 2 - 3
+            # 막대 진폭. 여백을 2px 만 남긴다 — 행이 커질수록 이 1px 차이는
+            # 무의미해지지만, 행이 작을 때(MIN_ROW_H=26) 진폭이 10 → 11 로 늘어
+            # 좁은 창에서 체감이 다르다.
+            half = row_h // 2 - 2
 
             col = QColor(_ROW_COLOR.get(key, _COL["blue"]))
             p.setPen(QPen(col, 1))
@@ -269,7 +279,7 @@ class _Plot(QWidget):
             cur = int(d.get("delta", 0))
             p.setFont(f_val)
             p.setPen(QPen(QColor(col if cur else _COL["muted"])))
-            p.drawText(QRectF(x1 + 2, top, self.VALUE_W - 4, row_h * 0.58),
+            p.drawText(QRectF(x1 + 2, mid - 17, self.VALUE_W - 4, 16),
                        Qt.AlignBottom | Qt.AlignRight, _fmt_qty(cur))
             p.setFont(f_sub)
             p.setPen(QPen(QColor(_COL["muted"])))
@@ -278,8 +288,7 @@ class _Plot(QWidget):
                 # 행마다 눈금이 다르다는 사실을 화면에 박는다.
                 # (공통 스케일일 때는 그룹 안이 같으므로 표기하지 않는다)
                 sub += " · ±%s" % format(int(scale_max), ",")
-            p.drawText(QRectF(x1 + 2, top + row_h * 0.56, self.VALUE_W - 4,
-                              row_h * 0.44),
+            p.drawText(QRectF(x1 + 2, mid + 1, self.VALUE_W - 4, 13),
                        Qt.AlignTop | Qt.AlignRight, sub)
 
         # x축 눈금 (09 ~ 15시)
