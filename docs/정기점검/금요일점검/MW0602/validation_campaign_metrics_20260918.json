@@ -1,0 +1,5648 @@
+{
+  "generated_at": "2026-09-18 15:52:29",
+  "days": 28,
+  "criteria": {
+    "tb": {
+      "ic_delta_min": 0.03,
+      "ic_abs_min": 0.05,
+      "min_samples_hz": 800,
+      "min_horizons_pass": 2,
+      "max_retries": 2
+    },
+    "atb_v2": {
+      "ic_delta_min": 0.03,
+      "ic_abs_min": 0.05,
+      "min_samples_hz": 800,
+      "target_horizons": [
+        "3m",
+        "5m"
+      ],
+      "min_horizons_pass": 1,
+      "uniqueness_min": 0.3,
+      "nonevent_ic_min": 0.025,
+      "judgement_start": "[1] tb 5m 첫 판정 이후"
+    },
+    "meta_gate": {
+      "top_ev_min_pt": 0.0,
+      "sep_cost_mult": 2.0,
+      "min_per_tercile": 30,
+      "reopen_gate": {
+        "enabled": true,
+        "metric": "auc_net_directional",
+        "threshold_anchor": "learning.calibration.PredictionCalibrator.DEGENERATE_AUC_MIN",
+        "consecutive_weeks": 4,
+        "start_date": "2026-08-25"
+      }
+    },
+    "quantile": {
+      "coverage_lo": 0.72,
+      "coverage_hi": 0.88,
+      "unc_corr_min": 0.15,
+      "min_samples": 300
+    },
+    "signal_decay": {
+      "min_samples": 10,
+      "cf_window_min": 30
+    },
+    "hurst_regime": {
+      "min_per_bucket": 20
+    },
+    "hurst_gate_shadow": {
+      "min_samples": 20,
+      "cf_window_min": 30
+    },
+    "hurst_threshold_shadow": {
+      "min_samples": 40,
+      "min_days": 10,
+      "oos_start": "2026-08-06",
+      "quantile_lookback_days": 10,
+      "abs_candidates": [
+        0.3,
+        0.36,
+        0.39,
+        0.42,
+        0.45
+      ],
+      "quantile_candidates": [
+        0.1,
+        0.2,
+        0.3
+      ],
+      "promotion_watch": {
+        "enabled": true,
+        "candidate": "abs_0.39",
+        "start_date": "2026-08-24",
+        "min_samples": 40,
+        "min_days": 10,
+        "min_marginal_samples": 20,
+        "marginal_cost_mult": 1.0,
+        "drop_worst_days": 1,
+        "alpha": 0.05,
+        "require_separation_hold": true
+      }
+    },
+    "joint_gate_shadow": {
+      "min_samples": 20,
+      "cf_window_min": 30,
+      "tox_regime_date": "2026-08-03",
+      "episode_gap_min": 5,
+      "evidence_t_abs": 2.0,
+      "jackknife_enabled": true
+    },
+    "kelly_skip": {
+      "min_samples": 20,
+      "block_gate_min_samples": 20,
+      "block_gate_day_sign_p": 0.05,
+      "block_gate_drop_max_sign": true
+    },
+    "open_gap_shadow": {
+      "min_samples": 20,
+      "cf_window_min": 30
+    },
+    "toxicity_block_shadow": {
+      "min_samples": 20,
+      "cf_window_min": 30
+    },
+    "toxicity_recalib_watch": {
+      "min_bars": 1500,
+      "pass_share_lo": 0.15,
+      "pass_share_hi": 0.92,
+      "block_share_max": 0.12,
+      "cancel_sat_max": 0.3,
+      "effective_date": "2026-08-03"
+    },
+    "toxicity_reduce_mult_shadow": {
+      "min_samples": 20,
+      "divergence_min_share": 0.2,
+      "anchor_date": "2026-08-03",
+      "anchor_ceiling": 0.42,
+      "anchor_target_mean": 0.7
+    },
+    "meta_size_zero_shadow": {
+      "min_samples": 20,
+      "min_days": 5,
+      "baseline_win_rate": 0.5,
+      "effective_date": "2026-08-04"
+    },
+    "tp2_hold_shadow": {
+      "min_samples": 15
+    },
+    "loss_tier1_qty1_shadow": {
+      "min_samples": 20,
+      "min_days": 6,
+      "alpha": 0.05
+    },
+    "tp1_trail_shadow": {
+      "min_samples": 15
+    },
+    "grade_ev_inversion": {
+      "min_samples_per_grade": 20
+    },
+    "loss_tier2_remainder_shadow": {
+      "min_samples": 20
+    },
+    "fast_reversal_watch": {
+      "fast_exit_max_sec": 150
+    },
+    "chase_foreign_combo_watch": {
+      "lookback_days": 28
+    },
+    "exit_fill_slippage_watch": {
+      "min_samples_for_note": 20,
+      "min_samples": 60,
+      "min_days": 8,
+      "alpha": 0.05
+    },
+    "regime_exhaustion_watch": {
+      "min_samples": 20,
+      "cf_window_min": 30
+    },
+    "weight_collapse_watch": {
+      "baseline_ratio": 0.448,
+      "target_ratio": 0.2,
+      "target_tolerance": 0.07,
+      "ineffective_ratio_min": 0.4,
+      "overrelax_ratio_max": 0.05,
+      "hz_acc_floor": {
+        "3m": 0.3,
+        "5m": 0.28
+      },
+      "regression_streak_days": 3,
+      "min_days": 3
+    },
+    "horizon_direction_watch": {
+      "horizons": [
+        "3m",
+        "5m",
+        "10m",
+        "15m"
+      ],
+      "conf_bucket_edge": 0.55,
+      "min_samples_high_conf": 100,
+      "min_days": 10,
+      "alpha": 0.05,
+      "bonferroni": true,
+      "dir_acc_floor": 0.45,
+      "regression_streak_weeks": 3
+    },
+    "direction_ev_watch": {
+      "min_samples_per_direction": 20,
+      "entry_source": "SYSTEM_AUTO"
+    },
+    "mfe_capture_watch": {
+      "min_samples_for_note": 20,
+      "entry_source": "SYSTEM_AUTO"
+    },
+    "tp1_geometry_shadow": {
+      "min_samples": 20,
+      "min_days": 3,
+      "entry_source": "SYSTEM_AUTO",
+      "variants": {
+        "current": {
+          "stop_mult": null,
+          "tp1_mult": null
+        },
+        "stop_1.0": {
+          "stop_mult": 1.0,
+          "tp1_mult": null
+        },
+        "tp1_x2": {
+          "stop_mult": null,
+          "tp1_mult": 2.0
+        },
+        "sym_1.0_1.0": {
+          "stop_mult": 1.0,
+          "tp1_mult": 1.0
+        }
+      },
+      "oos_start": "2026-07-31"
+    },
+    "guard_shadow": {
+      "min_samples": 18,
+      "min_days": 3,
+      "missed_upgrade_rate_max": 0.3
+    },
+    "sizing_inversion_watch": {
+      "entry_source": "SYSTEM_AUTO",
+      "min_samples_per_bucket": 20,
+      "min_days": 5,
+      "regression_streak_days": 3,
+      "inversion_gap_krw": 200000
+    },
+    "mean_revert_size_watch": {
+      "entry_source": "SYSTEM_AUTO",
+      "min_samples_per_bucket": 20,
+      "min_days": 5,
+      "regression_streak_days": 3,
+      "win_rate_gap_max": 0.15
+    },
+    "faststop_rerun_watch": {
+      "last_run_date": "2026-08-23",
+      "interim": {
+        "min_fast": 30,
+        "min_useful_days": 11
+      },
+      "full": {
+        "min_fast": 40,
+        "min_useful_days": 15
+      }
+    },
+    "tp1_protect_offset_shadow": {
+      "min_samples": 20,
+      "min_days": 3,
+      "feasibility_clamp": true,
+      "mw0601_sample_start": "2026-08-03",
+      "variants": [
+        "current",
+        "breakeven",
+        "breakeven_plus",
+        "atr_lock_0.50",
+        "atr_lock_0.75",
+        "bar_range",
+        "lock_prop_0.35",
+        "lock_prop_0.50",
+        "lock_prop_0.75"
+      ],
+      "lock_prop_variants": [
+        "lock_prop_0.35",
+        "lock_prop_0.50",
+        "lock_prop_0.75"
+      ],
+      "watch_candidate": "atr_lock_0.75",
+      "watch_min_hooks_per_pc": 70,
+      "watch_min_days_per_pc": 13,
+      "watch_registered": "2026-08-08",
+      "tp2_min_samples": 20,
+      "tp2_min_days": 3,
+      "tp2_variants": [
+        "current",
+        "tp2_0.75",
+        "tp2_1.00",
+        "tp2_1.25",
+        "tp2_2.00"
+      ]
+    },
+    "quantile_tp_shadow": {
+      "min_samples": 20,
+      "min_days": 3,
+      "entry_source": "SYSTEM_AUTO",
+      "variants": [
+        "current",
+        "q_raw",
+        "q_x0.7",
+        "q_blend"
+      ]
+    },
+    "phantom_stop_edge": {
+      "min_samples": 20,
+      "min_days": 5,
+      "alpha": 0.05,
+      "effective_date": "2026-08-05"
+    },
+    "grade_x_promotion": {
+      "entry_source": "SYSTEM_AUTO",
+      "min_samples_per_bucket": 20,
+      "min_days": 5,
+      "alpha": 0.05
+    },
+    "hurst_meanrevert_drag": {
+      "entry_source": "SYSTEM_AUTO",
+      "min_samples": 20,
+      "min_paired_days": 5,
+      "alpha": 0.05
+    },
+    "profit_guard_l1_watch": {
+      "min_activations": 5,
+      "min_days": 5,
+      "alpha": 0.05,
+      "cf_window_min": 30,
+      "sweep_activation_krw": [
+        500000,
+        1000000,
+        1500000,
+        2000000
+      ],
+      "sweep_ratio": [
+        0.2,
+        0.3,
+        0.35,
+        0.5
+      ],
+      "resume_delay_min": [
+        0,
+        15,
+        30,
+        60
+      ],
+      "live_prefs_path": "data/profit_guard_prefs.json"
+    },
+    "conf_discrimination_watch": {
+      "entry_source": "SYSTEM_AUTO",
+      "alpha": 0.05,
+      "min_positions": 40,
+      "min_days": 6,
+      "ens_gap_min": 0.025,
+      "min_predictions": 2000,
+      "model_gap_min_pp": 3.1,
+      "exclude_horizons": [
+        "30m"
+      ]
+    },
+    "direction_value_watch": {
+      "min_entries": 40,
+      "min_days": 6,
+      "alpha": 0.05,
+      "trials": 400,
+      "seed": 428,
+      "min_day_win_share": 0.7
+    },
+    "direction_disposal_watch": {
+      "min_entries": 300,
+      "min_days": 35,
+      "alpha": 0.05,
+      "seed": 458,
+      "start_date": "2026-07-14"
+    },
+    "early_trail_exit_watch": {
+      "min_samples": 60,
+      "min_days": 10,
+      "roundtrip_cost_pt": 0.0716,
+      "primary_arm": "orig",
+      "start_date": "2026-07-14"
+    },
+    "exit_model_watch": {
+      "min_events_per_variable": 10.0,
+      "min_days": 20,
+      "min_oof_auc": 0.55,
+      "label": "y_hold_better"
+    },
+    "entry_timing_value_watch": {
+      "min_entries": 40,
+      "min_days": 6,
+      "alpha": 0.05,
+      "trials": 400,
+      "seed": 429,
+      "entry_window": [
+        "09:05",
+        "14:49"
+      ]
+    },
+    "vol_estimator_watch": {
+      "min_samples": 40,
+      "min_days": 6,
+      "alpha": 0.05,
+      "horizon_min": 30,
+      "min_partial_t": 2.0,
+      "collinearity_warn": 0.9,
+      "report_qty_boundary": true
+    },
+    "dynmc_collapse_feed_watch": {
+      "start_date": "2026-07-31",
+      "min_days": 10,
+      "min_rows": 2000,
+      "pass_rate_gap_min_pp": 5.0,
+      "min_day_share": 0.7,
+      "constout_threshold": 0.15,
+      "constout_warn_margin_pp": 3.0
+    },
+    "cal_guard_flap_watch": {
+      "start_date": "2026-07-31",
+      "min_days": 6,
+      "flip_per_day_warn": 4.0,
+      "conf_jump_warn": 0.1,
+      "action_trigger_conf_jump_median": 0.1,
+      "action_trigger_flip_per_day": 4.0,
+      "action_trigger_consecutive_weeks": 2
+    },
+    "cal_artifact_contamination_watch": {
+      "start_date": "2026-08-11",
+      "min_days": 10,
+      "artifact_share_warn": 0.15,
+      "degen_verdict_disagree_warn": 0.2,
+      "auc_gain_warn": 0.03,
+      "min_day_share": 0.7
+    },
+    "slippage_ticks_per_side": 1.0,
+    "ic_decay_catalog": {
+      "grid": [
+        1,
+        3,
+        5,
+        10,
+        15,
+        30
+      ],
+      "alpha": 0.05,
+      "sig_t_pair": 2.0,
+      "min_days": 20,
+      "tau_min_points": 3,
+      "noise_shuffle": 3,
+      "noise_phase": 2
+    },
+    "sim_fidelity_gate": {
+      "min_samples": 40,
+      "min_days": 8,
+      "entry_source": "SYSTEM_AUTO",
+      "repro_bias_R_max": 0.1,
+      "require_sign_match": true,
+      "repro_gap_sd_max": 1.0,
+      "sign_match_min_sd": 2.0,
+      "day_corr_min": 0.6,
+      "day_sign_agree_min": 0.7,
+      "targets": [
+        "quantile_tp_shadow",
+        "tp1_geometry_shadow",
+        "tp1_protect_offset_shadow",
+        "hurst_threshold_shadow"
+      ],
+      "replay_engine_targets": [
+        "tp1_geometry_shadow",
+        "quantile_tp_shadow",
+        "tp1_protect_offset_shadow"
+      ],
+      "no_replay_targets": [
+        "hurst_threshold_shadow"
+      ],
+      "engine": "v2",
+      "report_both_engines": true
+    },
+    "tp_fill_overshoot_watch": {
+      "min_samples": 20,
+      "entry_source": "SYSTEM_AUTO"
+    },
+    "replay_regime": {
+      "tick_era_start": "2026-08-03",
+      "pre": {
+        "tp_trigger": "close",
+        "protect_mode": "breakeven"
+      },
+      "post": {
+        "tp_trigger": "envelope",
+        "protect_mode": "atr_profit"
+      }
+    },
+    "bar_stop_path_watch": {
+      "min_samples": 25,
+      "min_days": 8,
+      "fav_rate_band": [
+        0.35,
+        0.65
+      ],
+      "sign_test_alpha": 0.01,
+      "guard_live_date": "2026-08-04",
+      "pre_guard_contamination_warn": 0.5
+    },
+    "payoff_geometry_watch": {
+      "min_days": 10,
+      "min_samples": 40,
+      "entry_source": "SYSTEM_AUTO",
+      "dual_metric_divergence_pp": 3.0
+    },
+    "tp1_arm_latency_watch": {
+      "data_start": "2026-08-07",
+      "min_samples": 30,
+      "min_days": 10,
+      "fast_quantile": 0.33,
+      "slow_quantile": 0.67,
+      "atr_strata": 3,
+      "tp2_gap_min_pp": 5.0,
+      "alpha": 0.05
+    },
+    "profit_geometry_lowvol_watch": {
+      "entry_source": "SYSTEM_AUTO",
+      "min_samples_per_bucket": 25,
+      "min_days": 10,
+      "atr_split_pt": 2.6,
+      "profit_atr_ratio_gap_min": 0.25,
+      "alpha": 0.05,
+      "hour_residual": {
+        "strata_edges": [
+          1.25,
+          1.5,
+          2.0,
+          2.6
+        ],
+        "alpha": 0.05,
+        "min_positions_per_cell": 10,
+        "min_days_per_cell": 5,
+        "permutations": 5000,
+        "seed": 462,
+        "consecutive_weeks_required": 2
+      }
+    },
+    "effective_weight_watch": {
+      "entry_source": "SYSTEM_AUTO",
+      "min_samples_per_bucket": 25,
+      "min_days": 10,
+      "weight_sum_low": 0.3,
+      "alpha": 0.05
+    },
+    "const_out_horizon_watch": {
+      "enabled": true,
+      "entry_source": "SYSTEM_AUTO",
+      "heavy_events_min": 3,
+      "min_samples_per_bucket": 20,
+      "min_days": 5,
+      "pnl_gap_krw": 200000,
+      "data_start": "2026-08-12"
+    },
+    "zone_ban_breach_watch": {
+      "entry_source": "SYSTEM_AUTO",
+      "min_samples": 20,
+      "min_days": 10,
+      "banned_zones": [
+        "OTHER",
+        "EXIT_ONLY",
+        "PRE_MARKET"
+      ],
+      "alpha": 0.05
+    },
+    "spread_extreme_watch": {
+      "enabled": true,
+      "entry_source": "SYSTEM_AUTO",
+      "block_ticks": 20.0,
+      "min_samples": 20,
+      "min_days": 6,
+      "pnl_gap_krw": 200000,
+      "alpha": 0.05,
+      "drop_worst_days": 1,
+      "min_valid_ticks": 0.0001,
+      "spread_source": "features_json",
+      "data_start": "2026-05-14"
+    },
+    "early_window_gate_shadow": {
+      "enabled": true,
+      "window_start_hm": "09:20",
+      "window_end_hm": "09:29",
+      "block_reason": "조건부구간",
+      "min_samples": 20,
+      "min_days": 6,
+      "alpha": 0.05,
+      "drop_worst_days": 1,
+      "cf_window_min": 30,
+      "cost_mult": 2.0,
+      "sigma_split_hm": "09:25",
+      "data_start": "2026-06-23",
+      "vol_condition_prereg": {
+        "enabled": true,
+        "start_date": "2026-08-24",
+        "atr_ceiling_source": "ATR_MAX_ENTRY",
+        "keep_size_half": true,
+        "min_samples": 20,
+        "min_days": 6,
+        "cost_mult": 2.0,
+        "drop_worst_days": 1,
+        "alpha": 0.05
+      }
+    },
+    "cb2_restore_shadow": {
+      "enabled": true,
+      "entry_source": "SYSTEM_AUTO",
+      "candidates": [
+        2,
+        3
+      ],
+      "live_limit_setting": "CB_CONSEC_STOP_LIMIT",
+      "start_date": "2026-08-24",
+      "unit": "position",
+      "win_field": "pnl_pts",
+      "min_samples": 20,
+      "min_days": 6,
+      "alpha": 0.05,
+      "drop_worst_days": 1,
+      "posthoc_seed_date": "2026-08-23"
+    },
+    "entry_band_watch": {
+      "enabled": true,
+      "entry_source": "SYSTEM_AUTO",
+      "band_edges": [
+        0.8,
+        3.2,
+        4.4,
+        6.0
+      ],
+      "focus_band": "4.4-6.0",
+      "min_samples": 20,
+      "min_days": 6,
+      "pnl_gap_krw": 200000,
+      "win_rate_gap_pp": 15.0,
+      "alpha": 0.05,
+      "drop_worst_days": 1,
+      "data_start": "2026-06-02"
+    },
+    "trend_efficiency_entry_gate": {
+      "start_date": "2026-09-01",
+      "min_samples": 20,
+      "threshold": 0.32,
+      "cf_window_min": 30,
+      "require_ready": true,
+      "cost_multiple": 2.0,
+      "promotion_order": [
+        "size_multiplier",
+        "block"
+      ],
+      "tp_expansion_watch_quantile": 0.75
+    },
+    "lunch_early_entry_ban_shadow": {
+      "entry_source": "SYSTEM_AUTO",
+      "start_date": "2026-09-04",
+      "window": [
+        "13:00",
+        "13:30"
+      ],
+      "min_samples": 20,
+      "min_days": 10,
+      "alpha": 0.05,
+      "require_atr_residual": true,
+      "drop_worst_day": true
+    },
+    "exhaustion_restore_watch": {
+      "start_date": "2026-09-04",
+      "min_samples": 20,
+      "min_days": 10,
+      "alpha": 0.05,
+      "judgment_horizon_min": 10,
+      "aux_horizons_min": [
+        30
+      ],
+      "strength_tiers": [
+        0.6,
+        0.7
+      ],
+      "require_mr_eligible": true,
+      "drop_worst_day": true,
+      "consecutive_weeks_required": 2
+    },
+    "gp_cross_highvol_watch": {
+      "enabled": true,
+      "entry_source": "SIGNAL",
+      "feature_wired_date": "2026-09-07",
+      "data_start": "2026-09-08",
+      "period": 20,
+      "cross_level": 0.5,
+      "tight_eps": 0.05,
+      "require_tight": true,
+      "atr_bp_min": 16.0,
+      "sim": {
+        "stop_atr": 1.5,
+        "tp_atr": 0.5,
+        "max_bars": 60,
+        "nonoverlap_min": 3,
+        "slip_ticks_per_side": 1.0,
+        "session_start": "09:15",
+        "session_end": "15:10"
+      },
+      "min_samples": 60,
+      "min_days": 40,
+      "alpha": 0.05,
+      "drop_best_days": 3,
+      "require_beat_random_control": true,
+      "control_min_samples": 200,
+      "promotion_order": [
+        "record_only",
+        "shadow",
+        "size_quarter"
+      ],
+      "hard_block_forbidden": true,
+      "size_quarter_mult": 0.25,
+      "cost_source": "BROKER_CHANNEL_SPECS"
+    },
+    "gp_cross_any_watch": {
+      "enabled": true,
+      "entry_source": "SIGNAL",
+      "feature_wired_date": "2026-09-07",
+      "data_start": "2026-09-08",
+      "period": 20,
+      "cross_level": 0.5,
+      "tight_eps": 0.05,
+      "require_tight": false,
+      "atr_bp_min": 16.0,
+      "sim": {
+        "stop_atr": 1.5,
+        "tp_atr": 0.5,
+        "max_bars": 60,
+        "nonoverlap_min": 3,
+        "slip_ticks_per_side": 1.0,
+        "session_start": "09:15",
+        "session_end": "15:10"
+      },
+      "min_samples": 300,
+      "min_days": 40,
+      "alpha": 0.05,
+      "drop_best_days": 3,
+      "require_beat_random_control": true,
+      "control_min_samples": 200,
+      "promotion_order": [
+        "record_only"
+      ],
+      "hard_block_forbidden": true,
+      "role": "control_for_gp_cross_highvol_watch",
+      "cost_source": "BROKER_CHANNEL_SPECS"
+    },
+    "gp_rule_cost": {
+      "cost_source": "BROKER_CHANNEL_SPECS",
+      "channel_detect": "config.constants:detect_broker_channel",
+      "split_by_channel": true,
+      "report_both": true,
+      "slip_ticks_per_side": 1.0,
+      "pt_value_krw": 50000,
+      "contracts": 1,
+      "reference": {
+        "price_ref": 1050.0,
+        "CYBOS": {
+          "one_way_rate": 9.8104e-05,
+          "comm_pt": 0.206018,
+          "roundtrip_pt": 0.246018,
+          "roundtrip_krw": 12301
+        },
+        "CREON": {
+          "one_way_rate": 1.9e-05,
+          "comm_pt": 0.0399,
+          "roundtrip_pt": 0.0799,
+          "roundtrip_krw": 3995
+        }
+      },
+      "legacy_rate_to_replace": 1.5e-05
+    },
+    "gp_rule_long_watch": {
+      "enabled": true,
+      "entry_source": "GP_SHADOW",
+      "rule_doc": "docs/미륵이고도화3/Golden power/검증완료_진입청산규칙_정리.md",
+      "feature_wired_date": "2026-09-07",
+      "data_start": "2026-09-10",
+      "data_start_rule": "GP 섀도 배선 커밋 후 첫 REGULAR 세션",
+      "observation_days": 60,
+      "period": 20,
+      "trigger": "gp_cross_up_20",
+      "cross_level": 0.5,
+      "entry_delay_bars": 0,
+      "hold_minutes": 90,
+      "session_start": "09:20",
+      "session_end": "14:50",
+      "force_exit": "15:05",
+      "stop_loss": null,
+      "non_overlap": true,
+      "max_per_day": null,
+      "forbidden_additions": [
+        "squeeze_prefilter",
+        "opposite_line_convergence"
+      ],
+      "min_samples": 100,
+      "min_days": 40,
+      "unit": "position",
+      "alpha": 0.05,
+      "test": "daily_sign_test",
+      "drop_best_days": 3,
+      "require_beat_exposure_matched_control": true,
+      "control_kind": "exposure_matched_buy_and_hold",
+      "require_alpha_positive": true,
+      "require_beat_random_control": true,
+      "control_min_samples": 200,
+      "promotion_order": [
+        "record_only",
+        "report_only"
+      ],
+      "live_order_forbidden": true
+    },
+    "gp_rule_short_watch": {
+      "enabled": true,
+      "entry_source": "GP_SHADOW",
+      "rule_doc": "docs/미륵이고도화3/Golden power/검증완료_진입청산규칙_정리.md",
+      "feature_wired_date": "2026-09-10",
+      "ma_basis": "cont",
+      "ma_basis_options": [
+        "sess",
+        "cont"
+      ],
+      "ma_basis_evidence_key": "ma_cont_only",
+      "ma_cont_only_minutes_observed": [
+        39,
+        43
+      ],
+      "data_start": "2026-09-10",
+      "data_start_rule": "GP 섀도 배선 커밋 후 첫 REGULAR 세션",
+      "observation_days": 60,
+      "period": 20,
+      "squeeze_gb_max": 0.5,
+      "squeeze_gs_max": 0.5,
+      "squeeze_spread_max": 0.5,
+      "squeeze_valid_bars": 10,
+      "trigger": "gp_cross_dn_20",
+      "cross_level": 0.5,
+      "trigger_gb_max": 0.1,
+      "regime_filter": "ma20_lt_ma60",
+      "ma_fast": 20,
+      "ma_slow": 60,
+      "entry_delay_bars": 0,
+      "session_start": "09:20",
+      "session_end": "14:50",
+      "max_per_day": 1,
+      "exit_gs_target": 1.2,
+      "hold_minutes": 60,
+      "force_exit": "15:05",
+      "opposite_line_stop": null,
+      "min_samples": 30,
+      "min_days": 25,
+      "unit": "position",
+      "alpha": 0.05,
+      "test": "daily_sign_test",
+      "drop_best_days": 3,
+      "require_beta_nonpositive": true,
+      "require_beat_random_control": true,
+      "control_min_samples": 200,
+      "record_no_filter_control": true,
+      "promotion_order": [
+        "record_only",
+        "report_only"
+      ],
+      "live_order_forbidden": true
+    },
+    "gp_rule_challenger_ids": {
+      "long": "GP_LONG_GB90",
+      "short": "GP_SHORT_SQZ60"
+    },
+    "gp_rule_multiplicity": {
+      "exploration_tests_prior": 70,
+      "confirmatory_tests_n": 2,
+      "reset_forbidden": true,
+      "note": "탐색 70 은 소급 근거의 신뢰도를 깎는 값이고, 확증 2 는 전향 판정의 분모다. 둘을 바꿔 쓰지 말 것."
+    },
+    "streak_leg_end_watch": {
+      "enabled": true,
+      "entry_source": "SYSTEM_AUTO",
+      "data_start": "2026-07-14",
+      "population_source": "log",
+      "run_atr_min": 5.0,
+      "dist_atr_max": 1.0,
+      "min_samples": 20,
+      "min_days": 10,
+      "alpha": 0.05,
+      "drop_worst_days": 1,
+      "promotion_order": [
+        "skip_relax_when_leg_end"
+      ],
+      "hard_block_forbidden": true
+    },
+    "leg_entry_early_watch": {
+      "enabled": true,
+      "entry_source": "SYSTEM_AUTO",
+      "data_start": "2026-07-14",
+      "run_atr_max": 2.0,
+      "observe_only": true,
+      "min_samples": 20
+    },
+    "start_date": "2026-07-05",
+    "mode": "standing",
+    "mode_changed_on": "2026-08-01"
+  },
+  "sample_starvation": {
+    "verdict": "OK",
+    "floor": 10,
+    "n_weekly_entries": 30,
+    "starved": false,
+    "projected_28d_entries": 120,
+    "kpis_at_risk": [],
+    "ladder_status": "정상 — 사다리 미적용 상태 유지",
+    "current_step": 0
+  },
+  "tb": {
+    "horizons": {
+      "1m": {
+        "status": "FAIL",
+        "eval_start": "2026-09-11 15:54:34",
+        "n_samples": 1860,
+        "ic_tb": -0.0162,
+        "ic_3class": -0.0172,
+        "n_baseline": 1838,
+        "carried": false,
+        "judged_at": "2026-09-18 15:52:30"
+      },
+      "3m": {
+        "status": "FAIL",
+        "eval_start": "2026-09-04 15:49:34",
+        "n_samples": 1214,
+        "ic_tb": 0.0018,
+        "ic_3class": 0.0315,
+        "n_baseline": 2433,
+        "carried": false,
+        "judged_at": "2026-09-18 15:52:30"
+      },
+      "5m": {
+        "status": "FAIL",
+        "eval_start": "2026-09-04 15:50:10",
+        "n_samples": 725,
+        "carried": true,
+        "judged_at": "2026-09-04 15:47:46",
+        "ic_tb": -0.0331,
+        "ic_3class": -0.05,
+        "reason": "누적중 (725/800) — 최근 판정 유지: FAIL (2026-09-04 판정, n=1014)"
+      },
+      "10m": {
+        "status": "INSUFFICIENT",
+        "eval_start": "2026-08-21 15:52:32",
+        "n_samples": 709,
+        "reason": "OOS 표본 부족 (709 < 800) — 첫 판정 대기"
+      },
+      "15m": {
+        "status": "INSUFFICIENT",
+        "eval_start": "2026-08-21 15:52:32",
+        "n_samples": 457,
+        "reason": "OOS 표본 부족 (457 < 800) — 첫 판정 대기"
+      },
+      "30m": {
+        "status": "INSUFFICIENT",
+        "eval_start": "2026-08-21 15:52:32",
+        "n_samples": 217,
+        "reason": "OOS 표본 부족 (217 < 800) — 첫 판정 대기"
+      }
+    },
+    "verdict": "FAIL",
+    "n_pass": 0
+  },
+  "meta_gate": {
+    "verdict": "FAIL",
+    "src_nonnull_7d": 1846,
+    "n_samples": 2816,
+    "cost_pt": 0.0721,
+    "scoring_break_date": "2026-08-12",
+    "n_pre_break": 0,
+    "n_post_break": 2816,
+    "tercile_n": 938,
+    "top_ev_pt": -0.1155,
+    "mid_ev_pt": -0.065,
+    "bottom_ev_pt": 0.0227,
+    "separation_pt": -0.1382,
+    "required_sep_pt": 0.1442
+  },
+  "quantile": {
+    "verdict": "PASS",
+    "src_nonnull_7d": 1846,
+    "dir": {
+      "n": 4892,
+      "hit_rate": 0.5086,
+      "q50_pos_share": 0.461,
+      "conf_top30_n": 1467,
+      "conf_top30_hit": 0.5037
+    },
+    "n_samples": 4921,
+    "coverage": 0.7208,
+    "coverage_band": [
+      0.72,
+      0.88
+    ],
+    "unc_corr": 0.3334
+  },
+  "signal_decay": {
+    "verdict": "PASS",
+    "resolved_now": 0,
+    "n_resolved": 22,
+    "n_pending": 0,
+    "total_saved_pts": 12.4885,
+    "cf_stop": 9,
+    "cf_tp1": 13,
+    "cf_neither": 0
+  },
+  "hurst_regime": {
+    "verdict": "PASS",
+    "buckets": {
+      "mean-revert": {
+        "n": 228,
+        "avg_ev_krw": -11614.0,
+        "total_ev_krw": -2648061.0,
+        "win_rate": 0.61
+      },
+      "neutral": {
+        "n": 141,
+        "avg_ev_krw": 16056.0,
+        "total_ev_krw": 2263942.0,
+        "win_rate": 0.645
+      },
+      "trend": {
+        "n": 99,
+        "avg_ev_krw": 11694.0,
+        "total_ev_krw": 1157755.0,
+        "win_rate": 0.626
+      }
+    }
+  },
+  "hurst_gate_shadow": {
+    "verdict": "PASS",
+    "resolved_now": 10,
+    "n_resolved": 432,
+    "n_pending": 0,
+    "total_hyp_pnl_pts": -20.1065,
+    "win_rate": 0.7014,
+    "baseline_win_rate": 0.6239,
+    "cf_stop": 129,
+    "cf_tp1": 303,
+    "cf_neither": 0,
+    "cost_pt": 0.0723
+  },
+  "joint_gate_shadow": {
+    "verdict": "PASS",
+    "resolved_now": 10,
+    "mfe_backfilled": 0,
+    "regime_split": {
+      "boundary": "2026-08-03",
+      "pre": {
+        "n": 78,
+        "total_hyp_pnl_pts": -48.4179,
+        "win_rate": 0.6282
+      },
+      "post": {
+        "n": 207,
+        "total_hyp_pnl_pts": -13.2997,
+        "win_rate": 0.7295
+      }
+    },
+    "tox_ceiling_observed": {
+      "pre": [],
+      "post": [
+        0.42
+      ]
+    },
+    "judged_regime": "post",
+    "judged_regime_note": "419차 P0 재보정 **이후**(2026-08-03~) 표본으로 판정",
+    "n_with_mfe": 207,
+    "avg_mfe_30m": 5.5869,
+    "median_mfe_30m": 3.96,
+    "avg_mae_30m": 6.4218,
+    "total_mfe_30m": 1156.48,
+    "total_mae_30m": 1329.32,
+    "cf_capture_of_mfe": -0.0115,
+    "n_mfe_gt_mae": 89,
+    "n_mae_ge_mfe": 118,
+    "n_trend_underestimated": 81,
+    "trend_underestimated_top5": [
+      {
+        "ts": "2026-08-18 11:08:00",
+        "dir": "SHORT",
+        "mfe": 29.16,
+        "mae": 1.3,
+        "hyp": 1.45,
+        "cf": "TP1"
+      },
+      {
+        "ts": "2026-08-18 11:12:00",
+        "dir": "SHORT",
+        "mfe": 28.56,
+        "mae": 0.0,
+        "hyp": 1.27,
+        "cf": "TP1"
+      },
+      {
+        "ts": "2026-08-18 11:05:00",
+        "dir": "SHORT",
+        "mfe": 26.94,
+        "mae": 3.52,
+        "hyp": 1.26,
+        "cf": "TP1"
+      },
+      {
+        "ts": "2026-08-18 11:04:00",
+        "dir": "SHORT",
+        "mfe": 26.7,
+        "mae": 3.76,
+        "hyp": -3.75,
+        "cf": "STOP"
+      },
+      {
+        "ts": "2026-08-18 11:12:00",
+        "dir": "SHORT",
+        "mfe": 24.96,
+        "mae": 0.64,
+        "hyp": 0.66,
+        "cf": "TP1"
+      }
+    ],
+    "n_resolved": 207,
+    "n_pending": 0,
+    "total_hyp_pnl_pts": -13.2997,
+    "win_rate": 0.7295,
+    "baseline_win_rate": 0.6239,
+    "cf_stop": 56,
+    "cf_tp1": 151,
+    "cf_neither": 0,
+    "meta_size_split": {
+      "high": {
+        "n": 38,
+        "total_hyp_pnl_pts": -10.5855,
+        "win_rate": 0.7105
+      },
+      "low": {
+        "n": 169,
+        "total_hyp_pnl_pts": -2.7142,
+        "win_rate": 0.7337
+      }
+    },
+    "meta_fallback_split": {
+      "fallback": {
+        "n": 154,
+        "total_hyp_pnl_pts": -3.6833,
+        "win_rate": 0.7338
+      },
+      "learned": {
+        "n": 53,
+        "total_hyp_pnl_pts": -9.6164,
+        "win_rate": 0.717
+      },
+      "unmeasured_n": 0
+    },
+    "p1_shadow_block": {
+      "n": 207,
+      "kept_n": 192,
+      "freed_n": 15,
+      "kept_share": 0.9275,
+      "freed": {
+        "n": 15,
+        "total_hyp_pnl_pts": -11.8605,
+        "win_rate": 0.6
+      },
+      "shadow_mult_mean": 0.7631
+    },
+    "cost_pt": 0.0713,
+    "episode": {
+      "n": 104,
+      "signals_per_episode": 1.99,
+      "total_hyp_pnl_pts": -3.6827,
+      "win_rate": 0.7308,
+      "max_run": 13,
+      "mean": -0.0354,
+      "sd": 1.9198,
+      "t_stat": -0.188
+    },
+    "evidence": "NO_EVIDENCE",
+    "jackknife": {
+      "n_days": 26,
+      "sign_flip_days": [
+        [
+          "2026-08-07",
+          -13.6765,
+          9.9938
+        ],
+        [
+          "2026-08-24",
+          -7.9947,
+          4.312
+        ],
+        [
+          "2026-08-04",
+          -5.6697,
+          1.987
+        ],
+        [
+          "2026-09-10",
+          -3.6928,
+          0.0101
+        ]
+      ],
+      "fragile": true,
+      "largest_day": {
+        "date": "2026-08-07",
+        "contrib": -13.6765
+      }
+    }
+  },
+  "kelly_skip": {
+    "verdict": "FAIL",
+    "n": 50,
+    "total_pnl_krw": -667446.0,
+    "avg_pnl_krw": -13349.0,
+    "win_rate": 0.68,
+    "baseline_n": 65,
+    "baseline_avg_pnl_krw": 18970.0,
+    "baseline_win_rate": 0.6769,
+    "grade_split": {
+      "A": {
+        "n": 32,
+        "total_pnl_krw": -29018.0,
+        "win_rate": 0.6562
+      },
+      "C": {
+        "n": 50,
+        "total_pnl_krw": -667446.0,
+        "win_rate": 0.68
+      }
+    },
+    "recommendation": "C등급+KellySkip 조합 누적 순손실 확정 — 진입 차단(사이징 0 또는 등급 강등) 단계 도입 검토 (§9 사전등록 원칙에 따라 적용은 수동 결정)"
+  },
+  "open_gap_shadow": {
+    "verdict": "PASS",
+    "resolved_now": 1,
+    "n_resolved": 59,
+    "n_pending": 0,
+    "total_hyp_pnl_pts": -18.5731,
+    "win_rate": 0.678,
+    "baseline_win_rate": 0.6239,
+    "cf_stop": 19,
+    "cf_tp1": 40,
+    "cf_neither": 0,
+    "avg_gap_pt": 20.64,
+    "avg_atr_at_block": 2.67,
+    "cost_pt": 0.0718
+  },
+  "tp2_hold_shadow": {
+    "verdict": "INSUFFICIENT",
+    "resolved_now": 0,
+    "n_resolved": 0,
+    "n_pending": 0,
+    "total_hyp_pnl_pts": 0.0,
+    "win_rate": 0.0,
+    "cf_tp3": 0,
+    "cf_trail_stop": 0,
+    "cf_force_exit": 0,
+    "reason": "TP2 전량종료 표본 부족 (0 < 15) — 판정 보류"
+  },
+  "loss_tier1_qty1_shadow": {
+    "verdict": "PASS",
+    "resolved_now": 2,
+    "n_live_excluded": 0,
+    "n_remainder_excluded": 43,
+    "paired_days": 19,
+    "mean_diff": 0.6211,
+    "days_positive": 13,
+    "sign_p": 0.1671,
+    "t_stat": 1.896,
+    "significant": false,
+    "days": 19,
+    "n_resolved": 85,
+    "n_pending": 0,
+    "total_hyp_pnl_pts": 9.0949,
+    "win_rate": 0.6588,
+    "n_edge_samples": 128,
+    "edge_uncertainty_corr": 0.1844,
+    "edge_ratio_mean": 0.0632,
+    "cost_pt": 0.071,
+    "econ_ok": true,
+    "repro_ok": false,
+    "recommendation": "누적 +9.09pt는 비용 기준을 넘지만 **일자단위로 재현되지 않는다** (13/19일, p=0.1671) — 채택 보류. 누적 수치만으로 움직이지 말 것(313차)"
+  },
+  "tp1_trail_shadow": {
+    "verdict": "FAIL",
+    "resolved_now": 1,
+    "n_resolved": 165,
+    "n_pending": 0,
+    "total_hyp_pnl_pts": 14.1974,
+    "win_rate": 0.5697,
+    "cf_trail_stop": 165,
+    "cf_force_exit": 0,
+    "cost_pt": 0.0713,
+    "recommendation": "qty=1도 4단계 트레일링(update_trailing_stop) 적용 채택 검토 — 주간회의 수동 결정 (§9 사전등록 원칙)"
+  },
+  "grade_ev_inversion": {
+    "verdict": "FAIL",
+    "n_entries_merged": 358,
+    "n_exit_events": 465,
+    "by_grade": {
+      "A": {
+        "n": 254,
+        "avg_pnl_krw": -2050.0,
+        "total_pnl_krw": -520750.0,
+        "win_rate": 0.6339,
+        "min_pnl_krw": -638449.0,
+        "stdev_pnl_krw": 156261.0
+      },
+      "C": {
+        "n": 104,
+        "avg_pnl_krw": 5438.0,
+        "total_pnl_krw": 565590.0,
+        "win_rate": 0.6923,
+        "min_pnl_krw": -248467.0,
+        "stdev_pnl_krw": 124452.0
+      }
+    },
+    "by_grade_qty": {
+      "A": {
+        "1": {
+          "n": 151,
+          "n_win": 102,
+          "total_pnl_krw": 480324.0,
+          "avg_pnl_krw": 3181.0
+        },
+        "2": {
+          "n": 102,
+          "n_win": 58,
+          "total_pnl_krw": -1014414.0,
+          "avg_pnl_krw": -9945.0
+        },
+        "3": {
+          "n": 1,
+          "n_win": 1,
+          "total_pnl_krw": 13340.0,
+          "avg_pnl_krw": 13340.0
+        }
+      },
+      "C": {
+        "1": {
+          "n": 92,
+          "n_win": 65,
+          "total_pnl_krw": 242390.0,
+          "avg_pnl_krw": 2635.0
+        },
+        "2": {
+          "n": 12,
+          "n_win": 7,
+          "total_pnl_krw": 323200.0,
+          "avg_pnl_krw": 26933.0
+        }
+      }
+    },
+    "qty_split": {
+      "A": {
+        "le2": {
+          "n": 253,
+          "n_win": 160,
+          "total_pnl_krw": -534090.0,
+          "avg_pnl_krw": -2111.0
+        },
+        "ge3": {
+          "n": 1,
+          "n_win": 1,
+          "total_pnl_krw": 13340.0,
+          "avg_pnl_krw": 13340.0
+        }
+      },
+      "C": {
+        "le2": {
+          "n": 104,
+          "n_win": 72,
+          "total_pnl_krw": 565590.0,
+          "avg_pnl_krw": 5438.0
+        },
+        "ge3": {}
+      }
+    },
+    "inversion_persists_qty_le2": true,
+    "recommendation": "A등급 누적 순EV 음수 확정(C등급은 양수) — GradeEVGuard (config.settings.GRADE_EV_GUARD_ENABLED) 활성화를 주간회의에서 검토 (§9 사전등록 원칙에 따라 적용은 수동 결정)"
+  },
+  "loss_tier2_remainder_shadow": {
+    "verdict": "INSUFFICIENT",
+    "resolved_now": 1,
+    "n_resolved": 7,
+    "n_pending": 0,
+    "total_hyp_pnl_pts": 4.1967,
+    "win_rate": 1.0,
+    "reason": "tier2 터치 표본 부족 (7 < 20) — 판정 보류"
+  },
+  "fast_reversal_watch": {
+    "verdict": "OBSERVE",
+    "fast_exit_max_sec": 150,
+    "n_fast_hardstop": 88,
+    "by_grade": {},
+    "n_no_tp1": 0
+  },
+  "chase_foreign_combo_watch": {
+    "verdict": "OBSERVE",
+    "lookback_days": 28,
+    "n_matched": 210,
+    "by_grade": {
+      "A": {
+        "n": 46,
+        "total_pnl_krw": 6971.0,
+        "n_loss": 20
+      },
+      "C": {
+        "n": 5,
+        "total_pnl_krw": -84380.0,
+        "n_loss": 3
+      }
+    },
+    "n_combo": 51,
+    "total_pnl_krw": -77409.0
+  },
+  "exit_fill_slippage_watch": {
+    "verdict": "PASS",
+    "assumed_ticks_per_side": 1.0,
+    "n": 212,
+    "avg_slippage_pts": -0.1051,
+    "max_slippage_pts": 0.3,
+    "assumed_slippage_pts_per_side": 0.02,
+    "by_reason": {
+      "하드스톱(틱)": {
+        "n": 105,
+        "avg_pts": 0.014
+      },
+      "손절1차 조기축소": {
+        "n": 28,
+        "avg_pts": 0.0071
+      },
+      "TP1 부분청산 33%": {
+        "n": 39,
+        "avg_pts": -0.0108
+      },
+      "하드스톱": {
+        "n": 21,
+        "avg_pts": -1.1224
+      },
+      "TP2(전량)": {
+        "n": 19,
+        "avg_pts": 0.0021
+      }
+    },
+    "n_bar_excluded": 21,
+    "avg_bar_pts": -1.1224,
+    "n_valid": 191,
+    "avg_valid_pts": 0.0068,
+    "valid_over_assumed_mult": 0.34,
+    "n_valid_days": 19,
+    "day_means": {
+      "2026-08-24": 0.031,
+      "2026-08-25": 0.0317,
+      "2026-08-26": 0.0017,
+      "2026-08-27": -0.0245,
+      "2026-08-28": 0.0371,
+      "2026-08-31": -0.055,
+      "2026-09-01": -0.0292,
+      "2026-09-02": 0.0163,
+      "2026-09-03": 0.0325,
+      "2026-09-04": 0.0,
+      "2026-09-07": 0.0385,
+      "2026-09-08": -0.0211,
+      "2026-09-09": 0.01,
+      "2026-09-10": 0.0517,
+      "2026-09-11": 0.0129,
+      "2026-09-14": 0.0113,
+      "2026-09-15": -0.0127,
+      "2026-09-16": -0.055,
+      "2026-09-17": -0.0238
+    },
+    "avg_valid_day_pts": 0.0028,
+    "median_valid_day_pts": 0.01,
+    "paired_days": 19,
+    "mean_diff": -0.0172,
+    "days_positive": 6,
+    "sign_p": 0.1671,
+    "t_stat": -2.39,
+    "significant": false,
+    "days_over_assumed": 6,
+    "days_majority_over": false,
+    "event_day_split": false,
+    "reason": "일자단위 평균 +0.0028pt vs 가정 0.0200pt, 초과일 6/19, 부호검정 p=0.1671 — **가정과 구분되지 않는다**(가정이 옳다고 증명된 것이 아니다). 이벤트단위는 +0.0068pt(가정의 0.3배)지만 313차상 판정 단위는 일자다"
+  },
+  "regime_exhaustion_watch": {
+    "verdict": "SUPPORTS_GATE",
+    "resolved_now": 8,
+    "n_resolved": 151,
+    "n_pending": 0,
+    "total_hyp_pnl_pts": -44.4503,
+    "cf_stop": 52,
+    "cf_tp1": 99,
+    "cf_neither": 0,
+    "avg_ext_atr_60m": -1.345,
+    "avg_hurst": 0.373,
+    "n_chase_failed": 151,
+    "n_countertrend_failed": 0,
+    "cost_pt": 0.0709,
+    "recommendation": "탈진 반전 가설 지지 — REGIME_EXHAUSTION_GATE_ENABLED 전환(등급 강등) 또는 반대방향 신규 진입 시그널(3-2 제안) 개발을 주간회의에서 검토 (§9 사전등록 원칙 — 즉시 자동 전환 금지)"
+  },
+  "toxicity_block_shadow": {
+    "verdict": "INSUFFICIENT",
+    "resolved_now": 0,
+    "n_resolved": 8,
+    "n_pending": 0,
+    "total_hyp_pnl_pts": 4.3623,
+    "win_rate": 0.875,
+    "baseline_win_rate": 0.6239,
+    "cf_stop": 1,
+    "cf_tp1": 7,
+    "cf_neither": 0,
+    "avg_toxicity_score": 0.4428,
+    "avg_toxicity_score_ma": 0.3907,
+    "reason": "차단 표본 부족 (8 < 20) — 판정 보류"
+  },
+  "gp_cross_channels": {
+    "tight": {
+      "n": 1,
+      "n_days": 1,
+      "net_krw_total": 41674.0,
+      "net_krw_per": 41674.0,
+      "gross_krw_per": 45677.0,
+      "tp_rate": 1.0,
+      "day_pos": 1,
+      "day_neg": 0,
+      "sign_p": 1.0,
+      "net_wo_best_days": 0.0,
+      "control_net_per": 2736.0,
+      "beats_control": true,
+      "verdict": "INSUFFICIENT",
+      "control_n": 124,
+      "reason": "표본 미달 — 신호 1/60 · 거래일 1/40"
+    },
+    "any": {
+      "n": 32,
+      "n_days": 7,
+      "net_krw_total": -1505407.0,
+      "net_krw_per": -47044.0,
+      "gross_krw_per": -42985.0,
+      "tp_rate": 0.5625,
+      "day_pos": 3,
+      "day_neg": 4,
+      "sign_p": 1.0,
+      "net_wo_best_days": -1913611.0,
+      "control_net_per": 2736.0,
+      "beats_control": false,
+      "verdict": "INSUFFICIENT",
+      "control_n": 124,
+      "reason": "표본 미달 — 신호 32/300 · 거래일 7/40",
+      "role": "control_for_gp_cross_highvol_watch"
+    },
+    "data_start": "2026-09-08",
+    "atr_bp_min": 16.0,
+    "cost_rate": 1.9e-05,
+    "cost_source": "BROKER_CHANNEL_SPECS",
+    "slip_ticks_per_side": 1.0,
+    "n_feature_rows": 3457,
+    "n_ready_rows": 3277,
+    "n_key_missing": 0,
+    "n_cross_raw": 285,
+    "n_after_gate": 33,
+    "n_control": 124
+  },
+  "weight_collapse_watch": {
+    "verdict": "ACCEPT",
+    "effective_date": "2026-07-30",
+    "n_days_pre": 0,
+    "n_days_post": 21,
+    "baseline_ratio": null,
+    "daily": {
+      "2026-08-21": {
+        "ratio": 0.2027,
+        "n": 370,
+        "acc": {
+          "3m": 0.3306,
+          "5m": 0.2192
+        }
+      },
+      "2026-08-24": {
+        "ratio": 0.2033,
+        "n": 369,
+        "acc": {
+          "3m": 0.3566,
+          "5m": 0.2966
+        }
+      },
+      "2026-08-25": {
+        "ratio": 0.2033,
+        "n": 369,
+        "acc": {
+          "3m": 0.3648,
+          "5m": 0.3082
+        }
+      },
+      "2026-08-26": {
+        "ratio": 0.2027,
+        "n": 370,
+        "acc": {
+          "3m": 0.3102,
+          "5m": 0.3904
+        }
+      },
+      "2026-08-27": {
+        "ratio": 0.2087,
+        "n": 369,
+        "acc": {
+          "3m": 0.377,
+          "5m": 0.3241
+        }
+      },
+      "2026-08-28": {
+        "ratio": 0.2033,
+        "n": 369,
+        "acc": {
+          "3m": 0.3566,
+          "5m": 0.3655
+        }
+      },
+      "2026-08-31": {
+        "ratio": 0.2033,
+        "n": 369,
+        "acc": {
+          "3m": 0.2727,
+          "5m": 0.2937
+        }
+      },
+      "2026-09-01": {
+        "ratio": 0.2081,
+        "n": 370,
+        "acc": {
+          "3m": 0.3224,
+          "5m": 0.3082
+        }
+      },
+      "2026-09-02": {
+        "ratio": 0.2027,
+        "n": 370,
+        "acc": {
+          "3m": 0.3195,
+          "5m": 0.2958
+        }
+      },
+      "2026-09-03": {
+        "ratio": 0.2027,
+        "n": 370,
+        "acc": {
+          "3m": 0.2881,
+          "5m": 0.2727
+        }
+      },
+      "2026-09-04": {
+        "ratio": 0.2033,
+        "n": 369,
+        "acc": {
+          "3m": 0.3667,
+          "5m": 0.3521
+        }
+      },
+      "2026-09-07": {
+        "ratio": 0.206,
+        "n": 369,
+        "acc": {
+          "3m": 0.3033,
+          "5m": 0.3586
+        }
+      },
+      "2026-09-08": {
+        "ratio": 0.2108,
+        "n": 370,
+        "acc": {
+          "3m": 0.358,
+          "5m": 0.3776
+        }
+      },
+      "2026-09-09": {
+        "ratio": 0.2027,
+        "n": 370,
+        "acc": {
+          "3m": 0.3143,
+          "5m": 0.274
+        }
+      },
+      "2026-09-10": {
+        "ratio": 0.1995,
+        "n": 366,
+        "acc": {
+          "3m": 0.3165,
+          "5m": 0.3237
+        }
+      },
+      "2026-09-11": {
+        "ratio": 0.2027,
+        "n": 370,
+        "acc": {
+          "3m": 0.3484,
+          "5m": 0.3655
+        }
+      },
+      "2026-09-14": {
+        "ratio": 0.2033,
+        "n": 369,
+        "acc": {
+          "3m": 0.2623,
+          "5m": 0.3889
+        }
+      },
+      "2026-09-15": {
+        "ratio": 0.2027,
+        "n": 370,
+        "acc": {
+          "3m": 0.3918,
+          "5m": 0.274
+        }
+      },
+      "2026-09-16": {
+        "ratio": 0.2054,
+        "n": 370,
+        "acc": {
+          "3m": 0.3633,
+          "5m": 0.363
+        }
+      },
+      "2026-09-17": {
+        "ratio": 0.2038,
+        "n": 368,
+        "acc": {
+          "3m": 0.3595,
+          "5m": 0.2828
+        }
+      },
+      "2026-09-18": {
+        "ratio": 0.2033,
+        "n": 369,
+        "acc": {
+          "3m": 0.3402,
+          "5m": 0.3034
+        }
+      }
+    },
+    "post_ratio": 0.204,
+    "effect": "ON_TARGET",
+    "regressed": [],
+    "recommendation": "효과 목표 구간·부작용 없음 — 완화 존치 수용"
+  },
+  "trend_efficiency_entry_gate": {
+    "verdict": "PASS",
+    "resolved_now": 5,
+    "threshold": 0.32,
+    "start_date": "2026-09-01",
+    "n_resolved_skip": 39,
+    "n_resolved_keep": 36,
+    "n_pending": 0,
+    "n_fallback_excluded": 0,
+    "skip_total_hyp_pnl_pts": 6.4642,
+    "keep_total_hyp_pnl_pts": -9.1734,
+    "skip_win_rate": 0.7949,
+    "cf_stop": 8,
+    "cf_tp1": 31,
+    "rule_hurt_days": 7,
+    "rule_hurt_total_pts": 12.7889,
+    "tp_expansion_watch": {
+      "quantile": 0.75,
+      "te_cut": 0.4892,
+      "n": 20,
+      "mfe30_atr_avg": 2.186,
+      "mae30_atr_avg": -3.264,
+      "note": "미검정 — 방향 지지 표본 적립 중(후속2 §7). MFE30은 최댓값이라 고정 TP로 잡을 수 있는 값이 아니다."
+    },
+    "cost_pt": 0.0721
+  },
+  "hour_atr_residual": {
+    "strata_edges": [
+      1.25,
+      1.5,
+      2.0,
+      2.6
+    ],
+    "alpha": 0.05,
+    "min_positions_per_cell": 10,
+    "min_days_per_cell": 5,
+    "permutations": 5000,
+    "seed": 462,
+    "atr_source": "raw_candles ATR(14) — [51] 본판정과 동일 정의(_atr14_at)",
+    "n_positions": 358,
+    "cells": [
+      {
+        "hour": "09",
+        "stratum": "<1.25",
+        "n": 2,
+        "days": 1,
+        "total_pnl_krw": -68272.0,
+        "avg_pnl_krw": -34136.0,
+        "win_rate": 0.5,
+        "status": "INSUFFICIENT"
+      },
+      {
+        "hour": "09",
+        "stratum": "1.25-1.5",
+        "n": 3,
+        "days": 1,
+        "total_pnl_krw": 40722.0,
+        "avg_pnl_krw": 13574.0,
+        "win_rate": 0.6667,
+        "status": "INSUFFICIENT"
+      },
+      {
+        "hour": "09",
+        "stratum": "1.5-2",
+        "n": 4,
+        "days": 2,
+        "total_pnl_krw": -53580.0,
+        "avg_pnl_krw": -13395.0,
+        "win_rate": 0.5,
+        "status": "INSUFFICIENT"
+      },
+      {
+        "hour": "09",
+        "stratum": "2-2.6",
+        "n": 12,
+        "days": 7,
+        "total_pnl_krw": 7913.0,
+        "avg_pnl_krw": 659.0,
+        "win_rate": 0.5833,
+        "status": "OK"
+      },
+      {
+        "hour": "09",
+        "stratum": ">=2.6",
+        "n": 11,
+        "days": 7,
+        "total_pnl_krw": -470278.0,
+        "avg_pnl_krw": -42753.0,
+        "win_rate": 0.5455,
+        "status": "OK"
+      },
+      {
+        "hour": "10",
+        "stratum": "<1.25",
+        "n": 7,
+        "days": 4,
+        "total_pnl_krw": 186985.0,
+        "avg_pnl_krw": 26712.0,
+        "win_rate": 0.7143,
+        "status": "INSUFFICIENT"
+      },
+      {
+        "hour": "10",
+        "stratum": "1.25-1.5",
+        "n": 13,
+        "days": 6,
+        "total_pnl_krw": 31180.0,
+        "avg_pnl_krw": 2398.0,
+        "win_rate": 0.6923,
+        "status": "OK"
+      },
+      {
+        "hour": "10",
+        "stratum": "1.5-2",
+        "n": 20,
+        "days": 12,
+        "total_pnl_krw": -111645.0,
+        "avg_pnl_krw": -5582.0,
+        "win_rate": 0.65,
+        "status": "OK"
+      },
+      {
+        "hour": "10",
+        "stratum": "2-2.6",
+        "n": 15,
+        "days": 9,
+        "total_pnl_krw": -175633.0,
+        "avg_pnl_krw": -11709.0,
+        "win_rate": 0.5333,
+        "status": "OK"
+      },
+      {
+        "hour": "10",
+        "stratum": ">=2.6",
+        "n": 27,
+        "days": 11,
+        "total_pnl_krw": 111258.0,
+        "avg_pnl_krw": 4121.0,
+        "win_rate": 0.6667,
+        "status": "OK"
+      },
+      {
+        "hour": "11",
+        "stratum": "<1.25",
+        "n": 15,
+        "days": 10,
+        "total_pnl_krw": -104109.0,
+        "avg_pnl_krw": -6941.0,
+        "win_rate": 0.6,
+        "status": "OK"
+      },
+      {
+        "hour": "11",
+        "stratum": "1.25-1.5",
+        "n": 12,
+        "days": 10,
+        "total_pnl_krw": -198310.0,
+        "avg_pnl_krw": -16526.0,
+        "win_rate": 0.6667,
+        "status": "OK"
+      },
+      {
+        "hour": "11",
+        "stratum": "1.5-2",
+        "n": 20,
+        "days": 11,
+        "total_pnl_krw": 507977.0,
+        "avg_pnl_krw": 25399.0,
+        "win_rate": 0.75,
+        "status": "OK"
+      },
+      {
+        "hour": "11",
+        "stratum": "2-2.6",
+        "n": 19,
+        "days": 11,
+        "total_pnl_krw": 826856.0,
+        "avg_pnl_krw": 43519.0,
+        "win_rate": 0.8421,
+        "status": "OK"
+      },
+      {
+        "hour": "11",
+        "stratum": ">=2.6",
+        "n": 18,
+        "days": 11,
+        "total_pnl_krw": 16975.0,
+        "avg_pnl_krw": 943.0,
+        "win_rate": 0.6667,
+        "status": "OK"
+      },
+      {
+        "hour": "12",
+        "stratum": "<1.25",
+        "n": 1,
+        "days": 1,
+        "total_pnl_krw": 96961.0,
+        "avg_pnl_krw": 96961.0,
+        "win_rate": 1.0,
+        "status": "INSUFFICIENT"
+      },
+      {
+        "hour": "12",
+        "stratum": "1.25-1.5",
+        "n": 1,
+        "days": 1,
+        "total_pnl_krw": 17520.0,
+        "avg_pnl_krw": 17520.0,
+        "win_rate": 1.0,
+        "status": "INSUFFICIENT"
+      },
+      {
+        "hour": "12",
+        "stratum": "1.5-2",
+        "n": 1,
+        "days": 1,
+        "total_pnl_krw": 62510.0,
+        "avg_pnl_krw": 62510.0,
+        "win_rate": 1.0,
+        "status": "INSUFFICIENT"
+      },
+      {
+        "hour": "12",
+        "stratum": "2-2.6",
+        "n": 2,
+        "days": 1,
+        "total_pnl_krw": 86166.0,
+        "avg_pnl_krw": 43083.0,
+        "win_rate": 0.5,
+        "status": "INSUFFICIENT"
+      },
+      {
+        "hour": "12",
+        "stratum": ">=2.6",
+        "n": 1,
+        "days": 1,
+        "total_pnl_krw": 306082.0,
+        "avg_pnl_krw": 306082.0,
+        "win_rate": 1.0,
+        "status": "INSUFFICIENT"
+      },
+      {
+        "hour": "13",
+        "stratum": "<1.25",
+        "n": 16,
+        "days": 8,
+        "total_pnl_krw": -321444.0,
+        "avg_pnl_krw": -20090.0,
+        "win_rate": 0.5,
+        "status": "OK"
+      },
+      {
+        "hour": "13",
+        "stratum": "1.25-1.5",
+        "n": 12,
+        "days": 7,
+        "total_pnl_krw": -473351.0,
+        "avg_pnl_krw": -39446.0,
+        "win_rate": 0.5833,
+        "status": "OK"
+      },
+      {
+        "hour": "13",
+        "stratum": "1.5-2",
+        "n": 30,
+        "days": 10,
+        "total_pnl_krw": 73796.0,
+        "avg_pnl_krw": 2460.0,
+        "win_rate": 0.7,
+        "status": "OK"
+      },
+      {
+        "hour": "13",
+        "stratum": "2-2.6",
+        "n": 16,
+        "days": 9,
+        "total_pnl_krw": -379430.0,
+        "avg_pnl_krw": -23714.0,
+        "win_rate": 0.4375,
+        "status": "OK"
+      },
+      {
+        "hour": "13",
+        "stratum": ">=2.6",
+        "n": 3,
+        "days": 3,
+        "total_pnl_krw": 557121.0,
+        "avg_pnl_krw": 185707.0,
+        "win_rate": 1.0,
+        "status": "INSUFFICIENT"
+      },
+      {
+        "hour": "14",
+        "stratum": "<1.25",
+        "n": 12,
+        "days": 5,
+        "total_pnl_krw": -232974.0,
+        "avg_pnl_krw": -19414.0,
+        "win_rate": 0.75,
+        "status": "OK"
+      },
+      {
+        "hour": "14",
+        "stratum": "1.25-1.5",
+        "n": 20,
+        "days": 12,
+        "total_pnl_krw": -679922.0,
+        "avg_pnl_krw": -33996.0,
+        "win_rate": 0.55,
+        "status": "OK"
+      },
+      {
+        "hour": "14",
+        "stratum": "1.5-2",
+        "n": 24,
+        "days": 11,
+        "total_pnl_krw": 682480.0,
+        "avg_pnl_krw": 28437.0,
+        "win_rate": 0.7917,
+        "status": "OK"
+      },
+      {
+        "hour": "14",
+        "stratum": "2-2.6",
+        "n": 9,
+        "days": 5,
+        "total_pnl_krw": 58421.0,
+        "avg_pnl_krw": 6491.0,
+        "win_rate": 0.5556,
+        "status": "INSUFFICIENT"
+      },
+      {
+        "hour": "14",
+        "stratum": ">=2.6",
+        "n": 12,
+        "days": 5,
+        "total_pnl_krw": -357135.0,
+        "avg_pnl_krw": -29761.0,
+        "win_rate": 0.5833,
+        "status": "OK"
+      }
+    ],
+    "by_hour": {
+      "09": {
+        "n": 32,
+        "days": 16,
+        "total_pnl_krw": -543495.0,
+        "avg_pnl_krw": -16984.0,
+        "win_rate": 0.5625,
+        "neg_days": 8,
+        "obs_days": 16,
+        "sign_p": 1.0,
+        "obs_diff_withinday": -2559.4,
+        "p_withinday": 0.3759,
+        "blocks_withinday": 15,
+        "obs_diff_withinday_atr": 20467.3,
+        "p_withinday_atr": 0.5079,
+        "blocks_withinday_atr": 11,
+        "cells_ok": 2,
+        "escalate_candidate": false
+      },
+      "10": {
+        "n": 82,
+        "days": 29,
+        "total_pnl_krw": 42145.0,
+        "avg_pnl_krw": 514.0,
+        "win_rate": 0.6463,
+        "neg_days": 16,
+        "obs_days": 29,
+        "sign_p": 0.7111,
+        "obs_diff_withinday": -14304.4,
+        "p_withinday": 0.0958,
+        "blocks_withinday": 26,
+        "obs_diff_withinday_atr": -59202.6,
+        "p_withinday_atr": 0.0214,
+        "blocks_withinday_atr": 26,
+        "cells_ok": 4,
+        "escalate_candidate": false
+      },
+      "11": {
+        "n": 84,
+        "days": 36,
+        "total_pnl_krw": 1049389.0,
+        "avg_pnl_krw": 12493.0,
+        "win_rate": 0.7143,
+        "neg_days": 12,
+        "obs_days": 36,
+        "sign_p": 0.0652,
+        "obs_diff_withinday": 31468.4,
+        "p_withinday": 0.9544,
+        "blocks_withinday": 33,
+        "obs_diff_withinday_atr": 50035.6,
+        "p_withinday_atr": 0.9902,
+        "blocks_withinday_atr": 30,
+        "cells_ok": 5,
+        "escalate_candidate": false
+      },
+      "12": {
+        "n": 6,
+        "days": 3,
+        "total_pnl_krw": 569239.0,
+        "avg_pnl_krw": 94873.0,
+        "win_rate": 0.8333,
+        "neg_days": 0,
+        "obs_days": 3,
+        "sign_p": 0.25,
+        "obs_diff_withinday": 117138.4,
+        "p_withinday": 0.907,
+        "blocks_withinday": 3,
+        "obs_diff_withinday_atr": 83484.5,
+        "p_withinday_atr": 0.8836,
+        "blocks_withinday_atr": 4,
+        "cells_ok": 0,
+        "escalate_candidate": false
+      },
+      "13": {
+        "n": 77,
+        "days": 24,
+        "total_pnl_krw": -543308.0,
+        "avg_pnl_krw": -7056.0,
+        "win_rate": 0.5974,
+        "neg_days": 16,
+        "obs_days": 24,
+        "sign_p": 0.1516,
+        "obs_diff_withinday": -3682.6,
+        "p_withinday": 0.5203,
+        "blocks_withinday": 23,
+        "obs_diff_withinday_atr": -13762.6,
+        "p_withinday_atr": 0.3393,
+        "blocks_withinday_atr": 26,
+        "cells_ok": 4,
+        "escalate_candidate": false
+      },
+      "14": {
+        "n": 77,
+        "days": 27,
+        "total_pnl_krw": -529130.0,
+        "avg_pnl_krw": -6872.0,
+        "win_rate": 0.6623,
+        "neg_days": 16,
+        "obs_days": 27,
+        "sign_p": 0.4421,
+        "obs_diff_withinday": 1941.0,
+        "p_withinday": 0.203,
+        "blocks_withinday": 26,
+        "obs_diff_withinday_atr": -9822.9,
+        "p_withinday_atr": 0.3667,
+        "blocks_withinday_atr": 25,
+        "cells_ok": 4,
+        "escalate_candidate": false
+      }
+    },
+    "strata_labels": [
+      "<1.25",
+      "1.25-1.5",
+      "1.5-2",
+      "2-2.6",
+      ">=2.6"
+    ],
+    "n_days": 47,
+    "verdict": "OBSERVE",
+    "dropped": {
+      "total_positions": 358,
+      "no_atr": 0,
+      "bad_ts": 0
+    },
+    "consecutive_weeks_required": 2,
+    "escalate_hours": [],
+    "recommendation": "ATR 층화 후 잔여 열위가 남는 시간대가 없다 — **시간 기반 처방 금지**. 시간대별 손익 차이는 그 시간대에 몰린 ATR 조건으로 설명된다(O-69 판정과 동일)"
+  },
+  "regime_exhaustion_unique_split": {
+    "verdict": "OBSERVE",
+    "te_threshold": 0.32,
+    "n_fired": 151,
+    "n_executed": 41,
+    "n_not_executed": 107,
+    "by_cohort": {
+      "te_lt": {
+        "n": 8,
+        "avg_pnl_krw": -65504.0,
+        "total_pnl_krw": -524031.0,
+        "win_rate": 0.375,
+        "min_pnl_krw": -190482.0,
+        "days": 8
+      },
+      "te_ge": {
+        "n": 33,
+        "avg_pnl_krw": -8842.0,
+        "total_pnl_krw": -291773.0,
+        "win_rate": 0.6364,
+        "min_pnl_krw": -177555.0,
+        "days": 16
+      },
+      "te_missing": {
+        "n": 0
+      }
+    },
+    "total_net_krw": -815804.0,
+    "total_days": 16,
+    "recommendation": "고유 코호트(te>=0.32) n=33 **-291,773원** / 중복 코호트(te<0.32) n=8 -524,031원 — `[57]` 승격 시 `[18]`의 한계 효과는 고유 코호트에만 남는다. **두 채널의 반사실을 더하지 말 것**(이중계상)"
+  },
+  "exhaustion_restore_watch": {
+    "verdict": "INSUFFICIENT",
+    "judgment_start": "2026-09-04",
+    "judgment_horizon_min": 10,
+    "aux_horizons_min": [
+      30
+    ],
+    "require_mr_eligible": true,
+    "strength_tiers": [
+      0.6,
+      0.7
+    ],
+    "restore_mode": "shadow",
+    "mr_weak_min": 0.6,
+    "mr_strong_min": 0.7,
+    "dropped": {
+      "scanned": 20220,
+      "bad_json": 0,
+      "no_vwap": 0
+    },
+    "n_firings_all": 99,
+    "n_bull": 98,
+    "n_bear": 1,
+    "pre_window": {
+      "range": [
+        "2026-07-28",
+        "2026-09-03"
+      ],
+      "n_all": 62,
+      "n_mr_eligible": 21,
+      "judgment_cohort": {
+        "n": 21,
+        "mean_pt": -0.3838,
+        "median_pt": 0.42,
+        "hit_rate": 0.5714,
+        "days": 10,
+        "days_positive": 6,
+        "days_negative": 4,
+        "sign_p": 0.7539,
+        "worst_day": "2026-07-31",
+        "mean_ex_worst_day": 1.1067
+      },
+      "note": "🔴 이 구간에서 채널 설계를 정했다 — 판정 무영향·집행 근거 아님"
+    },
+    "n_judgment_cohort": 18,
+    "main": {
+      "n": 18,
+      "mean_pt": 0.2044,
+      "median_pt": 0.02,
+      "hit_rate": 0.5,
+      "days": 8,
+      "days_positive": 5,
+      "days_negative": 3,
+      "sign_p": 0.7266,
+      "worst_day": "2026-09-14",
+      "mean_ex_worst_day": 0.8655
+    },
+    "aux": {
+      "h30": {
+        "n": 16,
+        "mean_pt": -0.2463,
+        "median_pt": -1.01,
+        "hit_rate": 0.4375,
+        "days": 8,
+        "days_positive": 4,
+        "days_negative": 4,
+        "sign_p": 1.0,
+        "worst_day": "2026-09-14",
+        "mean_ex_worst_day": 0.5179
+      }
+    },
+    "by_tier": {
+      "strong(>=0.70)": {
+        "n": 11,
+        "mean_pt": 0.7745,
+        "median_pt": 0.04,
+        "hit_rate": 0.5455,
+        "days": 7,
+        "days_positive": 5,
+        "days_negative": 2,
+        "sign_p": 0.4531,
+        "worst_day": "2026-09-07",
+        "mean_ex_worst_day": 1.5192
+      },
+      "weak(0.60~0.70)": {
+        "n": 7,
+        "mean_pt": -0.6914,
+        "median_pt": -0.5,
+        "hit_rate": 0.4286,
+        "days": 5,
+        "days_positive": 2,
+        "days_negative": 3,
+        "sign_p": 1.0,
+        "worst_day": "2026-09-14",
+        "mean_ex_worst_day": 0.5433
+      }
+    },
+    "reason": "판정 코호트 표본 부족 (18건 < 20건) — 보류. 그 사이 `EXHAUSTION_RESTORE_MODE` 는 \"shadow\" 유지"
+  },
+  "lunch_early_entry_ban_shadow": {
+    "verdict": "INSUFFICIENT",
+    "window": [
+      "13:00",
+      "13:30"
+    ],
+    "judgment_start": "2026-09-04",
+    "enforced": false,
+    "entry_source_filter": "SYSTEM_AUTO",
+    "require_atr_residual": true,
+    "dropped": {
+      "total_positions": 358,
+      "no_atr": 0,
+      "bad_ts": 0
+    },
+    "pre_window": {
+      "range": [
+        "2026-07-09",
+        "2026-09-03"
+      ],
+      "cohort": {
+        "n": 38,
+        "avg_pnl_krw": -13440.0,
+        "total_pnl_krw": -510721.0,
+        "win_rate": 0.5526,
+        "min_pnl_krw": -202268.0,
+        "days": 20,
+        "neg_days": 13,
+        "worst_day": "2026-07-21",
+        "worst_day_pnl_krw": -190900.0,
+        "total_ex_worst_day_krw": -319821.0
+      },
+      "rest": {
+        "n": 264,
+        "avg_pnl_krw": 419.0,
+        "total_pnl_krw": 110679.0,
+        "win_rate": 0.6515,
+        "min_pnl_krw": -638449.0,
+        "days": 37,
+        "neg_days": 19,
+        "worst_day": "2026-08-19",
+        "worst_day_pnl_krw": -630257.0,
+        "total_ex_worst_day_krw": 740936.0
+      },
+      "note": "🔴 창을 이 구간에서 골랐다 — 사후탐색이라 집행 근거가 아니다"
+    },
+    "cohort": {},
+    "rest": {
+      "n": 56,
+      "avg_pnl_krw": 7944.0,
+      "total_pnl_krw": 444882.0,
+      "win_rate": 0.7143,
+      "min_pnl_krw": -186086.0,
+      "days": 10,
+      "neg_days": 4,
+      "worst_day": "2026-09-15",
+      "worst_day_pnl_krw": -345800.0,
+      "total_ex_worst_day_krw": 790682.0
+    },
+    "n_cohort": 0,
+    "n_days": 0,
+    "reason": "코호트 표본 부족 (0건 < 20건) — 판정 보류. 그 사이 라이브는 무변경이며 진입 금지를 집행하지 않는다"
+  },
+  "direction_ev_watch": {
+    "verdict": "FAIL",
+    "entry_source_filter": "SYSTEM_AUTO",
+    "by_direction": {
+      "SHORT": {
+        "n": 258,
+        "avg_pnl_krw": -1588.0,
+        "total_pnl_krw": -409821.0,
+        "win_rate": 0.6473,
+        "min_pnl_krw": -523099.0,
+        "stdev_pnl_krw": 141697.0
+      },
+      "LONG": {
+        "n": 92,
+        "avg_pnl_krw": 11747.0,
+        "total_pnl_krw": 1080728.0,
+        "win_rate": 0.6739,
+        "min_pnl_krw": -473373.0,
+        "stdev_pnl_krw": 136594.0
+      }
+    },
+    "n_entries_merged": 350,
+    "n_rows_raw": 456,
+    "recommendation": "SHORT 방향만 평균 순EV 음수(-1,588원, n=258, 최대손실 -523,099원, 표준편차 141,697원) — 해당 방향 min_conf 상향/사이징 축소를 섀도로 먼저 검증할지 주간회의에서 결정(즉시 적용 아님). 최대손실·표준편차로 단일건 지배 여부를 먼저 확인할 것."
+  },
+  "mfe_capture_watch": {
+    "verdict": "OBSERVE",
+    "entry_source_filter": "SYSTEM_AUTO",
+    "n_entries": 350,
+    "n_rows_raw": 456,
+    "capture_in_hold_pooled": 0.1094,
+    "avg_left_in_hold_pt": 1.948,
+    "n_hold": 324,
+    "capture_to_close_pooled": 0.0075,
+    "avg_left_to_close_pt": 11.015,
+    "n_close": 347,
+    "capture_to_close_pooled_winners": 0.1072,
+    "n_winners": 230,
+    "avg_mfe_hold_pt": 2.025,
+    "avg_mfe_close_pt": 11.004,
+    "avg_realized_pt": 0.068,
+    "most_left5": [
+      {
+        "ts": "2026-07-29 10:38:46",
+        "dir": "SHORT",
+        "realized_pt": 9.36,
+        "mfe_hold_pt": 12.34,
+        "mfe_close_pt": 120.72
+      },
+      {
+        "ts": "2026-07-29 10:46:45",
+        "dir": "SHORT",
+        "realized_pt": 12.18,
+        "mfe_hold_pt": 12.96,
+        "mfe_close_pt": 98.46
+      },
+      {
+        "ts": "2026-08-18 10:08:58",
+        "dir": "SHORT",
+        "realized_pt": -1.99,
+        "mfe_hold_pt": 0.67,
+        "mfe_close_pt": 60.53
+      },
+      {
+        "ts": "2026-08-18 10:15:58",
+        "dir": "SHORT",
+        "realized_pt": -0.5,
+        "mfe_hold_pt": 1.67,
+        "mfe_close_pt": 61.99
+      },
+      {
+        "ts": "2026-08-18 09:59:57",
+        "dir": "SHORT",
+        "realized_pt": 0.34,
+        "mfe_hold_pt": 2.08,
+        "mfe_close_pt": 62.42
+      }
+    ]
+  },
+  "guard_shadow": {
+    "verdict": "PASS",
+    "n_samples": 120,
+    "n_days": 20,
+    "pc": "MW0602",
+    "n_live_measure_failed": 0,
+    "fair_holdout_invalid_n": 120,
+    "fair_holdout_invalid_rate": 1.0,
+    "fair_holdout": {
+      "n": 0,
+      "n_excluded_invalid": 120,
+      "note": "⚠ 유효 표본 0 — 측정된 120행 전부 현행이 홀드아웃을 학습한 상태다(457차). 이 채널의 fair_* 수치를 성능차로 인용하지 말 것."
+    },
+    "n_fair": 120,
+    "missed_upgrade_n": 1,
+    "missed_upgrade_rate": 0.0083,
+    "mean_distortion": -0.0675,
+    "by_horizon": {
+      "1m": {
+        "n": 20,
+        "missed": 0
+      },
+      "3m": {
+        "n": 20,
+        "missed": 1
+      },
+      "5m": {
+        "n": 20,
+        "missed": 0
+      },
+      "10m": {
+        "n": 20,
+        "missed": 0
+      },
+      "15m": {
+        "n": 20,
+        "missed": 0
+      },
+      "30m": {
+        "n": 20,
+        "missed": 0
+      }
+    }
+  },
+  "intraday_cv_watch": {
+    "verdict": "OBSERVE",
+    "n_samples": 29,
+    "n_days": 8,
+    "by_horizon": {
+      "1m": {
+        "n": 3,
+        "mean_cv": 0.4309,
+        "std_cv": 0.0268,
+        "mean_distortion": -0.2889,
+        "fair_would_hold_rate": 1.0
+      },
+      "3m": {
+        "n": 8,
+        "mean_cv": 0.4742,
+        "std_cv": 0.0347,
+        "mean_distortion": -0.3279,
+        "fair_would_hold_rate": 1.0
+      },
+      "5m": {
+        "n": 9,
+        "mean_cv": 0.4556,
+        "std_cv": 0.0732,
+        "mean_distortion": -0.3193,
+        "fair_would_hold_rate": 1.0
+      },
+      "10m": {
+        "n": 3,
+        "mean_cv": 0.5129,
+        "std_cv": 0.0878,
+        "mean_distortion": -0.3343,
+        "fair_would_hold_rate": 1.0
+      },
+      "15m": {
+        "n": 3,
+        "mean_cv": 0.5128,
+        "std_cv": 0.04,
+        "mean_distortion": -0.4253,
+        "fair_would_hold_rate": 1.0
+      },
+      "30m": {
+        "n": 3,
+        "mean_cv": 0.6454,
+        "std_cv": 0.0503,
+        "mean_distortion": -0.3962,
+        "fair_would_hold_rate": 1.0
+      }
+    }
+  },
+  "tp1_protect_giveback_watch": {
+    "verdict": "OBSERVE",
+    "n": 171,
+    "n_days": 32,
+    "n_gaveback": 126,
+    "n_ranfurther": 45,
+    "mean_give_pt": 0.0449,
+    "median_give_pt": 0.36,
+    "mean_paper_pt": 1.1439,
+    "median_paper_pt": 0.88,
+    "mean_offset_pt": 0.4521,
+    "median_giveback_rate": 0.4091,
+    "offset_vs_give_corr": -0.1136,
+    "by_mode": {
+      "atr_profit": 169,
+      "breakeven": 2
+    },
+    "by_mode_stats": {
+      "atr_profit": {
+        "n": 169,
+        "n_days": 32,
+        "n_gaveback": 125,
+        "n_ranfurther": 44,
+        "mean_give_pt": 0.0489,
+        "median_give_pt": 0.36,
+        "mean_paper_pt": 1.1466,
+        "median_paper_pt": 0.88,
+        "mean_offset_pt": 0.4574,
+        "median_giveback_rate": 0.4091,
+        "offset_vs_give_corr": -0.1218
+      },
+      "breakeven": {
+        "n": 2,
+        "n_days": 1,
+        "n_gaveback": 1,
+        "n_ranfurther": 1,
+        "mean_give_pt": -0.3,
+        "median_give_pt": -0.3,
+        "mean_paper_pt": 0.91,
+        "median_paper_pt": 0.91,
+        "mean_offset_pt": 0.0,
+        "median_giveback_rate": -0.3297
+      }
+    },
+    "modes_mixed": true
+  },
+  "limit_pin_watch": {
+    "verdict": "OBSERVE",
+    "n_session_bars": 19445,
+    "n_pinned_bars": 29,
+    "days": [
+      {
+        "date": "2026-07-31",
+        "side": "UP",
+        "price": 1036.28,
+        "n_bars": 29,
+        "from": "14:21",
+        "to": "15:06",
+        "span_min": 46,
+        "n_missing_bars": 17,
+        "extreme_liquid_touches": 13,
+        "max_liquid_vol": 642
+      }
+    ],
+    "n_days": 1,
+    "mfe_contaminated_days": [],
+    "mfe_contamination": false
+  },
+  "unreachable_cf_watch": {
+    "verdict": "OBSERVE",
+    "limit_days": {
+      "2026-07-31": {
+        "UP": 1036.28
+      }
+    },
+    "n_unreachable": 5,
+    "by_table": {
+      "hurst_gate_shadow": 1,
+      "joint_gate_shadow": 1,
+      "regime_exhaustion_shadow": 3
+    },
+    "rows": [
+      {
+        "table": "hurst_gate_shadow",
+        "ts": "2026-07-31 14:17:00",
+        "dir": "LONG",
+        "entry": 1036.28,
+        "tp1": 1037.0686725,
+        "limit": 1036.28,
+        "cf_outcome": "STOP",
+        "hyp_pnl_pts": -2.366
+      },
+      {
+        "table": "joint_gate_shadow",
+        "ts": "2026-07-31 14:17:00",
+        "dir": "LONG",
+        "entry": 1036.28,
+        "tp1": 1037.0686725,
+        "limit": 1036.28,
+        "cf_outcome": "STOP",
+        "hyp_pnl_pts": -2.366
+      },
+      {
+        "table": "regime_exhaustion_shadow",
+        "ts": "2026-07-31 10:05:00",
+        "dir": "LONG",
+        "entry": 1036.26,
+        "tp1": 1037.4020175,
+        "limit": 1036.28,
+        "cf_outcome": "STOP",
+        "hyp_pnl_pts": -3.4261
+      },
+      {
+        "table": "regime_exhaustion_shadow",
+        "ts": "2026-07-31 10:09:00",
+        "dir": "LONG",
+        "entry": 1035.98,
+        "tp1": 1036.9168275,
+        "limit": 1036.28,
+        "cf_outcome": "STOP",
+        "hyp_pnl_pts": -2.8105
+      },
+      {
+        "table": "regime_exhaustion_shadow",
+        "ts": "2026-07-31 14:17:00",
+        "dir": "LONG",
+        "entry": 1036.28,
+        "tp1": 1037.0686725,
+        "limit": 1036.28,
+        "cf_outcome": "STOP",
+        "hyp_pnl_pts": -2.366
+      }
+    ],
+    "sensitivity": {
+      "hurst_gate_shadow": {
+        "n": 432,
+        "n_excluded": 1,
+        "total_hyp_pnl_pts": -20.1065,
+        "total_if_excluded": -17.7405,
+        "delta": 2.366
+      },
+      "joint_gate_shadow": {
+        "n": 285,
+        "n_excluded": 1,
+        "total_hyp_pnl_pts": -61.7176,
+        "total_if_excluded": -59.3516,
+        "delta": 2.366
+      },
+      "regime_exhaustion_shadow": {
+        "n": 151,
+        "n_excluded": 3,
+        "total_hyp_pnl_pts": -44.4503,
+        "total_if_excluded": -35.8477,
+        "delta": 8.6026
+      }
+    },
+    "excluded_hyp_pnl_pts": -13.3346
+  },
+  "sizing_inversion_watch": {
+    "verdict": "INSUFFICIENT",
+    "entry_source_filter": "SYSTEM_AUTO",
+    "n_positions": 358,
+    "n_days": 47,
+    "qty_source": {
+      "entry_qty_recorded": 358,
+      "leg_sum_fallback": 0,
+      "note": "entry_qty(진입시 기록)가 있으면 우선, 없으면 청산레그 합(sum). 405차의 max 집계는 409차 실측 반증으로 폐기(417차 ①)."
+    },
+    "by_bucket": {
+      "qty1": {
+        "n": 243,
+        "avg_pnl_krw": 2974.0,
+        "total_pnl_krw": 722714.0,
+        "win_rate": 0.6872,
+        "min_pnl_krw": -473373.0
+      },
+      "qty2": {
+        "n": 114,
+        "avg_pnl_krw": -6063.0,
+        "total_pnl_krw": -691214.0,
+        "win_rate": 0.5702,
+        "min_pnl_krw": -638449.0
+      },
+      "qty3plus": {
+        "n": 1,
+        "avg_pnl_krw": 13340.0,
+        "total_pnl_krw": 13340.0,
+        "win_rate": 1.0,
+        "min_pnl_krw": 13340.0
+      }
+    },
+    "excl_above_cap_krw": {
+      "1": 722714.0,
+      "2": 31500.0,
+      "3": 44840.0
+    },
+    "all_krw": 44840.0,
+    "n_qty3plus_recent": 0,
+    "structural_block": true,
+    "structural_reason": "최근 5거래일 qty≥3 **체결** 0건 (누적 1건). 원인은 사이징 자본이 아니라 **사이저 뒤의 곱셈 게이트 체인**이다 — 417차 로그 실측(2026-07-14~07-31)에서 `[Sizer]`는 379건 중 86건(22.7%)이 3계약 이상을 출력했고 최대 6계약까지 나왔으나, 진입까지 간 69건이 전부 meta·tox 등 배수에 눌려 1~2계약으로 체결됐다(qty≥3 체결 0건, 최빈 조합 meta≈0.50 × tox=0.70 ≈ 0.35). 따라서 이 버킷은 **기다린다고 채워지지 않지만**, ⑧ 해제로 base_risk가 오르거나 게이트 배수가 완화되면 즉시 표본이 생긴다 — 죽은 채널이 아니라 **눌려 잠든** 채널이다. CLAUDE.md ⑧이 이 채널의 누적 판정을 MAX_CONTRACTS 인하 근거로 지정하고 있으므로, 지금 판정이 필요하다면 과거 3계약+ 구간(2026-06-10~07-10) 포지션 단위 재분석을 별도 근거로 쓸 것. \n\n> **[2026-08-14 MW0602 470차 원인 갱신] 병목은 게이트 배수가 아니라 브로커 증거금 상한이다.** 431차 배포(08-05) 이후 8거래일 74포지션 전부 qty≤2, qty≥3 **0건**(마지막은 431차 이전 2026-07-31). 08-14 실측에서 사이저 산출 3계약이 진입까지 간 5건은 **5/5 전부 `[MarginCap]`으로 2계약에 잘렸다** (`main.py:15741 get_order_available_qty()` → `:15757`). 목표자본 5천만원 vs 실제 모의잔고 2,972만원의 괴리가 그 상한을 만든다. **즉 이 채널은 '표본이 천천히 쌓이는 중'이 아니라 ⑧이 해제되기 전에는 켜지지 않는다** — 해제 순서는 `실전 자본 재설정 → 증거금 상한 상승 → qty≥3 발생 → 표본 축적 → 판정`이다. 부수적으로 `MAX_CONTRACTS=3`은 현재 한 번도 구속하지 않는 죽은 파라미터다(값은 타당하니 되돌리지 말 것). ⚠ MarginCap이 유일 원인이라는 단정은 아직 못 한다(인과 관측 5건·1거래일).",
+    "sizer_pressure": {
+      "available": true,
+      "since_effective": "2026-08-18",
+      "n_sizer_runs": 585,
+      "n_days": 24,
+      "n_sizer_ge3": 233,
+      "pct_sizer_ge3": 39.8,
+      "qty_sizer_raw_hist": {
+        "1": 292,
+        "2": 60,
+        "3": 233
+      },
+      "qty_final_hist": {
+        "0": 28,
+        "1": 314,
+        "2": 243
+      },
+      "binding_gate_hist": {
+        "(없음)": 218,
+        "hurst": 206,
+        "tox": 86,
+        "meta": 47,
+        "margin": 28
+      },
+      "n_entered": 184,
+      "entered_qty_ge3": 0,
+      "n_margin_binding": 28,
+      "n_binding_margin": 28,
+      "margin_measured_since": "2026-08-25",
+      "reason": "사이저 585회/24일 중 3계약+ 출력 233회(39.8%) → 실제 3계약+ 체결 0건. 최빈 binding=(없음) (실측 기준일 2026-08-18~). 증거금 구속 28회 · binding=margin 28회 (증거금 축 실측 2026-08-25~). ⚠ `margin` 출현은 **증거금이 구속한 것** — ⑧ 해제 논의의 직접 입력이며 품질 게이트 탓이 아니다"
+    },
+    "reason": "구간 표본 부족 (qty1=243, qty3+=1, 각각 20 필요) — 판정 보류 ⚠ **구조적 판정불가**"
+  },
+  "mean_revert_size_watch": {
+    "verdict": "PASS",
+    "entry_source_filter": "SYSTEM_AUTO",
+    "n_positions": 358,
+    "n_days": 47,
+    "by_bucket": {
+      "mean_revert": {
+        "n": 189,
+        "avg_pnl_krw": -14011.0,
+        "total_pnl_krw": -2648061.0,
+        "win_rate": 0.6349,
+        "min_pnl_krw": -470619.0
+      },
+      "neutral_trend": {
+        "n": 169,
+        "avg_pnl_krw": 15934.0,
+        "total_pnl_krw": 2692901.0,
+        "win_rate": 0.6686,
+        "min_pnl_krw": -638449.0
+      }
+    },
+    "win_rate_gap": 0.0337,
+    "avg_gap_krw": 29945.0
+  },
+  "toxicity_recalib_watch": {
+    "verdict": "PASS",
+    "effective_date": "2026-08-03",
+    "cancel_churn_ceiling": 0.42,
+    "n_bars": 13053,
+    "block_share": 0.0148,
+    "reduce_share": 0.47,
+    "pass_share": 0.5152,
+    "cancel_sat_share": 0.0061,
+    "score_p50": 0.2344,
+    "score_p90": 0.3384,
+    "churn_p50": 0.2799,
+    "churn_p99": 0.4043
+  },
+  "toxicity_reduce_mult_shadow": {
+    "verdict": "PASS",
+    "n_samples": 89,
+    "divergent_qty_n": 5,
+    "divergent_qty_share": 0.0562,
+    "shadow_mult_min": 0.4092,
+    "shadow_mult_p50": 0.7871,
+    "shadow_mult_max": 0.9,
+    "shadow_mult_mean": 0.7449,
+    "applied_mult_const": 0.7,
+    "anchor_date": "2026-08-03",
+    "pnl_join_error": "name '_NOT_GHOST_SQL' is not defined",
+    "reason": "수량 상이 5.6% < 20% — 양자화에 흡수돼 실적용 실익 없음(현행 상수 유지)"
+  },
+  "phantom_stop_edge": {
+    "verdict": "SUPPORTS_HYP",
+    "effective_date": "2026-08-05",
+    "mirror": {
+      "n": 63,
+      "n_rows_total": 94,
+      "n_days": 21,
+      "n_multi_leg": 0,
+      "ghost_pt_sum": 89.34,
+      "held_pt_sum": 104.7,
+      "delta_pt_sum": -15.36,
+      "delta_pt_avg": -0.2438,
+      "delta_pt_median": 0.26,
+      "favorable_n": 35,
+      "ghost_positive_n": 63,
+      "by_path": {
+        "arm_tp1_qty1_mode": {
+          "n": 54,
+          "delta_pt_sum": -10.82
+        },
+        "tp1_breakeven_qty2": {
+          "n": 6,
+          "delta_pt_sum": -4.58
+        },
+        "trailing": {
+          "n": 3,
+          "delta_pt_sum": 0.04
+        }
+      },
+      "paired_days": 21,
+      "mean_diff": -0.2564,
+      "days_positive": 8,
+      "sign_p": 0.3833,
+      "t_stat": -1.595,
+      "significant": false,
+      "mean_median_split": true
+    },
+    "n": 29,
+    "n_unresolved": 0,
+    "n_days": 14,
+    "realized_pt_sum": 35.99,
+    "cf_pt_sum": 3.6,
+    "delta_pt_sum": 32.39,
+    "delta_pt_avg": 1.1169,
+    "favorable_n": 28,
+    "by_path": {
+      "tp1_breakeven_qty2": {
+        "n": 29,
+        "delta_pt_sum": 32.39
+      }
+    },
+    "paired_days": 14,
+    "mean_diff": 1.0396,
+    "days_positive": 13,
+    "sign_p": 0.0018,
+    "t_stat": 5.904,
+    "significant": true,
+    "recommendation": "유령 청산이 반사실보다 유리 (평균 +1.117pt, 13/14일 우세, p=0.0018) — **버그로 고치지 말 것.** \"스파이크가 스톱을 스쳤으나 현재가가 유리하면 시장가 익절\"을 명시적 청산 정책으로 승격시키는 안건(§9 주간회의)"
+  },
+  "grade_x_promotion": {
+    "verdict": "INSUFFICIENT",
+    "entry_source_filter": "SYSTEM_AUTO",
+    "n_positions": 293,
+    "n_days": 35,
+    "by_path": {
+      "X→A": {
+        "n": 14,
+        "avg_pnl_krw": 59110.0,
+        "total_pnl_krw": 827533.0,
+        "win_rate": 0.7857,
+        "min_pnl_krw": -193904.0,
+        "days": 9
+      },
+      "C→A": {
+        "n": 194,
+        "avg_pnl_krw": -6806.0,
+        "total_pnl_krw": -1320307.0,
+        "win_rate": 0.6392,
+        "min_pnl_krw": -473373.0,
+        "days": 35
+      },
+      "C→C": {
+        "n": 84,
+        "avg_pnl_krw": -5232.0,
+        "total_pnl_krw": -439504.0,
+        "win_rate": 0.6905,
+        "min_pnl_krw": -248467.0,
+        "days": 23
+      }
+    },
+    "promotion_effect_krw": -1574.0,
+    "n_cc": 84,
+    "raw_grade_effect_krw": -64342.0,
+    "dominant_axis": "원시등급",
+    "axis_share": 0.976,
+    "reason": "경로 표본 부족 (X→A=14, C→A=194, 각각 20 필요) — 판정 보류. 0803 P2 \"X 승격 조이기\" 제안은 그때까지 보류다"
+  },
+  "hurst_meanrevert_drag": {
+    "verdict": "PASS",
+    "entry_source_filter": "SYSTEM_AUTO",
+    "shares_population_with": "[29] mean_revert_size_watch",
+    "n_positions": 358,
+    "n_days": 47,
+    "n_mean_revert": 189,
+    "n_other": 169,
+    "cum_krw": {
+      "mean_revert": -2648061.0,
+      "other": 2692901.0
+    },
+    "paired_days": 27,
+    "mean_diff": -0.5117,
+    "days_positive": 10,
+    "sign_p": 0.2478,
+    "t_stat": -1.108,
+    "significant": false,
+    "unpaired_days": 20,
+    "recommendation": "일자단위로는 유의하지 않다 (평균차 -0.51pt, p=0.2478) — 누적 -2,648,061원이 커 보여도 **조치 금지**. [29]가 FAIL을 내더라도 이 채널이 PASS인 동안은 보류가 사전등록된 판독 규칙이다"
+  },
+  "profit_guard_l1_watch": {
+    "verdict": "OBSERVE",
+    "live_config": {
+      "prefs_path": "data/profit_guard_prefs.json",
+      "source": "prefs_json",
+      "code_activation_krw": 2000000.0,
+      "code_ratio": 0.35,
+      "activation_krw": 300000.0,
+      "ratio": 0.1,
+      "prefs_exists": true,
+      "prefs_mtime": "2026-09-02 08:57:44",
+      "diverged": true
+    },
+    "n_days_total": 47,
+    "sweep": [
+      {
+        "activation_krw": 500000.0,
+        "ratio": 0.2,
+        "n_fire": 2,
+        "n_binding": 0,
+        "n_blocked_pos": 0,
+        "saved_krw": 0
+      },
+      {
+        "activation_krw": 500000.0,
+        "ratio": 0.3,
+        "n_fire": 1,
+        "n_binding": 0,
+        "n_blocked_pos": 0,
+        "saved_krw": 0
+      },
+      {
+        "activation_krw": 500000.0,
+        "ratio": 0.35,
+        "n_fire": 1,
+        "n_binding": 0,
+        "n_blocked_pos": 0,
+        "saved_krw": 0
+      },
+      {
+        "activation_krw": 500000.0,
+        "ratio": 0.5,
+        "n_fire": 0,
+        "n_binding": 0,
+        "n_blocked_pos": 0,
+        "saved_krw": 0
+      },
+      {
+        "activation_krw": 1000000.0,
+        "ratio": 0.2,
+        "n_fire": 2,
+        "n_binding": 0,
+        "n_blocked_pos": 0,
+        "saved_krw": 0
+      },
+      {
+        "activation_krw": 1000000.0,
+        "ratio": 0.3,
+        "n_fire": 1,
+        "n_binding": 0,
+        "n_blocked_pos": 0,
+        "saved_krw": 0
+      },
+      {
+        "activation_krw": 1000000.0,
+        "ratio": 0.35,
+        "n_fire": 1,
+        "n_binding": 0,
+        "n_blocked_pos": 0,
+        "saved_krw": 0
+      },
+      {
+        "activation_krw": 1000000.0,
+        "ratio": 0.5,
+        "n_fire": 0,
+        "n_binding": 0,
+        "n_blocked_pos": 0,
+        "saved_krw": 0
+      },
+      {
+        "activation_krw": 1500000.0,
+        "ratio": 0.2,
+        "n_fire": 0,
+        "n_binding": 0,
+        "n_blocked_pos": 0,
+        "saved_krw": 0
+      },
+      {
+        "activation_krw": 1500000.0,
+        "ratio": 0.3,
+        "n_fire": 0,
+        "n_binding": 0,
+        "n_blocked_pos": 0,
+        "saved_krw": 0
+      },
+      {
+        "activation_krw": 1500000.0,
+        "ratio": 0.35,
+        "n_fire": 0,
+        "n_binding": 0,
+        "n_blocked_pos": 0,
+        "saved_krw": 0
+      },
+      {
+        "activation_krw": 1500000.0,
+        "ratio": 0.5,
+        "n_fire": 0,
+        "n_binding": 0,
+        "n_blocked_pos": 0,
+        "saved_krw": 0
+      },
+      {
+        "activation_krw": 2000000.0,
+        "ratio": 0.2,
+        "n_fire": 0,
+        "n_binding": 0,
+        "n_blocked_pos": 0,
+        "saved_krw": 0
+      },
+      {
+        "activation_krw": 2000000.0,
+        "ratio": 0.3,
+        "n_fire": 0,
+        "n_binding": 0,
+        "n_blocked_pos": 0,
+        "saved_krw": 0
+      },
+      {
+        "activation_krw": 2000000.0,
+        "ratio": 0.35,
+        "n_fire": 0,
+        "n_binding": 0,
+        "n_blocked_pos": 0,
+        "saved_krw": 0
+      },
+      {
+        "activation_krw": 2000000.0,
+        "ratio": 0.5,
+        "n_fire": 0,
+        "n_binding": 0,
+        "n_blocked_pos": 0,
+        "saved_krw": 0
+      }
+    ],
+    "n_blocked_signals": 45,
+    "blocked_days": [
+      "2026-08-04",
+      "2026-09-08"
+    ],
+    "fires": [
+      {
+        "day": "2026-07-14",
+        "halt_ts": "2026-07-14 14:02:56",
+        "peak_krw": 739784.0,
+        "n_after": 1,
+        "after_pnl_krw": 24341.0,
+        "binding": true,
+        "n_live_blocked": 0
+      },
+      {
+        "day": "2026-07-16",
+        "halt_ts": "2026-07-16 13:58:59",
+        "peak_krw": 364423.0,
+        "n_after": 2,
+        "after_pnl_krw": -514244.0,
+        "binding": true,
+        "n_live_blocked": 0
+      },
+      {
+        "day": "2026-07-20",
+        "halt_ts": "2026-07-20 14:56:18",
+        "peak_krw": 1458543.0,
+        "n_after": 0,
+        "after_pnl_krw": 0,
+        "binding": false,
+        "n_live_blocked": 0
+      },
+      {
+        "day": "2026-07-28",
+        "halt_ts": "2026-07-28 14:09:54",
+        "peak_krw": 435111.0,
+        "n_after": 1,
+        "after_pnl_krw": 45570.0,
+        "binding": true,
+        "n_live_blocked": 0
+      },
+      {
+        "day": "2026-08-04",
+        "halt_ts": "2026-08-04 10:46:50",
+        "peak_krw": 353603.0,
+        "n_after": 8,
+        "after_pnl_krw": 647426.0,
+        "binding": true,
+        "n_live_blocked": 40
+      },
+      {
+        "day": "2026-08-07",
+        "halt_ts": "2026-08-07 09:52:18",
+        "peak_krw": 343522.0,
+        "n_after": 15,
+        "after_pnl_krw": -106406.0,
+        "binding": true,
+        "n_live_blocked": 0
+      },
+      {
+        "day": "2026-08-12",
+        "halt_ts": "2026-08-12 14:25:08",
+        "peak_krw": 357753.0,
+        "n_after": 1,
+        "after_pnl_krw": 5454.0,
+        "binding": true,
+        "n_live_blocked": 0
+      },
+      {
+        "day": "2026-08-20",
+        "halt_ts": "2026-08-20 13:20:29",
+        "peak_krw": 326638.0,
+        "n_after": 1,
+        "after_pnl_krw": -137234.0,
+        "binding": true,
+        "n_live_blocked": 0
+      },
+      {
+        "day": "2026-08-21",
+        "halt_ts": "2026-08-21 14:14:01",
+        "peak_krw": 391557.0,
+        "n_after": 0,
+        "after_pnl_krw": 0,
+        "binding": false,
+        "n_live_blocked": 0
+      },
+      {
+        "day": "2026-08-31",
+        "halt_ts": "2026-08-31 10:14:42",
+        "peak_krw": 338018.0,
+        "n_after": 3,
+        "after_pnl_krw": -5024.0,
+        "binding": true,
+        "n_live_blocked": 0
+      },
+      {
+        "day": "2026-09-01",
+        "halt_ts": "2026-09-01 10:50:25",
+        "peak_krw": 480784.0,
+        "n_after": 6,
+        "after_pnl_krw": -356232.0,
+        "binding": true,
+        "n_live_blocked": 0
+      }
+    ],
+    "n_fire": 11,
+    "n_binding": 9,
+    "n_binding_days": 9,
+    "cf_n": 45,
+    "cf_outcome": {
+      "TP1": 25,
+      "STOP": 20,
+      "NEITHER": 0
+    },
+    "cf_total_pt": -9.4141,
+    "cf_avg_pt": -0.2092,
+    "resume_delay": {
+      "0": {
+        "n": 45,
+        "pt": -9.4141,
+        "n_kept": 0,
+        "kept_pt": 0
+      },
+      "15": {
+        "n": 33,
+        "pt": 14.3423,
+        "n_kept": 12,
+        "kept_pt": -23.7564
+      },
+      "30": {
+        "n": 26,
+        "pt": 11.7709,
+        "n_kept": 19,
+        "kept_pt": -21.1849
+      },
+      "60": {
+        "n": 11,
+        "pt": 0.7871,
+        "n_kept": 34,
+        "kept_pt": -10.2012
+      }
+    },
+    "paired_days": 2,
+    "mean_diff": -0.7778,
+    "days_positive": 0,
+    "sign_p": 0.5,
+    "t_stat": -1.064,
+    "significant": false
+  },
+  "conf_discrimination_watch": {
+    "verdict": "REJECTS_HYP",
+    "axes": {
+      "model": {
+        "n": 42676,
+        "n_days": 53,
+        "lo_acc": 0.333,
+        "hi_acc": 0.337,
+        "gap_pp": 0.398,
+        "stratified": {
+          "paired_days": 53,
+          "mean_diff": 0.376,
+          "days_positive": 32,
+          "sign_p": 0.169,
+          "t_stat": 0.723,
+          "significant": false
+        }
+      },
+      "ensemble": {
+        "n": 358,
+        "n_days": 47,
+        "n_win": 233,
+        "n_loss": 125,
+        "win_conf": 0.4089,
+        "loss_conf": 0.4058,
+        "gap": 0.0031,
+        "conf_sd": 0.0476,
+        "cohen_d": 0.065,
+        "stratified": {
+          "paired_days": 36,
+          "mean_diff": 0.001,
+          "days_positive": 21,
+          "sign_p": 0.405,
+          "t_stat": 0.172,
+          "significant": false
+        }
+      }
+    },
+    "excluded_horizons": [
+      "30m"
+    ],
+    "n_pred_excluded": 17706,
+    "n_positions_total": 358,
+    "n_matched": 358,
+    "n_unmatched": 0,
+    "unmatched_days": [],
+    "match_rate": 1.0,
+    "join_offset_min": {
+      "-1": 147,
+      "0": 211
+    },
+    "model_hit": false,
+    "ens_hit": false,
+    "recommendation": "판별력 없음 — 모델축 격차 +0.40%p(임계 3.1) / 앙상블축 +0.0031(임계 0.025). **min_conf 조정은 무의미하다**: 정보 없는 신호를 조이면 무작위로 덜어낼 뿐이다(0804 스윕 실측 — 잘려나간 진입 승률 62~63% = 전체 63.0%). 선행조건은 §P1(방향모델 랜덤) 해소이며, 새 정보원이 들어오면 이 채널이 먼저 반응한다"
+  },
+  "direction_value_watch": {
+    "verdict": "REJECTS_HYP",
+    "since": "2026-07-05 00:00:00",
+    "trials": 400,
+    "seed": 428,
+    "n_entries": 358,
+    "n_usable": 358,
+    "n_days": 47,
+    "actual_pt": -14.5181,
+    "actual_win_rate": 0.5838,
+    "random_median_pt": 23.7657,
+    "random_p05_pt": -60.764,
+    "random_p95_pt": 109.3002,
+    "random_mean_win_rate": 0.6038,
+    "p_one_sided": 0.783,
+    "beats_random_share": 0.2175,
+    "days_beating_random": 24,
+    "days_evaluated": 47,
+    "day_win_share": 0.5106,
+    "perm_ok": false,
+    "day_ok": false,
+    "recommendation": "방향 선택이 동전던지기와 구분되지 않는다 (단측 p=0.7830, 일자 24/47일=51%). **방향 피처 재배치(이월 D·E·G)보다 청산 축([41])과 새 정보원 도입이 우선이다** — `FEATURE_SET_DECISIONS`의 `opt_trade_flow_realtime` 재검토 트리거 (3)이 이 상태의 지속을 조건으로 걸려 있다"
+  },
+  "exit_model_watch": {
+    "verdict": "OBSERVE",
+    "labels": {
+      "n_rows": 1040,
+      "n_positions": 328,
+      "n_days": 47,
+      "y_hold_better_pos": 332,
+      "y_hold_better_rate": 0.3192,
+      "y_tp1_first_pos": 492,
+      "y_tp1_first_rate": 0.4731,
+      "rows_per_position": 3.17
+    },
+    "readiness": {
+      "n_positions": 328,
+      "n_days": 47,
+      "pos_rate": 0.3192,
+      "n_features": 14,
+      "min_events_per_variable": 10.0,
+      "min_days": 20,
+      "epv": 7.478,
+      "positions_required": 439,
+      "positions_short": 111,
+      "ready": false,
+      "reason": "EPV 7.48 < 10 (포지션 328/439, 111건 부족) · 거래일 47/20 — **학습 거부**. 이 표본으로 학습하면 학습이 아니라 암기다"
+    },
+    "trained": false,
+    "positions_per_day": 6.98,
+    "eta_trading_days": 16,
+    "reason": "EPV 7.48 < 10 (포지션 328/439, 111건 부족) · 거래일 47/20 — **학습 거부**. 이 표본으로 학습하면 학습이 아니라 암기다"
+  },
+  "entry_timing_value_watch": {
+    "verdict": "SUPPORTS_HYP",
+    "since": "2026-07-05 00:00:00",
+    "trials": 400,
+    "seed": 429,
+    "n_usable": 358,
+    "n_days": 47,
+    "entry_window": [
+      "09:05",
+      "14:49"
+    ],
+    "n_candidate_bars": 16140,
+    "arm_a_pt": -14.5181,
+    "arm_b_median_pt": 29.6204,
+    "arm_b_p05_pt": -59.1033,
+    "arm_b_p95_pt": 114.7396,
+    "arm_c_median_pt": 23.635,
+    "arm_c_p05_pt": -69.393,
+    "arm_c_p95_pt": 114.1401,
+    "timing_gain_pt": 5.9854,
+    "trials_b_over_c": 223,
+    "b_over_c_share": 0.5575,
+    "sign_p": 0.024328,
+    "recommendation": "**타점 선택에 가치가 있다** (기여 +5.99pt, B>C 55.8%, p=0.0243) — 체크리스트/게이트가 고른 분이 무작위보다 낫다. 진입 축 개선의 근거가 생겼고, 그 위에 변동성·미시구조 피처를 얹는 것이 정당해진다"
+  },
+  "vol_estimator_watch": {
+    "verdict": "REJECTS_HYP",
+    "n": 326,
+    "n_days": 42,
+    "corr_atr_realized": 0.6884,
+    "corr_qunc_realized": 0.5554,
+    "collinearity": 0.7728,
+    "partial_corr": 0.0508,
+    "partial_t": 0.915,
+    "norm_k": 0.6824,
+    "qty_boundary_cross": 300,
+    "qty_boundary_share": 0.9202,
+    "recommendation": "ATR 위에 추가 정보가 없다 (부분상관 +0.0508, t=+0.92 < 2.0, 공선성 0.773). **사이징 추정량 교체는 무의미하다** — 사이저는 이미 ATR로 변동성 스케일링을 하고 있고(`stop_risk = atr × 1.5 × pt_value`), ATR 자체가 실현 레인지와 r=+0.688로 이미 좋은 예측자다. 그리고 교체하면 **아무것도 안 바뀌는 것이 아니라** `int()` 절단 때문에 계약수가 **92%(300/326건)에서 갈린다** — 근거 없는 사이즈 변동을 그만큼 주입한다는 뜻이라 무해가 아니라 유해다(CLAUDE.md ⑧·425차의 qty 1↔2 경계 참조)."
+  },
+  "dynmc_collapse_feed_watch": {
+    "verdict": "SUPPORTS_HYP",
+    "start_date": "2026-07-31",
+    "n_rows": 12913,
+    "n_days": 35,
+    "n_collapsed": 2657,
+    "collapsed_share": 0.2058,
+    "n_non_collapsed": 10256,
+    "base_mc_current": 0.4061,
+    "base_mc_excl_collapsed": 0.388,
+    "base_mc_shift": 0.0181,
+    "pass_rate_current": 0.2322,
+    "pass_rate_excl_collapsed": 0.3506,
+    "pass_rate_design": 0.35,
+    "gap_pp": 11.78,
+    "top_conf_value": 0.85,
+    "top_conf_share": 0.122,
+    "constout_threshold": 0.15,
+    "constout_margin_pp": 2.8,
+    "constout_would_fire": false,
+    "by_day": [
+      {
+        "date": "2026-07-31",
+        "n": 354,
+        "collapsed_share": 0.2119,
+        "base_mc_current": 0.3727,
+        "base_mc_excl": 0.3676,
+        "pass_current": 0.2939,
+        "pass_excl": 0.3513
+      },
+      {
+        "date": "2026-08-03",
+        "n": 370,
+        "collapsed_share": 0.2108,
+        "base_mc_current": 0.4452,
+        "base_mc_excl": 0.4135,
+        "pass_current": 0.1849,
+        "pass_excl": 0.3527
+      },
+      {
+        "date": "2026-08-04",
+        "n": 370,
+        "collapsed_share": 0.2189,
+        "base_mc_current": 0.4487,
+        "base_mc_excl": 0.4136,
+        "pass_current": 0.1765,
+        "pass_excl": 0.3529
+      },
+      {
+        "date": "2026-08-05",
+        "n": 370,
+        "collapsed_share": 0.2162,
+        "base_mc_current": 0.4205,
+        "base_mc_excl": 0.3875,
+        "pass_current": 0.1828,
+        "pass_excl": 0.3517
+      },
+      {
+        "date": "2026-08-06",
+        "n": 369,
+        "collapsed_share": 0.2033,
+        "base_mc_current": 0.4263,
+        "base_mc_excl": 0.3947,
+        "pass_current": 0.2211,
+        "pass_excl": 0.3503
+      },
+      {
+        "date": "2026-08-07",
+        "n": 369,
+        "collapsed_share": 0.2087,
+        "base_mc_current": 0.4225,
+        "base_mc_excl": 0.3964,
+        "pass_current": 0.2192,
+        "pass_excl": 0.3527
+      },
+      {
+        "date": "2026-08-10",
+        "n": 369,
+        "collapsed_share": 0.2087,
+        "base_mc_current": 0.3649,
+        "base_mc_excl": 0.3597,
+        "pass_current": 0.3185,
+        "pass_excl": 0.3527
+      },
+      {
+        "date": "2026-08-11",
+        "n": 370,
+        "collapsed_share": 0.2135,
+        "base_mc_current": 0.3639,
+        "base_mc_excl": 0.3614,
+        "pass_current": 0.299,
+        "pass_excl": 0.3505
+      },
+      {
+        "date": "2026-08-12",
+        "n": 370,
+        "collapsed_share": 0.2054,
+        "base_mc_current": 0.4197,
+        "base_mc_excl": 0.3965,
+        "pass_current": 0.2211,
+        "pass_excl": 0.3503
+      },
+      {
+        "date": "2026-08-13",
+        "n": 370,
+        "collapsed_share": 0.2027,
+        "base_mc_current": 0.4015,
+        "base_mc_excl": 0.3896,
+        "pass_current": 0.2102,
+        "pass_excl": 0.3525
+      },
+      {
+        "date": "2026-08-14",
+        "n": 369,
+        "collapsed_share": 0.2033,
+        "base_mc_current": 0.3838,
+        "base_mc_excl": 0.3773,
+        "pass_current": 0.2313,
+        "pass_excl": 0.3503
+      },
+      {
+        "date": "2026-08-18",
+        "n": 369,
+        "collapsed_share": 0.2033,
+        "base_mc_current": 0.4013,
+        "base_mc_excl": 0.3921,
+        "pass_current": 0.2517,
+        "pass_excl": 0.3503
+      },
+      {
+        "date": "2026-08-19",
+        "n": 369,
+        "collapsed_share": 0.2033,
+        "base_mc_current": 0.3951,
+        "base_mc_excl": 0.3748,
+        "pass_current": 0.2245,
+        "pass_excl": 0.3503
+      },
+      {
+        "date": "2026-08-20",
+        "n": 370,
+        "collapsed_share": 0.2081,
+        "base_mc_current": 0.3916,
+        "base_mc_excl": 0.3821,
+        "pass_current": 0.2799,
+        "pass_excl": 0.3515
+      },
+      {
+        "date": "2026-08-21",
+        "n": 370,
+        "collapsed_share": 0.2027,
+        "base_mc_current": 0.3852,
+        "base_mc_excl": 0.3726,
+        "pass_current": 0.2305,
+        "pass_excl": 0.3525
+      },
+      {
+        "date": "2026-08-24",
+        "n": 369,
+        "collapsed_share": 0.2033,
+        "base_mc_current": 0.3974,
+        "base_mc_excl": 0.3855,
+        "pass_current": 0.2143,
+        "pass_excl": 0.3503
+      },
+      {
+        "date": "2026-08-25",
+        "n": 369,
+        "collapsed_share": 0.2033,
+        "base_mc_current": 0.3717,
+        "base_mc_excl": 0.3657,
+        "pass_current": 0.2959,
+        "pass_excl": 0.3503
+      },
+      {
+        "date": "2026-08-26",
+        "n": 370,
+        "collapsed_share": 0.2027,
+        "base_mc_current": 0.3944,
+        "base_mc_excl": 0.3754,
+        "pass_current": 0.1864,
+        "pass_excl": 0.3525
+      },
+      {
+        "date": "2026-08-27",
+        "n": 369,
+        "collapsed_share": 0.2087,
+        "base_mc_current": 0.4,
+        "base_mc_excl": 0.395,
+        "pass_current": 0.2568,
+        "pass_excl": 0.3527
+      },
+      {
+        "date": "2026-08-28",
+        "n": 369,
+        "collapsed_share": 0.2033,
+        "base_mc_current": 0.3989,
+        "base_mc_excl": 0.3772,
+        "pass_current": 0.1973,
+        "pass_excl": 0.3503
+      },
+      {
+        "date": "2026-08-31",
+        "n": 369,
+        "collapsed_share": 0.2033,
+        "base_mc_current": 0.4163,
+        "base_mc_excl": 0.3906,
+        "pass_current": 0.1871,
+        "pass_excl": 0.3503
+      },
+      {
+        "date": "2026-09-01",
+        "n": 370,
+        "collapsed_share": 0.2081,
+        "base_mc_current": 0.3854,
+        "base_mc_excl": 0.3656,
+        "pass_current": 0.2253,
+        "pass_excl": 0.3515
+      },
+      {
+        "date": "2026-09-02",
+        "n": 370,
+        "collapsed_share": 0.2027,
+        "base_mc_current": 0.4241,
+        "base_mc_excl": 0.3967,
+        "pass_current": 0.2271,
+        "pass_excl": 0.3525
+      },
+      {
+        "date": "2026-09-03",
+        "n": 370,
+        "collapsed_share": 0.2027,
+        "base_mc_current": 0.3816,
+        "base_mc_excl": 0.3676,
+        "pass_current": 0.2814,
+        "pass_excl": 0.3525
+      },
+      {
+        "date": "2026-09-04",
+        "n": 369,
+        "collapsed_share": 0.2033,
+        "base_mc_current": 0.4258,
+        "base_mc_excl": 0.3967,
+        "pass_current": 0.2007,
+        "pass_excl": 0.3503
+      },
+      {
+        "date": "2026-09-07",
+        "n": 369,
+        "collapsed_share": 0.206,
+        "base_mc_current": 0.3974,
+        "base_mc_excl": 0.382,
+        "pass_current": 0.2833,
+        "pass_excl": 0.3515
+      },
+      {
+        "date": "2026-09-08",
+        "n": 370,
+        "collapsed_share": 0.2108,
+        "base_mc_current": 0.4047,
+        "base_mc_excl": 0.3891,
+        "pass_current": 0.2603,
+        "pass_excl": 0.3527
+      },
+      {
+        "date": "2026-09-09",
+        "n": 370,
+        "collapsed_share": 0.2027,
+        "base_mc_current": 0.4185,
+        "base_mc_excl": 0.3977,
+        "pass_current": 0.2339,
+        "pass_excl": 0.3525
+      },
+      {
+        "date": "2026-09-10",
+        "n": 366,
+        "collapsed_share": 0.1995,
+        "base_mc_current": 0.4793,
+        "base_mc_excl": 0.4395,
+        "pass_current": 0.1911,
+        "pass_excl": 0.3515
+      },
+      {
+        "date": "2026-09-11",
+        "n": 370,
+        "collapsed_share": 0.2027,
+        "base_mc_current": 0.4428,
+        "base_mc_excl": 0.4093,
+        "pass_current": 0.1864,
+        "pass_excl": 0.3525
+      },
+      {
+        "date": "2026-09-14",
+        "n": 369,
+        "collapsed_share": 0.2033,
+        "base_mc_current": 0.4535,
+        "base_mc_excl": 0.4115,
+        "pass_current": 0.1871,
+        "pass_excl": 0.3503
+      },
+      {
+        "date": "2026-09-15",
+        "n": 370,
+        "collapsed_share": 0.2027,
+        "base_mc_current": 0.4103,
+        "base_mc_excl": 0.3819,
+        "pass_current": 0.1864,
+        "pass_excl": 0.3525
+      },
+      {
+        "date": "2026-09-16",
+        "n": 370,
+        "collapsed_share": 0.2054,
+        "base_mc_current": 0.4169,
+        "base_mc_excl": 0.3912,
+        "pass_current": 0.1837,
+        "pass_excl": 0.3503
+      },
+      {
+        "date": "2026-09-17",
+        "n": 368,
+        "collapsed_share": 0.2038,
+        "base_mc_current": 0.4326,
+        "base_mc_excl": 0.4054,
+        "pass_current": 0.1843,
+        "pass_excl": 0.3515
+      },
+      {
+        "date": "2026-09-18",
+        "n": 369,
+        "collapsed_share": 0.2033,
+        "base_mc_current": 0.4281,
+        "base_mc_excl": 0.4001,
+        "pass_current": 0.1871,
+        "pass_excl": 0.3503
+      }
+    ],
+    "stratified": {
+      "paired_days": 35,
+      "mean_diff": 12.5766,
+      "days_positive": 35,
+      "sign_p": 0.0,
+      "t_stat": 18.109,
+      "significant": true
+    },
+    "entry_lift": {
+      "n_rows": 12913,
+      "n_entries": 292,
+      "entry_rate": 0.0226,
+      "collapsed_share": 0.2058,
+      "entry_collapsed_n": 1,
+      "entry_collapsed_share": 0.0034,
+      "lift": 0.017,
+      "by_day": [
+        {
+          "date": "2026-07-31",
+          "n": 354,
+          "entries": 2,
+          "entry_rate": 0.0056
+        },
+        {
+          "date": "2026-08-03",
+          "n": 370,
+          "entries": 21,
+          "entry_rate": 0.0568
+        },
+        {
+          "date": "2026-08-04",
+          "n": 370,
+          "entries": 11,
+          "entry_rate": 0.0297
+        },
+        {
+          "date": "2026-08-05",
+          "n": 370,
+          "entries": 17,
+          "entry_rate": 0.0459
+        },
+        {
+          "date": "2026-08-06",
+          "n": 369,
+          "entries": 23,
+          "entry_rate": 0.0623
+        },
+        {
+          "date": "2026-08-07",
+          "n": 369,
+          "entries": 17,
+          "entry_rate": 0.0461
+        },
+        {
+          "date": "2026-08-10",
+          "n": 369,
+          "entries": 3,
+          "entry_rate": 0.0081
+        },
+        {
+          "date": "2026-08-11",
+          "n": 370,
+          "entries": 1,
+          "entry_rate": 0.0027
+        },
+        {
+          "date": "2026-08-12",
+          "n": 370,
+          "entries": 6,
+          "entry_rate": 0.0162
+        },
+        {
+          "date": "2026-08-13",
+          "n": 370,
+          "entries": 3,
+          "entry_rate": 0.0081
+        },
+        {
+          "date": "2026-08-14",
+          "n": 369,
+          "entries": 4,
+          "entry_rate": 0.0108
+        },
+        {
+          "date": "2026-08-18",
+          "n": 369,
+          "entries": 18,
+          "entry_rate": 0.0488
+        },
+        {
+          "date": "2026-08-19",
+          "n": 369,
+          "entries": 10,
+          "entry_rate": 0.0271
+        },
+        {
+          "date": "2026-08-20",
+          "n": 370,
+          "entries": 4,
+          "entry_rate": 0.0108
+        },
+        {
+          "date": "2026-08-21",
+          "n": 370,
+          "entries": 7,
+          "entry_rate": 0.0189
+        },
+        {
+          "date": "2026-08-24",
+          "n": 369,
+          "entries": 24,
+          "entry_rate": 0.065
+        },
+        {
+          "date": "2026-08-25",
+          "n": 369,
+          "entries": 6,
+          "entry_rate": 0.0163
+        },
+        {
+          "date": "2026-08-26",
+          "n": 370,
+          "entries": 4,
+          "entry_rate": 0.0108
+        },
+        {
+          "date": "2026-08-27",
+          "n": 369,
+          "entries": 17,
+          "entry_rate": 0.0461
+        },
+        {
+          "date": "2026-08-28",
+          "n": 369,
+          "entries": 14,
+          "entry_rate": 0.0379
+        },
+        {
+          "date": "2026-08-31",
+          "n": 369,
+          "entries": 5,
+          "entry_rate": 0.0136
+        },
+        {
+          "date": "2026-09-01",
+          "n": 370,
+          "entries": 11,
+          "entry_rate": 0.0297
+        },
+        {
+          "date": "2026-09-02",
+          "n": 370,
+          "entries": 6,
+          "entry_rate": 0.0162
+        },
+        {
+          "date": "2026-09-03",
+          "n": 370,
+          "entries": 2,
+          "entry_rate": 0.0054
+        },
+        {
+          "date": "2026-09-04",
+          "n": 369,
+          "entries": 3,
+          "entry_rate": 0.0081
+        },
+        {
+          "date": "2026-09-07",
+          "n": 369,
+          "entries": 11,
+          "entry_rate": 0.0298
+        },
+        {
+          "date": "2026-09-08",
+          "n": 370,
+          "entries": 7,
+          "entry_rate": 0.0189
+        },
+        {
+          "date": "2026-09-09",
+          "n": 370,
+          "entries": 4,
+          "entry_rate": 0.0108
+        },
+        {
+          "date": "2026-09-10",
+          "n": 366,
+          "entries": 8,
+          "entry_rate": 0.0219
+        },
+        {
+          "date": "2026-09-11",
+          "n": 370,
+          "entries": 4,
+          "entry_rate": 0.0108
+        },
+        {
+          "date": "2026-09-14",
+          "n": 369,
+          "entries": 4,
+          "entry_rate": 0.0108
+        },
+        {
+          "date": "2026-09-15",
+          "n": 370,
+          "entries": 9,
+          "entry_rate": 0.0243
+        },
+        {
+          "date": "2026-09-16",
+          "n": 370,
+          "entries": 1,
+          "entry_rate": 0.0027
+        },
+        {
+          "date": "2026-09-17",
+          "n": 368,
+          "entries": 5,
+          "entry_rate": 0.0136
+        },
+        {
+          "date": "2026-09-18",
+          "n": 369,
+          "entries": 0,
+          "entry_rate": 0.0
+        }
+      ]
+    },
+    "day_share": 1.0,
+    "reason": "설계 통과율 35.0% 대비 현행 23.2% — **이탈 11.78%p**(임계 5.0), 일자단위 35/35일(100%). 붕괴행 20.6%가 분포 상단을 점유해 base_mc를 0.3880→0.4061로 밀어올린다.",
+    "recommendation": "DynMC 피드에서 `weight_collapsed=1` 행 제외를 **주간회의 안건으로** 올릴 것. ⚠ 자동 배선 금지 — 제외하면 진입이 23.2%→35.1%로 늘고, 427차 [39]가 확정한 대로 min_conf는 무작위 샘플러이므로 **기대값의 부호가 보장되지 않는다.** CLAUDE.md ⑧(사이징·MAX_CONTRACTS) 미해제 상태에서는 진입 증가가 곧 노출 증가다."
+  },
+  "cal_guard_flap_watch": {
+    "verdict": "OBSERVE",
+    "start_date": "2026-07-31",
+    "by_day": [
+      {
+        "date": "2026-07-31",
+        "n": 354,
+        "passthru_share": 0.291,
+        "flips": 18
+      },
+      {
+        "date": "2026-08-03",
+        "n": 370,
+        "passthru_share": 0.9216,
+        "flips": 6
+      },
+      {
+        "date": "2026-08-04",
+        "n": 370,
+        "passthru_share": 0.9865,
+        "flips": 4
+      },
+      {
+        "date": "2026-08-05",
+        "n": 370,
+        "passthru_share": 0.8405,
+        "flips": 20
+      },
+      {
+        "date": "2026-08-06",
+        "n": 369,
+        "passthru_share": 0.748,
+        "flips": 20
+      },
+      {
+        "date": "2026-08-07",
+        "n": 369,
+        "passthru_share": 0.7588,
+        "flips": 11
+      },
+      {
+        "date": "2026-08-10",
+        "n": 369,
+        "passthru_share": 0.2222,
+        "flips": 24
+      },
+      {
+        "date": "2026-08-11",
+        "n": 370,
+        "passthru_share": 0.0541,
+        "flips": 9
+      },
+      {
+        "date": "2026-08-12",
+        "n": 370,
+        "passthru_share": 0.8486,
+        "flips": 10
+      },
+      {
+        "date": "2026-08-13",
+        "n": 370,
+        "passthru_share": 0.8757,
+        "flips": 4
+      },
+      {
+        "date": "2026-08-14",
+        "n": 369,
+        "passthru_share": 0.6206,
+        "flips": 6
+      },
+      {
+        "date": "2026-08-18",
+        "n": 369,
+        "passthru_share": 0.6721,
+        "flips": 7
+      },
+      {
+        "date": "2026-08-19",
+        "n": 369,
+        "passthru_share": 0.8509,
+        "flips": 5
+      },
+      {
+        "date": "2026-08-20",
+        "n": 370,
+        "passthru_share": 0.6297,
+        "flips": 26
+      },
+      {
+        "date": "2026-08-21",
+        "n": 370,
+        "passthru_share": 0.7622,
+        "flips": 6
+      },
+      {
+        "date": "2026-08-24",
+        "n": 369,
+        "passthru_share": 0.7371,
+        "flips": 20
+      },
+      {
+        "date": "2026-08-25",
+        "n": 369,
+        "passthru_share": 0.336,
+        "flips": 10
+      },
+      {
+        "date": "2026-08-26",
+        "n": 370,
+        "passthru_share": 0.8162,
+        "flips": 14
+      },
+      {
+        "date": "2026-08-27",
+        "n": 369,
+        "passthru_share": 0.7615,
+        "flips": 28
+      },
+      {
+        "date": "2026-08-28",
+        "n": 369,
+        "passthru_share": 0.9187,
+        "flips": 16
+      },
+      {
+        "date": "2026-08-31",
+        "n": 369,
+        "passthru_share": 0.9512,
+        "flips": 4
+      },
+      {
+        "date": "2026-09-01",
+        "n": 370,
+        "passthru_share": 0.6865,
+        "flips": 29
+      },
+      {
+        "date": "2026-09-02",
+        "n": 370,
+        "passthru_share": 0.7865,
+        "flips": 14
+      },
+      {
+        "date": "2026-09-03",
+        "n": 370,
+        "passthru_share": 0.5351,
+        "flips": 18
+      },
+      {
+        "date": "2026-09-04",
+        "n": 369,
+        "passthru_share": 0.9593,
+        "flips": 4
+      },
+      {
+        "date": "2026-09-07",
+        "n": 369,
+        "passthru_share": 0.4986,
+        "flips": 32
+      },
+      {
+        "date": "2026-09-08",
+        "n": 370,
+        "passthru_share": 0.6784,
+        "flips": 22
+      },
+      {
+        "date": "2026-09-09",
+        "n": 370,
+        "passthru_share": 0.727,
+        "flips": 12
+      },
+      {
+        "date": "2026-09-10",
+        "n": 366,
+        "passthru_share": 1.0,
+        "flips": 0
+      },
+      {
+        "date": "2026-09-11",
+        "n": 370,
+        "passthru_share": 0.9865,
+        "flips": 2
+      },
+      {
+        "date": "2026-09-14",
+        "n": 369,
+        "passthru_share": 1.0,
+        "flips": 0
+      },
+      {
+        "date": "2026-09-15",
+        "n": 370,
+        "passthru_share": 0.9865,
+        "flips": 4
+      },
+      {
+        "date": "2026-09-16",
+        "n": 370,
+        "passthru_share": 1.0,
+        "flips": 0
+      },
+      {
+        "date": "2026-09-17",
+        "n": 368,
+        "passthru_share": 0.9647,
+        "flips": 6
+      },
+      {
+        "date": "2026-09-18",
+        "n": 369,
+        "passthru_share": 1.0,
+        "flips": 0
+      }
+    ],
+    "n_rows": 12913,
+    "n_days": 35,
+    "passthru_share": 0.7551,
+    "flips_total": 411,
+    "flips_per_day": 11.74,
+    "conf_jump_median": 0.0441,
+    "conf_jump_max": 0.5324,
+    "flap_warn": true,
+    "jump_warn": false,
+    "reason": "보정 미적용 75.5% · 전환 11.74회/일(경보 4.0) · 전환 시 conf 점프 중앙값 0.0441(경보 0.10)",
+    "recommendation": "히스테리시스(또는 EOD 1회 고정) 도입을 주간회의 안건으로. ⚠ **AUC 임계·보정 함수형은 건드리지 말 것** — 근본 문제는 임계가 아니라 정보 부재이고(raw conf 순위 AUC 0.489 < 0.5, 427차 [39]와 일치), 임계를 손대면 conf 스케일에 세 번째 불연속이 생긴다."
+  },
+  "profit_geometry_lowvol_watch": {
+    "verdict": "PASS",
+    "entry_source_filter": "SYSTEM_AUTO",
+    "atr_split_pt": 2.6,
+    "n_positions": 358,
+    "n_days": 47,
+    "by_stratum": {
+      "low_vol": {
+        "n": 286,
+        "avg_profit_atr_ratio": -0.0119,
+        "avg_pnl_krw": -417.0,
+        "win_rate": 0.6503,
+        "days": 42
+      },
+      "high_vol": {
+        "n": 72,
+        "avg_profit_atr_ratio": 0.0162,
+        "avg_pnl_krw": 2278.0,
+        "win_rate": 0.6528,
+        "days": 22
+      }
+    },
+    "ratio_gap": 0.0281,
+    "paired_days": 17,
+    "mean_diff": -0.2287,
+    "days_positive": 9,
+    "sign_p": 1.0,
+    "t_stat": -0.916,
+    "significant": false,
+    "recommendation": "ATR 정규화 후 두 층이 구분되지 않는다 (격차 0.028, p=1.0000) — 0811 §4-1의 \"저변동에서 이익기하 붕괴\" 가설은 **근거 없음**. 8월 적자는 다른 축에서 찾을 것"
+  },
+  "effective_weight_watch": {
+    "verdict": "PASS",
+    "entry_source_filter": "SYSTEM_AUTO",
+    "weight_sum_low": 0.3,
+    "n_positions": 357,
+    "n_days": 47,
+    "by_bucket": {
+      "low_weight": {
+        "n": 207,
+        "avg_pnl_krw": 5101.0,
+        "total_pnl_krw": 1055909.0,
+        "win_rate": 0.657,
+        "min_pnl_krw": -523099.0,
+        "days": 45,
+        "avg_wsum": 0.1294
+      },
+      "normal_weight": {
+        "n": 150,
+        "avg_pnl_krw": -6944.0,
+        "total_pnl_krw": -1041590.0,
+        "win_rate": 0.64,
+        "min_pnl_krw": -638449.0,
+        "days": 41,
+        "avg_wsum": 0.5336
+      }
+    },
+    "avg_gap_krw": -12045.0,
+    "paired_days": 39,
+    "mean_diff": -27023.7358,
+    "days_positive": 19,
+    "sign_p": 1.0,
+    "t_stat": -1.173,
+    "significant": false,
+    "recommendation": "준붕괴 구간이 정상 구간과 구분되지 않는다 (p=1.0000) — 현행 문턱(가중합 0) 유지"
+  },
+  "zone_ban_breach_watch": {
+    "verdict": "INSUFFICIENT",
+    "entry_source_filter": "SYSTEM_AUTO",
+    "enforce_flag": false,
+    "n_positions": 358,
+    "n_days": 47,
+    "by_bucket": {
+      "banned_zone": {
+        "n": 9,
+        "avg_pnl_krw": 70737.0,
+        "total_pnl_krw": 636631.0,
+        "win_rate": 0.7778,
+        "min_pnl_krw": -193904.0,
+        "days": 5
+      },
+      "allowed_zone": {
+        "n": 349,
+        "avg_pnl_krw": -1696.0,
+        "total_pnl_krw": -591791.0,
+        "win_rate": 0.6476,
+        "min_pnl_krw": -638449.0,
+        "days": 47
+      }
+    },
+    "breach_zones": [
+      "OTHER"
+    ],
+    "reason": "위반 코호트 표본 부족 (9건 < 20건) — 판정 보류. 표본이 찰 때까지 ZONE_ENTRY_BAN_ENFORCE는 False 유지"
+  },
+  "conf_scale_breaks_in_window": [
+    {
+      "date": "2026-07-31",
+      "label": "앙상블 보정기 미적용(passthrough) 전환"
+    }
+  ],
+  "tp1_geometry_shadow": {
+    "verdict": "PASS",
+    "reason": "모든 대안이 현행 이하",
+    "per_variant": {
+      "current": {
+        "n": 350,
+        "total_pt": 3.4857,
+        "avg_pt": 0.01,
+        "win_rate": 0.5743,
+        "max_loss_pt": -9.7635,
+        "n_tp1": 0,
+        "n_stop": 134,
+        "n_timeout": 0,
+        "delta_vs_current": 0.0
+      },
+      "stop_1.0": {
+        "n": 350,
+        "total_pt": -19.84,
+        "avg_pt": -0.0567,
+        "win_rate": 0.4886,
+        "max_loss_pt": -6.5423,
+        "n_tp1": 0,
+        "n_stop": 166,
+        "n_timeout": 0,
+        "delta_vs_current": -23.3257
+      },
+      "tp1_x2": {
+        "n": 350,
+        "total_pt": -64.8983,
+        "avg_pt": -0.1854,
+        "win_rate": 0.3943,
+        "max_loss_pt": -9.7635,
+        "n_tp1": 0,
+        "n_stop": 213,
+        "n_timeout": 0,
+        "delta_vs_current": -68.3839
+      },
+      "sym_1.0_1.0": {
+        "n": 350,
+        "total_pt": -35.0392,
+        "avg_pt": -0.1001,
+        "win_rate": 0.4314,
+        "max_loss_pt": -6.5423,
+        "n_tp1": 0,
+        "n_stop": 194,
+        "n_timeout": 0,
+        "delta_vs_current": -38.5249
+      }
+    },
+    "n_trades": 350,
+    "n_days": 45,
+    "n_skipped": 0,
+    "min_samples": 20,
+    "min_days": 3,
+    "oos": {
+      "oos_start": "2026-07-31",
+      "per_variant": {
+        "current": {
+          "n": 292,
+          "total_pt": -4.124,
+          "avg_pt": -0.0141,
+          "win_rate": 0.637,
+          "delta_vs_current": 0.0
+        },
+        "stop_1.0": {
+          "n": 292,
+          "total_pt": -24.2513,
+          "avg_pt": -0.0831,
+          "win_rate": 0.5411,
+          "delta_vs_current": -20.1273
+        },
+        "tp1_x2": {
+          "n": 292,
+          "total_pt": -65.5093,
+          "avg_pt": -0.2243,
+          "win_rate": 0.4075,
+          "delta_vs_current": -61.3853
+        },
+        "sym_1.0_1.0": {
+          "n": 292,
+          "total_pt": -27.4052,
+          "avg_pt": -0.0939,
+          "win_rate": 0.4692,
+          "delta_vs_current": -23.2812
+        }
+      },
+      "n_days": 292,
+      "note": "가설 수립(2026-07-31) 이후 신규 발생분만 — **판정 미반영, 표시 전용**. 누적 verdict는 in-sample 포함 종전 기준 그대로다(§9-4)."
+    }
+  },
+  "tp1_protect_offset_shadow": {
+    "verdict": "FAIL",
+    "reason": "현행 초과 대안: atr_lock_0.50, atr_lock_0.75, bar_range, lock_prop_0.75",
+    "per_variant": {
+      "current": {
+        "n": 145,
+        "total_pt": 220.0068,
+        "median_pt": 0.5935,
+        "win_rate": 1.0,
+        "max_loss_pt": 0.1339,
+        "n_stop": 0,
+        "n_tp2": 64,
+        "n_forced": 0,
+        "outcomes": {
+          "TP1_ARM_STOP": 81,
+          "TP2": 64
+        },
+        "delta_vs_current": 0.0,
+        "delta_paired": 0.0,
+        "n_missing_vs_current": 0,
+        "beats_current_n": 0,
+        "n_clamped": 0,
+        "clamp_excess_med": 0.0
+      },
+      "breakeven": {
+        "n": 145,
+        "total_pt": 201.8563,
+        "median_pt": 1.042,
+        "win_rate": 0.5034,
+        "max_loss_pt": -0.0741,
+        "n_stop": 0,
+        "n_tp2": 72,
+        "n_forced": 0,
+        "outcomes": {
+          "TP1_ARM_STOP": 73,
+          "TP2": 72
+        },
+        "delta_vs_current": -18.1505,
+        "delta_paired": -18.1505,
+        "n_missing_vs_current": 0,
+        "beats_current_n": 8,
+        "n_clamped": 0,
+        "clamp_excess_med": 0.0
+      },
+      "breakeven_plus": {
+        "n": 145,
+        "total_pt": 208.7537,
+        "median_pt": 0.1308,
+        "win_rate": 1.0,
+        "max_loss_pt": 0.1259,
+        "n_stop": 0,
+        "n_tp2": 67,
+        "n_forced": 0,
+        "outcomes": {
+          "TP1_ARM_STOP": 78,
+          "TP2": 67
+        },
+        "delta_vs_current": -11.2531,
+        "delta_paired": -11.2531,
+        "n_missing_vs_current": 0,
+        "beats_current_n": 3,
+        "n_clamped": 0,
+        "clamp_excess_med": 0.0
+      },
+      "atr_lock_0.50": {
+        "n": 145,
+        "total_pt": 224.9167,
+        "median_pt": 1.0951,
+        "win_rate": 1.0,
+        "max_loss_pt": 0.3418,
+        "n_stop": 0,
+        "n_tp2": 50,
+        "n_forced": 0,
+        "outcomes": {
+          "TP1_ARM_STOP": 95,
+          "TP2": 50
+        },
+        "delta_vs_current": 4.91,
+        "delta_paired": 4.91,
+        "n_missing_vs_current": 0,
+        "beats_current_n": 80,
+        "n_clamped": 9,
+        "clamp_excess_med": 0.0773
+      },
+      "atr_lock_0.75": {
+        "n": 145,
+        "total_pt": 247.7185,
+        "median_pt": 1.2948,
+        "win_rate": 1.0,
+        "max_loss_pt": 0.3472,
+        "n_stop": 0,
+        "n_tp2": 44,
+        "n_forced": 0,
+        "outcomes": {
+          "TP1_ARM_STOP": 101,
+          "TP2": 44
+        },
+        "delta_vs_current": 27.7117,
+        "delta_paired": 27.7117,
+        "n_missing_vs_current": 0,
+        "beats_current_n": 81,
+        "n_clamped": 41,
+        "clamp_excess_med": 0.2131
+      },
+      "bar_range": {
+        "n": 145,
+        "total_pt": 240.1236,
+        "median_pt": 1.1123,
+        "win_rate": 1.0,
+        "max_loss_pt": 0.258,
+        "n_stop": 0,
+        "n_tp2": 54,
+        "n_forced": 0,
+        "outcomes": {
+          "TP1_ARM_STOP": 91,
+          "TP2": 54
+        },
+        "delta_vs_current": 20.1168,
+        "delta_paired": 20.1168,
+        "n_missing_vs_current": 0,
+        "beats_current_n": 80,
+        "n_clamped": 15,
+        "clamp_excess_med": 0.13
+      },
+      "lock_prop_0.35": {
+        "n": 145,
+        "total_pt": 211.7045,
+        "median_pt": 0.4654,
+        "win_rate": 1.0,
+        "max_loss_pt": 0.0186,
+        "n_stop": 0,
+        "n_tp2": 66,
+        "n_forced": 0,
+        "outcomes": {
+          "TP1_ARM_STOP": 79,
+          "TP2": 66
+        },
+        "delta_vs_current": -8.3022,
+        "delta_paired": -8.3022,
+        "n_missing_vs_current": 0,
+        "beats_current_n": 5,
+        "n_clamped": 0,
+        "clamp_excess_med": 0.0
+      },
+      "lock_prop_0.50": {
+        "n": 145,
+        "total_pt": 214.599,
+        "median_pt": 0.6459,
+        "win_rate": 1.0,
+        "max_loss_pt": 0.0568,
+        "n_stop": 0,
+        "n_tp2": 63,
+        "n_forced": 0,
+        "outcomes": {
+          "TP1_ARM_STOP": 82,
+          "TP2": 63
+        },
+        "delta_vs_current": -5.4078,
+        "delta_paired": -5.4078,
+        "n_missing_vs_current": 0,
+        "beats_current_n": 19,
+        "n_clamped": 0,
+        "clamp_excess_med": 0.0
+      },
+      "lock_prop_0.75": {
+        "n": 145,
+        "total_pt": 225.5335,
+        "median_pt": 0.9299,
+        "win_rate": 1.0,
+        "max_loss_pt": 0.1203,
+        "n_stop": 0,
+        "n_tp2": 61,
+        "n_forced": 0,
+        "outcomes": {
+          "TP1_ARM_STOP": 84,
+          "TP2": 61
+        },
+        "delta_vs_current": 5.5267,
+        "delta_paired": 5.5267,
+        "n_missing_vs_current": 0,
+        "beats_current_n": 70,
+        "n_clamped": 0,
+        "clamp_excess_med": 0.0
+      }
+    },
+    "n_hooks": 169,
+    "n_days": 32,
+    "n_skipped": 0,
+    "min_samples": 20,
+    "min_days": 3,
+    "n_other_mode": {
+      "breakeven": 2
+    },
+    "n_backout_legacy": 23,
+    "n_excluded_override": 0,
+    "n_clamped": {
+      "current": 0,
+      "breakeven": 0,
+      "breakeven_plus": 0,
+      "atr_lock_0.50": 9,
+      "atr_lock_0.75": 41,
+      "bar_range": 15,
+      "lock_prop_0.35": 0,
+      "lock_prop_0.50": 0,
+      "lock_prop_0.75": 0
+    },
+    "tp2": {
+      "verdict": "FAIL",
+      "reason": "현행 초과 대안: tp2_2.00",
+      "per_variant": {
+        "current": {
+          "n": 145,
+          "total_pt": 220.0068,
+          "avg_pt": 1.5173,
+          "median_pt": 0.5935,
+          "win_rate": 1.0,
+          "max_loss_pt": 0.1339,
+          "std_pt": 2.2332,
+          "n_stop": 0,
+          "n_tp2": 64,
+          "n_forced": 0,
+          "outcomes": {
+            "TP1_ARM_STOP": 81,
+            "TP2": 64
+          },
+          "delta_vs_current": 0.0,
+          "beats_current_n": 0,
+          "delta_drop_max": 0.0
+        },
+        "tp2_0.75": {
+          "n": 145,
+          "total_pt": 176.7968,
+          "avg_pt": 1.2193,
+          "median_pt": 0.8394,
+          "win_rate": 1.0,
+          "max_loss_pt": 0.1573,
+          "std_pt": 1.1669,
+          "n_stop": 0,
+          "n_tp2": 114,
+          "n_forced": 0,
+          "outcomes": {
+            "TP1_ARM_STOP": 31,
+            "TP2": 114
+          },
+          "delta_vs_current": -43.21,
+          "beats_current_n": 50,
+          "delta_drop_max": -45.5979
+        },
+        "tp2_1.00": {
+          "n": 145,
+          "total_pt": 201.8484,
+          "avg_pt": 1.3921,
+          "median_pt": 1.0307,
+          "win_rate": 1.0,
+          "max_loss_pt": 0.1339,
+          "std_pt": 1.4394,
+          "n_stop": 0,
+          "n_tp2": 96,
+          "n_forced": 0,
+          "outcomes": {
+            "TP1_ARM_STOP": 49,
+            "TP2": 96
+          },
+          "delta_vs_current": -18.1583,
+          "beats_current_n": 32,
+          "delta_drop_max": -21.6483
+        },
+        "tp2_1.25": {
+          "n": 145,
+          "total_pt": 215.5422,
+          "avg_pt": 1.4865,
+          "median_pt": 1.0148,
+          "win_rate": 1.0,
+          "max_loss_pt": 0.1339,
+          "std_pt": 1.9807,
+          "n_stop": 0,
+          "n_tp2": 77,
+          "n_forced": 0,
+          "outcomes": {
+            "TP1_ARM_STOP": 68,
+            "TP2": 77
+          },
+          "delta_vs_current": -4.4646,
+          "beats_current_n": 13,
+          "delta_drop_max": -8.7435
+        },
+        "tp2_2.00": {
+          "n": 145,
+          "total_pt": 242.2005,
+          "avg_pt": 1.6703,
+          "median_pt": 0.5269,
+          "win_rate": 1.0,
+          "max_loss_pt": 0.1339,
+          "std_pt": 2.6877,
+          "n_stop": 0,
+          "n_tp2": 53,
+          "n_forced": 0,
+          "outcomes": {
+            "TP1_ARM_STOP": 92,
+            "TP2": 53
+          },
+          "delta_vs_current": 22.1938,
+          "beats_current_n": 45,
+          "delta_drop_max": 17.5738
+        }
+      },
+      "min_samples": 20,
+      "min_days": 3,
+      "n_hooks": 169,
+      "n_days": 32,
+      "baseline_consistent": true,
+      "baseline_note": null
+    }
+  },
+  "quantile_tp_shadow": {
+    "verdict": "PASS",
+    "reason": "모든 대안이 현행 이하",
+    "per_variant": {
+      "current": {
+        "n": 266,
+        "total_pt": 20.9431,
+        "avg_pt": 0.0787,
+        "median_pt": 0.3143,
+        "win_rate": 0.5977,
+        "max_loss_pt": -9.7635,
+        "n_tp1": 0,
+        "n_stop": 103,
+        "n_timeout": 0,
+        "outcomes": {
+          "STOP": 103,
+          "TP1_ARM_STOP": 79,
+          "TP2": 84
+        },
+        "delta_vs_current": 0.0,
+        "beats_current_n": 0
+      },
+      "q_raw": {
+        "n": 266,
+        "total_pt": 6.9434,
+        "avg_pt": 0.0261,
+        "median_pt": 0.3179,
+        "win_rate": 0.5226,
+        "max_loss_pt": -9.7635,
+        "n_tp1": 0,
+        "n_stop": 128,
+        "n_timeout": 0,
+        "outcomes": {
+          "STOP": 128,
+          "TP1_ARM_STOP": 36,
+          "TP2": 102
+        },
+        "delta_vs_current": -13.9997,
+        "beats_current_n": 56,
+        "delta_drop_max": -18.6121,
+        "sign_flips_on_drop": false
+      },
+      "q_x0.7": {
+        "n": 266,
+        "total_pt": -8.2476,
+        "avg_pt": -0.031,
+        "median_pt": 0.3068,
+        "win_rate": 0.5526,
+        "max_loss_pt": -9.7635,
+        "n_tp1": 0,
+        "n_stop": 116,
+        "n_timeout": 0,
+        "outcomes": {
+          "STOP": 116,
+          "TP1_ARM_STOP": 61,
+          "TP2": 89
+        },
+        "delta_vs_current": -29.1908,
+        "beats_current_n": 45,
+        "delta_drop_max": -31.5871,
+        "sign_flips_on_drop": false
+      },
+      "q_blend": {
+        "n": 266,
+        "total_pt": 3.2604,
+        "avg_pt": 0.0123,
+        "median_pt": 0.3068,
+        "win_rate": 0.5564,
+        "max_loss_pt": -9.7635,
+        "n_tp1": 0,
+        "n_stop": 118,
+        "n_timeout": 0,
+        "outcomes": {
+          "STOP": 118,
+          "TP1_ARM_STOP": 56,
+          "TP2": 92
+        },
+        "delta_vs_current": -17.6827,
+        "beats_current_n": 52,
+        "delta_drop_max": -22.2951,
+        "sign_flips_on_drop": false
+      }
+    },
+    "n_trades": 266,
+    "n_candidates": 350,
+    "n_days": 41,
+    "skip": {
+      "atr": 0,
+      "quantile": 24,
+      "unfavorable": 0,
+      "tp_too_tight": 0,
+      "sim": 0,
+      "tp_inverted": 60
+    },
+    "min_samples": 20,
+    "min_days": 3
+  },
+  "sim_fidelity_gate": {
+    "verdict": "PASS",
+    "gate": "OPEN",
+    "reason": "재현 양호 — bias(중앙) +0.007R ≤ 0.10R · 격차 0.33SE ≤ 1.0SE · 일자 상관 +0.818 · 부호일치 80% · 부호검정 **무정보**(|Σ실제|=0.54SE < 2.0SE) — 수준 기준으로 대체 (시뮬 +38.49 / 실제 +23.91 pt, n=350/45일)",
+    "n": 350,
+    "n_days": 45,
+    "engine": "v2",
+    "repro_bias_R": 0.0067,
+    "repro_bias_R_mean": 0.0209,
+    "sim_total_pt": 38.4857,
+    "actual_total_pt": 23.91,
+    "sign_match": true,
+    "targets": [
+      "quantile_tp_shadow",
+      "tp1_geometry_shadow",
+      "tp1_protect_offset_shadow",
+      "hurst_threshold_shadow"
+    ],
+    "mae_R": 0.2184,
+    "sim_total_pt_wq": 37.3024,
+    "actual_total_pt_wq": 13.4181,
+    "sign_margin_sd": 0.54,
+    "verdict_strict_sign": "PASS",
+    "sign_binding": false,
+    "repro_gap_pt": 14.5757,
+    "repro_gap_sd": 0.329,
+    "day_corr": 0.8179,
+    "day_sign_agree": 0.8,
+    "n_day_points": 45,
+    "sim_total_pt_legacy": 3.4857,
+    "actual_total_pt_legacy": 36.6166
+  },
+  "bar_stop_path_watch": {
+    "per_path": {
+      "틱 하드스톱": {
+        "n": 221,
+        "total": 7.88,
+        "mean": 0.0357,
+        "median": 0.02,
+        "fav": 95,
+        "fav_rate": 0.4298642533936652,
+        "sign_p": 0.043345,
+        "days": 35
+      },
+      "목표(TP1/TP2/기타)": {
+        "n": 141,
+        "total": -1.24,
+        "mean": -0.0088,
+        "median": 0.0,
+        "fav": 70,
+        "fav_rate": 0.49645390070921985,
+        "sign_p": 1.0,
+        "days": 35
+      },
+      "봉중 하드스톱": {
+        "n": 43,
+        "total": -60.74,
+        "mean": -1.4126,
+        "median": -1.28,
+        "fav": 43,
+        "fav_rate": 1.0,
+        "sign_p": 0.0,
+        "days": 17
+      }
+    },
+    "n_reclassified": 171,
+    "n_total": 405,
+    "guard_live_date": "2026-08-04",
+    "bar_by_day": {
+      "2026-07-27": 0,
+      "2026-07-28": 0,
+      "2026-07-29": 0,
+      "2026-07-30": 0,
+      "2026-07-31": 0,
+      "2026-08-03": 8,
+      "2026-08-04": 4,
+      "2026-08-05": 1,
+      "2026-08-06": 0,
+      "2026-08-07": 0,
+      "2026-08-10": 0,
+      "2026-08-11": 0,
+      "2026-08-12": 2,
+      "2026-08-13": 2,
+      "2026-08-14": 2,
+      "2026-08-18": 0,
+      "2026-08-19": 0,
+      "2026-08-20": 0,
+      "2026-08-21": 3,
+      "2026-08-24": 1,
+      "2026-08-25": 1,
+      "2026-08-26": 2,
+      "2026-08-27": 0,
+      "2026-08-28": 0,
+      "2026-08-31": 0,
+      "2026-09-01": 3,
+      "2026-09-02": 1,
+      "2026-09-03": 0,
+      "2026-09-04": 3,
+      "2026-09-07": 1,
+      "2026-09-08": 5,
+      "2026-09-09": 3,
+      "2026-09-10": 0,
+      "2026-09-11": 0,
+      "2026-09-14": 0,
+      "2026-09-15": 0,
+      "2026-09-16": 0,
+      "2026-09-17": 1
+    },
+    "path_by_day": {
+      "2026-07-27": {
+        "틱 하드스톱": 3
+      },
+      "2026-07-28": {
+        "목표(TP1/TP2/기타)": 2,
+        "틱 하드스톱": 2
+      },
+      "2026-07-29": {
+        "목표(TP1/TP2/기타)": 2
+      },
+      "2026-07-30": {
+        "틱 하드스톱": 1
+      },
+      "2026-07-31": {
+        "틱 하드스톱": 3,
+        "목표(TP1/TP2/기타)": 1
+      },
+      "2026-08-03": {
+        "틱 하드스톱": 13,
+        "봉중 하드스톱": 8
+      },
+      "2026-08-04": {
+        "목표(TP1/TP2/기타)": 6,
+        "틱 하드스톱": 6,
+        "봉중 하드스톱": 4
+      },
+      "2026-08-05": {
+        "틱 하드스톱": 14,
+        "목표(TP1/TP2/기타)": 2,
+        "봉중 하드스톱": 1
+      },
+      "2026-08-06": {
+        "틱 하드스톱": 21,
+        "목표(TP1/TP2/기타)": 2
+      },
+      "2026-08-07": {
+        "목표(TP1/TP2/기타)": 3,
+        "틱 하드스톱": 15
+      },
+      "2026-08-10": {
+        "목표(TP1/TP2/기타)": 3,
+        "틱 하드스톱": 3
+      },
+      "2026-08-11": {
+        "목표(TP1/TP2/기타)": 1,
+        "틱 하드스톱": 1
+      },
+      "2026-08-12": {
+        "목표(TP1/TP2/기타)": 4,
+        "틱 하드스톱": 3,
+        "봉중 하드스톱": 2
+      },
+      "2026-08-13": {
+        "목표(TP1/TP2/기타)": 4,
+        "봉중 하드스톱": 2
+      },
+      "2026-08-14": {
+        "목표(TP1/TP2/기타)": 3,
+        "봉중 하드스톱": 2,
+        "틱 하드스톱": 2
+      },
+      "2026-08-18": {
+        "틱 하드스톱": 13,
+        "목표(TP1/TP2/기타)": 7
+      },
+      "2026-08-19": {
+        "목표(TP1/TP2/기타)": 4,
+        "틱 하드스톱": 9
+      },
+      "2026-08-20": {
+        "목표(TP1/TP2/기타)": 5,
+        "틱 하드스톱": 3
+      },
+      "2026-08-21": {
+        "목표(TP1/TP2/기타)": 6,
+        "봉중 하드스톱": 3,
+        "틱 하드스톱": 4
+      },
+      "2026-08-24": {
+        "틱 하드스톱": 19,
+        "목표(TP1/TP2/기타)": 10,
+        "봉중 하드스톱": 1
+      },
+      "2026-08-25": {
+        "틱 하드스톱": 3,
+        "목표(TP1/TP2/기타)": 3,
+        "봉중 하드스톱": 1
+      },
+      "2026-08-26": {
+        "목표(TP1/TP2/기타)": 5,
+        "틱 하드스톱": 1,
+        "봉중 하드스톱": 2
+      },
+      "2026-08-27": {
+        "목표(TP1/TP2/기타)": 5,
+        "틱 하드스톱": 15
+      },
+      "2026-08-28": {
+        "목표(TP1/TP2/기타)": 5,
+        "틱 하드스톱": 12
+      },
+      "2026-08-31": {
+        "목표(TP1/TP2/기타)": 6,
+        "틱 하드스톱": 4
+      },
+      "2026-09-01": {
+        "목표(TP1/TP2/기타)": 5,
+        "봉중 하드스톱": 3,
+        "틱 하드스톱": 8
+      },
+      "2026-09-02": {
+        "목표(TP1/TP2/기타)": 3,
+        "틱 하드스톱": 5,
+        "봉중 하드스톱": 1
+      },
+      "2026-09-03": {
+        "목표(TP1/TP2/기타)": 2,
+        "틱 하드스톱": 2
+      },
+      "2026-09-04": {
+        "목표(TP1/TP2/기타)": 3,
+        "봉중 하드스톱": 3
+      },
+      "2026-09-07": {
+        "목표(TP1/TP2/기타)": 4,
+        "틱 하드스톱": 9,
+        "봉중 하드스톱": 1
+      },
+      "2026-09-08": {
+        "목표(TP1/TP2/기타)": 8,
+        "봉중 하드스톱": 5,
+        "틱 하드스톱": 1
+      },
+      "2026-09-09": {
+        "목표(TP1/TP2/기타)": 4,
+        "봉중 하드스톱": 3,
+        "틱 하드스톱": 1
+      },
+      "2026-09-10": {
+        "목표(TP1/TP2/기타)": 5,
+        "틱 하드스톱": 7
+      },
+      "2026-09-11": {
+        "목표(TP1/TP2/기타)": 3,
+        "틱 하드스톱": 4
+      },
+      "2026-09-14": {
+        "목표(TP1/TP2/기타)": 6,
+        "틱 하드스톱": 2
+      },
+      "2026-09-15": {
+        "틱 하드스톱": 8,
+        "목표(TP1/TP2/기타)": 3
+      },
+      "2026-09-16": {
+        "목표(TP1/TP2/기타)": 1,
+        "틱 하드스톱": 1
+      },
+      "2026-09-17": {
+        "목표(TP1/TP2/기타)": 5,
+        "봉중 하드스톱": 1,
+        "틱 하드스톱": 3
+      }
+    },
+    "pre_guard": {
+      "n": 8,
+      "days": 1,
+      "total": -10.97
+    },
+    "post_guard": {
+      "n": 35,
+      "days": 16,
+      "total": -49.77
+    },
+    "pre_guard_share": 0.186,
+    "prereg_contaminated": false,
+    "recent_days": [
+      "2026-09-11",
+      "2026-09-14",
+      "2026-09-15",
+      "2026-09-16",
+      "2026-09-17"
+    ],
+    "bar_recent_seq": [
+      0,
+      0,
+      0,
+      0,
+      1
+    ],
+    "bar_dry_days": 0,
+    "verdict": "FAIL",
+    "reason": "봉중 경로 유리비율 100% (43/43, 부호검정 p=0.00000) — 밴드 [0.35, 0.65] 밖. 대조군 틱 경로는 43% (95/221). 체결가 산정이 시장을 반영하지 않는다"
+  },
+  "payoff_geometry_watch": {
+    "n": 350,
+    "n_days": 45,
+    "n_legs": 456,
+    "n_multileg": 106,
+    "krw": {
+      "n": 350,
+      "n_win": 230,
+      "win_rate": 0.6571428571428571,
+      "avg_win": 1.604637391304348,
+      "avg_loss": -2.7704166666666667,
+      "payoff": 0.5792043524034344,
+      "breakeven_wr": 0.6332302709766932,
+      "edge_gap": 0.023912586166163985,
+      "total": 36.61659999999996
+    },
+    "risk": {
+      "n": 350,
+      "n_win": 230,
+      "win_rate": 0.6571428571428571,
+      "avg_win": 0.5459730019118546,
+      "avg_loss": -1.0460923742924817,
+      "payoff": 0.5219166254616091,
+      "breakeven_wr": 0.6570662172092983,
+      "edge_gap": 7.663993355888632e-05,
+      "total": 0.04270552462878063
+    },
+    "n_with_R": 350,
+    "dual_divergence_pp": 2.384,
+    "verdict": "PASS",
+    "reason": "edge_gap > 0 (원화 +2.39%p · 위험조정 +0.01%p)"
+  },
+  "direction_bias_watch": {
+    "verdict": "NOT_AVAILABLE_ON_THIS_BRANCH",
+    "reason": "[50] 생산부가 이 브랜치에 없음 — scripts/direction_bias_watch.py (080c982, v9-dev 전용). 체리픽 안 함(487차 결정) · 자체 재구현은 P3 백로그"
+  },
+  "const_out_horizon_watch": {
+    "verdict": "NOT_AVAILABLE_ON_THIS_BRANCH",
+    "reason": "[54] 생산부가 이 브랜치에 없음 — scaler_daily.const_out_by_horizon 컬럼 (457차 G5, v9-dev 전용). 체리픽 안 함(487차 결정) · 자체 재구현은 P3 백로그"
+  },
+  "early_window_gate_shadow": {
+    "verdict": "BLOCK_UNJUSTIFIED",
+    "channel": "[55]",
+    "badge": "[1계약·TP1상한·미실현 시뮬]",
+    "n_blocked_raw": 99,
+    "n_resolved": 99,
+    "n_days": 31,
+    "day_first": "2026-06-23",
+    "day_last": "2026-09-16",
+    "avg_entry_px": 1140.1,
+    "cost_pt": 0.0833,
+    "total_hyp_pnl_pts": 19.2771,
+    "win_rate": 0.798,
+    "baseline_win_rate": 0.6436,
+    "day_pos": 22,
+    "day_neg": 9,
+    "day_sign_p": 0.0294,
+    "outcome_mix": {
+      "STOP": 20,
+      "TP1": 79,
+      "NEITHER": 0
+    },
+    "horizon_mix": {
+      "1m": 24,
+      "3m": 58,
+      "5m": 17
+    },
+    "drop_worst_days": [
+      "2026-07-01"
+    ],
+    "drop_worst_total_pt": 54.5049,
+    "drop_worst_sign_kept": true,
+    "half_split_pt": [
+      11.3368,
+      7.9403
+    ],
+    "half_sign_consistent": true,
+    "sigma_split": {
+      "early_09:20~09:25": {
+        "n": 49,
+        "hyp_pt": 2.5699
+      },
+      "late_09:25~09:29": {
+        "n": 50,
+        "hyp_pt": 16.7072
+      },
+      "sign_consistent": true
+    },
+    "gates": {
+      "hyp > 왕복비용×2.0": true,
+      "승률 > 기준선": true,
+      "일자 부호검정 p < 0.05": true,
+      "drop-worst 부호 유지": true,
+      "전후반 부호 일관": true,
+      "σ 층 부호 일관": true
+    },
+    "_posthoc_warning": "아래 by_day/atr_tercile 은 사후탐색이다 — 판정 근거로 쓰지 말 것(313차 ④). 가설로 채택하려면 사전등록 후 신규 표본으로 재판정한다.",
+    "by_day": {
+      "2026-06-23": -5.706,
+      "2026-06-24": -11.2218,
+      "2026-06-25": 2.6099,
+      "2026-06-26": 20.2207,
+      "2026-07-01": -35.2278,
+      "2026-07-03": 2.4844,
+      "2026-07-07": 4.7989,
+      "2026-07-09": 9.5599,
+      "2026-07-27": -6.7606,
+      "2026-08-03": 8.9773,
+      "2026-08-04": 1.805,
+      "2026-08-05": 1.5893,
+      "2026-08-06": 6.1344,
+      "2026-08-07": 8.6031,
+      "2026-08-12": 3.4701,
+      "2026-08-14": -2.3885,
+      "2026-08-21": 0.9789,
+      "2026-08-24": 3.3086,
+      "2026-08-26": 1.8112,
+      "2026-08-27": -0.1525,
+      "2026-08-28": 2.3952,
+      "2026-08-31": -4.4035,
+      "2026-09-01": 1.0237,
+      "2026-09-03": -5.8724,
+      "2026-09-04": -0.5554,
+      "2026-09-08": 1.3483,
+      "2026-09-09": 0.7948,
+      "2026-09-10": 0.2558,
+      "2026-09-11": 4.2944,
+      "2026-09-15": 0.9629,
+      "2026-09-16": 4.1388
+    },
+    "atr_tercile": {
+      "low": {
+        "atr_range": [
+          null,
+          2.693
+        ],
+        "n": 33,
+        "days": 12,
+        "hyp_pt": 13.3011,
+        "stop": 5
+      },
+      "mid": {
+        "atr_range": [
+          2.693,
+          4.491
+        ],
+        "n": 33,
+        "days": 13,
+        "hyp_pt": 24.6364,
+        "stop": 5
+      },
+      "high": {
+        "atr_range": [
+          4.491,
+          null
+        ],
+        "n": 33,
+        "days": 8,
+        "hyp_pt": -18.6604,
+        "stop": 10
+      }
+    },
+    "direction_mix": {
+      "LONG": 18,
+      "SHORT": 81
+    },
+    "recommendation": "09:20~09:29 특별분기 제거((D)안) **상정 가능** — ⚠ 상정 자격일 뿐 집행은 주간회의 결정. 제거 시 같은 분기의 `size×0.5`는 분리 존치 권고.",
+    "headline": "차단 99건/31일 · 누적 hyp +19.28pt(비용 0.083) · 승률 79.8%(기준선 64.4%) · 일자 +22/-9 p=0.029"
+  },
+  "cb2_restore_shadow": {
+    "since": "2026-07-05",
+    "start_date": "2026-08-24",
+    "live_limit": 9999,
+    "live_limit_active": false,
+    "n_positions_all": 350,
+    "n_positions_judged": 145,
+    "n_days_judged": 19,
+    "n_positions_seed": 205,
+    "n_days_seed": 26,
+    "judged": {
+      "2": {
+        "limit": 2,
+        "halt_days": [
+          {
+            "day": "2026-08-24",
+            "halt_ts": "2026-08-24 10:39:59",
+            "n_removed": 19,
+            "krw_removed": 215622.0
+          },
+          {
+            "day": "2026-08-27",
+            "halt_ts": "2026-08-27 10:51:25",
+            "n_removed": 15,
+            "krw_removed": 141832.0
+          },
+          {
+            "day": "2026-08-28",
+            "halt_ts": "2026-08-28 09:55:15",
+            "n_removed": 11,
+            "krw_removed": -166432.0
+          },
+          {
+            "day": "2026-08-31",
+            "halt_ts": "2026-08-31 13:24:09",
+            "n_removed": 1,
+            "krw_removed": 75944.0
+          },
+          {
+            "day": "2026-09-01",
+            "halt_ts": "2026-09-01 11:04:18",
+            "n_removed": 5,
+            "krw_removed": -162176.0
+          },
+          {
+            "day": "2026-09-03",
+            "halt_ts": "2026-09-03 11:23:16",
+            "n_removed": 0,
+            "krw_removed": 0
+          },
+          {
+            "day": "2026-09-07",
+            "halt_ts": "2026-09-07 09:42:18",
+            "n_removed": 9,
+            "krw_removed": -57667.0
+          },
+          {
+            "day": "2026-09-11",
+            "halt_ts": "2026-09-11 10:35:57",
+            "n_removed": 2,
+            "krw_removed": 34865.0
+          },
+          {
+            "day": "2026-09-15",
+            "halt_ts": "2026-09-15 11:06:28",
+            "n_removed": 7,
+            "krw_removed": -57826.0
+          }
+        ],
+        "n_halt_days": 9,
+        "n_removed": 69,
+        "krw_removed": 24162.0
+      },
+      "3": {
+        "limit": 3,
+        "halt_days": [
+          {
+            "day": "2026-08-24",
+            "halt_ts": "2026-08-24 10:50:51",
+            "n_removed": 18,
+            "krw_removed": 352229.0
+          },
+          {
+            "day": "2026-08-28",
+            "halt_ts": "2026-08-28 10:50:54",
+            "n_removed": 10,
+            "krw_removed": -32392.0
+          },
+          {
+            "day": "2026-09-01",
+            "halt_ts": "2026-09-01 11:22:10",
+            "n_removed": 4,
+            "krw_removed": -71139.0
+          },
+          {
+            "day": "2026-09-11",
+            "halt_ts": "2026-09-11 10:45:15",
+            "n_removed": 1,
+            "krw_removed": 14949.0
+          },
+          {
+            "day": "2026-09-15",
+            "halt_ts": "2026-09-15 11:36:35",
+            "n_removed": 6,
+            "krw_removed": 41172.0
+          }
+        ],
+        "n_halt_days": 5,
+        "n_removed": 39,
+        "krw_removed": 304819.0
+      }
+    },
+    "seed": {
+      "2": {
+        "limit": 2,
+        "halt_days": [
+          {
+            "day": "2026-07-15",
+            "halt_ts": "2026-07-15 10:16:59",
+            "n_removed": 5,
+            "krw_removed": -129791.0
+          },
+          {
+            "day": "2026-07-16",
+            "halt_ts": "2026-07-16 14:06:59",
+            "n_removed": 1,
+            "krw_removed": -470619.0
+          },
+          {
+            "day": "2026-07-22",
+            "halt_ts": "2026-07-22 10:43:28",
+            "n_removed": 8,
+            "krw_removed": -50554.0
+          },
+          {
+            "day": "2026-08-03",
+            "halt_ts": "2026-08-03 14:35:55",
+            "n_removed": 0,
+            "krw_removed": 0
+          },
+          {
+            "day": "2026-08-04",
+            "halt_ts": "2026-08-04 13:07:20",
+            "n_removed": 0,
+            "krw_removed": 0
+          },
+          {
+            "day": "2026-08-05",
+            "halt_ts": "2026-08-05 11:19:35",
+            "n_removed": 10,
+            "krw_removed": -54632.0
+          },
+          {
+            "day": "2026-08-06",
+            "halt_ts": "2026-08-06 13:30:19",
+            "n_removed": 9,
+            "krw_removed": 33695.0
+          },
+          {
+            "day": "2026-08-07",
+            "halt_ts": "2026-08-07 13:06:23",
+            "n_removed": 4,
+            "krw_removed": -63842.0
+          },
+          {
+            "day": "2026-08-10",
+            "halt_ts": "2026-08-10 14:42:36",
+            "n_removed": 1,
+            "krw_removed": -162926.0
+          },
+          {
+            "day": "2026-08-14",
+            "halt_ts": "2026-08-14 14:41:43",
+            "n_removed": 0,
+            "krw_removed": 0
+          },
+          {
+            "day": "2026-08-18",
+            "halt_ts": "2026-08-18 13:05:30",
+            "n_removed": 11,
+            "krw_removed": 531050.0
+          },
+          {
+            "day": "2026-08-19",
+            "halt_ts": "2026-08-19 14:23:20",
+            "n_removed": 1,
+            "krw_removed": 4474.0
+          },
+          {
+            "day": "2026-08-20",
+            "halt_ts": "2026-08-20 14:45:05",
+            "n_removed": 0,
+            "krw_removed": 0
+          }
+        ],
+        "n_halt_days": 13,
+        "n_removed": 50,
+        "krw_removed": -363145.0
+      },
+      "3": {
+        "limit": 3,
+        "halt_days": [
+          {
+            "day": "2026-07-15",
+            "halt_ts": "2026-07-15 11:20:59",
+            "n_removed": 4,
+            "krw_removed": 83979.0
+          },
+          {
+            "day": "2026-07-16",
+            "halt_ts": "2026-07-16 14:12:00",
+            "n_removed": 0,
+            "krw_removed": 0
+          },
+          {
+            "day": "2026-08-10",
+            "halt_ts": "2026-08-10 14:53:04",
+            "n_removed": 0,
+            "krw_removed": 0
+          },
+          {
+            "day": "2026-08-18",
+            "halt_ts": "2026-08-18 13:36:20",
+            "n_removed": 10,
+            "krw_removed": 657691.0
+          }
+        ],
+        "n_halt_days": 4,
+        "n_removed": 14,
+        "krw_removed": 741670.0
+      }
+    },
+    "per_limit": {
+      "2": {
+        "limit": 2,
+        "halt_days": [
+          {
+            "day": "2026-08-24",
+            "halt_ts": "2026-08-24 10:39:59",
+            "n_removed": 19,
+            "krw_removed": 215622.0
+          },
+          {
+            "day": "2026-08-27",
+            "halt_ts": "2026-08-27 10:51:25",
+            "n_removed": 15,
+            "krw_removed": 141832.0
+          },
+          {
+            "day": "2026-08-28",
+            "halt_ts": "2026-08-28 09:55:15",
+            "n_removed": 11,
+            "krw_removed": -166432.0
+          },
+          {
+            "day": "2026-08-31",
+            "halt_ts": "2026-08-31 13:24:09",
+            "n_removed": 1,
+            "krw_removed": 75944.0
+          },
+          {
+            "day": "2026-09-01",
+            "halt_ts": "2026-09-01 11:04:18",
+            "n_removed": 5,
+            "krw_removed": -162176.0
+          },
+          {
+            "day": "2026-09-03",
+            "halt_ts": "2026-09-03 11:23:16",
+            "n_removed": 0,
+            "krw_removed": 0
+          },
+          {
+            "day": "2026-09-07",
+            "halt_ts": "2026-09-07 09:42:18",
+            "n_removed": 9,
+            "krw_removed": -57667.0
+          },
+          {
+            "day": "2026-09-11",
+            "halt_ts": "2026-09-11 10:35:57",
+            "n_removed": 2,
+            "krw_removed": 34865.0
+          },
+          {
+            "day": "2026-09-15",
+            "halt_ts": "2026-09-15 11:06:28",
+            "n_removed": 7,
+            "krw_removed": -57826.0
+          }
+        ],
+        "n_halt_days": 9,
+        "n_removed": 69,
+        "krw_removed": 24162.0,
+        "n_effective_days": 8,
+        "day_pos": 4,
+        "day_neg": 4,
+        "day_sign_p": 1.0,
+        "drop_worst_days_excluded": [
+          "2026-08-24"
+        ],
+        "krw_removed_drop_worst": -191460.0,
+        "drop_worst_sign_holds": false,
+        "gates": {
+          "일자 부호검정 p < 0.05": false,
+          "drop-worst 부호 유지": false
+        },
+        "verdict": "NO_EVIDENCE",
+        "reason": "표본은 찼으나 관문 미충족 (일자 부호검정 p < 0.05, drop-worst 부호 유지)"
+      },
+      "3": {
+        "limit": 3,
+        "halt_days": [
+          {
+            "day": "2026-08-24",
+            "halt_ts": "2026-08-24 10:50:51",
+            "n_removed": 18,
+            "krw_removed": 352229.0
+          },
+          {
+            "day": "2026-08-28",
+            "halt_ts": "2026-08-28 10:50:54",
+            "n_removed": 10,
+            "krw_removed": -32392.0
+          },
+          {
+            "day": "2026-09-01",
+            "halt_ts": "2026-09-01 11:22:10",
+            "n_removed": 4,
+            "krw_removed": -71139.0
+          },
+          {
+            "day": "2026-09-11",
+            "halt_ts": "2026-09-11 10:45:15",
+            "n_removed": 1,
+            "krw_removed": 14949.0
+          },
+          {
+            "day": "2026-09-15",
+            "halt_ts": "2026-09-15 11:36:35",
+            "n_removed": 6,
+            "krw_removed": 41172.0
+          }
+        ],
+        "n_halt_days": 5,
+        "n_removed": 39,
+        "krw_removed": 304819.0,
+        "n_effective_days": 5,
+        "verdict": "INSUFFICIENT",
+        "reason": "표본 부족 (제거 39건<20 또는 유효 정지일 5<6)"
+      }
+    },
+    "verdict": "NO_EVIDENCE",
+    "reason": "limit=2: 표본은 찼으나 관문 미충족 (일자 부호검정 p < 0.05, drop-worst 부호 유지)",
+    "headline": "limit=2: 표본은 찼으나 관문 미충족 (일자 부호검정 p < 0.05, drop-worst 부호 유지) · 판정창 2026-08-24~ 145포지션/19일 · 라이브 CB②=9999(비활성)"
+  }
+}

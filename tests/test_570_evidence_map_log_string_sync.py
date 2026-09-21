@@ -128,3 +128,71 @@ def test_5_evidence_map_quotes_lifecycle_markers(evmap):
         u"evidence_map.md 에 %s 가 없다 — 「동결과 종료」 절의 판별표가 불완전하다."
         % u", ".join(missing)
     )
+
+
+# ── 4. `[OptionFlow]` 스로틀 — 「줄이 적다」를 「죽었다」로 읽지 않기 위한 묶음 ──
+#
+# [MW0602 582차 후속 / G-3B] 2026-09-21 O-83 판정이 INFO 1줄을 보고 그것이 정상인지
+# 확인하려고 **코드를 열어 `_info_every_sec` 를 읽어야 했다.** 증거지도에 그 해설을
+# 실었으므로, 해설이 인용한 것들이 프로덕션에서 사라지면 여기서 깨져야 한다.
+#
+# ⚠ 스로틀 값이 옳은지는 판정하지 않는다 — 그 값은 2026-09-21 MW0601 `b35d363` 의
+#   의도된 결정이다(매분 INFO 면 하루 390줄). 여기서는 **문서와 코드가 함께
+#   움직이는지**만 본다.
+
+_OPTFLOW_SRC = os.path.join(_ROOT, "collection", "cybos", "weekly_option_flow.py")
+
+#: 증거지도 판별표가 인용한 문자열.
+_OPTFLOW_OK = u"[OptionFlow] stored=%d rows"
+_OPTFLOW_LATEST_BAR = u"최신봉=%s"
+_OPTFLOW_FAIL = u"[OptionFlow] 부분/전체 실패 streak=%d"
+
+#: 30분 스로틀 상수 — 증거지도가 이 값을 그대로 적고 있다.
+_OPTFLOW_THROTTLE = u"1800.0"
+
+#: 증거지도 쪽 절 제목의 특징 문구.
+_EVMAP_OPTFLOW_SECTION = u"INFO 가 하루 한두 줄뿐인 것은"
+
+
+@pytest.fixture(scope="module")
+def optflow_src():
+    if not os.path.exists(_OPTFLOW_SRC):
+        pytest.skip("weekly_option_flow.py 없음")
+    return _read(_OPTFLOW_SRC)
+
+
+def test_6_optionflow_success_log_shape(optflow_src):
+    """성공 INFO 의 두 축(건수·최신봉)이 살아 있는가.
+
+    `최신봉=` 이 사라지면 증거지도 판별표 1행("최신봉이 전진한다")이 근거를 잃고,
+    다음 점검이 다시 **DB 파일 mtime** 이라는 간접 증거로 돌아간다.
+    """
+    missing = [t for t in (_OPTFLOW_OK, _OPTFLOW_LATEST_BAR) if t not in optflow_src]
+    assert not missing, (
+        u"weekly_option_flow.py 에서 %s 를 찾지 못했다 — evidence_map.md 의 "
+        u"「[OptionFlow]」 절도 함께 갱신할 것."
+        % u", ".join(repr(m) for m in missing)
+    )
+
+
+def test_7_optionflow_failure_path_is_separate(optflow_src):
+    """실패는 성공과 **다른 줄**로 나온다 — 판별표가 그렇게 적고 있다."""
+    assert _OPTFLOW_FAIL in optflow_src, (
+        u"weekly_option_flow.py 에서 %r 를 찾지 못했다 — 실패 경로가 없어지면 "
+        u"판별표의 「INFO·WARNING 둘 다 없다 = 부재」 행이 무의미해진다."
+        % _OPTFLOW_FAIL
+    )
+
+
+def test_8_evidence_map_documents_the_throttle(evmap, optflow_src):
+    """문서 쪽 절반 — 절이 있고, 코드의 스로틀 값을 그대로 인용하는가."""
+    assert _EVMAP_OPTFLOW_SECTION in evmap, (
+        u"evidence_map.md 에서 「[OptionFlow] 스로틀」 절을 찾지 못했다."
+    )
+    assert _OPTFLOW_THROTTLE in optflow_src, (
+        u"weekly_option_flow.py 에 %s 가 없다 — 스로틀이 바뀌었다." % _OPTFLOW_THROTTLE
+    )
+    assert _OPTFLOW_THROTTLE in evmap, (
+        u"evidence_map.md 가 스로틀 값 %s 를 적고 있지 않다 — 코드와 문서가 "
+        u"어긋났다." % _OPTFLOW_THROTTLE
+    )
