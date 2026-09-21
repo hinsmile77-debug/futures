@@ -276,6 +276,59 @@ def test_11_side_path_never_raises():
         assert "except Exception" in body, fn
 
 
+def test_11b_worker_hands_off_via_dashboard_call_not_qtimer():
+    """🔴 워커 스레드의 `QTimer.singleShot` 은 **한 번도 발화하지 않는다.**
+
+    타이머는 호출한 스레드에 붙는데 그 스레드에는 Qt 이벤트 루프가 없다.
+    예외도 로그도 없이 조용히 사라진다.
+
+    614차 초판이 정확히 이걸로 죽었다 — 2026-09-21 16:41 재기동에서 `[Replay]`
+    로그가 한 줄도 없었고 화면은 10행 전부 「미수집」이었다. 504차 후속이
+    `_restore_panels_worker` 에서 **같은 함수·같은 유형**을 이미 겪고 고쳐뒀는데
+    그 교훈을 놓친 결과다.
+    """
+    src = _src(_SVC)
+    worker = src[src.index("def _worker"):]
+    worker = worker[:worker.index("\n    def ", 5)]
+    # ⚠ 그 함정을 **설명하는 주석**이 본문에 있다. 코드만 본다.
+    worker = "\n".join(ln for ln in worker.splitlines()
+                       if not ln.lstrip().startswith("#"))
+    assert "QTimer" not in worker, (
+        "워커 스레드에서 QTimer 를 쓴다 — 발화하지 않는다. `_dashboard_call` 을 쓸 것")
+    assert "_dashboard_call(" in worker, "메인 스레드 통로를 쓰지 않는다"
+
+
+def test_11c_worker_actually_uses_the_handoff(tmp_path):
+    """계약만이 아니라 **실제로** 그 통로로 넘기는지 본다."""
+    p = str(tmp_path / "raw.db")
+    con = sqlite3.connect(p)
+    con.execute("CREATE TABLE raw_features (ts TEXT PRIMARY KEY, features TEXT)")
+    con.execute("CREATE TABLE raw_candles (ts TEXT PRIMARY KEY, close REAL)")
+    con.execute("INSERT INTO raw_candles VALUES ('2026-09-21 15:08:00', 1105.0)")
+    con.commit(); con.close()
+
+    calls = []
+
+    class _S2(object):
+        dashboard = _FakeDash()
+
+        def _dashboard_call(self, fn):
+            calls.append(fn)
+
+    import strategy.runtime.session_replay_service as m
+    old_raw, old_pred = m._RAW_DB, m._PRED_DB
+    m._RAW_DB, m._PRED_DB = p, p
+    svc = _svc()
+    # 날짜 판정은 오늘 기준이라 고정한다 — 이 테스트가 보는 건 넘기는 통로다.
+    svc._decide = lambda system: ("post_market", "2026-09-21")
+    try:
+        svc._worker(_S2())
+    finally:
+        m._RAW_DB, m._PRED_DB = old_raw, old_pred
+
+    assert len(calls) == 1, "메인 스레드 통로로 넘기지 않았다(주입이 조용히 사라진다)"
+
+
 def test_12_collection_gates_are_not_loosened():
     """🔴 화면을 채우려고 장외 TR 게이트를 풀면 안 된다.
 
