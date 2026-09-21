@@ -79,7 +79,8 @@ def main():
         rc, ptree, _ = git('rev-parse', '%s^{tree}' % parent)
         if rc == 0 and ptree == tree:
             print('변경 없음 — 새 커밋을 만들지 않았다.')
-            _maybe_push(a, parent)
+            if not _maybe_push(a, parent):
+                raise SystemExit(1)
             return
 
     n = len([f for f in os.listdir(os.path.join(_ROOT, SUBDIR))
@@ -98,19 +99,38 @@ def main():
     if rc:
         raise SystemExit('ref 갱신 실패: %s' % err)
     print('%s %s  (%s)' % (BRANCH, commit[:9], '갱신' if parent else '새로 만듦'))
-    _maybe_push(a, commit)
+    if not _maybe_push(a, commit):
+        raise SystemExit(1)
 
 
 def _maybe_push(a, commit):
+    """올린다. **성공하면 True.**
+
+    🔴 예전에는 실패해도 메시지만 찍고 0 으로 끝났다. 그러면 작업 스케줄러가
+      「성공」으로 기록하고, 로컬 ref 만 앞서 간 채 MW0602 는 어제에 멈춘다 —
+      아무도 에러를 못 보는 종류의 고장이다. 그래서 실패는 종료코드로 낸다.
+    """
     if not a.push:
         print('로컬만 갱신했다. 올리려면 --push (또는 `git push %s %s`).' % (a.remote, BRANCH))
-        return
+        return True
     rc, out, err = git('push', a.remote, '%s:refs/heads/%s' % (BRANCH, BRANCH))
     if rc:
+        e = err.strip()
         print('푸시 실패 — Windows 에서 `git push %s %s` 로 올려라.\n%s'
-              % (a.remote, BRANCH, err.strip()[:400]))
-        return
-    print('푸시 완료 -> %s/%s' % (a.remote, BRANCH))
+              % (a.remote, BRANCH, e[:400]))
+        if 'could not read Username' in e or 'Authentication failed' in e:
+            print('  ↑ 자격증명이 없는 환경이다(Cowork 마운트 등). 푸시는 Windows 가 한다:')
+            print('    scripts\\peter_feed_push_MW0601.bat  (작업 「피터 사료 송신」)')
+        return False
+    # 올라간 것을 origin 에 되물어 확인한다 — 「푸시 완료」를 믿지 않는다.
+    rc, ls, _ = git('ls-remote', a.remote, 'refs/heads/%s' % BRANCH)
+    remote_sha = ls.split()[0] if rc == 0 and ls.strip() else '?'
+    if remote_sha != commit:
+        print('푸시했다는데 origin 이 %s 다 (로컬 %s) — 확인이 필요하다.'
+              % (remote_sha[:9], commit[:9]))
+        return False
+    print('푸시 완료 -> %s/%s @ %s' % (a.remote, BRANCH, remote_sha[:9]))
+    return True
 
 
 if __name__ == '__main__':
