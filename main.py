@@ -827,6 +827,11 @@ class TradingSystem:
         self._weekly_option_flow = None     # 지연 생성 (COM Dispatch 비용)
         self._wof_last_ts = None            # None = 아직 한 번도 수집 안 함
         self._wof_warned = False
+        # [MW0601 612차 후속5] 수급 첫 호출 실패 시 조기 재시도 — 세션당 1회.
+        # 런타임 상태이므로 여기서 명시 초기화한다 — 기본값 폴백으로 읽으면
+        # 미설정과 False 가 구분되지 않는다
+        # (계측 4원칙 ④ / tests/test_457_fallback_visibility.py).
+        self._investor_retry_done = False
         # [451차 Phase 1-1] raw_program_trade 보존 로그 1회성 플래그 (60초 주기 로그 폭주 방지)
         self._program_raw_logged = False
         self._program_raw_err_logged = False
@@ -4588,6 +4593,13 @@ class TradingSystem:
             market_open_now=runtime_ctx.market_open_now,
         )
         self.option_chain_snap.initialize()
+        # [MW0601 612차] 신선도 게이지가 300초를 하드코딩하고 있었다 — 실제 주기를 준다.
+        if self.dashboard is not None:
+            try:
+                self.dashboard.set_option_chain_interval(
+                    self.option_chain_snap.interval_sec)
+            except Exception:
+                pass
         return True
 
     def connect_kiwoom(self) -> bool:
@@ -4617,6 +4629,30 @@ class TradingSystem:
             # (무스킬_피처셋_딥다이브_보고서_2026-07-13.md F5). 실패 시에도 api_connector.py의
             # _system_info_throttled(600s)가 로그 폭주를 막으므로 108차 우려는 이미 해소됨.
             self.investor_data.fetch_all(include_program=True)
+            # [MW0601 612차 후속2] 선물 수급 **금액 축** 대사 — 계측 4원칙 ⑤.
+            # 패널이 7221 열 30/31/32(백만원)를 억원으로 그리므로, 그 열이 정말
+            # 금액인지를 `금액 ÷ 계약수 ≈ 지수 × 250,000` 으로 매번 재확인한다.
+            # 열 매핑이 바뀌면 조용히 틀린 억원이 나가는 대신 WARNING 이 뜬다.
+            try:
+                _chk = getattr(self.investor_data, "check_amount_consistency", None)
+                if _chk is not None:
+                    _chk(self._last_close)
+            except Exception:
+                logger.debug("[CybosInvestor] 금액축 대사 스킵", exc_info=True)
+            # [MW0601 612차 후속5] **수급 패널을 여기서도 민다.**
+            # 종전에는 분봉 파이프라인(`run_minute_pipeline`)만 패널을 갱신했는데,
+            # 그 파이프라인은 **15:09 에 정상 종료**한다(09-17·09-18·09-21 동일).
+            # 그래서 15:09 이후 화면이 그 순간 상태로 얼어붙고, 하필 그 틱이
+            # 실패 상태였던 날은 하루 종일 「대기 / 0」이 남는다 — 2026-09-21
+            # 사용자 보고가 정확히 그 그림이었다(데이터는 15:09:45 부터 정상이었다).
+            # 이 타이머는 장중 내내 60초로 도니 갱신 경로를 하나 더 둔다.
+            if self.dashboard is not None:
+                try:
+                    _pd = getattr(self.investor_data, "get_panel_data", None)
+                    if _pd is not None:
+                        self.dashboard.update_divergence(_pd())
+                except Exception as _pe:
+                    logger.debug("[CybosInvestor] 패널 push 스킵: %s", _pe)
             self._save_program_trade_raw(now)
             # FutureCurOnly 틱에서 실시간으로 수집된 미결제약정 동기화
             rt = getattr(self, "realtime_data", None)
@@ -4648,6 +4684,26 @@ class TradingSystem:
                 )
             else:
                 logger.debug("[LiveDBG] _fetch_investor_data 완료 %.0fms", _elapsed_ms)
+
+        # [MW0601 612차 후속5] 재기동 직후 **첫 호출이 실패하면 60초를 기다리지
+        # 않고 10초 뒤 한 번 더** 시도한다.
+        #
+        # 실측(2026-09-21): 재기동 8회 중 2회에서 기동 3초 후의 첫 호출이
+        # 전 후보 실패(`futures investor TR 후보 없음` + `CpSvr8111 실패`)했고,
+        # 다음 60초 틱까지 대시보드 「선물 투자자 수급」이 통째로 비었다.
+        # 사용자가 그 구간을 화면으로 보고 「데이터가 올라오지 않는다」고 보고했다.
+        # ⚠ 무한 재시도가 아니다 — 세션당 1회만. 계속 실패하면 정규 틱이 맡는다.
+        try:
+            if (not self._investor_retry_done
+                    and not self.investor_data._futures_supported
+                    and not self.investor_data._program_supported):
+                self._investor_retry_done = True
+                logger.info(
+                    "[CybosInvestor] 첫 수급 호출 실패 — 10초 뒤 1회 재시도 "
+                    "(정규 주기 60초를 기다리지 않는다)")
+                QTimer.singleShot(10_000, self._fetch_investor_data)
+        except Exception:
+            logger.debug("[CybosInvestor] 재시도 예약 스킵", exc_info=True)
 
     def _fetch_weekly_option_flow(self, now: datetime.datetime) -> None:
         """[MW0601 2026-09-21] 위클리/먼스리 옵션·현물 투자자 수급 수집 (CpSvrNew7222).
@@ -4682,6 +4738,17 @@ class TradingSystem:
                 self._weekly_option_flow = flow
             flow.fetch_and_store()
             self._wof_last_ts = now
+            # [MW0601 612차 후속3] 개인 옵션 6종 시초 대비 증감을 패널로 민다.
+            # (아래 선물 수급 push 와 함께, 이 타이머가 15:09 이후의 유일한
+            #  갱신 경로가 된다 — 분봉 파이프라인은 15:09 에 정상 종료한다)
+            # 조회는 **여기서** 한다 — GUI 스레드가 DB 를 열면 paint 가 막힌다.
+            # 실측 24ms(하루 약 2,100행 인덱스 조회), 분당 1회.
+            if self.dashboard is not None:
+                try:
+                    self.dashboard.update_option_flow_delta(
+                        flow.get_individual_session_delta())
+                except Exception as _de:
+                    logger.debug("[OptionFlow] 대시보드 push 스킵: %s", _de)
         except Exception as e:
             # 첫 실패만 남긴다 — 매분 반복이라 폭주를 막는다.
             if not self._wof_warned:
@@ -4758,15 +4825,40 @@ class TradingSystem:
         """
         if not is_market_open(datetime.datetime.now()):
             return
-        spot = self._last_close
+        # [MW0601 612차 / P3-J] ATM 기준가는 **현물지수**다 — 행사가가 현물 기준이라
+        # 선물가를 쓰면 베이시스만큼 ATM 행사가가 어긋난다(행사가 간격 2.5pt).
+        # `_last_kospi200_spot`은 60초 폴링이라 None 일 수 있어 선물 종가로 폴백하고,
+        # **폴백했다는 사실을 남긴다**(계측 4원칙 ④ — 기본값이 쓰였으면 그 사실을 남겨라).
+        spot = self._last_kospi200_spot
+        if not spot or spot <= 0:
+            spot = self._last_close
+            if _ts_should_emit_throttled(self, "optchain_spot_fallback",
+                                         min_interval_sec=600.0):
+                logger.warning(
+                    "[OptionChain] 현물지수 미수신 — 선물 종가(%.2f)로 ATM 기준가 폴백. "
+                    "베이시스만큼 ATM 행사가가 어긋날 수 있다(612차)", spot or 0.0,
+                )
         if not self.option_chain_snap.is_due(spot):
+            # [612차] 종전 debug 라 파일에 안 남아, 「5분 폴링이 왜 10분인가」를
+            # 로그로 판정할 수 없었다(계측 4원칙 ③ — 탈락 가시화).
+            _elapsed = self.option_chain_snap.seconds_since_refresh()
+            if _elapsed < 1e9 and _ts_should_emit_throttled(
+                self, "optchain_not_due", min_interval_sec=600.0
+            ):
+                logger.info(
+                    "[OptionChain] 폴링 스킵 — 경과 %.1fs < 주기 %ds (10분 스로틀)",
+                    _elapsed, self.option_chain_snap.interval_sec,
+                )
             return
 
         _prev = getattr(self, "_option_chain_worker", None)
         if _prev is not None:
             try:
                 if _prev.isRunning():
-                    logger.debug("[OptionChain] 이전 워커 실행 중 — 스킵 spot=%.1f", spot)
+                    logger.warning(
+                        "[OptionChain] 이전 워커 실행 중 — 스킵 spot=%.1f "
+                        "(정상이면 1.5초에 끝난다 — 이 로그가 보이면 지연 조사)", spot,
+                    )
                     return
             except RuntimeError:
                 # deleteLater()로 C++ 객체가 이미 소멸됐지만 Python wrapper는 살아있는 경우
@@ -4781,6 +4873,10 @@ class TradingSystem:
             cache_path    = self.option_chain_snap.cache_path,
             atm_window_pt = self.option_chain_snap.atm_window,
             pause_ms      = self.option_chain_snap.pause_ms,
+            # [MW0601 612차] 거래일이 바뀌면 체인 코드 목록을 다시 받게 한다.
+            # 종전 재수집 조건("ATM 대상 0건")은 낡은 목록에 유효 코드가 남아 있는
+            # 한 성립하지 않아, 실측상 2026-06-04 목록이 3.5개월간 그대로 쓰였다.
+            force_chain_reload = self.option_chain_snap.chain_reload_due(),
         )
         _worker.result_ready.connect(self._on_option_chain_done)
         _worker.finished.connect(_worker.deleteLater)   # Qt C++ 객체 정리
@@ -7281,36 +7377,39 @@ class TradingSystem:
         self._record_shap_feature_window(features)
 
         # 다이버전스 패널 갱신 (외인·개인 수급)
+        #
+        # [MW0601 612차] 종전에는 여기서 dict 를 손으로 조립해 한 번 보내고,
+        # 바로 다음 줄에서 `get_panel_data()` 로 **덮어썼다.** 매분 패널을 두 번
+        # 그렸고, 첫 dict 에는 `option_flow_supported`·`panel_status_text`·신선도가
+        # 없어 한 프레임이 잘못 그려졌다(기본값 True 로 옵션 칸이 켜졌다).
+        # 조립 로직도 두 벌이라 `contrarian` 문구가 서로 달랐다
+        # ("역발상 하락" vs "개인 매수 우위") — 단일 출처로 합친다.
         _inv = self.investor_data
-        _fi_call  = _inv._call.get("foreign", 0)
-        _fi_put   = _inv._put.get("foreign", 0)
-        _rt_call  = _inv._call.get("individual", 0)
-        _rt_put   = _inv._put.get("individual", 0)
-        _fi_fut   = _inv._futures.get("foreign", 0)
-        _rt_fut   = _inv._futures.get("individual", 0)
-        _inst_call = _inv._call.get("institution", 0)
-        _inst_put  = _inv._put.get("institution", 0)
-        _rt_opt_total = max(abs(_rt_call) + abs(_rt_put), 1)
-        _fi_opt_total = max(abs(_fi_call) + abs(_fi_put), 1)
-        _rt_bias = (_rt_call - _rt_put) / _rt_opt_total
-        _fi_bias = (_fi_call - _fi_put) / _fi_opt_total
-        _contrarian = ("역발상 하락" if _rt_bias > 0.3 else
-                       "역발상 상승" if _rt_bias < -0.3 else "중립")
-        self.dashboard.update_divergence({
-            "rt_bias":     _rt_bias,
-            "fi_bias":     _fi_bias,
-            "rt_call":     _rt_call,
-            "rt_put":      _rt_put,
-            "rt_strd":     abs(_rt_call) + abs(_rt_put),
-            "fi_call":     _fi_call,
-            "fi_put":      _fi_put,
-            "fi_strangle": abs(_fi_call) + abs(_fi_put),
-            "contrarian":  _contrarian,
-            "div_score":   float(_fi_fut - _rt_fut),
-            "zones":       _inv.get_zone_data(),
-        })
         if hasattr(_inv, "get_panel_data"):
             self.dashboard.update_divergence(_inv.get_panel_data())
+        else:
+            # 키움 경로 등 `get_panel_data` 가 없는 제공자용 최소 폴백.
+            _fi_call = _inv._call.get("foreign", 0)
+            _fi_put  = _inv._put.get("foreign", 0)
+            _rt_call = _inv._call.get("individual", 0)
+            _rt_put  = _inv._put.get("individual", 0)
+            _rt_abs  = abs(_rt_call) + abs(_rt_put)
+            _fi_abs  = abs(_fi_call) + abs(_fi_put)
+            _fi_fut  = _inv._futures.get("foreign", 0)
+            _rt_fut  = _inv._futures.get("individual", 0)
+            self.dashboard.update_divergence({
+                "rt_bias":     (_rt_call - _rt_put) / max(_rt_abs, 1),
+                "fi_bias":     (_fi_call - _fi_put) / max(_fi_abs, 1),
+                "rt_call":     _rt_call,
+                "rt_put":      _rt_put,
+                "rt_strd":     _rt_abs,
+                "fi_call":     _fi_call,
+                "fi_put":      _fi_put,
+                "fi_strangle": _fi_abs,
+                "contrarian":  "중립",
+                "div_score":   float(_fi_fut - _rt_fut),
+                "zones":       _inv.get_zone_data(),
+            })
 
         # [DBG-F4] ATR floor 적용 전후 + 핵심 피처 원시값 확인
         debug_log.debug(
@@ -14986,6 +15085,9 @@ class TradingSystem:
         self._kospi200_index_timer.setInterval(60_000)
         self._kospi200_index_timer.timeout.connect(self._poll_kospi200_index)
         self._kospi200_index_timer.start()
+        # [612차 후속5] 재기동 직후 즉시 1회 — VKOSPI·현물지수가 60초간 비는 것을
+        # 막는다. 이 둘이 없으면 RV-IV 스프레드 카드와 옵션 ATM 기준가도 함께 빈다.
+        QTimer.singleShot(8_000, self._poll_kospi200_index)
 
         # 옵션 체인 주기 폴링 — 300초 (opt_chain_pcr / opt_gex_bn / opt_atm_* 수집)
         #
@@ -15007,6 +15109,12 @@ class TradingSystem:
         self._option_chain_timer.setInterval(300_000)
         self._option_chain_timer.timeout.connect(self._poll_option_chain)
         QTimer.singleShot(17_000, self._option_chain_timer.start)
+        # [MW0601 612차 후속5] 재기동 직후 **첫 1회를 즉시** 돌린다.
+        # 종전에는 17초 오프셋 + 300초 주기라 장중 재기동 시 옵션 체인 카드
+        # (PCR·GEX·ATM OI)가 최대 **5분간 「미수집」** 이었다. 오늘만 재기동이
+        # 8회여서 그 구멍이 실제로 여러 번 화면에 보였다(15:08 스크린샷).
+        # `is_due()` 가 경과 시간으로만 판단하므로 중복 기동 위험은 없다.
+        QTimer.singleShot(20_000, self._poll_option_chain)
 
         # [MW0601 478차 후속 / FZ-1] 메인 이벤트 루프 하트비트 — 5초.
         # 이 타이머가 멈추는 것이 곧 "이벤트 루프 사망"이며, 그것을 이벤트 루프 **밖**의

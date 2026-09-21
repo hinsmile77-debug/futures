@@ -26,7 +26,28 @@ logger = logging.getLogger("OPTIONS")
 system_logger = logging.getLogger("SYSTEM")
 
 _HV_OI    = 99   # OptionMst GetHeaderValue 인덱스 — 미결제약정
-_HV_GAMMA = 110  # Gamma (백분율, ÷100)
+_HV_GAMMA = 110  # Gamma — **백분율로 온다**. 반드시 `_GREEK_PCT`로 나눠 쓸 것(612차).
+
+# 🔴 [MW0601 612차] OptionMst Greeks 는 백분율이다 — 249차 도입 이래 나눈 적이 없었다.
+#
+# `_HV_GAMMA` 주석은 처음부터 "(백분율, ÷100)"이라 적혀 있었는데 `_compute_gex`도
+# `scripts/collect_option_metrics.py`도 그 ÷100 을 적용하지 않았다(`git log -S "gamma / 100"`
+# = 0건). 그래서 `opt_gex_bn` 이 **100배 부풀려진 채** 2026-05 부터 흘렀다.
+#
+# 근거 — `data/option_metrics.json`(2026-05-14, 48종목 실수집):
+#   · `delta` 필드 범위 −52.63 ~ +59.43  → 0~1 이 아니라 0~100. **Greeks 는 백분율.**
+#   · ATM(strike 1220.0) `gamma` 필드 0.2100
+#     vs Black-Scholes 이론 감마 1/(S·σ·√(2πT)) = 0.002018
+#     (S=1220.17, σ=56.51%, T=30/365)        → **비율 104.1**
+#
+# ⚠ **"GEX IC 재현 실패(0.198 → 0.013)의 원인이 이 버그"라고 쓰지 말 것.**
+#   ÷100 은 순수 선형 변환이라 **Spearman/IC 는 불변**이다. F4 판정은 그대로 유효하다.
+#   실제로 바뀌는 것은 ① 표시값 ② 절대 임계(감마 배지) ③ DB 컬럼 스케일 셋뿐이다.
+#
+# ⚠ **학습 영향 없음** — `model/horizons/feature_names.pkl`(97키 동결 슈퍼셋)과 호라이즌별
+#   6개 피처셋(1m 8 · 3m 12 · 5m 12 · 10m 11 · 15m 13 · 30m 11) 전수 확인에서
+#   옵션 체인 키는 **하나도 포함돼 있지 않다**. train/serve skew 우려 없음(317차 원칙).
+_GREEK_PCT = 100.0
 
 _OPTION_MULTIPLIER = 250_000
 _GEX_BN = 1e9
@@ -188,6 +209,7 @@ class OptionChainWorker(QThread):
         atm_window_pt: float = 30.0,
         pause_ms: int = 50,
         parent=None,
+        force_chain_reload: bool = False,
     ) -> None:
         super().__init__(parent)
         self._chain_raw   = list(chain_raw)   # 복사본 — 메인 스레드와 공유 없음
@@ -195,6 +217,10 @@ class OptionChainWorker(QThread):
         self._cache_path  = cache_path
         self._atm_window  = atm_window_pt
         self._pause_ms    = pause_ms
+        # [MW0601 612차] 거래일이 바뀌어 체인 **코드 목록**을 다시 받아야 하는가.
+        # 판정은 메인 스레드(OptionChainSnapshot.chain_reload_due)가 한다 —
+        # 워커는 시키는 대로 받기만 한다.
+        self._force_reload = bool(force_chain_reload)
 
     # ── QThread 진입점 ─────────────────────────────────────────────
 
@@ -230,6 +256,25 @@ class OptionChainWorker(QThread):
         t0 = time.perf_counter()
 
         chain_raw = self._chain_raw
+
+        # [MW0601 612차] 거래일이 바뀌었으면 코드 목록부터 다시 받는다.
+        # ⚠ 실패해도 낡은 목록을 **버리지 않는다** — 코드 목록은 관측치가 아니라
+        #   조회 대상이라, 없으면 그날 옵션 피처가 통째로 사라진다. 낡은 쪽이 낫다.
+        #   다만 조용히 넘어가지 않는다(계측 4원칙 ④).
+        if self._force_reload and chain_raw:
+            _fresh = self._fetch_chain()
+            if _fresh:
+                system_logger.info(
+                    "[OptionChain][Worker] 체인 코드 목록 재수집 — %d → %d 종목",
+                    len(chain_raw), len(_fresh),
+                )
+                chain_raw = _fresh
+            else:
+                system_logger.warning(
+                    "[OptionChain][Worker] 체인 코드 목록 재수집 실패 — 낡은 캐시 %d 종목 유지. "
+                    "행사가 격자가 현재 상장분과 다를 수 있다(612차)",
+                    len(chain_raw),
+                )
 
         if not chain_raw:
             chain_raw = self._fetch_chain()
@@ -330,7 +375,8 @@ class OptionChainWorker(QThread):
                     snap["error"] = f"dib_status={_i(mst_obj.GetDibStatus())}"
                 else:
                     snap["oi"]    = _i(mst_obj.GetHeaderValue(_HV_OI))
-                    snap["gamma"] = _f(mst_obj.GetHeaderValue(_HV_GAMMA))
+                    # [612차] 백분율 → 실수. 이 한 줄이 빠져 GEX 가 100배였다.
+                    snap["gamma"] = _f(mst_obj.GetHeaderValue(_HV_GAMMA)) / _GREEK_PCT
             except Exception as exc:
                 snap["error"] = str(exc)
             out.append(snap)
@@ -368,6 +414,11 @@ class OptionChainWorker(QThread):
             if dir_:
                 os.makedirs(dir_, exist_ok=True)
             with open(self._cache_path, "w", encoding="utf-8") as f:
-                json.dump({"chain": chain}, f, ensure_ascii=False, indent=2)
+                # [MW0601 612차] `saved_at` 을 함께 쓴다 — 파일 mtime 은 복사·체크아웃에
+                # 쉽게 흔들려서 "언제 받은 목록인가"의 1차 근거가 못 된다.
+                json.dump(
+                    {"saved_at": _dt.date.today().isoformat(), "chain": chain},
+                    f, ensure_ascii=False, indent=2,
+                )
         except Exception:
             pass

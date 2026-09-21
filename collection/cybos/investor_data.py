@@ -32,6 +32,16 @@ ZONE_LABELS = {
 # (INVESTOR_KEYS 전체는 키움 시절 스키마 잔재로, 나머지 7종은 emit 대상이 아니다.)
 _EMITTED_INVESTOR_KEYS = ("foreign", "individual", "institution")
 
+# [MW0601 612차] 「역발상 신호」 데드밴드 (계약수).
+#
+# 종전엔 `retail_fut > 0 / < 0` 순수 부호 판정이라 개인 선물 순매수가 0 근처를
+# 배회하는 동안 카드가 계속 뒤집혔다 — 실측 부호 전환 09-18 **14회** / 09-14 8회 /
+# 09-21 3회. 표시 전용 임계이며 매매 판단에는 쓰이지 않는다.
+#
+# ⚠ 절대 계약수 고정 임계다. 미결제약정·거래량 체제가 바뀌면 함께 드리프트한다
+#   (539차 `ATR_MIN_ENTRY` 와 같은 계열). 26주 WFA 때 재확인 대상.
+CONTRARIAN_DEADBAND_CONTRACTS = 200
+
 
 def _to_int(value: Any, default: int = 0) -> int:
     try:
@@ -67,6 +77,10 @@ class CybosInvestorData:
         self._fetch_count = 0
 
         self._futures: Dict[str, int] = {k: 0 for k in INVESTOR_KEYS}
+        # [MW0601 612차 후속2] 선물 순매수 **금액**(백만원) — 7221 열 30/31/32.
+        # 계약수와 별개 축이며 **원천이 직접 준다**(우리가 환산하지 않는다).
+        self._futures_amt: Dict[str, int] = {k: 0 for k in INVESTOR_KEYS}
+        self._futures_amt_seen: set = set()
         self._call: Dict[str, int] = {k: 0 for k in INVESTOR_KEYS}
         self._put: Dict[str, int] = {k: 0 for k in INVESTOR_KEYS}
         self._program_arb = 0
@@ -96,7 +110,7 @@ class CybosInvestorData:
         self._option_flow_source = "unavailable"
         self._futures_reason = "not fetched"
         self._program_reason = "not fetched"
-        self._option_flow_reason = "Cybos option investor-flow mapping pending"
+        self._option_flow_reason = "옵션 수급 TR 매핑 대기"
 
     def set_futures_code(self, code: str) -> None:
         """매매 종목코드 갱신 — Cybos는 API 내부에서 코드를 관리하므로 현재 no-op."""
@@ -147,11 +161,21 @@ class CybosInvestorData:
         self._futures_seen.update(k for k in nets.keys() if k in INVESTOR_KEYS)
         for key in INVESTOR_KEYS:
             self._futures[key] = _to_int(nets.get(key, self._futures.get(key, 0)))
+
+        # [612차 후속2] 금액 축 — 계약수와 **따로** 측정여부를 센다.
+        # 7221 이외 후보(FutureTrader 등)는 이 열을 주지 않으므로, 계약수는 왔는데
+        # 금액은 안 온 상태가 성립한다. 한 플래그로 뭉뚱그리면 안 된다(계측 4원칙 ②).
+        net_amounts = result.get("net_amounts") or {}
+        self._futures_amt_seen.update(
+            k for k in net_amounts.keys() if k in INVESTOR_KEYS)
+        for key in INVESTOR_KEYS:
+            self._futures_amt[key] = _to_int(
+                net_amounts.get(key, self._futures_amt.get(key, 0)))
         self._futures_prov.maybe_warn(
             logger, _EMITTED_INVESTOR_KEYS, bool(result.get("supported", False))
         )
 
-        # call_nets / put_nets — CpSyrNew7212 제공 시 option_flow도 갱신
+        # call_nets / put_nets — CpSvrNew7221 옵션콜·풋 행 제공 시 option_flow도 갱신
         call_nets = result.get("call_nets") or {}
         put_nets  = result.get("put_nets")  or {}
         if call_nets or put_nets:
@@ -160,7 +184,7 @@ class CybosInvestorData:
                 self._put[key]  = _to_int(put_nets.get(key,  self._put.get(key, 0)))
             self._option_flow_supported = True
             self._option_flow_source    = result.get("source", "unknown")
-            self._option_flow_reason    = "콜/풋 순매수 제공 (CpSvrNew7212)"
+            self._option_flow_reason    = "콜/풋 순매수 제공 (CpSvrNew7221)"
 
         # 미결제약정: TR 미발견 시 FutureMst fallback 값 수신
         raw = result.get("raw") or {}
@@ -245,6 +269,52 @@ class CybosInvestorData:
         """
         return dict(self._program_fields)
 
+    # [MW0601 612차 후속2] 정규 KOSPI200 선물 승수(원/pt).
+    # 🔴 **우리 매매 종목(미니 A05·50,000)의 승수가 아니다.** 7221 선물 행은
+    #    시장 전체 수급이라 정규 계약 기준이다. `active_contract_spec()` 으로
+    #    "고치면" 5배 틀린다(settings.py §승수 단일원천 주석과 충돌하지 않는다 —
+    #    그 규약은 *우리 포지션*의 승수에 대한 것이다).
+    _REGULAR_FUT_PT_VALUE = 250_000
+    # 대사 허용 오차 — 열 매핑이 바뀌면 이 비율이 깨진다.
+    _AMT_RECON_TOL = 0.20
+
+    def check_amount_consistency(self, ref_price: float) -> Optional[float]:
+        """[612차 후속2] 금액 ÷ 계약수 가 `지수 × 250,000` 과 맞는지 대사한다.
+
+        계측 4원칙 ⑤ — 파생값을 쓰려면 구성요소를 각각 걸어라. 여기서는 원천이
+        주는 **두 축(계약·금액)이 서로 정합한지**를 매번 확인해, 열 30/31/32 의
+        의미가 바뀌거나 행 레이아웃이 밀리면 조용히 틀린 억원이 나가지 않게 한다.
+
+        근거: RAW 덤프 11개/5거래일/33개 비율에서 `금액÷계약` 이 259~279 백만원이고
+        지수 수준을 따라갔다(0.5% 이내로 `지수 × 250,000` 과 일치).
+
+        Returns: 실측 배수(백만원/계약). 대사 불가면 None.
+        """
+        if not ref_price or ref_price <= 0:
+            return None
+        expected_mn = ref_price * self._REGULAR_FUT_PT_VALUE / 1e6
+        # 계약수가 충분히 큰 투자자로만 잰다 — 소수 계약은 반올림 오차가 크다.
+        best_key, best_qty = None, 0
+        for k in _EMITTED_INVESTOR_KEYS:
+            q = abs(self._futures.get(k, 0))
+            if q > best_qty:
+                best_key, best_qty = k, q
+        if best_key is None or best_qty < 50:
+            return None
+        amt = self._futures_amt.get(best_key, 0)
+        if not amt:
+            return None
+        actual_mn = abs(float(amt)) / float(best_qty)
+        if abs(actual_mn - expected_mn) / expected_mn > self._AMT_RECON_TOL:
+            logger.warning(
+                "[CybosInvestor] 선물 금액축 대사 실패 — %s 실측 %.1f 백만원/계약 vs "
+                "기대 %.1f (지수 %.2f × %d). 7221 열 30/31/32 매핑이 바뀌었을 수 있다. "
+                "억원 표시를 신뢰하지 말 것(612차 후속2)",
+                best_key, actual_mn, expected_mn, ref_price,
+                self._REGULAR_FUT_PT_VALUE,
+            )
+        return actual_mn
+
     def _is_measured(self, key: str) -> bool:
         """[559차 P1'-1] 이 키를 오늘 원천에서 **실제로 받은 적이 있는가**.
 
@@ -252,6 +322,14 @@ class CybosInvestorData:
         초기 0 인지는 여기서만 알 수 있다. 프리장(08:45~08:59)에는 전부 False 다.
         """
         return bool(self._futures_supported) and key in self._futures_seen
+
+    def _is_amt_measured(self, key: str) -> bool:
+        """[612차 후속2] 금액 축을 오늘 원천에서 실제로 받았는가.
+
+        계약수와 **따로** 센다 — 7221 이외 후보는 열 30/31/32 를 주지 않으므로
+        "계약은 왔는데 금액은 안 왔다"가 성립한다.
+        """
+        return bool(self._futures_supported) and key in self._futures_amt_seen
 
     def get_features(self) -> Dict[str, float]:
         foreign_fut = self._futures.get("foreign", 0)
@@ -327,32 +405,35 @@ class CybosInvestorData:
 
         if self._futures_supported and self._program_supported:
             panel_status = "partial"
-            status_text = "Cybos futures/program investor flow live; option flow pending"
+            status_text = "선물·프로그램 수급 수신 중 (옵션 수급 대기)"
         elif self._futures_supported:
             panel_status = "partial"
-            status_text = "Cybos futures investor flow live; {0}; option flow pending".format(
+            status_text = "선물 수급 수신 중 · {0} · 옵션 수급 대기".format(
                 self._program_status_text(self._program_source, self._program_reason)
             )
         elif self._program_supported:
             panel_status = "partial"
-            status_text = "Cybos program investor flow live; futures/option flow pending"
+            status_text = "프로그램 수급만 수신 중 (선물·옵션 수급 대기)"
         else:
             panel_status = "unavailable"
-            status_text = "Cybos investor-flow unavailable; {0}".format(
+            status_text = "수급 수신 불가 · {0}".format(
                 self._program_status_text(self._program_source, self._program_reason)
             )
 
         if self._futures_supported:
-            if retail_fut > 0:
+            # [MW0601 612차] 데드밴드 도입. 종전엔 순수 부호 판정이라 0 근방에서
+            # 카드가 하루 종일 뒤집혔다 — 실측 부호 전환 09-18 **14회** / 09-14 8회.
+            # 개인 선물 순매수는 일중 누계라 0 근처를 오래 배회하는 구간이 있다.
+            if retail_fut > CONTRARIAN_DEADBAND_CONTRACTS:
                 contrarian = "개인 매수 우위"
-            elif retail_fut < 0:
+            elif retail_fut < -CONTRARIAN_DEADBAND_CONTRACTS:
                 contrarian = "개인 매도 우위"
             else:
                 contrarian = "중립"
         else:
             contrarian = "대기"
 
-        # 콜/풋 순매수 — CpSvrNew7212 제공 시 실제값, 미제공 시 0
+        # 콜/풋 순매수 — CpSvrNew7221 옵션콜·풋 행 제공 시 실제값, 미제공 시 0
         fi_call = self._call.get("foreign", 0)
         fi_put  = self._put.get("foreign", 0)
         rt_call = self._call.get("individual", 0)
@@ -366,11 +447,11 @@ class CybosInvestorData:
         # 상태 텍스트: option_flow_supported 반영
         if self._option_flow_supported:
             if self._futures_supported and self._program_supported:
-                status_text = "Cybos futures/program/option investor flow live"
+                status_text = "선물·프로그램·옵션 수급 정상 수신 중"
             elif self._futures_supported:
-                status_text = "Cybos futures/option investor flow live; program flow pending"
+                status_text = "선물·옵션 수급 수신 중 (프로그램 수급 대기)"
             else:
-                status_text = "Cybos option investor flow live; futures/program flow pending"
+                status_text = "옵션 수급만 수신 중 (선물·프로그램 수급 대기)"
 
         panel = {
             "panel_status": panel_status,
@@ -391,16 +472,48 @@ class CybosInvestorData:
             "contrarian": contrarian,
             "div_score": float(divergence),
             "zones": self.get_zone_data(),
-            # 선물 투자자별 순매수 (계약수)
+            # 선물 투자자별 순매수 (계약수) — `div_score` 등 기존 소비처가 쓴다
             "foreign_futures_net": foreign_fut,
             "retail_futures_net": retail_fut,
             "institution_futures_net": inst_fut,
+            # [MW0601 612차 후속2] 선물 투자자별 순매수 **금액(백만원)** —
+            # 7221 열 30/31/32 원값. 패널은 이것을 억원으로 나눠 표시한다.
+            # 계약수와 다른 축이므로 키 이름에 단위를 박는다(계측 4원칙 ①).
+            "foreign_futures_amt_mn": self._futures_amt.get("foreign", 0),
+            "retail_futures_amt_mn": self._futures_amt.get("individual", 0),
+            "institution_futures_amt_mn": self._futures_amt.get("institution", 0),
+            "foreign_futures_amt_measured": bool(self._is_amt_measured("foreign")),
+            "retail_futures_amt_measured": bool(self._is_amt_measured("individual")),
+            "institution_futures_amt_measured":
+                bool(self._is_amt_measured("institution")),
             # 프로그램 매매 — 원천이 주는 차익/비차익만. 투자자별 분해는 없다(451차).
             "program_arb_net": self._program_arb,
             "program_nonarb_net": self._program_nonarb,
             "program_total_net_krw": self._program_total,
             # 미결제약정 (FutureMst 또는 선물 투자자 TR 응답)
             "open_interest": self._open_interest,
+            # ── [MW0601 612차] 신선도·측정여부 ────────────────────────────────
+            # 🔴 종전에 패널은 이 두 축을 **하나도 받지 못했다.** TR 이 실패하면
+            #    `_futures` 가 직전값을 유지하므로 **멈춘 값이 살아 있는 값처럼**
+            #    보였다(계측 4원칙 ④). `get_features()` 는 이미 만들고 있던 값인데
+            #    `get_panel_data()` 가 싣지 않아 화면까지 오지 않았을 뿐이다.
+            "age_sec": float(features["quality_investor_age_sec"]),
+            "stale": bool(features["quality_investor_stale"]),
+            # [612차 후속5] **절대 시각**도 함께 준다.
+            # `age_sec` 만 주면 패널이 그 숫자를 화면에 박아두므로, 갱신이 끊기면
+            # 신선도 칩 자체가 함께 얼어 「수급 15초 전」이 영원히 남는다 —
+            # 낡음을 알리려던 표시가 낡음을 감춘다(2026-09-21 15:09 실측).
+            # 패널이 스스로 나이를 다시 계산할 수 있게 원점을 넘긴다.
+            "last_fetch_epoch": (
+                float(self._last_fetch.timestamp()) if self._last_fetch else None),
+            # 559차 `*_measured` — "아직 안 왔다"와 "실측 0계약"을 구분한다.
+            # `futures_supported`(= TR 응답 여부)로는 구분되지 않는다.
+            "foreign_futures_net_measured":
+                bool(features["foreign_futures_net_measured"]),
+            "retail_futures_net_measured":
+                bool(features["retail_futures_net_measured"]),
+            "institution_futures_net_measured":
+                bool(features["institution_futures_net_measured"]),
         }
         logger.info(
             "[DivergencePanel] source=cybos status=%s div=%+d "
@@ -424,6 +537,9 @@ class CybosInvestorData:
         self._fetch_count = 0
         self._futures_seen = set()          # [559차 P1'-1] 하루 단위로 다시 센다
         self._futures = {k: 0 for k in INVESTOR_KEYS}
+        # [612차 후속2] 금액 축도 함께 리셋 — 안 하면 어제 금액이 오늘 화면에 남는다
+        self._futures_amt = {k: 0 for k in INVESTOR_KEYS}
+        self._futures_amt_seen = set()
         self._call = {k: 0 for k in INVESTOR_KEYS}
         self._put = {k: 0 for k in INVESTOR_KEYS}
         self._program_arb = 0
@@ -442,7 +558,7 @@ class CybosInvestorData:
         self._option_flow_source = "unavailable"
         self._futures_reason = "reset"
         self._program_reason = "reset"
-        self._option_flow_reason = "Cybos option investor-flow mapping pending"
+        self._option_flow_reason = "옵션 수급 TR 매핑 대기"
 
     def get_stats(self) -> dict:
         age_sec = (
@@ -506,13 +622,13 @@ class CybosInvestorData:
     def _program_status_text(cls, program_source: str, program_reason: str) -> str:
         state = cls._program_status_label(program_source, program_reason)
         if state == "status_error":
-            return "program flow reachable but server returned nonzero status"
+            return "프로그램 수급 응답은 오나 서버 status 가 0 이 아님"
         if state == "zero_response":
-            return "program flow object reachable but payload is all zero"
+            return "프로그램 수급 응답이 전부 0"
         if state == "api_missing":
-            return "program flow helper missing"
+            return "프로그램 수급 helper 없음"
         if state == "mapping_pending":
-            return "program flow mapping pending"
+            return "프로그램 수급 TR 매핑 대기"
         if state == "live":
-            return "program flow live"
-        return "program flow state unknown"
+            return "프로그램 수급 정상"
+        return "프로그램 수급 상태 불명"

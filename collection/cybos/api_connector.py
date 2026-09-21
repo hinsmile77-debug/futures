@@ -1280,6 +1280,19 @@ class CybosAPI:
     # 투자자 TR probe 결과를 SYSTEM 로그에 1회만 덤프 (세션당 progid별)
     _probe_dump_done: set = set()
 
+    # [MW0601 612차 후속4] 상시(라이브) 파싱에서 **기본 15열 밖으로 추가로** 읽을 열.
+    #
+    # 라이브 경로는 메인 스레드를 점유하므로(`_fetch_investor_data` 500ms 경고)
+    # 전 64열을 매분 읽지 않는다. 대신 **실제로 소비하는 열만** 넓힌다.
+    #   · `CpSvrNew7221` 30/31/32 = 선물 행 개인·외인·기관 순매수 **금액**(백만원)
+    #     → 612차 후속2 대시보드 「선물 순매수 (억원)」 3칸.
+    # 비용: 열 3개 × 30행 = COM 호출 +90 (기존 450 대비 +20%).
+    # ⚠ 새 열을 소비하기 시작하면 **여기에 등록**할 것. 안 하면 그 열은
+    #   `r.get(i, 0)` 폴백에 걸려 조용히 0 이 된다 — 612차 후속4 가 그 사고였다.
+    _LIVE_EXTRA_FIELDS = {
+        "CpSysDib.CpSvrNew7221": (30, 31, 32),
+    }
+
     def _probe_investor_tr(
         self,
         progid: str,
@@ -1321,13 +1334,28 @@ class CybosAPI:
             # 메인 스레드를 점유하며 500ms 초과 시 경고가 찍힌다). 그래서 넓게 읽는 것은
             # **세션당 progid별 첫 호출(=RAW 덤프를 남기는 그 호출)** 로 한정한다.
             # 상시 파싱 폭은 그대로 15 — 실제 사용하는 열(2·5·8)을 모두 포함한다.
+            #
+            # 🔴 [MW0601 612차 후속4] **이 폭이 소비처와 어긋나면 조용히 0 이 나간다.**
+            # 612차 후속2 가 7221 열 30/31/32(선물 순매수 금액)를 쓰기 시작했는데
+            # 여기 상시 폭은 15 그대로였다 — 라이브에서 `r.get(30)` 이 없으니
+            # `_safe_int(…, 0)` 이 **0 을 만들어냈고**, 대시보드 「선물 순매수(억원)」
+            # 3칸이 하루 종일 `0` 으로 떴다(15:03 실측 `amt_mn={}`).
+            # RAW 덤프(세션 첫 호출)만 64열을 읽어서 오프라인 분석에서는 값이 보였다 —
+            # 그래서 배선 검증을 통과했는데 라이브만 비는 형태였다.
+            # ⇒ 상시 폭을 **소비하는 열의 집합**으로 명시한다. 새 열을 쓰기 시작하면
+            #   `_LIVE_EXTRA_FIELDS` 에 등록할 것. 안 하면 그 열은 0 으로 위장된다.
             is_dump_call = progid not in CybosAPI._probe_dump_done
-            field_limit = 64 if is_dump_call else 15
+            if is_dump_call:
+                field_idx = tuple(range(64))
+            else:
+                field_idx = tuple(sorted(
+                    set(range(15)) | set(self._LIVE_EXTRA_FIELDS.get(progid, ()))
+                ))
             rows: List[Dict[int, str]] = []
             for ri in range(30):
                 row: Dict[int, str] = {}
                 any_val = False
-                for fi in range(field_limit):
+                for fi in field_idx:
                     try:
                         v = _safe_str(obj.GetDataValue(fi, ri))
                         row[fi] = v
@@ -1355,7 +1383,7 @@ class CybosAPI:
                 rows_nonempty = [{k: v for k, v in r.items() if v} for r in rows[:25]]
                 probe_log.info(
                     "[CybosProbe][RAW] %s field_limit=%d headers=%s rows_sample=%s",
-                    progid, field_limit, h_nonempty, rows_nonempty,
+                    progid, len(field_idx), h_nonempty, rows_nonempty,
                 )
             return {
                 "progid": progid,
@@ -1366,7 +1394,24 @@ class CybosAPI:
                 "rows": rows,
             }
         except Exception as exc:
-            probe_log.warning("[CybosProbe] %s dispatch/request failed: %s", progid, exc)
+            # 🔴 [MW0601 612차 후속5] **코드 버그를 API 실패로 라벨하지 않는다.**
+            # 612차 후속4 가 `field_limit` → `field_idx` 로 바꾸면서 RAW 덤프
+            # 로그의 참조 한 곳을 놓쳤다. 그 `NameError` 가 여기 걸려
+            # `"dispatch/request failed"` 로 찍혔고, 로그만 보면 **브로커가
+            # 안 준 것처럼** 보였다(실제로는 우리 코드가 깨진 것).
+            # 세션당 progid별 첫 호출에서만 타는 경로라 더 눈에 안 띄었다.
+            # ⇒ COM 오류(pywintypes/com_error)와 파이썬 오류를 갈라 적는다.
+            _is_com = exc.__class__.__name__ in ("com_error", "error") or isinstance(
+                getattr(exc, "args", (None,))[0], int)
+            if _is_com:
+                probe_log.warning(
+                    "[CybosProbe] %s dispatch/request failed: %s", progid, exc)
+            else:
+                probe_log.error(
+                    "[CybosProbe] %s **코드 오류** (%s) — 브로커 응답 문제가 "
+                    "아니다: %s", progid, exc.__class__.__name__, exc,
+                    exc_info=True,
+                )
             return None
 
     def request_investor_futures(self) -> Dict[str, Any]:
@@ -1402,6 +1447,9 @@ class CybosAPI:
             nets: Dict[str, int] = {}
             call_nets: Dict[str, int] = {}
             put_nets: Dict[str, int] = {}
+            # [612차 후속2] 선물 순매수 **금액**(백만원) — 7221 열 30/31/32.
+            # 7221 이외 후보는 채우지 않는다(원천이 안 주면 빈 dict — 미측정 != 0).
+            net_amounts: Dict[str, int] = {}
 
             if progid == "CpSysDib.CpSvrNew7221":
                 # 행=상품종류(ri), 열=투자자(fi)
@@ -1413,6 +1461,36 @@ class CybosAPI:
                     nets["individual"] = _safe_int(r.get(2, 0))
                     nets["foreign"]    = _safe_int(r.get(5, 0))
                     nets["institution"] = _safe_int(r.get(8, 0))
+                    # [MW0601 612차 후속2] **금액 축은 원천이 이미 준다.**
+                    #
+                    # 종전에는 열 2·5·8(계약수)만 읽고 나머지를 버렸다. 열 30·31·32 가
+                    # 같은 투자자 순서(개인·외인·기관)의 **순매수 금액(백만원)** 이다.
+                    #
+                    # 근거 — `logs/*_PROBE.log` RAW 덤프 11개 / 5거래일 / 33개 비율 실측.
+                    # `금액 ÷ 계약수` 가 전부 259~279 백만원이고 **지수 수준을 따라간다**:
+                    #     09-16 259.1·259.7·259.9  (지수 ≈ 1,038)
+                    #     09-17 266.7·267.3·268.1
+                    #     09-18 272.9·272.4·273.1  (지수 ≈ 1,091)
+                    #     09-21 277.5·278.2·277.8  (지수 ≈ 1,111)
+                    # 이는 **정규선물 1계약 명목 = 지수 × 250,000원**과 0.5% 이내로
+                    # 일치한다(1,111 × 250,000 = 277.8 백만원).
+                    #
+                    # ⚠ 여기 승수는 **정규 KOSPI200 선물 250,000** 이다. 우리가 매매하는
+                    #   미니(A05·50,000)가 아니다 — 이 행은 시장 전체 수급이지 우리 포지션이
+                    #   아니다. `active_contract_spec()`(미니)으로 "고치면" 5배 틀린다.
+                    # ⚠ 환산하지 말고 **이 열을 그대로 쓴다.** 우리가 계약수에 가격을 곱하면
+                    #   체결 시점 가격이 아니라 현재가를 쓰는 근사가 된다.
+                    #
+                    # 🔴 [612차 후속4] **열이 없으면 키를 만들지 않는다.**
+                    # 종전에는 `r.get(30, 0)` 이라 라이브 파싱 폭(15열) 밖이면
+                    # 0 이 **만들어져** 들어갔고, 하류의 `*_measured` 플래그가
+                    # "키가 왔다"만 보므로 `measured=True + 값 0` 이 됐다.
+                    # 451차가 폐기한 「스키마 폴백으로 상수 0 을 정상 수집처럼
+                    # 위장」과 정확히 같은 형태다. 없으면 없는 대로 둔다.
+                    for _k, _col in (("individual", 30), ("foreign", 31),
+                                     ("institution", 32)):
+                        if _col in r:
+                            net_amounts[_k] = _safe_int(r[_col])
                 if len(rows) > 3:
                     r = rows[3]  # 옵션콜
                     call_nets["individual"] = _safe_int(r.get(2, 0))
@@ -1448,13 +1526,15 @@ class CybosAPI:
 
             _system_info(
                 f"[CybosInvestorRaw] futures via {progid} supported={supported} "
-                f"nets={{{','.join(f'{k}:{v:+d}' for k, v in nets.items() if v != 0)}}}"
+                f"nets={{{','.join(f'{k}:{v:+d}' for k, v in nets.items() if v != 0)}}} "
+                f"amt_mn={{{','.join(f'{k}:{v:+d}' for k, v in net_amounts.items() if v != 0)}}}"
             )
             return {
                 "supported": supported,
                 "source": progid,
                 "reason": f"probe ok via {progid}",
                 "nets": nets,
+                "net_amounts": net_amounts,
                 "call_nets": call_nets,
                 "put_nets": put_nets,
                 "raw": {"open_interest": 0, "row_count": len(probe["rows"])},
@@ -1474,6 +1554,7 @@ class CybosAPI:
             "source": "FutureMst_oi",
             "reason": "Cybos 선물 투자자 TR 미발견; 미결제약정만 제공",
             "nets": {},
+            "net_amounts": {},
             "call_nets": {},
             "put_nets": {},
             "raw": {"open_interest": oi},

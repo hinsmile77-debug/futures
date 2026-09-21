@@ -305,3 +305,96 @@ class WeeklyOptionFlow:
             return None
         return {"bar_time": row[0], "sell_qty": row[1], "buy_qty": row[2],
                 "net_qty": row[3], "net_amt": row[4]}
+
+    # ── 대시보드 — 개인 옵션 시초 대비 증감 (612차 후속3) ──────────────────
+    #
+    # 「투자자 포지션 매트릭스」가 이 값을 시계열로 그린다.
+    #
+    # 🔴 **원천 `net_qty` 는 일중 누적 순매수다**(`SetInputValue(2, ord('1'))` = 누적).
+    #    그래서 첫 바가 0 이 아니다 — 2026-09-21 실측 08:56 에 (월)위클리 콜이
+    #    이미 +2,091 이었다(프리장 단일가 결과가 실려 있다).
+    #    ⇒ 「시초 대비 증감」은 **그날 첫 관측을 0 으로 놓은 차분**이다.
+    #      사용자 결정(2026-09-21): 기준 = 당일 첫 바.
+    #
+    # ⚠ 결측을 0 으로 메우지 않는다 — 실측상 `wk_thu_call` 은 오늘 319바로
+    #   다른 상품(352바)보다 33바 적다. 없는 분은 점을 찍지 않는다(계측 4원칙 ②).
+    DASHBOARD_PRODUCTS: Tuple[Tuple[str, str], ...] = (
+        ("wk_mon_call", "(월)위클리 콜"),
+        ("wk_mon_put",  "(월)위클리 풋"),
+        ("wk_thu_call", "(목)위클리 콜"),
+        ("wk_thu_put",  "(목)위클리 풋"),
+        ("mon_call",    "먼스리 콜"),
+        ("mon_put",     "먼스리 풋"),
+    )
+    # 세션 창 — 지시받은 표시 범위. 기준 바는 이 창 안의 첫 관측이다.
+    SESSION_START = "08:45"
+    SESSION_END   = "15:35"
+
+    def get_individual_session_delta(
+        self, trade_date: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """개인 옵션 6종의 **시초 대비 누적 증감(계약)** 시계열.
+
+        한 번의 인덱스 조회로 6상품 전량을 읽는다(하루 약 2,100행 · 실측 수 ms).
+        호출은 수급 QTimer 경로에서 분당 1회 — **GUI 스레드에서 DB 를 열지 않는다.**
+
+        Returns:
+            {
+              "trade_date": "YYYY-MM-DD",
+              "last_time":  "HH:MM" | None,
+              "products": {
+                 key: {"label", "baseline", "baseline_time", "value",
+                       "delta", "last_time", "n", "series": [(HH:MM, delta), ...]}
+              },
+            }
+            수집 전이면 `products` 안이 비어 있다 — **빈 dict 와 0 을 구분한다.**
+        """
+        today = trade_date or datetime.date.today().isoformat()
+        keys = [k for k, _ in self.DASHBOARD_PRODUCTS]
+        labels = dict(self.DASHBOARD_PRODUCTS)
+        out: Dict[str, Any] = {
+            "trade_date": today, "last_time": None, "products": {},
+        }
+        try:
+            con = self._conn()
+            cur = con.execute(
+                "SELECT product,bar_time,net_qty FROM option_investor_flow "
+                "WHERE trade_date=? AND investor='individual' "
+                "  AND bar_time>=? AND bar_time<=? "
+                "  AND product IN (%s) "
+                "ORDER BY product, bar_time" % ",".join("?" * len(keys)),
+                tuple([today, self.SESSION_START, self.SESSION_END] + keys),
+            )
+            raw = cur.fetchall()
+            con.close()
+        except Exception as exc:                                # noqa: BLE001
+            logger.warning("[OptionFlow] 대시보드 조회 실패: %s", exc)
+            return out
+
+        by_prod: Dict[str, List[Tuple[str, int]]] = {}
+        for product, bar_time, net_qty in raw:
+            if net_qty is None:
+                continue        # 미측정 — 0 으로 메우지 않는다
+            by_prod.setdefault(product, []).append((bar_time, int(net_qty)))
+
+        last_times = []
+        for key in keys:
+            pts = by_prod.get(key) or []
+            if not pts:
+                continue        # 아직 안 옴 — 항목 자체를 만들지 않는다
+            base_t, base_v = pts[0]
+            series = [(t, v - base_v) for t, v in pts]
+            last_t, last_v = pts[-1]
+            last_times.append(last_t)
+            out["products"][key] = {
+                "label":         labels[key],
+                "baseline":      base_v,
+                "baseline_time": base_t,
+                "value":         last_v,
+                "delta":         last_v - base_v,
+                "last_time":     last_t,
+                "n":             len(pts),
+                "series":        series,
+            }
+        out["last_time"] = max(last_times) if last_times else None
+        return out
