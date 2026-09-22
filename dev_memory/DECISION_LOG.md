@@ -46543,3 +46543,65 @@ DB 실측도 일치했다: `wk_thu_call` 최초봉 13:13, 나머지 5종 13:14, 
 DB 쓰기는 `option_flow.db`(백필) · `raw_data.db`(선물 백필 + 격리) 두 곳뿐이고
 둘 다 장 마감 후(17:2x~18:0x)에 수행했다 — 장중 라이브 DB 스캔 금지 규약 준수.
 커밋하지 않았다.
+
+
+## 2026-09-22 (MW0601 617차 후속 체리픽 — 표시 위젯이 엔진을 죽이는 경로 차단)
+
+**체리픽 기록** (CLAUDE.md 「다른 PC 브랜치의 커밋을 cherry-pick 하면 남긴다」)
+
+| 항목 | 값 |
+|---|---|
+| 원 커밋 | `e3e5d91` (`v9-dev`) |
+| 원 PC | **MW0601** |
+| 이 브랜치 | `f3bd4fc` (`git cherry-pick -x`, 충돌 없음 — `main_dashboard.py` 자동병합) |
+| 가져온 이유 | **이 브랜치에도 같은 결함이 그대로 있다.** 대시보드 코드는 두 갈래가 공유하고, 실측으로 동일함을 확인했다(아래 §3) |
+
+### 1. MW0601 에서 무슨 일이 있었나
+
+2026-09-22 09:41:56, 미륵이가 장중에 즉사했다. 런처가 10초 뒤 재기동해
+09:43:16 복구. **다운 31초 · 분봉 2개(ts=09:41·09:42) 파이프라인 결손.**
+실손해 0은 그날 우연히 FLAT 이었기 때문이다(480차와 같은 계열).
+
+```
+dashboard/panels/direction_indicator_dialog.py:490 in _draw_chart
+numpy.linalg.LinAlgError: Singular matrix
+```
+
+① `transData = transScale + (transLimits + transAxes)` 의 역행렬은
+   `transAxes = BboxTransformTo(ax.bbox)` 부터 깐다 — **`ax.bbox` 폭 0 = 특이행렬**.
+② 캔버스에 `setMinimumHeight(180)` **만** 있었다(최소 폭 없음) + `main_split` 이
+   `setChildrenCollapsible` 미호출(기본 True) → 좌측 컬럼을 폭 0 으로 접을 수 있다.
+③ 폭 0 일 때 `axvline` 은 통과하고 `axhline` 만 터진다(실측). `axhline` 은
+   `direction != 0` 일 때만 그려서 희소했다 — 전 로그 통틀어 1건.
+④ `_refresh` 는 QTimer 슬롯이고 **PyQt5(5.15.10)는 슬롯에서 새어나온 예외를
+   `qFatal()` 로 처리**한다 → 프로세스 abort. `sys.excepthook` 으로는 못 막는다.
+
+### 2. 가져온 내용 — 세 겹 + 형제 화면
+
+A 치명화 차단(`_refresh`·`_flash_tick`·`_apply`·`_draw_chart` 가 예외를 밖으로
+내지 않음, 첫 1회·30회마다 로그) / B 원인 제거(캔버스 최소 폭 · 스플리터 접힘
+금지) / C 그리기 가드(**Qt 위젯 크기와 `ax.bbox` 를 둘 다** 본다 — 특이행렬을
+만드는 것은 figure 크기이지 위젯 크기가 아니다).
+`candle_chart_dialog` 도 같은 결함이라 함께 고쳤다(거기선 `_refresh` 가 아니라
+**워커 완료 슬롯 `_apply`** 가 위험 지점이다).
+
+### 3. 이 브랜치에서 확인한 것
+
+- `tests/test_617_dashboard_chart_zero_width.py` **15건** + 
+  `tests/test_617_qt_slot_guard_ratchet.py` **3건** = **18건 전부 통과**
+  (별도 worktree `C:/tmp/mireuk_dev_wt`, py37_32).
+- `scripts/audit_qtimer_slot_guards.py` 실측: `timeout.connect` **36건** =
+  무가드 18 · 부분가드 13 · 가드 4 · 미해결 1 — **v9-dev 와 동일**.
+  래칫 기준선 18건이 이 브랜치에서도 어긋나지 않는다(stale 0 · new 0).
+- ⚠ **「176곳」은 오집계였다** — `grep -r` 이 `dashboard/` 의 `.bak` 사본 14개를
+  함께 센 값이다. 재인용 금지.
+
+### 4. 남은 것
+
+- 무가드 18건 중 **표시 슬롯 15건**은 손대는 김에 하나씩 가드하고 래칫
+  기준선에서 지울 것.
+- **엔진 슬롯 3건**(`main.py:TradingSystem` `_on_main_heartbeat`·
+  `_effect_report_timer_tick`·`_check_limit_entry_timeout`)은 **일부러 남겼다.**
+  표시 슬롯은 삼켜도 화면이 빌 뿐이지만 **엔진 슬롯을 삼키면 주문·청산 실패가
+  조용히 사라진다** — 이 사고의 교훈을 그대로 재생산한다. 처분은 주간회의 안건.
+- 이 PC(MW0602)에서도 **재기동 전까지는 반영되지 않는다.**
