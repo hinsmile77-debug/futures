@@ -40,9 +40,25 @@ def _shutdown_marker_wired():
     필요한 것은 「스스로 종료했다」를 말해 주는 마커이고, 그것이 마지막 신호보다
     **뒤**여야 한다. `_exit_normally` 는 런처가 지우고 `daily_close_done` 은 마감
     중에 찍혀 늦지 않다. 그래서 판정 근거는 `shutdown_normal` 마커 하나다.
+    🔴 [586차 후속 정정] **`main.py` 만 읽으면 안 된다.**
+    2026-09-22 17:16 의 `6eb587d`(MW0601 618차 체리픽)가 이 마커 기록 본문을
+    `main.py` → `utils/exit_flags.py:write_exit_flags()` 로 옮겼다. 마커는
+    멀쩡히 배선돼 있고 그날 `data/shutdown_normal_20260922.txt` 도 15:47:15 에
+    실제로 쓰였는데, 여기서 `main.py` 만 grep 하는 바람에 이 가드가 **가짜로
+    울렸다**(창 16:30 이 15:45 요구에 걸림).
+
+    468차 G-2 가 등록한 *"감시 대상 목록 자체가 낡는 것은 일일 점검이 못 잡는다"*
+    와 같은 실패다 — 감시 대상이 죽은 게 아니라 **감시자가 엉뚱한 곳을 봤다.**
+    그래서 파일을 못 박지 않고 **기록 지점이 있을 수 있는 곳을 모두** 훑는다.
     """
-    src = io.open(os.path.join(ROOT, "main.py"), encoding="utf-8").read()
-    return "shutdown_normal_%s.txt" in src or "shutdown_normal_{" in src
+    for rel in ("main.py", "utils/exit_flags.py"):
+        path = os.path.join(ROOT, rel)
+        if not os.path.exists(path):
+            continue
+        src = io.open(path, encoding="utf-8").read()
+        if "shutdown_normal_%s.txt" in src or "shutdown_normal_{" in src:
+            return True
+    return False
 
 
 def test_sentinel_is_alert_only():
