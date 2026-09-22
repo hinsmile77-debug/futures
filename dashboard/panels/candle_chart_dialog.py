@@ -29,6 +29,7 @@
 QTimer 10초 DB 폴링. 방향 변경 시 배너가 즉시 변색.
 """
 import datetime
+import logging
 import sqlite3
 from typing import Dict, List, Optional
 
@@ -43,6 +44,39 @@ from matplotlib.figure import Figure
 from matplotlib.patches import Rectangle
 
 from config.settings import PREDICTIONS_DB, RAW_DATA_DB
+
+logger = logging.getLogger(__name__)
+
+# 🔴 [MW0601 617차] 캔버스 최소 폭 — 0 이 되면 프로세스가 죽는다.
+#   `ax.bbox` 폭이 0 이면 `transAxes` 가 특이행렬이 되어 `axhline` 이
+#   `LinAlgError` 를 던지고, 그 예외가 Qt 슬롯에서 새어나가면 PyQt5 가
+#   `qFatal()` 로 **엔진째 죽인다**. 같은 결함으로 방향 인디케이터가
+#   2026-09-22 09:41:56 에 실제로 프로세스를 내렸다(31초 다운).
+#   여기는 그 형제 화면이다 — 높이만 막혀 있던 것까지 같았다.
+_CANVAS_MIN_W = 240
+_DRAW_MIN_PX  = 2
+
+
+def _note_failure(obj, where, exc):
+    """실패를 **삼키되 숨기지는 않는다** (계측 4원칙 ④ 폴백 가시화).
+
+    폴링이라 매번 찍으면 로그가 잠긴다 — 첫 1회와 이후 30회마다만 남긴다.
+    """
+    n = getattr(obj, "_draw_fail_n", 0) + 1
+    obj._draw_fail_n = n
+    if n == 1 or n % 30 == 0:
+        cw = ch = -1
+        try:
+            cv = getattr(obj, "_canvas", None)
+            if cv is not None:
+                cw, ch = cv.width(), cv.height()
+        except Exception:
+            pass
+        logger.warning(
+            "[CandleChart] %s 실패 %d회차 — 표시만 건너뛴다 (canvas=%sx%s) | %s: %s",
+            where, n, cw, ch, type(exc).__name__, exc,
+        )
+
 from dashboard.panels.mid_status_row import (
     MidStatusRow, draw_position_levels, fetch_day_state,
     publish_position, read_position,
@@ -312,6 +346,7 @@ class CandleChartDialog(QDialog):
 
         self._canvas = FigureCanvasQTAgg(self._fig)
         self._canvas.setMinimumHeight(270)
+        self._canvas.setMinimumWidth(_CANVAS_MIN_W)   # 617차
         root.addWidget(self._canvas, 1)   # 남는 세로는 전부 차트로
 
         # 하단 호라이즌 스트립
@@ -376,6 +411,16 @@ class CandleChartDialog(QDialog):
     # ── 갱신 (비동기) ─────────────────────────────────────────────
 
     def _refresh(self):
+        """QTimer 슬롯 — 617차: 예외를 밖으로 내지 않는다.
+
+        PyQt5 는 슬롯에서 새어나온 예외를 `qFatal()` 로 처리한다.
+        """
+        try:
+            self._refresh_impl()
+        except Exception as e:                   # noqa: BLE001 — 최후 방어선
+            _note_failure(self, "refresh", e)
+
+    def _refresh_impl(self):
         # 이전 worker가 아직 실행 중이면 중복 실행 방지
         if self._worker is not None and self._worker.isRunning():
             return
@@ -383,7 +428,18 @@ class CandleChartDialog(QDialog):
         self._worker.done.connect(self._apply)
         self._worker.start()
 
-    def _apply(
+    def _apply(self, *a, **kw):
+        """워커 완료 슬롯 — 617차: 예외를 밖으로 내지 않는다.
+
+        `_refresh` 가 아니라 **여기가 위험 지점**이다. 그리기는 전부
+        이 슬롯 안에서 일어난다.
+        """
+        try:
+            self._apply_impl(*a, **kw)
+        except Exception as e:                   # noqa: BLE001 — 최후 방어선
+            _note_failure(self, "apply", e)
+
+    def _apply_impl(
         self,
         candles:          List[dict],
         ensemble:         Optional[dict],
@@ -456,7 +512,27 @@ class CandleChartDialog(QDialog):
 
     # ── 봉차트 + 인디케이터 레인 렌더링 ──────────────────────────
 
-    def _draw_chart(
+    def _draw_chart(self, *a, **kw):
+        """차트 그리기 — 617차: 크기 0 이면 건너뛰고, 터져도 삼킨다.
+
+        축이 셋(캔들·방향·레짐)이라 **셋 다** 본다. 하나라도 폭·높이가
+        0 이면 그 축을 건드리는 순간 특이행렬이 된다.
+        """
+        try:
+            if (self._canvas.width()  < _DRAW_MIN_PX
+                    or self._canvas.height() < _DRAW_MIN_PX):
+                return
+            for _a in (self._ax, self._ax_dir, self._ax_reg):
+                if _a.bbox.width < _DRAW_MIN_PX or _a.bbox.height < _DRAW_MIN_PX:
+                    return
+        except Exception:
+            return
+        try:
+            self._draw_chart_impl(*a, **kw)
+        except Exception as e:                   # noqa: BLE001 — 최후 방어선
+            _note_failure(self, "draw_chart", e)
+
+    def _draw_chart_impl(
         self,
         candles:          List[dict],
         direction:        int,

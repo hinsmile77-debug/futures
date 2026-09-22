@@ -17,6 +17,7 @@ DirectionIndicatorWidget  : 임베드 가능한 QWidget (패널 내 삽입용)
 DirectionIndicatorDialog  : AOT 팝업 래퍼 (기존 호환 유지)
 """
 import datetime
+import logging
 import sqlite3
 from typing import Dict, List, Optional
 
@@ -30,8 +31,19 @@ from PyQt5.QtWidgets import (
 from config.settings import PREDICTIONS_DB, RAW_DATA_DB
 from dashboard.panels.mid_status_row import MidStatusRow, draw_position_levels
 
+logger = logging.getLogger(__name__)
+
 _HORIZONS = ["1m", "3m", "5m", "10m", "15m", "30m"]
 _N_CANDLES = 40
+
+# 🔴 [MW0601 617차] 캔버스 최소 폭 — 0이 되면 프로세스가 죽는다.
+#   matplotlib 은 `ax.bbox` 폭이 0이면 `transAxes = BboxTransformTo(ax.bbox)` 가
+#   특이행렬이 되어 `axhline` 이 `LinAlgError: Singular matrix` 를 던진다.
+#   그 예외는 QTimer 슬롯에서 나오므로 PyQt5 가 qFatal() 로 **엔진째 죽인다**.
+#   (2026-09-22 09:41:56 실사고 — 31초 다운·분봉 2개 결손)
+_CANVAS_MIN_W = 120
+# 그림을 건너뛰는 하한. 최소 폭·접힘 금지가 뚫려도 여기서 멈춘다.
+_DRAW_MIN_PX  = 2
 
 _BG       = {"up": "#0d2e1a", "dn": "#2e0d0d", "flat": "#1a1a1a"}
 _FG       = {"up": "#3fb950", "dn": "#f85149", "flat": "#8b949e"}
@@ -148,6 +160,8 @@ class DirectionIndicatorWidget(QWidget):
                 sp.set_edgecolor("#30363d")
             self._canvas = FigureCanvasQTAgg(self._fig)
             self._canvas.setMinimumHeight(180)
+            # 617차: 높이만 막혀 있었다 — 폭 0 이 사고 경로였다(모듈 상단 주석)
+            self._canvas.setMinimumWidth(_CANVAS_MIN_W)
             self._canvas.setStyleSheet("background:%s;" % _DARK)
             return self._canvas
         except Exception:
@@ -285,6 +299,19 @@ class DirectionIndicatorWidget(QWidget):
     # ── 갱신 ─────────────────────────────────────────────────────
 
     def _refresh(self):
+        """QTimer 슬롯 — 🔴 예외를 밖으로 내보내지 않는다.
+
+        PyQt5(5.15.10)는 슬롯 안의 미처리 파이썬 예외에서 `qFatal()` 로
+        **프로세스를 abort** 한다. `sys.excepthook` 로는 못 막는다(호출된 뒤
+        그대로 죽는다) — 슬롯 안에서 잡는 것이 유일하게 확실한 방법이다.
+        표시 전용 위젯이 매매 엔진을 죽여서는 안 된다.
+        """
+        try:
+            self._refresh_impl()
+        except Exception as e:                       # noqa: BLE001 — 최후 방어선
+            self._note_draw_failure("refresh", e)
+
+    def _refresh_impl(self):
         today    = datetime.date.today().isoformat()
         candles  = self._fetch_candles(today)
         ensemble = self._fetch_latest_ensemble(today)
@@ -406,9 +433,55 @@ class DirectionIndicatorWidget(QWidget):
 
     # ── 봉차트 렌더링 ─────────────────────────────────────────────
 
+    def _note_draw_failure(self, where: str, exc: Exception) -> None:
+        """실패를 **삼키되 숨기지는 않는다** (계측 4원칙 ④ 폴백 가시화).
+
+        10초 폴링이라 매번 찍으면 로그가 잠긴다 — 첫 1회와 이후 30회마다만
+        남기고, 누적 횟수를 함께 적는다.
+        """
+        n = getattr(self, "_draw_fail_n", 0) + 1
+        self._draw_fail_n = n
+        if n == 1 or n % 30 == 0:
+            cw = ch = -1
+            try:
+                if self._canvas is not None:
+                    cw, ch = self._canvas.width(), self._canvas.height()
+            except Exception:
+                pass
+            logger.warning(
+                "[DirIndicator] %s 실패 %d회차 — 표시만 건너뛴다 "
+                "(canvas=%sx%s) | %s: %s",
+                where, n, cw, ch, type(exc).__name__, exc,
+            )
+
     def _draw_chart(self, candles: List[dict], direction: int, dir_fg: str):
+        """캔들차트 그리기 — 🔴 어떤 경우에도 예외를 밖으로 내지 않는다.
+
+        호출자(`_apply`)는 램프·호라이즌 스트립도 갱신한다. 차트 하나 때문에
+        나머지 표시까지 죽이지 않기 위해 여기서 따로 한 번 더 잡는다.
+        """
         if self._canvas is None or self._ax is None:
             return
+        # 🔴 폭·높이가 0이면 matplotlib 변환행렬이 특이해진다(모듈 상단 주석).
+        #   최소폭·접힘금지가 뚫려도(재부모화·복원 과도상태 등) 여기서 멈춘다.
+        #   ⚠ **Qt 위젯 크기와 figure 크기를 둘 다 본다.** 특이행렬을 만드는 것은
+        #     `ax.bbox`(= figure 크기 × axes 비율)이지 위젯 크기가 아니다. 보통은
+        #     같이 움직이지만, 어긋나는 순간이 바로 사고가 나는 순간이다.
+        try:
+            if (self._canvas.width()  < _DRAW_MIN_PX
+                    or self._canvas.height() < _DRAW_MIN_PX):
+                return
+            _bb = self._ax.bbox
+            if _bb.width < _DRAW_MIN_PX or _bb.height < _DRAW_MIN_PX:
+                return
+        except Exception:
+            return
+        try:
+            self._draw_chart_impl(candles, direction, dir_fg)
+        except Exception as e:                       # noqa: BLE001 — 최후 방어선
+            self._note_draw_failure("draw_chart", e)
+
+    def _draw_chart_impl(self, candles: List[dict], direction: int, dir_fg: str):
         try:
             from matplotlib.patches import Rectangle
         except ImportError:
@@ -543,6 +616,13 @@ class DirectionIndicatorWidget(QWidget):
         self._flash_tick()
 
     def _flash_tick(self):
+        """QTimer 슬롯 — `_refresh` 와 같은 이유로 예외를 삼킨다."""
+        try:
+            self._flash_tick_impl()
+        except Exception as e:                       # noqa: BLE001 — 최후 방어선
+            self._note_draw_failure("flash", e)
+
+    def _flash_tick_impl(self):
         if self._flash_count <= 0:
             self._flash_timer.stop()
             self._set_lamp_style(self._flash_key, flash=False)
