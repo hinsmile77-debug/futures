@@ -109,9 +109,36 @@ def test_settings_keys_exist():
     for key in ("WEEKLY_OPTION_FLOW_ENABLED",
                 "WEEKLY_OPTION_FLOW_DB",
                 "WEEKLY_OPTION_FLOW_MIN_INTERVAL_SEC",
-                "WEEKLY_OPTION_FLOW_START_AFTER"):
+                "WEEKLY_OPTION_FLOW_START_AFTER",
+                "WEEKLY_OPTION_FLOW_PEAK_SKIP"):
         assert re.search(r"^%s\s*=" % key, src, re.M), \
             "config/settings.py 에 %s 가 없다" % key
+
+
+def test_start_after_is_early_enough_for_first_bar():
+    """시작 시각에 여유가 있어야 이른 구간이 잘리지 않는다.
+
+    한 번의 조회는 18행만 준다. 시작이 09:02 면 옵션(1분 간격) 기준 하한이
+    08:44 로 딱 맞물려 여유가 없다 — 첫 수집이 조금만 밀려도 이른 구간이 잘린다.
+    장 개시 직후 서버 피크는 시작을 미루는 대신 PEAK_SKIP 으로 건너뛴다.
+
+    ⚠ **08:45 는 이 테스트의 관심사가 아니다.** 2026-09-22 실측상 Cybos 의 첫 행은
+      08:46 이고(`t3=0846` 은 0행) 어떤 설정으로도 08:45 는 오지 않는다 —
+      키움에는 있으므로 브로커 간 차이다. 그걸 미륵이 결손으로 세지 말 것.
+    """
+    src = _read(SETTINGS)
+    m = re.search(r'^WEEKLY_OPTION_FLOW_START_AFTER\s*=\s*"(\d{2}):(\d{2})"', src, re.M)
+    assert m, "WEEKLY_OPTION_FLOW_START_AFTER 를 읽지 못했다"
+    minutes = int(m.group(1)) * 60 + int(m.group(2))
+    # 수급 타이머 첫 호출(08:58)에 걸리도록 그보다 이르게 둔다 — 그래야 첫 수집이
+    # 장 개시 전에 한 번 돌아 18행 하한에 여유가 생긴다.
+    assert minutes <= 8 * 60 + 58, (
+        "START_AFTER 가 %s 다 — 08:58(수급 타이머 첫 호출)보다 늦으면 "
+        "첫 수집의 18행 하한이 장 개시 구간과 맞물려 여유가 사라진다." % m.group(0)
+    )
+    # 피크 구간은 시작 시각이 아니라 스킵으로 처리돼야 한다.
+    assert re.search(r"WEEKLY_OPTION_FLOW_PEAK_SKIP", _read(MAIN)), \
+        "main.py 가 PEAK_SKIP 을 읽지 않는다 — 피크 회피가 배선되지 않았다"
 
 
 def test_market_codes_are_the_verified_ones():
