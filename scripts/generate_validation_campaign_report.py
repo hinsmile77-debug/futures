@@ -8205,6 +8205,10 @@ CHANNEL_REGISTRY = (
     (57, "trend_efficiency_entry_gate", "te 진입 게이트 (섀도)"),
     (58, "gp_cross_highvol_watch", "GP 교차 x 고변동 (좁은)"),
     (59, "gp_cross_any_watch", "GP 교차 x 고변동 (순수·대조)"),
+    # ⚠ [80] option_flow_predictive_watch 는 **여기에 없다** — 의도된 상태다.
+    #   레지스트리는 "리포트가 실제로 출력하는 채널"의 목록이고, 그 채널은 아직
+    #   판정이 배선되지 않았다(사전등록만). [2] atb_v2 와 같은 취급이다.
+    #   판정을 배선하는 커밋이 번호 80 을 여기 등록할 것.
 )
 
 
