@@ -25,6 +25,49 @@
 
 ---
 
+### 618-2 테스트 스위트가 빨갛다 — 기존 실패 9건 (기준선 기록)
+
+2026-09-22 618차 작업 중 전체 스위트를 돌렸다: **2168 통과 / 9 실패 / 1 스킵
+/ 4 xfail, 703초**. 9건 **전부 618차 이전부터 있던 것**이며 아래 절차로 확인했다.
+
+🔴 **왜 적어두는가 — `O-77` 이 정확히 이 상태에서 났다.** 스위트가 죽어 있어
+2026-09-07 채널 번호 충돌 가드(`test_487`)가 설계대로 울렸는데도 **6일간 아무도
+못 들었고** 그 사이 주간 리포트 한 부가 오염된 채 커밋됐다. 빨간 스위트는
+「실패 9건」이 아니라 **「새 실패를 못 알아본다」**는 상태다.
+
+| 실패 | 성격 | 확인 방법 |
+|---|---|---|
+| `test_457::test_db_fallback_columns_have_measured_flag` | `peter_paste` INSERT 폴백(`or ''`) 미등록 — 진행 중인 피터 피드 작업 | HEAD~1 워크트리에서 동일 실패 |
+| `test_477::test_step9_batch_placeholders_match_params` | 〃 | 〃 |
+| `test_493::test_cost_formulas_do_not_use_live_rate` | 〃 | 〃 |
+| `test_497::test_prev_broker_net_fetch` | 〃 (sqlite) | 〃 |
+| `test_498::test_every_recon_log_is_registered` | `[CybosInvestor]` 대사 로그가 `RECON_INVENTORY` 미등록 | 〃 |
+| `test_483::…[fuoption-…git_lock_guard.py]` | **형제 repo**(`fuoption`) 사본이 정본과 어긋남 | `scripts/git_lock_guard.py` 는 491차 이후 무변경·워킹트리 clean |
+| `test_553_gp_chart_markers::test_loader_is_safe_before_phase3` | **라이브 DB 의존** — GP 테이블이 이미 생겨 `wired=True` | 618차 커밋의 `main_dashboard.py` 변경은 `closeEvent` 2 hunk 뿐, GP 심볼 변경 0줄 |
+| `test_553_gp_pnl_panel::test_gp_uses_mini_futures_multiplier` | 〃 (513,281 vs 50,000) | 〃 |
+| `test_554::test_missing_reference_skips_check_but_is_not_silent` | **테스트 순서 오염** — 단독 실행하면 통과 | 단독 실행 실측 |
+
+⚠ **HEAD~1 워크트리 대조는 DB 의존 테스트에 쓸 수 없다.** 워크트리에는 `data/`
+가 없어(gitignore) 두 `test_553` 은 거기서 「통과」한다 — 코드가 옳아서가 아니라
+**테이블이 없어서**다. 그 두 건은 워크트리가 아니라 **커밋 diff**로 갈랐다.
+
+할 일(우선순위 순):
+1. `test_554` 순서 오염 — 어떤 선행 테스트가 `PT._STATE_FILE`/로거를 남기는지
+   `-p no:randomly` 로 이등분. **가장 위험하다**(단독으로 초록이라 안 보인다).
+2. `test_553` 2건 — 라이브 DB 에 의존하지 않게 픽스처를 격리하거나, 의존이
+   의도라면 그 사실을 테스트 docstring 에 박을 것.
+3. `test_498` `[CybosInvestor]` 인벤토리 등록 (①무엇과 비교 ②원천 독립 여부
+   ③한쪽 없을 때 무엇을 찍는가).
+4. `peter_paste` 계열 4건 — 피터 피드 작업이 끝날 때 함께.
+5. `test_483` — `fuoption` 쪽 사본 동기화(이 repo 문제 아님).
+
+⚠ 스위트가 **11분 43초**다. `test_424::test_evals_smoke`·`test_426::
+test_renders_in_report` 처럼 캠페인 리포트를 통째로 만드는 것들이 대부분을
+먹는다. 느려서 안 돌리게 되는 것도 O-77 의 원인 중 하나다 — 빠른 하위셋
+마커를 두는 것을 검토할 것.
+
+---
+
 ### 614-1 라이브 검증 — 세션 재생 (다음 거래일)
 
 근거: `dev_memory/DECISION_LOG.md` 2026-09-21(614차).
