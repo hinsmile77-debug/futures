@@ -45451,3 +45451,188 @@ CLAUDE.md/SKILL.md의 원칙을 그대로 적용하면 "F-1 해소"로 잘못 �
 이 세션은 라이브 DB를 조회하지 않았다(수집기는 로그·설정·git 전용). 코드 변경
 없음. 커밋 없음(장중 규칙). 작업 종료 시 `.git/index.lock` 신규 생성 없음
 (`git_lock_guard.py --check` → `OK 정상 — 락 없음`, 종료 직전 재확인).
+
+
+## 2026-09-22 (MW0601 617차 — 장전 점검)
+
+**근거**: `docs/정기점검/매일점검/MW0601-20260922-점검리포트.md` 장전(pre) 절,
+`docs/정기점검/매일점검/evidence_MW0601-20260922_pre.md`.
+
+### 0. 브랜치·기동 확인
+
+`v9-dev`(정상, MW0601 운영 브랜치와 일치) · HEAD `60d598c` · 당일 커밋 0건(점검 시작
+시점 08:59 기준, 정상 — 장전 규칙상 이 세션은 커밋하지 않는다). Python 3.7.13 32bit /
+scipy=1.5.4 / sklearn=1.0.2 / joblib=1.1.0(CLAUDE.md 표기 "1.1.1"과 다름 — 09-21
+609차에 이미 등록된 문서 정정 사안, 재등록 아님) — 정상. 08:55 매크로 수집 완료
+(VIX=14.8, SP500=+1.49%, USD/KRW -1.15% → 레짐 RISK_ON 확정, 08:58:17). 실시간 구독
+08:45:13 사전 시작(개장 대비 +13.4s, 프리장 15봉 확보) — 정상. 옵션체인 09:01:33
+재수집 완료(PCR=0.180, ATM_PCR=0.216, GEX=5.21B). 6호라이즌(1m~30m) 모델·스케일러
+전부 정상 로드.
+
+### 1. 전일(09-21) EOD 재학습 + P8 성공 — 이중 확인
+
+`data/eod_retrain_done_20260921.txt`(15:53:28 완료, 6/6 호라이즌 교체, phase2_fallback
+=false, daily_close_seen=true) + `logs/retrain_eod_20260921.log`(15:53:28,969
+`[P8] session_state p8_last_success_date + eod_retrain_ok_date 기록 완료`) 두 원천
+모두에서 성공 확인. **단, 오늘 아침 `data/session_state.json`에는 이 두 키가 빠져
+있다** — 아래 2번 참조.
+
+### 2. `[SessionStateDrop]` 재현 — F-1(538-4) 지속, 오늘도 기능 영향 없음 확인
+
+**증상**: `session_state.json`의 `p8_last_success_date`·`eod_retrain_ok_date`가
+08:41:13 `[SessionStateDrop]` 경고와 함께 소실 확인(호출부
+`session_recovery_service.py:increment_session`, 날짜 롤오버 시 새 딕셔너리가
+이전 키를 승계하지 않음).
+
+**결정**: 신규 조치 없음 — F-1(538-4)로 이미 등록돼 승인 대기 중인 사안의 재현.
+다만 오늘 `[PreRetrain]` 로그(08:55:13)에서 "EOD 마커 파일 직접 확인 (1일 전:
+2026-09-21) → PreRetrain 스킵 (session_state 미기록 보완)"을 확인 — 이 소비처는
+이미 우회 로직을 갖추고 있어 실질 기능 장애가 없음을 재확인했다.
+
+**Why**: 함정① 방지 — 이미 등록된 F-1(538-4)을 새 발견으로 올리지 않기 위해
+NEXT_TODO 기존 항목과 대조했다.
+
+**검증**: `grep -n "SessionStateDrop" logs/20260922_WARN.log` → 08:41:13 2건.
+`logs/retrain_eod_20260921.log` 직접 열람으로 P8 완료·마커 기록 로그 원문 확인.
+
+### 3. `.git/index.lock` 재발 — 이 세션도 `--no-optional-locks` 전량 사용했음에도 생성 (1-1)
+
+**증상**: 이 세션이 사용한 모든 git 명령(`branch --show-current`·`log --since`·
+`diff --numstat -w`·`status --short`)에 예외 없이 `--no-optional-locks`를 붙였다.
+그럼에도 09:00경 `.git/index.lock`(0바이트)이 새로 생성됐다. `rm -f` 시도 →
+`Operation not permitted`(EPERM) — 리눅스 샌드박스 마운트 unlink 거부, SKILL.md
+§0 기지 경고와 정확히 일치. `git_lock_guard.py --check`를 09:05·09:07·09:10 세 차례
+실행 — 전부 `HOLD 판정보류`(나이 297s/441s/594s ≤ 임계 600s).
+
+**결정**: 판정보류 상태이므로 이 세션에서 지우지 않았다. 최종 상태는 세션 종료
+직전 재확인해 리포트 "사용자 조치" 절에 반영한다(아래 4번 참조).
+
+**Why**: 2026-09-21(609차) 후속 4번 항목과 **완전히 동일한 패턴**(그날도
+`--no-optional-locks` 전량 사용했음에도 발생, STALE 확정 후 `--reclaim`도 실패).
+09-16·09-17·09-18에도 유사 재발 이력 있음 — "옵션을 붙여도 이 환경에서는
+100% 방지되지 않는다"는 가설이 반복 관측으로 더 굳어졌다. 근본 원인은 여전히
+미상이다.
+
+**검증**: 아래 4번(후속) 참조.
+
+### 자가유발 여부 (2·3번 제외 전체)
+
+이 세션은 라이브 DB를 조회하지 않았다(수집기는 로그·설정·git 전용). 코드 변경
+없음. 커밋 없음(장전 규칙 — 어차피 3번 사유로 물리적으로도 불가능한 상태).
+`dev`/`main` 미접촉.
+
+### 4. 후속 — 세션 종료 직전 `.git/index.lock` 재확인, STALE 확정·회수 실패
+
+**증상**: 09:11:42 `git_lock_guard.py --check` → `STALE 스테일 확정 — 0바이트 ·
+0.2시간 · git 프로세스 0개 → 이 저장소는 커밋 불가 상태다`(exit=2). `--reclaim`
+시도 → `[Errno 1] Operation not permitted`로 실패(리눅스 샌드박스 마운트 경유
+`unlink` 거부 — SKILL.md §0 기지 경고와 정확히 일치).
+
+**결정**: 리포트 최상단·1-1(P1)·사용자 조치 1번으로 STALE 확정 사실을 반영했다.
+Windows PC에서 사용자가 직접 `python scripts\git_lock_guard.py --reclaim` 또는
+수동 삭제해야 한다.
+
+**Why**: 09-16·09-17·09-18·09-21에 이어 다섯 번째(그 이상) 재현이다. 원인 후보
+명령을 전부 `--no-optional-locks`로 실행했음에도 매번 재발한다는 점에서, 이
+환경(코웍 리눅스 샌드박스 + Windows 호스트 마운트) 자체의 구조적 제약일 가능성이
+점점 커지고 있다. NEXT_TODO F-1(617차)에 다음 세션들이 초 단위 명령 로그를
+누적하도록 등록했다.
+
+**검증**: `python scripts/git_lock_guard.py --check` exit=2(STALE), `--reclaim`
+exit=2(회수 실패) 둘 다 09:11 재확인. 커밋 미실행(장전 규칙 + 물리적으로도 불가).
+
+### 자가 점검 (갱신)
+
+읽기 전용 git 전량 `--no-optional-locks` 사용(그럼에도 락 발생 — 위 3·4번 참조) ·
+`git add`/커밋 미실행 · `dev`/`main` 미접촉 · 라이브 DB 미조회 · 코드 미변경 ·
+작업 종료 시 `.git/index.lock` **STALE로 존재함**(회수 실패, 사용자 조치 1번으로
+리포트 최상단에 반영). 리포트는 신규 생성(장전 첫 파일) — append 규약 위반 없음.
+
+
+## 2026-09-22 (MW0601 617차 후속 — 표시 위젯 한 줄이 엔진을 죽였다) — 🟢 **구현 완료**
+
+**커밋**: `e3e5d91`. **근거**: 당일 라이브 로그(`logs/Mireuk_batch/launcher_20260922_084001_14358.log`
+· `logs/crash_fault.log` · `logs/20260922_SYSTEM.log`), 실측 재현
+(py37_32 · matplotlib 3.5.1 · PyQt5 5.15.10 · offscreen).
+
+### 1. 무슨 일이 있었나
+
+09:41:56 프로세스 즉사 → 런처 `[AUTO-RESTART]` 10초 후 재기동(09:42:27) →
+09:43:16 브로커 재연결. **다운 31초**, `BAR-CLOSE` 가 09:41:00(ts=09:40) 다음
+바로 09:44:00(ts=09:43) 이라 **ts=09:41·09:42 두 사이클이 통째로 결손**됐다.
+
+🔴 **실손해 0은 설계의 결과가 아니다.** 09:30:01 `JointGateBlock` 차단으로
+그날 종일 FLAT 이었을 뿐이다. 포지션이 있었다면 31초 무감시 + 재기동 중
+청산 트리거 공백이었다 — **480차(08-19 동결)와 같은 계열**이며, 그때 적어둔
+"우연히 FLAT이었기 때문"이 그대로 반복됐다.
+
+### 2. 인과 — 네 단계, 전부 재현 확인
+
+```
+File "dashboard/panels/direction_indicator_dialog.py", line 490, in _draw_chart
+numpy.linalg.LinAlgError: Singular matrix
+```
+
+① `transData = transScale + (transLimits + transAxes)` 의 역행렬은
+   `transAxes = BboxTransformTo(ax.bbox)` 부터 깐다 — **`ax.bbox` 폭이 0이면
+   특이행렬**이다(mpl 3.5.1 `_base.py:832` 조립 순서로 확인).
+② 캔버스에 `setMinimumHeight(180)` **만** 있었다. 최소 폭이 없었고, 좌측
+   컬럼이 든 `main_split` 은 `setChildrenCollapsible` 을 부른 적이 없다
+   (기본 True) → 핸들을 끝까지 끌면 폭 0.
+③ **폭 0 일 때 `axvline` 은 통과하고 `axhline` 만 터진다**(실측). 높이 0이면
+   반대다 — 최소높이 180 때문에 높이는 0이 못 되니 항상 이 조합만 남는다.
+   `axhline` 은 `direction != 0` 일 때만 그린다 → 희소. 전 런처 로그 통틀어
+   이 예외는 **오늘 1건**이 전부다. 09:34~09:40 창 최대화/복원 4회 왕복
+   (차트 size `1886x1150 ↔ 2848x1800`) — UI를 만지던 중이었다.
+④ `_refresh` 는 QTimer 슬롯이다. **PyQt5(5.15.10)는 슬롯에서 새어나온 예외를
+   `qFatal()` 로 처리한다** → 프로세스 abort. `sys.excepthook` 은 코드베이스에
+   0건이고, **깔아도 못 막는다**(호출된 뒤 그대로 죽는다).
+
+⚠ **가드는 위젯 폭이 아니라 `ax.bbox` 를 봐야 한다.** 봉차트 팝업은 위젯이
+640px 인데 figure 폭만 0 이 되는 상태가 실제로 만들어진다(실측). 둘이 어긋나는
+순간이 바로 사고가 나는 순간이다.
+
+### 3. 조치 — 세 겹 + 형제 화면
+
+| 층 | 내용 |
+|---|---|
+| A 치명화 차단 | `_refresh`·`_flash_tick`·`_apply`·`_draw_chart` 가 예외를 밖으로 내지 않는다. **삼키되 숨기지 않는다** — 첫 1회·이후 30회마다 캔버스 크기와 함께 WARNING(계측 4원칙 ④) |
+| B 원인 제거 | 캔버스 `setMinimumWidth` · `main_split`/`left_split` 접힘 금지 |
+| C 그리기 가드 | 폭·높이 < 2px 이면 건너뛴다. **Qt 위젯 크기와 `ax.bbox` 를 둘 다** 본다 |
+
+**`candle_chart_dialog` 도 같은 결함이었다** — `setMinimumHeight(270)` 만 있고
+슬롯 무가드. 거기선 `_refresh` 가 아니라 **워커 완료 슬롯 `_apply`** 가 위험
+지점이다(그리기가 전부 그 안에서 일어난다). 같은 세 겹을 적용했다.
+
+### 4. 회귀 가드
+
+- `tests/test_617_dashboard_chart_zero_width.py` (15건) — **음성 대조 포함**:
+  가드를 우회한 `_draw_chart_impl` 은 figure 폭 0 에서 **여전히 `LinAlgError`
+  를 던진다**. 살아 있는 것은 운이 아니라 가드다. 이게 통과하기 시작하면
+  matplotlib 쪽이 바뀐 것이므로 전제를 다시 읽어야 한다.
+- `scripts/audit_qtimer_slot_guards.py` — 무가드 슬롯 AST 전수 스캔.
+  실측 `timeout.connect` **36건** = 무가드 18 · 부분가드 13 · 가드 4 · 미해결 1.
+  ⚠ **앞서 세어둔 "176곳"은 틀렸다** — `dashboard/` 안의 `.bak` 사본 14개를
+  함께 센 것이다(`grep -r` 이 백업을 포함했다). 재인용 금지.
+- `tests/test_617_qt_slot_guard_ratchet.py` — 기준선 18건 고정, **새 무가드만**
+  막는다.
+
+🔴 **왜 18건을 일괄 try/except 하지 않았나.** 그중 셋이 `main.py:TradingSystem`
+의 **엔진 슬롯**이다(`_on_main_heartbeat`·`_effect_report_timer_tick`·
+`_check_limit_entry_timeout`). 표시 슬롯은 삼켜도 화면이 빌 뿐이지만,
+**엔진 슬롯을 삼키면 주문·청산 실패가 조용히 사라진다** — 이 사고의 교훈
+(조용히 그럴듯한 값)을 그대로 재생산하는 꼴이다. 슬롯별 판단이 필요하며
+주간회의 안건으로 남긴다.
+
+### 5. 남은 것 · 주의
+
+- **실행 중인 프로세스에는 재기동 전까지 반영되지 않는다.**
+- 무가드 15건(표시 슬롯)은 손대는 김에 하나씩 가드하고 래칫 기준선에서 지울 것.
+- 엔진 슬롯 3건의 처분은 미정(위 §4).
+- 장중 커밋은 `v9-dev` 규약상 피하는 쪽이나, **사용자 지시로 진행**했다.
+- 부수 확인: 어제(09-21) 12회 재기동에 섞여 있던
+  `NameError: name 'settings' is not defined`(`main.py:4659`
+  `_fetch_weekly_option_flow`)는 `ERR-DEGRADED` 로 **잡힌** 예외라 사망 원인이
+  아니었고, 오늘 0건이다.
+- 부수 관찰: 크래시 재기동인데 `[Session] 재기동 #1 | cause=STARTUP` 으로
+  기록된다 — 정상 기동과 구분이 안 된다(계측 4원칙 ② 계열, 미처리).
