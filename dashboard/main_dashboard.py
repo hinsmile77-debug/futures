@@ -14796,6 +14796,12 @@ class MireukDashboard(QMainWindow):
         # ── 3열 메인 레이아웃 ──────────────────────────────────
         main_split = QSplitter(Qt.Horizontal)
         main_split.setHandleWidth(3)
+        # 🔴 [MW0601 617차] 컬럼을 폭 0 으로 접지 못하게 한다.
+        #   기본값 True 면 핸들을 끝까지 끌어 좌측 컬럼을 0px 로 접을 수 있고,
+        #   그 안의 matplotlib 캔버스가 폭 0 이 되는 순간 `axhline` 이
+        #   `LinAlgError: Singular matrix` 를 던져 **프로세스가 죽는다**
+        #   (2026-09-22 09:41:56 실사고 — 31초 다운·분봉 2개 결손).
+        main_split.setChildrenCollapsible(False)
         main_split.setStyleSheet(f"QSplitter::handle{{background:{C['border']};}}")
 
         # 좌측 컬럼
@@ -14805,6 +14811,7 @@ class MireukDashboard(QMainWindow):
         ll.setSpacing(6)
         left_split = QSplitter(Qt.Vertical)
         left_split.setHandleWidth(3)
+        left_split.setChildrenCollapsible(False)   # 617차 — 위 main_split 주석 참조
         left_split.setStyleSheet(f"QSplitter::handle{{background:{C['border']};}}")
         self.account_info_panel = AccountInfoPanel()
         self.pred_panel = PredictionPanel()
