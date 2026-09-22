@@ -15285,6 +15285,10 @@ class MireukDashboard(QMainWindow):
           - 재시작:    플래그 없음 → 런처 AUTO-RESTART 10초 후 재기동
           - 취소:      닫기 취소
 
+        [MW0601 618차] 두 분기 다 `utils/exit_flags.write_exit_flags()` 로 의도를
+        남긴다. 파일 규약·런처는 무변경이고, 바뀐 것은 재시작 분기가 더 이상
+        **무흔적**이 아니라는 점이다.
+
         Qt 부모-자식 소멸 경로에서는 자식 closeEvent가 호출되지 않으므로,
         메인 윈도우 closeEvent에서 차트 다이얼로그를 먼저 닫아 geometry를 저장한다.
         """
@@ -15315,19 +15319,40 @@ class MireukDashboard(QMainWindow):
             except Exception:
                 pass
 
-        if _clicked == _btn_full:
-            # 완전 종료: 플래그 생성 → 런처 재시작 방지
-            try:
-                import os as _os, datetime as _dt
-                _flag = _os.path.join(
-                    _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
-                    "data", "_exit_normally",
-                )
-                with open(_flag, "w", encoding="utf-8") as _f:
-                    _f.write(f"user_close\n{_dt.datetime.now().isoformat()}\n")
-            except Exception:
-                pass
-        # 재시작: 플래그 없음 → 런처가 10초 후 AUTO-RESTART
+        # ── [MW0601 618차] 종료 의도를 **두 분기 모두** 남긴다 ─────────────
+        # 종전: 완전 종료만 인라인으로 플래그를 썼고 **재시작 분기는 아무 흔적도
+        #   남기지 않았다.** 그래서 2026-09-22 15:08 의 사용자 재시작이
+        #   `crash_fault.log` 엔 `[CLEAN EXIT]` 인데 런처 로그엔 「일시적 크래시」로
+        #   남았고, 그날 점검이 수동 재시작 2회를 크래시로 오독했다.
+        # 바뀐 것: 파일 규약은 **그대로**(런처 무수정)이고, 의도를 로그 한 줄
+        #   `[Shutdown] intent=… keep_alive=…` 로 남긴다. 점검은 파일(런처가 읽은
+        #   직후 지운다)이 아니라 로그를 읽으므로 이것으로 세 경로가 구분된다.
+        # 덤: 인라인 복제가 사라지면서 완전 종료 경로도 날짜본 마커(513차 FZ-2)를
+        #   함께 쓰게 된다 — 종전 복제본은 그것을 빠뜨리고 있었다.
+        try:
+            import sys as _sys, os as _os
+            _root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+            if _root not in _sys.path:
+                _sys.path.insert(0, _root)
+            from utils.exit_flags import write_exit_flags as _wef
+            if _clicked == _btn_full:
+                _wef("user_close", keep_alive=False, root=_root)
+            else:
+                # 재시작: 파일을 쓰지 않는다 → 런처가 10초 후 AUTO-RESTART.
+                _wef("user_restart", keep_alive=True, root=_root)
+        except Exception:
+            # 폴백 — 헬퍼를 못 불러도 완전 종료 계약(플래그 파일)은 지킨다.
+            if _clicked == _btn_full:
+                try:
+                    import os as _os2, datetime as _dt
+                    _flag = _os2.path.join(
+                        _os2.path.dirname(_os2.path.dirname(_os2.path.abspath(__file__))),
+                        "data", "_exit_normally",
+                    )
+                    with open(_flag, "w", encoding="utf-8") as _f:
+                        _f.write("user_close" + chr(10) + _dt.datetime.now().isoformat() + chr(10))
+                except Exception:
+                    pass
 
         # super().closeEvent 만으로는 차트 다이얼로그 등 다른 Qt 윈도우가
         # 남아있을 때 quitOnLastWindowClosed 자동 종료가 트리거되지 않아

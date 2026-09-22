@@ -509,6 +509,20 @@ class TradingSystem:
         self.feature_builder    = FeatureBuilder()
         self.feature_builder._on_core_fail = self._on_core_feature_fail
         self._load_prev_day_closes_at_startup()
+        # ── [MW0601 618차 / P2-a] 기동 시점 `raw_candles` 결손 감지 ──────────
+        # 재기동 공백만큼 조용히 비는 것을 매번 한 줄로 남긴다. **메우지 않는다**
+        # (533차 — 최근 N행 창이 밀린다). 결손 0 이어도 찍는다: 침묵은 「결손
+        # 없음」과 「검사 죽음」을 구분해주지 않는다(계측 4원칙 ④).
+        # ⚠ `session_bars` 로 대조하지 않는다 — 이 시점엔 거기에도 그 봉이 없다
+        #   (차트 TR 보충은 당일 15:46 / 익일 08:41). 분 그리드가 정본이다.
+        try:
+            from utils.bar_gap import startup_line as _bg_start
+            from config.settings import RAW_DATA_DB as _bg_db
+            _bg = _bg_start(_bg_db)
+            if _bg is not None:
+                log_manager.system(_bg[0], _bg[1])
+        except Exception as _bg_e:
+            logger.warning("[BarGap] 기동 결손 감지 실패 (무해): %s", _bg_e)
         # [260704 감사 P2] 선물-현물 베이시스 — KOSPI200 현물지수 폴링(60s) + 계산기
         self.basis_calc         = BasisCalculator()
         self._last_kospi200_spot: Optional[float] = None
@@ -920,6 +934,9 @@ class TradingSystem:
         # [589차] **당일** 마감 체결(15:45) 차트 TR 보충 1회 플래그 (15:46~15:48 틱).
         #   명시 초기화 — getattr 폴백 금지(계측 4원칙 ④).
         self._chart_backfill_today_done: bool = False
+        # [MW0601 618차 / P2-a] 당일 결손 확정 판정 1회 플래그.
+        # 명시 초기화 — getattr 폴백 금지(계측 4원칙 ④, tests/test_457).
+        self._bargap_confirm_done: bool = False
         self._const_out_refit_until = None           # ConstOut 트리거 쿨다운 (30분)
         self._const_out_heavy_cooldown_until = None  # ConstOut 직후 heavy 작업 유예 (3분)
         self._price_momentum_refit_until = None      # D_PRICE_MOMENTUM 쿨다운 (20분)
@@ -13235,43 +13252,13 @@ class TradingSystem:
         """정상 종료 플래그 파일 생성 — 런처 RESTART_LOOP 재시작 방지.
 
         [229차] UI X 버튼·자동 종료 등 의도된 종료 시 생성.
-        런처(start_mireuk.bat)가 이 파일을 감지하면 AUTO-RESTART 건너뜀.
-        → X 버튼 후 스케줄러 클릭으로 인한 이중 인스턴스 방지.
+        [MW0601 618차] 본문을 `utils/exit_flags.py` 로 옮겼다 — 대시보드
+          `closeEvent` 가 같은 일을 **인라인으로 복제**하고 있었고, 그 복제본은
+          날짜본 마커(513차 FZ-2)를 빠뜨려 두 경로의 산출물이 달랐다.
+          동작은 그대로다(`keep_alive=False` = 종전 경로 전체).
         """
-        try:
-            _flag = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "_exit_normally")
-            with open(_flag, "w", encoding="utf-8") as _f:
-                import datetime as _dt
-                _f.write(f"{reason}\n{_dt.datetime.now().isoformat()}\n")
-            logger.info("[Shutdown] 정상 종료 플래그 기록: %s (%s)", _flag, reason)
-        except Exception as _e:
-            logger.warning("[Shutdown] 정상 종료 플래그 기록 실패 (무해): %s", _e)
-
-        # 🔴 [MW0601 513차 / FZ-2 오탐 차단 · MW0602 524차 이식] 런처가 **지우지 않는**
-        #   날짜본 종료 마커.
-        #   위 `_exit_normally` 는 런처가 읽은 직후 삭제한다. 그래서 프로세스 밖
-        #   센티넬(FZ-2)이 판정할 시점에는 **항상 없고**, 그 축은 매번 「미측정」이
-        #   되어 규약대로 동결 판정이 유지된다 → 정상 마감한 날에도 15:45~16:30 에
-        #   가짜 CRITICAL 이 쏟아진다.
-        #   ⚠ **MW0602 실측으로 확인된 문제다**(523차): `--at-time` 재생에서
-        #     16:00·16:29 둘 다 CRITICAL 이었다. 그때는 감시 창을 15:45 로 좁혀
-        #     피했는데, 이 마커가 생기면 그 우회가 필요 없어진다.
-        #
-        #   ⚠ **마감 완료 시각이 아니라 종료 시각을 담는 것이 핵심이다.**
-        #     `daily_close_done` 은 마감 중에 찍히는데 그 뒤로도 종료 로그가 더
-        #     남아, 마커가 마지막 신호보다 **먼저**가 된다(MW0602 실측 약 15초).
-        #     이 마커는 `_auto_shutdown()` 에서 **다시** 쓰이므로 종료 시점을 갖는다.
-        #   ⚠ 파일명에 날짜가 박혀 있어 어제 마커가 오늘 판정에 끼어들지 않는다.
-        #     그래도 센티넬은 **시각을 비교**한다(존재만으로 판정하지 않는다).
-        try:
-            _sd_marker = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), "data",
-                "shutdown_normal_%s.txt" % datetime.date.today().strftime("%Y%m%d"),
-            )
-            with open(_sd_marker, "w", encoding="utf-8") as _f:
-                _f.write(reason + "\n" + datetime.datetime.now().isoformat() + "\n")
-        except Exception as _sm_e:
-            logger.warning("[Shutdown] 날짜본 종료 마커 기록 실패 (무해): %s", _sm_e)
+        from utils.exit_flags import write_exit_flags as _wef
+        _wef(reason, keep_alive=False, log_fn=log_manager.system)
 
     # ── 파이프라인 생존 감시 ──────────────────────────────────────
 
@@ -14266,6 +14253,30 @@ class TradingSystem:
         except Exception as _cbt_e:
             logger.warning(
                 "[SessionBackfill] 당일 보충 실패 (무해 — 익일 08:41 이 메운다): %s", _cbt_e)
+
+        # ── [MW0601 618차 / P2-a] 당일 결손 **확정** 판정 (차트 TR 보충 직후) ──
+        # 위 589차 보충이 끝난 뒤라 `session_bars` 가 정본이다. 그때 비로소
+        # 「결손봉이 session_bars 에 보존돼 있는가」까지 말할 수 있다 — 보존돼
+        # 있으면 데이터 손실이 아니다(기동 로그의 유보를 여기서 닫는다).
+        #
+        # ⚠ 15:50 이후로 미루면 **영영 안 돈다.** `_schedule_shutdown()` 이
+        #   15:47:15 에 프로세스를 끝낸다(589차). 그래서 같은 틱 안, 보충 블록
+        #   **바로 뒤**에 둔다 — 순차 실행이라 보충이 먼저다.
+        # ⚠ 보충이 스킵된 날(만기일·이미 완료)에도 판정은 돈다. 스킵을 결손으로
+        #   위장시키지 않기 위해서다(계측 4원칙 ②).
+        try:
+            if (
+                not self._bargap_confirm_done
+                and is_trading_day(now)
+                and now.time() >= datetime.time(15, 46)
+            ):
+                self._bargap_confirm_done = True
+                from utils.bar_gap import confirm_line as _bg_conf
+                from config.settings import RAW_DATA_DB as _bg_db2
+                _msg, _lv = _bg_conf(_bg_db2, now.date().isoformat())
+                log_manager.system(_msg, _lv)
+        except Exception as _bgc_e:
+            logger.warning("[BarGap] 당일 확정 판정 실패 (무해): %s", _bgc_e)
 
         # [A] 08:45 얼리버드 warmup — scaler age > EARLY_WARMUP_MIN_AGE_HOURS 시 선행 갱신
         # 커버: 전날 P8 실패 / 휴장일 / 중간 멈춤 / 주말 등 원인 무관 모든 노후화 케이스

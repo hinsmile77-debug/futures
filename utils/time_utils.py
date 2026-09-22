@@ -17,6 +17,63 @@ PRE_MARKET_END   = datetime.time(9,  0)
 # (0715진입청산검토.md #8 트레이드). 10분 앞당겨 14:50으로 조정.
 NEW_ENTRY_CUTOFF = datetime.time(14, 50)
 
+# ── [MW0601 618차] 강제청산 시각 + `raw_candles` 절단선 ──────────────────────
+#
+# 종전에는 `is_force_exit_time()` 본문에 15:10 이 리터럴로 박혀 있었다. 상수로
+# 올려 이 모듈 안의 중복을 없앤다. `config/settings.py:FORCE_EXIT_TIME`("15:10")
+# 과의 일치는 `tests/test_618_exit_intent_and_bar_gap.py` 가 고정한다 — 두 곳을
+# 억지로 하나로 합치지 않고 **어긋나면 테스트가 깨지게** 한다.
+FORCE_EXIT_AT = datetime.time(15, 10)
+
+
+def raw_candles_last_ts() -> datetime.time:
+    """`raw_candles` 에 남는 **마지막 봉 ts** — 평시 15:08.
+
+    🔴 **상수가 아니라 파생값이다.** 리터럴 "15:08" 을 새로 박으면 461차
+    `mdd_pct`(분모 두 출처)·500차 CORE 정의(세 출처)와 같은 유형이 된다.
+
+    유도:
+      · 봉 ts=T 의 마감 콜백은 T+1분에 도착한다.
+      · `main.py:run_minute_pipeline` 이 `is_force_exit_time(now)` 면 **저장 전에**
+        return 한다(main.py 15:10 가드) → now=15:10 에 도착하는 ts=15:09 봉이 탈락.
+      ⇒ 마지막 저장 ts = FORCE_EXIT_AT − 2분 = 15:08.
+
+    판정 규약:
+      · `== raw_candles_last_ts()` → 정상
+      · `<`  → 결손 (재기동 공백 등)
+      · `>`  → **이상**. 파이프라인 중단선이 안 먹었다는 뜻이다.
+
+    15:09~15:45 봉은 `session_bars` 에만 있다(533차 — 원천은 원천끼리).
+    """
+    _base = datetime.datetime.combine(datetime.date(2000, 1, 1), FORCE_EXIT_AT)
+    return (_base - datetime.timedelta(minutes=2)).time()
+
+
+def expected_raw_candle_minutes(upto=None):
+    """그날 `raw_candles` 에 있어야 하는 "HH:MM" 집합 — 08:45 ~ min(upto, 15:08).
+
+    분 그리드를 기준으로 쓰는 이유: 기동 시점에는 `session_bars` 도 같은 봉을
+    갖고 있지 않다(차트 TR 보충은 당일 15:46 / 익일 08:41 에만 돈다). 그 시점에
+    `session_bars` 로 대조하면 **언제나 결손 0** 을 돌려주는 죽은 계측이 된다.
+
+    거짓양성이 없다 — 08:45~15:08 은 정확히 384분이고 실측상 정상일의
+    `raw_candles` 당일 행수가 정확히 384다(점심 휴장 없음).
+
+    `upto` 는 "여기까지는 저장돼 있어야 한다"는 상한(`datetime.time`)이다.
+    호출부가 `now − 1분` 을 주면 아직 비행 중인 봉을 결손으로 세지 않는다.
+    """
+    last = raw_candles_last_ts()
+    if upto is not None and upto < last:
+        last = upto
+    out = []
+    cur = datetime.datetime.combine(datetime.date(2000, 1, 1), PRE_MARKET_START)
+    end = datetime.datetime.combine(datetime.date(2000, 1, 1), last)
+    while cur <= end:
+        out.append(cur.strftime("%H:%M"))
+        cur += datetime.timedelta(minutes=1)
+    return set(out)
+
+
 
 def now_kst() -> datetime.datetime:
     """현재 KST 시각을 naive datetime으로 반환 (기존 naive 비교 코드와 호환)."""
@@ -141,10 +198,10 @@ def minutes_to_close(dt: Optional[datetime.datetime] = None) -> int:
 
 
 def is_force_exit_time(dt: Optional[datetime.datetime] = None) -> bool:
-    """15:10 강제 청산 시각 도달 여부"""
+    """15:10 강제 청산 시각 도달 여부 — 시각은 `FORCE_EXIT_AT` 단일 출처."""
     if dt is None:
         dt = now_kst()
-    return dt.time() >= datetime.time(15, 10)
+    return dt.time() >= FORCE_EXIT_AT
 
 
 def is_new_entry_allowed(dt: Optional[datetime.datetime] = None) -> bool:
