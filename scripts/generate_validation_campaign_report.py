@@ -9218,6 +9218,12 @@ CHANNEL_REGISTRY = (
     (59, "exhaustion_restore_watch", "소진 피처 live 조건ⓐ (mode=… · 판정창 …~)"),
     (60, "gp_cross_highvol_watch", "GP 교차 x 고변동 (좁은)"),
     (61, "gp_cross_any_watch", "GP 교차 x 고변동 (순수·대조)"),
+    # ⚠ [80] option_flow_predictive_watch 는 **여기에 없다** — 의도된 상태다.
+    #   레지스트리는 "리포트가 실제로 출력하는 채널"의 목록이고, 그 채널은 아직
+    #   판정이 배선되지 않았다(사전등록만). [2] atb_v2 와 같은 취급이다.
+    #   판정을 배선하는 커밋이 번호 80 을 여기 등록할 것.
+    #   ⚠ 번호 80 은 **MW0601 대역(80~159)** 이라 이 브랜치의 62~79 와 겹치지 않는다
+    #     (CLAUDE.md 「캠페인 채널 번호 — PC별 대역 분할」).
 )
 
 
