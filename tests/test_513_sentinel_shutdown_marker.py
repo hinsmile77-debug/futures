@@ -183,13 +183,24 @@ def test_main_writes_dated_shutdown_marker():
     ⚠ `_write_exit_normally_flag()` **안**이어야 한다 — 그래야 `_auto_shutdown()`
       경로에서 **종료 시점**으로 갱신된다. 마감 완료 시점(15:40:11)에만 찍히면
       2026-09-01 형이 그대로 재발한다.
+
+    [MW0601 618차] 본문이 `utils/exit_flags.write_exit_flags()` 로 옮겨졌다.
+    불변식은 그대로고 **보는 곳만** 따라간다 — 두 파일이 같은 함수를 쓰게 된
+    덕분에 대시보드 `closeEvent` 경로(종전 인라인 복제, 날짜본 마커 누락)까지
+    같은 가드가 덮는다.
     """
     with io.open(os.path.join(_ROOT, "main.py"), encoding="utf-8") as f:
         src = f.read()
-    body = src.split("def _write_exit_normally_flag")[1].split("\n    def ")[0]
-    assert "shutdown_normal_" in body, \
+    body = src.split("def _write_exit_normally_flag")[1]
+    assert "write_exit_flags" in body and "keep_alive=False" in body, \
+        "종료 플래그 기록은 공용 헬퍼에 위임하되 keep_alive=False 를 유지해야 한다"
+
+    with io.open(os.path.join(_ROOT, "utils", "exit_flags.py"), encoding="utf-8") as f:
+        helper = f.read()
+    hbody = helper.split("def write_exit_flags")[1]
+    assert "shutdown_normal_" in hbody, \
         "종료 플래그와 같은 함수에서 날짜본 마커를 써야 종료 시점을 담는다"
-    assert "_exit_normally" in body, "기존 런처 계약을 깨지 않았는지 함께 고정한다"
+    assert "_exit_normally" in hbody, "기존 런처 계약을 깨지 않았는지 함께 고정한다"
 
 
 def test_both_paths_pass_shutdown_axis():

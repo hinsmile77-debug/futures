@@ -301,7 +301,7 @@ DEFAULT_CONFIG = {
     ],
     # 날짜 토큰이 없어 인벤토리에 안 잡히는 상태 파일 — 존재와 mtime 만 본다
     "state_files": [
-        {"path": "data/_exit_normally", "why": "정상 종료 플래그. **기동 시 소비되므로 재기동했다면 없는 것이 정상**이다. 로그의 `[Shutdown] 정상 종료 플래그 기록` 과 교차확인하라"},
+        {"path": "data/_exit_normally", "why": "정상 종료 플래그. **기동 시 소비되므로 재기동했다면 없는 것이 정상**이다. [618차] 의도는 파일이 아니라 로그 `[Shutdown] intent=<daily_close|auto_shutdown|user_close|user_restart> keep_alive=<bool>` 로 읽는다 — `user_restart` 는 파일을 쓰지 않으므로 런처 로그의 「일시적 크래시」를 그대로 믿지 말 것"},
     ],
     "report_dirs": ["docs/정기점검/매일점검", "docs/정기점검/금요일점검"],
     # --out-auto 가 쓰는 출력 폴더. 파일명에 PC명이 들어가 두 PC가 서로를 덮지 않는다.
@@ -1880,6 +1880,112 @@ def state_snapshot_section(root, cfg, day, out):
     A("")
 
 
+def bar_gap_section(root, cfg, day, out):
+    """[MW0601 618차] `raw_candles` 절단선·결손 — 오독 재발 차단용.
+
+    무엇을 막는가
+    -------------
+    2026-09-22 1차 진단이 `raw_candles` 당일 max=15:07 을 **「15:07 이후 38분
+    수집 공백」**으로 읽었다. 5거래일 비교로 뒤집혔다 — 15:08 에서 끝나는 것이
+    **정상**이고, 그 사실이 코드 주석(`main.py` 15:10 가드 · `utils/db_utils.py`
+    session_bars 주석)에만 있어 점검 산출물 어디에도 안 실렸기 때문이다.
+
+    판정
+    ----
+      · `== 15:08` → 정상 (절단선. 15:09~15:45 봉은 `session_bars` 에만 있다)
+      · `<  15:08` → 결손. 재기동 공백인지 그 시각의 `[START]` 와 대조할 것
+      · `>  15:08` → **이상**. 15:10 파이프라인 중단선이 안 먹었다는 뜻
+
+    절단선은 리터럴이 아니라 `utils.time_utils.raw_candles_last_ts()` 파생값을
+    쓴다 — 여기에 "15:08" 을 박으면 461차 `mdd_pct` 처럼 출처가 갈린다.
+
+    ⚠ 읽기 전용이다(`mode=ro`). 다만 라이브 DB 전수 스캔은 아니다 — 하루치
+      ts 만 읽는다(456차 장중 분석 금지의 취지는 대용량 스캔이다).
+    """
+    A = out.append
+    day_txt = day.strftime("%Y-%m-%d")
+    A("### `raw_candles` 절단선·결손 (618차)")
+    A("")
+
+    # 프로젝트 모듈을 쓴다 — 절단선을 여기서 다시 정의하지 않기 위해서다.
+    try:
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        from utils.bar_gap import confirm_line, gap_vs_session
+        from utils.bar_gap import raw_candle_minutes, session_bar_minutes
+        from utils.time_utils import raw_candles_last_ts
+    except Exception as e:
+        A("(판정 모듈 로드 실패 — **미측정**) `%s`" % e)
+        A("")
+        return
+
+    db = os.path.join(root, "data", "db", "raw_data.db")
+    if not os.path.exists(db):
+        A("(`data/db/raw_data.db` 없음 — **미측정**. `0` 도 `결손 없음` 도 아니다)")
+        A("")
+        return
+
+    raw = raw_candle_minutes(db, day_txt)
+    ses = session_bar_minutes(db, day_txt)
+    if raw is None:
+        A("(`raw_candles` 조회 실패 — **미측정**)")
+        A("")
+        return
+
+    cut = raw_candles_last_ts().strftime("%H:%M")
+    max_ts = max(raw) if raw else None
+    if max_ts is None:
+        verdict = "**행 없음** — 그날 파이프라인이 한 번도 안 돌았다"
+    elif max_ts == cut:
+        verdict = "정상 (절단선과 일치)"
+    elif max_ts < cut:
+        verdict = "**결손** — 아래 목록과 그 시각의 `[START]`/`[CLEAN EXIT]` 대조"
+    else:
+        verdict = "🔴 **이상** — 15:10 파이프라인 중단선 미작동"
+
+    A("| 항목 | 값 |")
+    A("|---|---|")
+    A("| `raw_candles` 당일 max ts | **%s** |" % (max_ts or "(없음)"))
+    A("| 절단선(파생 = 강제청산 − 2분) | `%s` |" % cut)
+    A("| 판정 | %s |" % verdict)
+    A("| `raw_candles` 당일 행수 | %d |" % len(raw))
+    if ses is None:
+        A("| `session_bars` 당일 행수 | (조회 실패 — 미측정) |")
+    else:
+        A("| `session_bars` 당일 행수 | %d (기대 411) |" % len(ses))
+    A("")
+
+    if ses:
+        r = gap_vs_session(raw, ses)
+        if r["missing"]:
+            A("- 결손 **%d봉**: %s" % (len(r["missing"]), ", ".join(r["missing"][:20])
+                                      + (" … 외 %d개" % (len(r["missing"]) - 20)
+                                         if len(r["missing"]) > 20 else "")))
+            A("  - 전부 `session_bars` 에 보존됨 → **데이터 손실 아님**. "
+              "백필하지 않는다(533차 — 최근 N행 창이 밀린다).")
+        else:
+            A("- 결손 **0봉**")
+        if r["permanent"]:
+            A("- ⚠ **영구 결손 %d봉** (`session_bars` 에도 없음): %s"
+              % (len(r["permanent"]), ", ".join(r["permanent"][:20])))
+        if r["over_cut"]:
+            A("- 🔴 절단선 초과 %d봉: %s" % (len(r["over_cut"]), ", ".join(r["over_cut"])))
+        if r["orphan"]:
+            A("- 🔴 `session_bars` 에 없는 raw 봉 %d개: %s"
+              % (len(r["orphan"]), ", ".join(r["orphan"][:20])))
+        A("")
+
+    A("- 라이브 로그 대조: `logs/%s_SYSTEM.log` 의 `[BarGap]` 줄"
+      % day.strftime("%Y%m%d"))
+    A("  - 기동 직후 1줄(분그리드 기준) + 15:46 보충 직후 1줄(확정). "
+      "**한 줄도 없으면 계측이 죽은 것**이지 결손이 없는 것이 아니다.")
+    A("")
+    A("> 결손 ts 는 그날 재기동 시각과 1:1 대응한다(실측 2026-09-07~09-22: "
+      "결손일 3/12일, 12봉, 09-21 은 8회 재기동에 7봉). `[Shutdown] intent=` "
+      "줄과 함께 보면 그 재기동이 사용자 의도인지 하드킬인지까지 갈린다.")
+    A("")
+
+
 def devmemory_section(root, cfg, day, out):
     A = out.append
     A("")
@@ -2414,6 +2520,9 @@ def build(root, day, phase, cfg, discover_only=False):
 
     # ---- 9-b. 기동 마커 스냅샷 (G-1) ----
     state_snapshot_section(root, cfg, day, L)
+
+    # ---- 9-c. raw_candles 절단선·결손 (618차) ----
+    bar_gap_section(root, cfg, day, L)
 
     # ---- 10. 정기점검 리포트 폴더 ----
     A("## 10. 정기점검 리포트 현황")
