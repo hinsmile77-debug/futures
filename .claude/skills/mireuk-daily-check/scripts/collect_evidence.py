@@ -1986,6 +1986,110 @@ def bar_gap_section(root, cfg, day, out):
     A("")
 
 
+def wer_crash_section(root, cfg, day, out):
+    """[MW0601 620차] 프로세스 종료 3축 대사 — 런처 분류 × `crash_fault.log` × Windows WER.
+
+    무엇을 막는가
+    -------------
+    2026-09-22 장후 F-3 은 「15:08 무흔적 종료」의 원인 가설 3개를 나열한 채
+    *"Windows 이벤트 뷰어 확인은 이 세션이 할 수 없다"* 며 사용자 조치로 넘겼다.
+    그 기록은 **처음부터 이 PC 에 있었다** — 점검이 그 축을 안 걸었을 뿐이다.
+    수집기가 종전에 본 것은 **로그 파일 안의 `0xC0000409` 문자열**뿐이라,
+    로그를 못 남기고 죽은 종료는 구조적으로 안 잡혔다.
+
+    이 절이 답하는 질문은 하나다 — **「그 재기동은 진짜 크래시였나」**.
+    런처의 "일시적 크래시" 는 **분류일 뿐 근거가 아니다**(실측 2026-09-21:
+    재기동 10회 전부 "일시적 크래시" 로 찍혔으나 그중 네이티브 크래시는 0건).
+
+    ⚠ 읽기 전용이다. 이벤트 로그를 지우거나 쓰지 않는다.
+    """
+    A = out.append
+    A("")
+    A("### 프로세스 종료 3축 대사 (620차)")
+    A("")
+
+    try:
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        from utils.wer_crash import (crash_fault_events, launcher_processes,
+                                     reconcile, wer_app_faults)
+    except Exception as e:
+        A("(판정 모듈 로드 실패 — **미측정**) `%s`" % e)
+        A("")
+        return
+
+    day_txt = day.strftime("%Y-%m-%d")
+    lau = launcher_processes(root, day.strftime("%Y%m%d"))
+    fau = crash_fault_events(root, day_txt)
+    wer = wer_app_faults(day_txt)
+
+    # 축마다 측정 여부를 따로 적는다 — 하나가 죽어도 나머지 판정을 살리기 위해서다.
+    A("| 축 | 상태 |")
+    A("|---|---|")
+    A("| 런처 로그(기동 PID·재시작 분류) | %s |"
+      % ("측정됨 — 기동 %d회 · 재시작 %d회" % (len(lau["starts"]), len(lau["restarts"]))
+         if lau["measured"] else "**미측정** — %s" % lau["reason"]))
+    if not fau["measured"]:
+        _fau_txt = "**미측정** — %s" % fau["reason"]
+    elif not fau.get("covered", bool(fau["by_pid"])):
+        # 파일은 있는데 그날 구간이 없다 — 「종료 기록 없음」과 구분한다(계측 4원칙 ②).
+        _fau_txt = "**그날 행 없음** — 롤링으로 잘렸을 수 있다. 「정상종료 없었음」으로 읽지 말 것"
+    else:
+        _fau_txt = "측정됨 — PID %d개" % len(fau["by_pid"])
+    A("| `crash_fault.log`(정상종료 기록) | %s |" % _fau_txt)
+    A("| Windows WER(네이티브 예외) | %s |"
+      % ("측정됨 — 응용 프로그램 오류 %d건(전체 프로세스)" % len(wer["events"])
+         if wer["measured"] else "**미측정** — %s" % wer["reason"]))
+    A("")
+
+    if not lau["measured"]:
+        A("- 런처 축이 없어 PID 대사를 할 수 없다. **「크래시 0건」이 아니라 「재지 못했다」**이다.")
+        A("")
+        return
+
+    rec = reconcile(lau, wer, fau)
+    A("| 미륵이 PID | 기동 | 정상종료 기록 | WER 네이티브 예외 | 판정 |")
+    A("|---|---|---|---|---|")
+    for r in rec["rows"]:
+        ev = r["wer"]
+        A("| %s | %s | %s | %s | %s |" % (
+            r["pid"], r["started"], r["clean_exit"] or "없음",
+            ("%s `%s` %s" % (ev["time"], ev["module"], ev["code"])) if ev else "없음",
+            r["verdict"]))
+    A("")
+
+    if wer["measured"]:
+        native = [r for r in rec["rows"] if r["wer"]]
+        A("- 미륵이 프로세스 **%d개** 중 네이티브 크래시로 확인된 것 **%d개**."
+          % (len(rec["rows"]), len(native)))
+        if lau["restarts"]:
+            kinds = ", ".join("%s(%s)" % (x["at"], x["kind"]) for x in lau["restarts"][:12])
+            more = (" … 외 %d건" % (len(lau["restarts"]) - 12)) if len(lau["restarts"]) > 12 else ""
+            A("- 런처 분류: %s%s" % (kinds, more))
+            A("  - 🔴 런처의 「일시적 크래시」는 **분류일 뿐 근거가 아니다.** "
+              "위 판정 열과 어긋나면 믿을 것은 판정 열이다.")
+        if rec["others"]:
+            head = rec["others"][:8]
+            A("- 참고 — 같은 날 크래시했지만 **미륵이 `main.py` 가 아닌** 프로세스 %d건: %s%s"
+              % (len(rec["others"]),
+                 ", ".join("%s `%s`%s %s" % (
+                     e["time"], e["app"],
+                     "" if e["module"] in (e["app"], "unknown") else "(%s)" % e["module"],
+                     e["code"]) for e in head),
+                 (" … 외 %d건" % (len(rec["others"]) - 8)) if len(rec["others"]) > 8 else ""))
+            A("  - 형제 프로젝트·점검 스크립트·대시보드가 섞인다. "
+              "**미륵이 사고로 세지 말 것**(계측 4원칙 ③ — 탈락이 아니라 귀속의 문제다).")
+            A("  - ⚠ 다만 **`DIBSERVER.EXE`(대신 데이터 서버)가 보이면 남의 일이 아니다** — "
+              "미륵이 프로세스는 아니지만 시세 공급 경로다. 그 시각의 "
+              "`[FutureCurOnly]`·수신 공백과 대조할 것(실측 2026-09-17 `c0000005` 3건).")
+    A("")
+    A("> 🔴 **「WER 기록 없음」을 「크래시가 아니다」로 읽지 말 것.** 참인 것은 "
+      "**「미처리 네이티브 예외는 아니었다」까지**다 — `sys.exit`·창 닫기·"
+      "`TerminateProcess`(하드킬)는 전부 이벤트를 안 남긴다. 종료 *의도*는 "
+      "618차가 넣은 `[Shutdown] intent=` 줄과 함께 봐야 갈린다.")
+    A("")
+
+
 def devmemory_section(root, cfg, day, out):
     A = out.append
     A("")
@@ -2523,6 +2627,9 @@ def build(root, day, phase, cfg, discover_only=False):
 
     # ---- 9-c. raw_candles 절단선·결손 (618차) ----
     bar_gap_section(root, cfg, day, L)
+
+    # ---- 9-d. 프로세스 종료 3축 대사 (620차) ----
+    wer_crash_section(root, cfg, day, L)
 
     # ---- 10. 정기점검 리포트 폴더 ----
     A("## 10. 정기점검 리포트 현황")
