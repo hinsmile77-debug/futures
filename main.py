@@ -4028,9 +4028,18 @@ class TradingSystem:
             if not getattr(runtime_settings, "WEEKLY_OPTION_FLOW_ENABLED", False):
                 return
             hh, mm = str(getattr(runtime_settings,
-                                 "WEEKLY_OPTION_FLOW_START_AFTER", "09:02")).split(":")
+                                 "WEEKLY_OPTION_FLOW_START_AFTER", "08:50")).split(":")
             if now.time() < datetime.time(int(hh), int(mm)):
                 return
+            # 장 개시 직후 서버 피크만 건너뛴다. 시작 시각을 늦추면 첫 수집이 받는
+            # 18행이 08:46 까지만 닿아 **08:45 가 매일 빠진다**(2026-09-22 정정).
+            peak = getattr(runtime_settings, "WEEKLY_OPTION_FLOW_PEAK_SKIP", None)
+            if peak:
+                p0h, p0m = str(peak[0]).split(":")
+                p1h, p1m = str(peak[1]).split(":")
+                if (datetime.time(int(p0h), int(p0m))
+                        <= now.time() < datetime.time(int(p1h), int(p1m))):
+                    return
             min_iv = float(getattr(runtime_settings,
                                    "WEEKLY_OPTION_FLOW_MIN_INTERVAL_SEC", 55.0))
             last = self._wof_last_ts
