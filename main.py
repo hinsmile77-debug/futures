@@ -4672,8 +4672,12 @@ class TradingSystem:
             self._pump_defer_pending.add(key)
 
             def _retry(_k=key, _fn=retry_fn):
-                self._pump_defer_pending.discard(_k)
-                _fn()
+                # Qt 가 부르는 진입점 — 예외가 새면 qFatal 로 무흔적 종료된다(617차).
+                try:
+                    self._pump_defer_pending.discard(_k)
+                    _fn()
+                except Exception:
+                    logger.exception("[PumpGuard] %s 재시도 예외", _k)
 
             QTimer.singleShot(int(delay_ms), _retry)
             scheduled = True
