@@ -9359,6 +9359,16 @@ def _qt_guard_fail(tag, exc):
 class MinuteChartCanvas(QWidget):
     RIGHT_PADDING_BARS = 10
 
+    # ── [MW0601 625차 / F2] 그리기 한계 — paintEvent 가드와 최대 크기의 **단일 출처** ──
+    # 🔴 2026-09-23 사고: 가드(3000×2000)는 있는데 창이 그 이상 커지는 것은 막지 않아,
+    #   4K 모니터(DISPLAY1 3840×2160)로 옮겨 키우면 **배경만 칠한 빈 차트**가 됐다
+    #   (로그 `거대 캔버스 차단: 3892x1458` 수십 건). 가드가 막는 크기로는 애초에
+    #   못 커지게 `setMaximumSize` 로 같은 값을 건다.
+    # ⚠ 논리 px 절대값이다 — 화면 배율(S)로 곱하지 말 것. 이건 레이아웃 치수가 아니라
+    #   32-bit 프로세스의 DIB 메모리 보호다(217차 GDI 크래시 2차 방어).
+    MAX_W = 3000
+    MAX_H = 2000
+
     # ── [MW0601 589차] 「전일정」 x축 — 격자를 마감(15:45)까지 미리 잡는다 ──────
     #
     # 기본은 **꺼짐**이다. 켜면 장 초반에 화면 대부분이 빈칸이 되므로 사용자가
@@ -9393,6 +9403,7 @@ class MinuteChartCanvas(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setMaximumSize(self.MAX_W, self.MAX_H)   # [625차 F2] 가드 크기 이상으로 안 큰다
         self._closed_candles = []
         self._live_candle = None
         self._completed_trades = []
@@ -9866,6 +9877,31 @@ class MinuteChartCanvas(QWidget):
                 self._draw_link_line(painter, _x1, _y1, _x2, _y2, _col, width=_w, style=_st)
         self._draw_crosshair_and_tooltip(painter, m["plot"], candles, m["lo"], m["hi"])
 
+    def oversize_notice_text(self) -> str:
+        return ("그리기 중단 — 캔버스 %d×%d (한계 %d×%d)\n"
+                "32-bit 메모리 보호입니다. 창을 줄이면 다시 그립니다."
+                % (self.width(), self.height(), self.MAX_W, self.MAX_H))
+
+    def _paint_oversize_notice(self):
+        """[625차 F3] 가드에 걸렸을 때 **빈 화면 대신 사유를 그린다**(계측 4원칙 ④).
+
+        2026-09-23 에는 배경색만 칠해 「봉이 안 보인다」로만 보였다 — 고장인지
+        보호인지 화면으로는 구분할 수 없었다. F2(`setMaximumSize`)가 1차 차단이고
+        이건 창 관리자가 그것을 우회했을 때의 최후 방어선이다.
+        """
+        p = QPainter(self)
+        try:
+            p.fillRect(self.rect(), QColor(C["bg"]))
+            p.setPen(QColor(C["orange"]))
+            # 테두리 — 글꼴이 없는 환경에서도 「보호 중」이 빈 화면과 구분된다
+            p.drawRect(self.rect().adjusted(2, 2, -3, -3))
+            _f = p.font()
+            _f.setPixelSize(S.f(14))
+            p.setFont(_f)
+            p.drawText(self.rect(), Qt.AlignCenter, self.oversize_notice_text())
+        finally:
+            p.end()
+
     def paintEvent(self, event):
         try:
             import time as _t
@@ -9876,12 +9912,13 @@ class MinuteChartCanvas(QWidget):
             # restore_saved_geometry에서 DIB 예산(window_utils.dib_safe_size, 621차 후속5)으로 1차 차단되므로
             # 여기는 세션 중 수동 리사이즈 후 단편화 크래시 대비 안전망
             # 3000×2000: DPI 150% → 4500×3000×4=54MB — 이 이상은 32-bit에서 unsafe
-            if self.width() > 3000 or self.height() > 2000:
+            # [625차 F2] 한계는 클래스 상수 하나 — `setMaximumSize` 와 같은 값이어야 한다.
+            if self.width() > self.MAX_W or self.height() > self.MAX_H:
                 logger.warning(
                     "[ChartDBG] paintEvent 거대 캔버스 차단: %dx%d candles=%d",
                     self.width(), self.height(), len(self._closed_candles),
                 )
-                QPainter(self).fillRect(self.rect(), QColor(C["bg"]))
+                self._paint_oversize_notice()
                 return
             # [621차 후속6] 캐시가 유효하면 진행 중 봉·크로스헤어만 얹고 끝낸다.
             # 🔴 캐시 경로의 예외는 **여기서 삼키고 종전 방식으로 그린다.** PyQt5 는 paintEvent
@@ -12929,7 +12966,7 @@ class MinuteChartDialog(QDialog):
         self._status = QLabel(
             f"{self.SHORTCUT_TEXT}  |  휠 줌  |  진입 ▲/▼  |  익절 G  |  손절 X  |  부분청산 P"
         )
-        self._status.setStyleSheet(f"color:{C['text2']};font-size:{S.f(10)}px;")
+        self._wrap_note_label(self._status)   # [625차 F1] 상태줄도 최소 폭에 기여하지 않게
         self._set_status()   # [553차] GP 섀도 상태 포함 — 로딩 전에는 「GP 미배선」
 
         root = QVBoxLayout(self)
@@ -12937,9 +12974,15 @@ class MinuteChartDialog(QDialog):
         root.setSpacing(S.p(8))
         root.addLayout(self._build_date_bar())
         root.addLayout(self._build_overlay_bar())
+        root.addLayout(self._build_note_bar())
         root.addWidget(self._status)
         root.addWidget(self._chart, 1)
         root.addWidget(self._build_nav_bar())
+        # [625차 F2] 창 가로 상한 = 캔버스 한계 + 좌우 여백. 캔버스 자신의 `setMaximumSize` 만으로는
+        #   창이 계속 커지고 남는 폭이 빈칸이 된다 — 창 자체를 묶는다(최대화해도 이 폭까지).
+        #   세로는 묶지 않는다: 문구 줄이 접히며 높이가 변하고, 캔버스가 2000에서 멈추면 충분하다.
+        _m = root.contentsMargins()
+        self.setMaximumWidth(MinuteChartCanvas.MAX_W + _m.left() + _m.right())
 
         self._toggle_shortcut = QShortcut(QKeySequence(self.SHORTCUT_TEXT), self)
         self._toggle_shortcut.activated.connect(self.close)
@@ -13152,8 +13195,13 @@ class MinuteChartDialog(QDialog):
         bar.addWidget(self._btn_cal)
         bar.addWidget(self._btn_today)
         bar.addWidget(self._mode_lbl)
-        bar.addStretch(1)
-        bar.addWidget(self._layer_lbl)
+        # [625차 F1] 배지 한 줄도 레이어 수가 늘면 길어진다 — 같은 이유로 최소 폭에서 뺀다.
+        #   `addStretch` 와 Ignored 라벨을 나란히 두면 늘임 몫을 늘임 칸이 다 가져가
+        #   라벨이 0폭이 된다. 그래서 라벨 자신이 늘임(1)을 갖고 오른쪽 정렬로 종전 모양을 지킨다.
+        self._wrap_note_label(self._layer_lbl)
+        self._layer_lbl.setStyleSheet(f"font-size:{S.f(10)}px;")
+        self._layer_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        bar.addWidget(self._layer_lbl, 1)
         return bar
 
     # ── [오버레이 P3] 레이어 토글 바 ──────────────────────────────────
@@ -13228,13 +13276,38 @@ class MinuteChartDialog(QDialog):
         )
         self._btn_fullx.toggled.connect(self._on_full_session_toggled)
         bar.addWidget(self._btn_fullx)
-        self._ov_note = QLabel("")
-        self._ov_note.setStyleSheet(f"color:{C['text2']};font-size:{S.f(10)}px;")
-        bar.addWidget(self._ov_note)
-        self._peter_note = QLabel("")
-        self._peter_note.setStyleSheet(f"color:{C['text2']};font-size:{S.f(10)}px;")
-        bar.addWidget(self._peter_note)
+        # [625차 F1] 두 문구는 여기서 **만들기만** 하고 이 줄에 넣지 않는다 —
+        #   `_build_note_bar` 가 줄바꿈되는 별도 줄에 싣는다(사유는 그쪽 주석).
+        self._ov_note = self._wrap_note_label(QLabel(""))
+        self._peter_note = self._wrap_note_label(QLabel(""))
         bar.addStretch(1)
+        return bar
+
+    # ── [MW0601 625차 / F1] 가변 문구는 창 최소 폭을 정하면 안 된다 ──────────
+    #
+    # 🔴 2026-09-23 사고: 버튼 11개 + 장전레벨·GEX 문구(712px) + 피터 문구(631px)가
+    #   한 줄이었다. 줄바꿈이 꺼진 QLabel 은 **문구 전체 폭이 곧 최소 폭**이라
+    #   그 줄이 2,461px(S=1.40)가 됐고, 창이 주모니터(2560)에 들어가지 않아
+    #   가로가 화면 밖으로 나가고 줄여지지도 않았다. 623차 GEX 버튼·문구가 넘긴 것이다.
+    # 🔴 해상도를 올려도 안 풀린다 — UI 스케일 S 가 주모니터 폭에 비례하므로 그 줄은
+    #   S 단위로 약 1,758·S = 주모니터 가로의 **약 105%** 였다. 그래서 목표도 S 단위다
+    #   (`MIN_WIDTH_BUDGET_S`, 테스트 `test_625_chart_dialog_fit`).
+    MIN_WIDTH_BUDGET_S = 1000      # 최소 폭 상한 = 1000·S ≈ 가로 기준 주모니터의 60%
+
+    @staticmethod
+    def _wrap_note_label(lbl):
+        """문구 라벨을 줄바꿈 + 가로 Ignored 로 — 길어져도 창 최소 폭에 기여하지 않는다."""
+        lbl.setWordWrap(True)
+        lbl.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        lbl.setStyleSheet(f"color:{C['text2']};font-size:{S.f(10)}px;")
+        return lbl
+
+    def _build_note_bar(self):
+        """장전레벨·GEX 문구와 피터 문구 — 창이 좁으면 아래로 접힌다."""
+        bar = QHBoxLayout()
+        bar.setSpacing(S.p(16))
+        bar.addWidget(self._ov_note, 1)
+        bar.addWidget(self._peter_note, 1)
         return bar
 
     # ── [MW0601 591차] 「하루 전체」 토글 ──────────────────────────────
@@ -14449,6 +14522,58 @@ class MinuteChartDialog(QDialog):
             w, h, x, y, screen.name(),
         )
 
+    # ── [MW0601 625차 / F4] 창 크기 판정 — 원격 PC(MW0602) 검증 수단 ──────────
+    #
+    # MW0602 의 모니터 구성은 기록이 없다. 스크린샷 없이도 합격 여부를 알 수 있게
+    # 창을 띄울 때마다 **한 줄**을 남긴다:
+    #   [ChartDBG] 창 크기판정 OK S=1.40 minW=1036 avail=2560x1400 screen=\\.\DISPLAY2 ...
+    # ⚠ 넘쳐도 INFO 다 — WARNING 은 헬스 Degraded 를 올린다(622차 후속2). 매매와 무관한
+    #   화면 결함으로 운영 경보를 울리지 않는다. grep 은 `창 크기판정 넘침` 으로 한다.
+    def size_fit_verdict(self) -> dict:
+        _scr = None
+        try:
+            _wh = self.windowHandle()
+            _scr = _wh.screen() if _wh is not None else None
+        except Exception:                                       # noqa: BLE001
+            _scr = None
+        if _scr is None:
+            _scr = QApplication.primaryScreen()
+        _av = _scr.availableGeometry() if _scr is not None else None
+        _mh = self.minimumSizeHint()
+        _min_w = max(_mh.width(), self.minimumWidth())
+        _min_h = max(_mh.height(), self.minimumHeight())
+        _aw = _av.width() if _av is not None else 0
+        _ah = _av.height() if _av is not None else 0
+        return {
+            "scale": float(S._scale),
+            "min_w": _min_w, "min_h": _min_h,
+            "max_w": self.maximumWidth(),
+            "avail_w": _aw, "avail_h": _ah,
+            "screen": _scr.name() if _scr is not None else "?",
+            "win_w": self.width(), "win_h": self.height(),
+            "canvas_w": self._chart.width(), "canvas_h": self._chart.height(),
+            "fits": bool(_av is not None and _min_w <= _aw and _min_h <= _ah),
+        }
+
+    def _log_size_verdict(self):
+        v = self.size_fit_verdict()
+        logger.info(
+            "[ChartDBG] 창 크기판정 %s S=%.2f minW=%d minH=%d maxW=%d avail=%dx%d "
+            "screen=%s win=%dx%d canvas=%dx%d",
+            "OK" if v["fits"] else "넘침", v["scale"], v["min_w"], v["min_h"], v["max_w"],
+            v["avail_w"], v["avail_h"], v["screen"], v["win_w"], v["win_h"],
+            v["canvas_w"], v["canvas_h"],
+        )
+        return v
+
+    def after_show(self):
+        """show() 직후 1회 — 위치 보정(WM_SHOWWINDOW) 후 크기 판정을 남긴다."""
+        try:
+            self.restore_saved_geometry()
+            self._log_size_verdict()
+        except Exception as _qe:  # noqa: BLE001 — Qt 진입점 최후 방어선(625차)
+            _qt_guard_fail('MinuteChartDialog.after_show', _qe)
+
     def restore_saved_geometry(self):
         try:
             geo = None
@@ -15572,7 +15697,8 @@ class MireukDashboard(QMainWindow):
             self._minute_chart_dialog.show()
             self._minute_chart_dialog.raise_()
             self._minute_chart_dialog.activateWindow()
-            QTimer.singleShot(0, self._minute_chart_dialog.restore_saved_geometry)  # post-show: WM_SHOWWINDOW 보정
+            # post-show: WM_SHOWWINDOW 보정 + [625차 F4] 크기 판정 1줄
+            QTimer.singleShot(0, self._minute_chart_dialog.after_show)
         except Exception as _qe:  # noqa: BLE001 — Qt 진입점 최후 방어선(621차 후속11)
             _qt_guard_fail('MireukDashboard.toggle_minute_chart_dialog', _qe)
 
