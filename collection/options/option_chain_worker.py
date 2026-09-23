@@ -187,6 +187,108 @@ def _compute_gex(snapshots: List[Dict], spot: float) -> Tuple[float, float]:
     return gex_bn, sign
 
 
+# ── [MW0601 623차] 만기북 수집 (먼스리 재사용 + 위클리 2북) ─────────────
+
+def _wait_quota(cy: Any, reserve: int, deadline: float) -> bool:
+    """시세 잔여 한도가 reserve 이상이 될 때까지 기다린다. 예산 초과면 False."""
+    while True:
+        try:
+            remain = int(cy.GetLimitRemainCount(1))
+        except Exception:
+            return True                     # 측정 불가 — pause_ms 가 최소한의 보호
+        if remain >= reserve:
+            return True
+        if time.perf_counter() > deadline:
+            return False
+        try:
+            ms = int(cy.LimitRequestRemainTime)
+        except Exception:
+            ms = 500
+        time.sleep(min(max(ms, 200), 1000) / 1000.0)
+
+
+def collect_option_books(mst_obj: Any, cy: Any, spot: float, monthly_snaps: List[Dict],
+                         monthly_ym: str, ts: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """먼스리 스냅샷(이미 받음) + 위클리 2북 조회 → DB 저장 → 요약 반환.
+
+    워커 스레드 전용(COM 객체는 호출자 스레드 소유). 스크립트에서도 그대로 부른다.
+    반환: {"ts", "spot", "master_src", "books": {book: summary}}
+    """
+    from collection.options import option_book as ob
+
+    t0 = time.perf_counter()
+    today = _dt.date.today()
+    books: Dict[str, Dict] = {}
+
+    # 먼스리 — 추가 조회 없음. cp 표기를 'C'/'P' 로 정규화만 한다.
+    m_snaps = []
+    for s in monthly_snaps:
+        cp = "C" if _is_call(s) else ("P" if _is_put(s) else "")
+        if cp:
+            m_snaps.append(dict(s, cp=cp))
+    summ, strikes = ob.compute_book(m_snaps, spot)
+    _exp = None
+    try:
+        _exp = _option_expiry(2000 + int(monthly_ym[:2]), int(monthly_ym[2:])).isoformat()
+    except Exception:
+        pass
+    summ.update(label=monthly_ym, expiry=_exp, spot=spot, master_src="CpOptionCode")
+    books["monthly"] = {"summary": summ, "strikes": strikes}
+
+    rows, src = ob.load_master(cfg["master_dir"], today, cfg.get("fallbacks", ()))
+    if src.startswith("stale") or src == "none":
+        system_logger.warning("[OptionBook] 마스터 원천=%s — 위클리 목록이 오늘 것이 아닐 수 있다", src)
+    deadline = t0 + float(cfg.get("budget_sec", 150.0))
+    for book in ("weekly_thu", "weekly_mon"):
+        label, sel = ob.select_nearest(rows, book, today)
+        target = ob.filter_atm(sel, spot, float(cfg.get("window", 30.0)))
+        snaps: List[Dict] = []
+        for r in target:
+            snap = dict(r)
+            if not _wait_quota(cy, int(cfg.get("reserve", 25)), deadline):
+                snap["error"] = "budget_exceeded"
+                snaps.append(snap)
+                continue
+            try:
+                mst_obj.SetInputValue(0, r["code"])
+                mst_obj.BlockRequest()
+                st = _i(mst_obj.GetDibStatus())
+                if st != 0:
+                    snap["error"] = "dib_status=%d" % st
+                else:
+                    snap["oi"] = _i(mst_obj.GetHeaderValue(_HV_OI))
+                    snap["gamma"] = _f(mst_obj.GetHeaderValue(_HV_GAMMA)) / _GREEK_PCT
+            except Exception as exc:
+                snap["error"] = str(exc)
+            snaps.append(snap)
+            time.sleep(0.05)                # 기존 먼스리 루프 pause_ms 와 같은 간격
+        summ, strikes = ob.compute_book(snaps, spot)
+        exp = ob.nominal_expiry(book, label) if label else None
+        summ.update(label=label, expiry=exp.isoformat() if exp else None,
+                    spot=spot, master_src=src)
+        books[book] = {"summary": summ, "strikes": strikes}
+
+    elapsed = int((time.perf_counter() - t0) * 1000)
+    for b in books.values():
+        b["summary"]["elapsed_ms"] = elapsed
+    try:
+        ob.save_books(cfg["db_path"], ts, books)
+    except Exception as exc:
+        system_logger.warning("[OptionBook] 저장 실패: %s", exc)
+    system_logger.info(
+        "[OptionBook] 완료 %dms master=%s | %s", elapsed, src,
+        " | ".join(
+            "%s %s n=%d/%d GEX=%s 콜월=%s 풋월=%s" % (
+                ob.BOOK_LABEL[k], v["summary"].get("label"), v["summary"]["n_valid"],
+                v["summary"]["n_target"],
+                "%.2fB" % v["summary"]["gex_bn"] if v["summary"]["gex_bn"] is not None else "미측정",
+                v["summary"]["call_wall"], v["summary"]["put_wall"])
+            for k, v in books.items()),
+    )
+    return {"ts": ts, "spot": spot, "master_src": src,
+            "books": {k: v["summary"] for k, v in books.items()}}
+
+
 # ── OptionChainWorker ───────────────────────────────────────────────
 
 class OptionChainWorker(QThread):
@@ -200,6 +302,8 @@ class OptionChainWorker(QThread):
     """
 
     result_ready = pyqtSignal(object, object)   # (dict, list) — PyQt_PyObject 사용
+    # [623차] 만기북 요약 — result_ready **다음에** 온다(먼스리 피처를 늦추지 않는다).
+    book_ready = pyqtSignal(object)
 
     def __init__(
         self,
@@ -210,6 +314,7 @@ class OptionChainWorker(QThread):
         pause_ms: int = 50,
         parent=None,
         force_chain_reload: bool = False,
+        book_cfg: Dict[str, Any] = None,
     ) -> None:
         super().__init__(parent)
         self._chain_raw   = list(chain_raw)   # 복사본 — 메인 스레드와 공유 없음
@@ -221,6 +326,9 @@ class OptionChainWorker(QThread):
         # 판정은 메인 스레드(OptionChainSnapshot.chain_reload_due)가 한다 —
         # 워커는 시키는 대로 받기만 한다.
         self._force_reload = bool(force_chain_reload)
+        # [623차] None 이면 만기북 수집 안 함. _execute 가 먼스리 성공 시 _book_ctx 를 채운다.
+        self._book_cfg = book_cfg
+        self._book_ctx: Dict[str, Any] = None
 
     # ── QThread 진입점 ─────────────────────────────────────────────
 
@@ -236,19 +344,33 @@ class OptionChainWorker(QThread):
         feats: Dict[str, float] = {}
         chain_raw: List[Dict] = self._chain_raw
         try:
-            feats, chain_raw = self._execute()
-        except Exception as exc:
-            system_logger.warning(
-                "[OptionChain][Worker] 예외: %s", exc, exc_info=True,
-            )
+            try:
+                feats, chain_raw = self._execute()
+            except Exception as exc:
+                system_logger.warning(
+                    "[OptionChain][Worker] 예외: %s", exc, exc_info=True,
+                )
+            self.result_ready.emit(feats, chain_raw)
+            # [623차] 먼스리 피처를 내보낸 뒤에 만기북. 실패해도 피처 경로와 무관하다.
+            if self._book_cfg and self._book_ctx:
+                try:
+                    from win32com.client import Dispatch
+                    c = self._book_ctx
+                    summary = collect_option_books(
+                        c["mst"], Dispatch("CpUtil.CpCybos"), c["spot"], c["snaps"],
+                        c["ym"], c["ts"], self._book_cfg)
+                    self.book_ready.emit(summary)
+                except Exception as exc:
+                    system_logger.warning(
+                        "[OptionBook] 예외: %s", exc, exc_info=True,
+                    )
         finally:
+            self._book_ctx = None           # COM 객체 참조를 CoUninitialize 전에 놓는다
             try:
                 import pythoncom as _pc
                 _pc.CoUninitialize()
             except Exception:
                 pass
-
-        self.result_ready.emit(feats, chain_raw)
 
     # ── 핵심 실행 (워커 스레드) ────────────────────────────────────
 
@@ -328,6 +450,12 @@ class OptionChainWorker(QThread):
             return {}, []
 
         feats = _compute(snapshots, self._spot)
+        if self._book_cfg:
+            self._book_ctx = {
+                "mst": mst_obj, "spot": self._spot, "snaps": snapshots,
+                "ym": target[0].get("ym", ""),
+                "ts": _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
         elapsed = (time.perf_counter() - t0) * 1000
         system_logger.info(
             "[OptionChain][Worker] 완료 %.0fms | target=%d valid=%d "

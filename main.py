@@ -5044,8 +5044,18 @@ class TradingSystem:
             # 종전 재수집 조건("ATM 대상 0건")은 낡은 목록에 유효 코드가 남아 있는
             # 한 성립하지 않아, 실측상 2026-06-04 목록이 3.5개월간 그대로 쓰였다.
             force_chain_reload = self.option_chain_snap.chain_reload_due(),
+            # [MW0601 623차] 먼스리 피처 뒤에 위클리 2북까지 — 차트 표시 전용(피처 무변경)
+            book_cfg = ({
+                "db_path":    runtime_settings.OPTION_BOOK_DB,
+                "master_dir": runtime_settings.OPTION_BOOK_MASTER_DIR,
+                "fallbacks":  runtime_settings.OPTION_BOOK_MASTER_FALLBACKS,
+                "window":     runtime_settings.OPTION_BOOK_ATM_WINDOW_PT,
+                "reserve":    runtime_settings.OPTION_BOOK_QUOTA_RESERVE,
+                "budget_sec": runtime_settings.OPTION_BOOK_BUDGET_SEC,
+            } if getattr(runtime_settings, "OPTION_BOOK_ENABLED", False) else None),
         )
         _worker.result_ready.connect(self._on_option_chain_done)
+        _worker.book_ready.connect(self._on_option_book_done)
         _worker.finished.connect(_worker.deleteLater)   # Qt C++ 객체 정리
         self._option_chain_worker = _worker             # GC 방지용 참조 보관
         _worker.start()
@@ -5055,6 +5065,14 @@ class TradingSystem:
         self.option_chain_snap.on_worker_done(feats, chain_raw)
         if self.dashboard and feats:
             self.dashboard.update_option_chain(self.option_chain_snap.get_features())
+
+    def _on_option_book_done(self, summary: dict) -> None:
+        """[623차] 만기북 요약 수신 — 메인 스레드. 표시 전용이라 예외는 삼킨다(617차)."""
+        try:
+            if self.dashboard is not None and hasattr(self.dashboard, "update_option_book"):
+                self.dashboard.update_option_book(summary)
+        except Exception as exc:
+            logger.warning("[OptionBook] 대시보드 반영 실패: %s", exc)
 
     def _on_tick_price_update(self, bar: dict) -> None:
         """틱 수신마다 대시보드 헤더 현재가 갱신.
