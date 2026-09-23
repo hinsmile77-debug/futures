@@ -4681,7 +4681,10 @@ class TradingSystem:
 
             QTimer.singleShot(int(delay_ms), _retry)
             scheduled = True
-        logger.warning(
+        # INFO 로 둔다 — SYSTEM 레이어 WARNING 은 exceptions_10m 으로 집계돼 Degraded Mode
+        # (자동진입 conf 62%)를 오발동시킨다(304·307·402차, dev 494차 F-4③ 교훈).
+        # 빈도는 메시지의 `누적 N회` 가 실어 나른다.
+        logger.info(
             "[PumpGuard] %s 연기 — 메인 펌프(BlockRequest 대기) 중 재진입 회피 "
             "(누적 %d회, 재시도=%s)",
             key, n, ("%dms 뒤" % delay_ms) if scheduled else

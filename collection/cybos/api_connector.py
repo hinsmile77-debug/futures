@@ -235,7 +235,8 @@ def _run_block_request(progid, input_pairs, data_reader=None,
     if on_main:
         if _MAIN_PUMP_DEPTH > 0:
             MAIN_PUMP_STATS["nested_enter"] += 1
-            logger.warning(
+            # INFO — WARNING 은 exceptions_10m → Degraded 오발동(dev 494차 교훈). 빈도는 `누적 N회`.
+            logger.info(
                 "[BlockReq] 메인 펌프 중첩 진입 depth=%d progid=%s (누적 %d회) — "
                 "가드 밖 경로가 펌프 안에서 요청을 겹쳤다",
                 _MAIN_PUMP_DEPTH, progid, MAIN_PUMP_STATS["nested_enter"],
