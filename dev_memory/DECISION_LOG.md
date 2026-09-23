@@ -2,6 +2,64 @@
 
 ---
 
+## 2026-09-23 (MW0601 622차 — 장중 동결: 메시지 펌프 안에서 Qt 타이머가 3중 재진입했다) — 🟢 **구현·반영**
+
+### 증상
+
+13:38:05 이후 하트비트 정지(메인 스레드 CPU 100%, 창 「응답 없음」). 13:41:38
+FreezeWatchdog 가 `os._exit(43)` → 런처 13:41:51 재기동. 포지션 FLAT — 실손해 0.
+(11:30~12:37 재기동 6회는 **사용자 수동 재기동**이다 — 이 건과 무관.)
+
+### 원인 — `crash_fault.log` 13:38:07~13:41:08 덤프 7개가 같은 스택
+
+```
+_poll_kospi200_index → get_index_price → _run_block_request(PumpWaitingMessages)   ①
+  → _fetch_investor_data → _probe_investor_tr → obj.BlockRequest() [메인 직접]     ②
+    → _scheduler_tick → check_rollover → get_nearest_mini_futures_code
+      → _run_block_request(PumpWaitingMessages)  ← 여기서 영구 정지                ③
+```
+
+- ① `PumpWaitingMessages()` 는 Windows 메시지를 전부 디스패치하므로 **Qt 타이머도
+  그 안에서 돈다.** 주석의 「processEvents 금지」로는 재진입이 막히지 않는다.
+- ② `_probe_investor_tr` 만 워커 스레드를 안 쓰고 메인에서 직접 BlockRequest — Cybos
+  모달 루프가 또 타이머를 재진입시킨다.
+- ③ `check_rollover` 는 heartbeat 60 tick(30분)마다 — 12:38:05 기동이라 13:08·**13:38:05**.
+  수급·현물지수 타이머는 둘 다 60초, 같은 순간 시작이라 **매분 :05 에 동시 발화**.
+- 13:38:37 이후 FutureMst 워커는 사라졌는데(요청 완료) 메인은 224행에서 **네이티브 스핀**
+  (5초에 CPU 5.03초, 모달 창 없음). 그래서 30초 타임아웃 코드가 **한 번도 검사되지 못했다.**
+  스핀 기전(큐가 비지 않는 재게시 등)은 **가설 — 미검증**.
+
+### 결정 (3건)
+
+1. **재진입 가드** — `api_connector.main_pump_busy()`(메인 스레드 펌프 깊이). 수급·현물지수·
+   롤오버 폴링은 펌프 중 발화하면 겹치지 않고 연기(`main._defer_if_pump_busy`,
+   `[PumpGuard] … 연기` WARNING + 누적 횟수 — 계측 4원칙 ③). 롤오버는 다음 tick 재시도.
+   가드 밖 경로의 중첩은 `[BlockReq] 메인 펌프 중첩 진입` WARNING 으로 계측.
+2. **`_probe_investor_tr` 를 `_run_block_request` 워커 경로로** — 헤더·행 읽기도 워커 안
+   `data_reader` 에서(STA 규칙). TimeoutError 는 「코드 오류」가 아니라 timeout 으로 분류.
+3. **위상 분리** — 현물지수 타이머 시작을 30초 늦춰 수급 타이머와 반 주기 어긋나게.
+
+### Why
+
+- 주문 경로까지 일괄 차단(중첩 시 예외)은 장중 청산 주문을 실패시킬 수 있어 택하지 않았다 —
+  재진입을 **만드는 쪽**(주기 폴링 3종)만 막고, 나머지는 계측으로 드러낸다.
+- 30초 타임아웃은 네이티브 스핀을 못 끊는다 — 이 경우 탈출구는 워치독(≈3.5분)뿐이다.
+
+### How to apply
+
+- 로그에 `[PumpGuard]` 가 잦으면 정상 동작(연기) — `[BlockReq] 메인 펌프 중첩 진입` 이
+  보이면 **가드 밖 경로**가 남아 있다는 뜻이니 그 progid 의 호출부를 찾을 것.
+- 남은 메인 직접 BlockRequest 후보: `weekly_option_flow.py:163` (스레드 확인 필요).
+- 부수: FZ-1 워치독의 **첫 라이브 왕복**(전환기준 ②ⓑ 후보) — 세션 복원 `승계 1` 확인 필요.
+  런처가 rc=43 을 「일시적 크래시」로 적는다(구분 미구현).
+
+### 검증
+
+`tests/test_622_main_pump_reentry_guard.py` 6건 + 관련 기존(612b·612d·614) 72 passed.
+`test_457 …measured_flag` 1건 실패는 기존(`peter_paste`, 이번 변경 무관).
+
+---
+
 ## 2026-09-22 (MW0601 620차 후속 — 장후 자동조치: 안 걸어본 축이 있었다) — 🟢 **구현 완료**
 
 근거: `docs/정기점검/매일점검/MW0601-20260922-점검리포트.md` §2p F-3 · §3p G-3 ·
