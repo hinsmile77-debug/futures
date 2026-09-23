@@ -8393,6 +8393,14 @@ _STATE_KO = {"BUY_MECH": "기계적 매수", "BUY_STACK": "상방 쌓기",
 _FLOW_LANE_H = 15    # 전환 마커 레인
 _FLOW_HIST_H = 34    # 공격자 · ΔOI 각각
 _FLOW_GAP    = 5
+# [MW0601 623차] 옵션 만기북 GEX·감마월 — (북, 토글 키, 표기, 색).
+#   색은 기존 레이어(매수/매도·ΔOI·구조·피터·가격모델)와 겹치지 않게 골랐다.
+_GEX_BOOK_SPEC = (
+    ("monthly",    "gw_month", "먼스리", "#79C0FF"),
+    ("weekly_thu", "gw_thu",   "목위클", "#FFA657"),
+    ("weekly_mon", "gw_mon",   "월위클", "#F778BA"),
+)
+_GEX_PANEL_H = 64          # 라벨 줄 14 + 선 영역 50
 _LEGEND_H    = 22
 _DIR_BAR_COLOR = {
     1:  "#3fb950",   # UP   (녹색)
@@ -8962,7 +8970,11 @@ class MinuteChartCanvas(QWidget):
         # 레이어 토글. 기본은 **전부 꺼짐** — 화면은 빼는 것도 설계다(원칙 6).
         # 거래 스팬은 **기본 켜짐** — 567차 이전부터 그리던 것이라 끄면 퇴행이다.
         self._ov = {"struct": False, "price": False, "trade_mireuk": True,
-                    "peter_lv": False, "trade_peter": False}
+                    "peter_lv": False, "trade_peter": False,
+                    # [623차] 만기북 GEX·감마월 — 기본 꺼짐(원칙 6)
+                    "gw_month": False, "gw_thu": False, "gw_mon": False}
+        # [623차] {book: [스냅샷(시각순)]}. None 은 「미조회」 — 빈 dict(「그날 기록 없음」)와 다르다.
+        self._gex_books = None
         # [589차] 전일정 x축 토글 — 기본 꺼짐. 명시 초기화(계측 4원칙 ④).
         self._full_session_x = False
         # [591차] Y 확장 보류 사유. None = 보류 안 함(계측 4원칙 ④ — 명시 초기화)
@@ -9462,8 +9474,10 @@ class MinuteChartCanvas(QWidget):
             # [오버레이 P7] 가격 아래에 보조 패널 2단 + 전환 레인, 맨 아래 레전드.
             #   자리를 먼저 떼고 남은 높이를 가격에 준다 — 안 그러면 패널이 x축 위로 겹친다.
             _flow_h = self._flow_panel_height()
+            _gex_h = self._gex_panel_height()          # [623차] 만기북 GEX 패널
             _leg_h = _LEGEND_H if _flow_h else 0
-            _reserve = (_flow_h + _FLOW_GAP if _flow_h else 0) + _leg_h
+            _reserve = ((_flow_h + _FLOW_GAP if _flow_h else 0)
+                        + (_gex_h + _FLOW_GAP if _gex_h else 0) + _leg_h)
             plot = QRectF(left, top, max(10, self.width() - left - right),
                           max(10, self.height() - top - bottom - _reserve))
             self._last_plot_rect = plot
@@ -9577,6 +9591,8 @@ class MinuteChartCanvas(QWidget):
             self._draw_peter_levels(painter, plot, lo, hi)
             _t_spans = _t2.perf_counter()
             index_map = {c["ts"]: i for i, c in enumerate(candles)}
+            # [623차] 감마월(시각별 계단) — 레벨 레이어 뒤, 캔들 아래
+            self._draw_gamma_walls(painter, plot, candles, index_map, lo, hi, padded_count)
             # 지시 깃발은 index_map 이 필요하다 — 맥점(전폭) 바로 뒤 자리다
             self._draw_peter_orders(painter, plot, candles, index_map, lo, hi, padded_count)
             self._draw_peter_aux(painter, plot, candles, index_map, lo, hi, padded_count)
@@ -9606,6 +9622,10 @@ class MinuteChartCanvas(QWidget):
                 _axis_bottom = _pr.bottom()
                 self._draw_legend(painter, QRectF(plot.left(), self.height() - _leg_h,
                                                   plot.width(), _leg_h))
+            if _gex_h:
+                _gr = QRectF(plot.left(), _axis_bottom + _FLOW_GAP, plot.width(), _gex_h)
+                self._draw_gex_panel(painter, _gr, candles, index_map, padded_count)
+                _axis_bottom = _gr.bottom()
             _t_axes = _t2.perf_counter()
             self._draw_axes(painter, QRectF(plot.left(), plot.top(), plot.width(),
                                             _axis_bottom - plot.top()),
@@ -10466,6 +10486,188 @@ class MinuteChartCanvas(QWidget):
                 painter.drawText(_r, Qt.AlignCenter, _txt)
         except Exception as _e:
             logger.debug("[ChartDBG] _draw_peter_aux_labels 예외: %s", _e)
+        finally:
+            painter.restore()
+
+    # ── [MW0601 623차] 옵션 만기북 GEX · 감마월 ──────────────────────────
+    #
+    # 원천: `data/db/option_book.db` (OptionChainWorker 가 5분마다 먼스리·목위클·월위클을
+    #   ATM±30pt 로 받아 둔다). 화면은 **읽기만** 한다 — 다시 계산하지 않는다.
+    # 감마월 = 그 북에서 콜 GEX(γ·OI) 최대 행사가(실선) / 풋 GEX 최대 행사가(파선).
+    #   스냅샷 시각부터 다음 스냅샷까지 **계단**으로 긋는다 — 벽은 장중에 움직인다.
+    # ⚠ 수집 범위(ATM±30pt) 밖 벽은 잡히지 않는다. 가장자리 행사가가 벽이면
+    #   실제 벽이 더 바깥일 수 있다.
+    def set_option_book(self, books):
+        self._gex_books = books
+        self.update()
+
+    def _gex_enabled(self):
+        """켜져 있고 데이터가 있는 북 (spec 순서)."""
+        _b = self._gex_books or {}
+        return [sp for sp in _GEX_BOOK_SPEC if self._ov.get(sp[1]) and _b.get(sp[0])]
+
+    def _gex_panel_height(self):
+        return S.p(_GEX_PANEL_H) if self._gex_enabled() else 0
+
+    # 한 스냅샷이 유효한 최대 봉 수. 폴링은 5분(실측 5~10분)이라 15봉이면 한두 번 빠져도 잇는다.
+    # 🔴 이보다 길게 이으면 **수집이 끊긴 구간을 벽이 그대로였던 것처럼** 그린다 — 실측
+    #   2026-09-23: 수동 14:34 스냅샷과 재기동 뒤 15:23 사이 49분이 한 줄로 이어졌다(계측 4원칙 ④).
+    GEX_STALE_BARS = 15
+
+    def _gex_spans(self, snaps, candles, index_map):
+        """스냅샷 → (시작 슬롯, 끝 슬롯, 스냅샷). 끝은 다음 스냅샷 슬롯(마지막은 봉 끝),
+        단 `GEX_STALE_BARS` 를 넘기지 않는다 — 넘는 구간은 비워 둔다(결측은 결측으로)."""
+        out = []
+        idx = [self._resolve_index(index_map, candles, self._coerce_dt(s.get("ts")))
+               for s in snaps]
+        for i, s in enumerate(snaps):
+            a = idx[i]
+            if a is None:
+                continue
+            b = idx[i + 1] if i + 1 < len(snaps) and idx[i + 1] is not None else len(candles)
+            b = min(b, a + self.GEX_STALE_BARS)
+            if b > a:
+                out.append((a, b, s))
+        return out
+
+    def _draw_gamma_walls(self, painter: QPainter, plot: QRectF, candles, index_map,
+                          lo: float, hi: float, padded_count: int):
+        _en = self._gex_enabled()
+        if not _en or not candles:
+            return
+        try:
+            painter.save()
+        except Exception:
+            return
+        try:
+            step = plot.width() / max(padded_count, 1)
+            painter.setFont(QFont("Consolas", 8))
+            _fm = painter.fontMetrics()
+
+            def _chip_x(text):
+                # 칩 폭(_draw_label_chip 과 같은 식)을 재서 오른쪽 안쪽에 붙인다 — 고정 오프셋은 잘렸다(실측)
+                return plot.right() - max(S.p(84), _fm.horizontalAdvance(text) + S.p(12)) - S.p(4)
+            _n_dn = [0]                                # 아래 가장자리 칩 개수
+            for _bi, (_book, _key, _name, _col) in enumerate(_en):
+                spans = self._gex_spans(self._gex_books[_book], candles, index_map)
+                if not spans:
+                    continue
+                for _fld, _style, _tag in (("call_wall", Qt.SolidLine, "콜월"),
+                                           ("put_wall", Qt.DashLine, "풋월")):
+                    col = QColor(_col); col.setAlpha(225)
+                    _pen = QPen(col); _pen.setWidthF(2.0); _pen.setStyle(_style)
+                    painter.setPen(_pen)
+                    _prev = None                       # (x, y) — 계단 세로 연결용
+                    for a, b, s in spans:
+                        v = s.get(_fld)
+                        if v is None or self._is_off_axis(float(v)):
+                            _prev = None               # 미측정·축 밖은 끊는다(잇지 않는다)
+                            continue
+                        y = self._price_to_y(float(v), plot, lo, hi)
+                        x1 = plot.left() + step * a
+                        x2 = plot.left() + step * b
+                        if _prev is not None and abs(_prev[0] - x1) < 0.5 and abs(_prev[1] - y) > 0.5:
+                            _thin = QPen(col); _thin.setWidthF(1.0); _thin.setStyle(Qt.DotLine)
+                            painter.setPen(_thin)
+                            painter.drawLine(QPointF(x1, _prev[1]), QPointF(x1, y))
+                            painter.setPen(_pen)
+                        painter.drawLine(QPointF(x1, y), QPointF(x2, y))
+                        _prev = (x2, y)
+                    _last = spans[-1][2].get(_fld)
+                    if _last is None:
+                        continue
+                    _lv = float(_last)
+                    if self._is_off_axis(_lv):
+                        # 축 밖 — 캐럿 + 방향 표시 칩. 가장자리 가격인 척하지 않되 값은 읽히게.
+                        _up = _lv > (self._axis_hi or 0)
+                        _y = plot.top() + S.p(6) if _up else plot.bottom() - S.p(6)
+                        self._draw_off_axis_caret(painter, plot.left() + S.p(10) + _bi * S.p(12), _y,
+                                                  QColor(_col), above=_up)
+                        _t = "%s %s %s %g" % ("▲" if _up else "▼", _name, _tag, _lv)
+                        # `_place_chip` 은 아래로만 민다 — 아래 가장자리 칩은 **위로** 쌓아 둔다
+                        _cy = (plot.top() + S.p(2) if _up
+                               else plot.bottom() - S.p(22) - _n_dn[0] * S.p(19))
+                        if not _up:
+                            _n_dn[0] += 1
+                        self._draw_label_chip(painter, plot.left() + S.p(50), _cy,
+                                              _t, QColor(13, 17, 23, 225), QColor(_col), _up)
+                        continue
+                    y = self._price_to_y(_lv, plot, lo, hi)
+                    _t = "%s %s %g" % (_name, _tag, _lv)
+                    self._draw_label_chip(painter, _chip_x(_t), y - S.p(9), _t,
+                                          QColor(13, 17, 23, 225), QColor(_col), True)
+        except Exception as _e:
+            logger.debug("[ChartDBG] _draw_gamma_walls 예외: %s", _e)
+        finally:
+            painter.restore()
+
+    def _draw_gex_panel(self, painter: QPainter, rect: QRectF, candles, index_map,
+                        padded_count: int):
+        """북별 순 GEX(콜−풋, 십억) 계단 — **공통 척도**. 북끼리 크기를 비교하라고 그린다."""
+        _en = self._gex_enabled()
+        if rect.height() <= 0 or not _en or not candles:
+            return
+        try:
+            painter.save()
+        except Exception:
+            return
+        try:
+            step = rect.width() / max(padded_count, 1)
+            _bd = QColor(C["border"]); _bd.setAlpha(120)
+            painter.setPen(QPen(_bd)); painter.setBrush(Qt.NoBrush)
+            painter.drawRect(rect)
+            _all = [abs(s["gex_bn"]) for _b, _k, _n, _c in _en
+                    for s in self._gex_books[_b] if s.get("gex_bn") is not None]
+            _mx = max(_all) if _all else 0.0
+            # 맨 위 한 줄은 라벨 몫 — 선은 그 아래에만 긋는다. 공통 척도라 최대 북이
+            #   패널 꼭대기에 붙는데, 라벨과 같은 높이면 둘 다 안 읽혔다(실측 2026-09-23).
+            _area = QRectF(rect.left(), rect.top() + S.p(14), rect.width(),
+                           max(4.0, rect.height() - S.p(14)))
+            _mid = _area.center().y()
+            painter.setPen(QPen(QColor(C["border"])))
+            painter.drawLine(QPointF(rect.left(), _mid), QPointF(rect.right(), _mid))
+            _half = _area.height() / 2 - 2
+            _right = []
+            if _mx > 0:
+                for _book, _key, _name, _col in _en:
+                    spans = self._gex_spans(self._gex_books[_book], candles, index_map)
+                    col = QColor(_col); col.setAlpha(230)
+                    _prev = None
+                    _lastv = None
+                    for a, b, s in spans:
+                        v = s.get("gex_bn")
+                        if v is None:
+                            _prev = None
+                            continue
+                        # 행사가 일부만 받은 스냅샷은 합계가 치우친다 — 점선으로 가른다
+                        _part = (s.get("n_valid") or 0) < (s.get("n_target") or 0)
+                        _pen = QPen(col); _pen.setWidthF(1.8)
+                        _pen.setStyle(Qt.DotLine if _part else Qt.SolidLine)
+                        painter.setPen(_pen)
+                        y = _mid - (float(v) / _mx) * _half
+                        x1 = rect.left() + step * a
+                        x2 = rect.left() + step * b
+                        if _prev is not None and abs(_prev[0] - x1) < 0.5:
+                            painter.drawLine(QPointF(x1, _prev[1]), QPointF(x1, y))
+                        painter.drawLine(QPointF(x1, y), QPointF(x2, y))
+                        _prev = (x2, y)
+                        _lastv = float(v)
+                    _right.append((_name, _col, _lastv))
+            painter.setFont(QFont("Malgun Gothic", 7))
+            painter.setPen(QColor(C["text2"]))
+            painter.drawText(QPointF(rect.left() + S.p(4), rect.top() + S.p(10)),
+                             "순 GEX 콜−풋 (십억) · 공통 척도 ±%.1fB · 위 차트: 실선 콜월 · 파선 풋월" % _mx)
+            # 북별 최신값 — 오른쪽 위 **한 줄**(세 줄로 쌓으면 56px 패널에서 겹쳤다, 실측)
+            _fm = painter.fontMetrics()
+            _x = rect.right() - S.p(4)
+            for _name, _col, _v in reversed(_right):
+                _t = "%s %s" % (_name, "미측정" if _v is None else "%+.1fB" % _v)
+                _x -= _fm.horizontalAdvance(_t)
+                painter.setPen(QColor(_col))
+                painter.drawText(QPointF(_x, rect.top() + S.p(10)), _t)
+                _x -= S.p(10)
+        except Exception as _e:
+            logger.debug("[ChartDBG] _draw_gex_panel 예외: %s", _e)
         finally:
             painter.restore()
 
@@ -12450,6 +12652,10 @@ class MinuteChartDialog(QDialog):
         ("peter_lv",     "피터맥점", "#BC8CFF"),
         ("struct",       "구조모델", "#C2CCD6"),
         ("price",        "가격모델", "#39C5CF"),
+        # [623차] 옵션 만기북 GEX·감마월 — 색은 캔버스 `_GEX_BOOK_SPEC` 과 같다
+        ("gw_month",     "GEX먼스리", "#79C0FF"),
+        ("gw_thu",       "GEX목위클", "#FFA657"),
+        ("gw_mon",       "GEX월위클", "#F778BA"),
     )
 
     def _build_overlay_bar(self):
@@ -12945,6 +13151,34 @@ class MinuteChartDialog(QDialog):
         except Exception as _e:
             logger.debug("[ChartDBG] 장전레벨 문구 실패: %s", _e)
 
+    def _apply_option_book(self):
+        """[623차] 그날 만기북 스냅샷을 읽어 캔버스에 넘긴다(작은 별도 DB — 큰 DB 안 건드림).
+
+        `None` = 미조회(경로·조회 실패), `{}` = 그날 기록 없음(623차 이전 날짜 포함).
+        """
+        try:
+            from config.settings import OPTION_BOOK_DB
+            from collection.options.option_book import load_day_snaps
+            _books = load_day_snaps(OPTION_BOOK_DB, self._session_date)
+        except Exception as _e:
+            logger.debug("[ChartDBG] 만기북 조회 실패: %s", _e)
+            _books = None
+        self._chart.set_option_book(_books)
+        try:
+            if _books is None:
+                _t = "GEX 미조회"
+            elif not _books:
+                _t = "GEX 기록 없음"
+            else:
+                _t = "GEX " + " · ".join(
+                    "%s %d" % (_n, len(_books.get(_b) or []))
+                    for _b, _k, _n, _c in _GEX_BOOK_SPEC)
+            _cur = self._ov_note.text()
+            _base = _cur.split("  |  GEX")[0] if "  |  GEX" in _cur else _cur
+            self._ov_note.setText((_base + "  |  " if _base else "") + _t)
+        except Exception as _e:
+            logger.debug("[ChartDBG] 만기북 문구 실패: %s", _e)
+
     def _style_calendar(self):
         """달력을 대시보드 다크 테마에 맞춘다."""
         try:
@@ -13374,6 +13608,7 @@ class MinuteChartDialog(QDialog):
         self._refresh_mode_label()
         self._refresh_layer_badges()
         self._apply_premarket_levels()
+        self._apply_option_book()
         self._apply_peter()
         self._chart.update()
 
@@ -13494,6 +13729,7 @@ class MinuteChartDialog(QDialog):
         self._refresh_mode_label()
         self._refresh_layer_badges()
         self._apply_premarket_levels()
+        self._apply_option_book()
         self._apply_peter()
         self._chart.update()
         # reset_session이 _active_trade를 초기화하므로, 외부 훅으로 재동기화
@@ -16505,6 +16741,15 @@ class DashboardAdapter:
             self._win.div_panel.set_chain_interval(interval_sec)
         except Exception:
             pass
+
+    def update_option_book(self, summary: dict) -> None:
+        """[623차] 만기북 GEX·감마월 갱신 — 1분봉 차트가 라이브·표시 중일 때만 다시 읽는다."""
+        try:
+            _dlg = self._win._minute_chart_dialog
+            if _dlg._live_mode and _dlg.isVisible():
+                _dlg._apply_option_book()
+        except Exception as _e:
+            logger.debug("[OptionBook] 차트 반영 실패: %s", _e)
 
     def update_option_chain(self, chain_feats: dict) -> None:
         """옵션 체인 스냅샷 패널 업데이트"""

@@ -7660,6 +7660,31 @@ LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 #
 # 비용 실측: 첫 Dispatch 만 ~1,100ms, 이후 요청 5~7ms. 7상품×3주체=21요청 ≈ 150ms.
 #            7222 는 type1(시세) 한도(15초당 60건)를 쓴다 — 라이브와 공유하므로 여유를 둔다.
+# ─────────────────────────────────────────────────────────────────────────
+# [MW0601 623차] 옵션 만기북 GEX · 감마월 (먼스리 · 목위클리 · 월위클리) — 차트 표시 전용
+#
+# `OptionChainWorker` 가 먼스리 피처를 내보낸 **뒤에** 같은 스레드에서 위클리 2북을
+# 이어서 조회한다(스레드를 나누면 두 스레드가 같은 한도를 동시에 쓴다). 먼스리 북은
+# 이미 받은 스냅샷을 재사용하므로 추가 조회는 위클리 몫뿐이다(북당 ≈48건).
+# ⚠ 학습 피처가 아니다 — `opt_gex_bn`/`opt_gex_sign`(CORE) 은 무변경.
+# 위클리 코드 원천은 KIS 종목 마스터(Cybos 코드 = 표준코드[3:11], 4,602/4,602 실측 일치).
+OPTION_BOOK_ENABLED = True
+OPTION_BOOK_DB = os.path.join(DB_DIR, "option_book.db")
+OPTION_BOOK_MASTER_DIR = os.path.join(DATA_DIR, "option_master")
+# 다운로드 실패 시 폴백 — 마흐디가 매일 07:30 받는 같은 파일. 없어도 된다.
+# ⚠ MW0602(dev)에는 마흐디·메시아가 없다 — 그 PC 는 **다운로드가 유일한 원천**이다.
+#   실패하면 위클리 2북이 그날 비고(먼스리 북은 계속 쌓인다) 30분 뒤 재시도한다.
+OPTION_BOOK_MASTER_FALLBACKS = (
+    os.path.join(os.path.dirname(BASE_DIR), "options", "data", "symbol_master_cache",
+                 "fo_idx_code_mts.mst"),
+)
+OPTION_BOOK_ATM_WINDOW_PT = 30.0       # 먼스리 체인과 같은 폭
+# 시세요청(type1) 잔여 한도가 이 값 미만이면 기다린다 — 15초당 60건을 라이브와 공유한다.
+# 25 는 `scripts/backfill_option_flow.py` 의 관례(라이브 수급 수집 몫 여유)와 같다.
+OPTION_BOOK_QUOTA_RESERVE = 25
+# 위클리 수집 예산(초). 넘으면 남은 행사가는 error 로 남긴다(탈락 가시화). 폴링 300초 안.
+OPTION_BOOK_BUDGET_SEC = 150.0
+
 WEEKLY_OPTION_FLOW_ENABLED = True
 WEEKLY_OPTION_FLOW_DB = "data/db/option_flow.db"
 # 매분 수집하지 않고 N초 스로틀. _fetch_investor_data(수급 타이머)에 얹혀 돈다.
