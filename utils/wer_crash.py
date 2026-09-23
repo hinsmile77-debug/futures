@@ -61,6 +61,13 @@ _RE_RESTART_KIND = re.compile(
 _RE_FAULT_EVT = re.compile(
     r"^\[(START|CLEAN EXIT)\]\s+(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})\s+PID=(\d+)"
 )
+# [MW0601 624차] 동결 감시자(utils/freeze_watchdog.py:_fire)가 os._exit(43) 직전에 남기는 블록.
+#   [FreezeWatchdog] CRITICAL 메인 이벤트 루프 동결 판정 — 하드 종료
+#     시각      : 2026-09-23T13:41:38
+# PID 가 블록 안에 없으므로 **직전 [START] 의 PID** 에 귀속한다(파일은 프로세스 순서로 append).
+# 시각 줄은 한글 라벨이라 인코딩이 틀어져도 잡히도록 ISO 타임스탬프만 본다.
+_WD_MARK = "[FreezeWatchdog] CRITICAL"
+_RE_ISO_TS = re.compile(r"(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})")
 
 # Application Error(Id=1000) 의 Properties 배열 — **로캘 독립**이다.
 # 메시지 본문("Faulting application name: ...")은 OS 언어에 따라 번역되므로 쓰지 않는다.
@@ -207,6 +214,12 @@ def crash_fault_events(root, day_txt):
     다르다.** `crash_fault.log` 는 롤링 파일이라 며칠 지나면 그 날짜 구간이 통째로
     사라진다(실측 2026-09-17 은 행 0개). 이 둘을 같은 값으로 두면 과거 날짜를 재생할
     때마다 **전 프로세스가 「하드킬」로 오판**된다 — 계측 4원칙 ②.
+
+    🔴 [624차] `watchdog_exit` — 동결 감시자의 `os._exit(43)` 은 **atexit 를 건너뛰므로
+    `[CLEAN EXIT]` 가 없는 것이 설계다.** 그런데 감시자는 죽기 직전 이 파일에 자기
+    블록을 남긴다. 종전에는 그 블록을 안 읽어서, 2026-09-23 13:41:38 PID 11272
+    (감시자가 동결을 판정해 스스로 끝낸 종료)가 장후 리포트에 **「완전 무흔적 크래시」**
+    로 올라갔다(이상점 1-9·1-10). 기록은 있었다 — 파서가 안 본 것이다.
     """
     p = os.path.join(root, "logs", "crash_fault.log")
     if not os.path.exists(p):
@@ -218,15 +231,40 @@ def crash_fault_events(root, day_txt):
     except Exception as e:
         return {"measured": False, "reason": "crash_fault.log 열기 실패: %s" % e,
                 "by_pid": {}, "covered": False}
+    cur_pid = None      # 직전 [START] 의 PID (그날 것이 아니면 None)
+    wd_pid = None       # 감시자 블록을 봤고 시각 줄을 기다리는 PID
+    wd_wait = 0
     with fh:
         for line in fh:
-            m = _RE_FAULT_EVT.match(line.strip())
-            if not m or m.group(2) != day_txt:
+            s = line.strip()
+            if wd_pid is not None:
+                t = _RE_ISO_TS.search(s)
+                if t:
+                    if t.group(1) == day_txt:
+                        by_pid[wd_pid]["watchdog_exit"] = t.group(2)
+                    wd_pid = None
+                else:
+                    wd_wait -= 1
+                    if wd_wait <= 0:
+                        wd_pid = None   # 블록 형식이 바뀌었다 — 추측으로 채우지 않는다
+                continue
+            if _WD_MARK in s:
+                if cur_pid is not None:
+                    wd_pid, wd_wait = cur_pid, 3
+                continue
+            m = _RE_FAULT_EVT.match(s)
+            if not m:
+                continue
+            if m.group(2) != day_txt:
+                if m.group(1) == "START":
+                    cur_pid = None
                 continue
             kind, tm, pid = m.group(1), m.group(3), int(m.group(4))
-            rec = by_pid.setdefault(pid, {"start": None, "clean_exit": None})
+            rec = by_pid.setdefault(
+                pid, {"start": None, "clean_exit": None, "watchdog_exit": None})
             if kind == "START":
                 rec["start"] = tm
+                cur_pid = pid
             else:
                 rec["clean_exit"] = tm
     return {"measured": True, "reason": "", "by_pid": by_pid,
@@ -259,10 +297,19 @@ def reconcile(launcher, wer, fault):
         mireuk_pids.add(pid)
         fr = fault.get("by_pid", {}).get(pid, {})
         ev = wer_by_pid.get(pid)
-        if not wer.get("measured"):
-            verdict = "판정불가 — WER **미측정**"
-        elif ev is not None:
+        if ev is not None and wer.get("measured"):
             verdict = "**네이티브 크래시 확정** (%s / %s)" % (ev["module"], ev["code"])
+        elif fr.get("watchdog_exit"):
+            # [624차] 프로세스 자신의 기록이라 WER 과 무관하게 종료 주체가 확정된다.
+            # 확정되는 것은 「누가 끝냈나」까지다 — 왜 동결됐는지는 crash_fault.log 의
+            # 직전 스택 덤프를 봐야 한다.
+            verdict = ("**동결 감시자 강제 종료** (FreezeWatchdog `os._exit(43)` %s) — "
+                       "atexit 를 건너뛰므로 정상종료 기록이 없는 것이 설계다. "
+                       "동결 원인은 직전 스택 덤프를 볼 것" % fr["watchdog_exit"])
+            if not wer.get("measured"):
+                verdict += " · WER 미측정"
+        elif not wer.get("measured"):
+            verdict = "판정불가 — WER **미측정**"
         elif fr.get("clean_exit"):
             verdict = "네이티브 예외 아님 + 프로세스가 **정상 종료 기록을 남김**"
         elif not fault_covered:
@@ -274,6 +321,7 @@ def reconcile(launcher, wer, fault):
         rows.append({
             "pid": pid, "started": s["time"],
             "clean_exit": fr.get("clean_exit"),
+            "watchdog_exit": fr.get("watchdog_exit"),
             "wer": ev, "verdict": verdict,
         })
 

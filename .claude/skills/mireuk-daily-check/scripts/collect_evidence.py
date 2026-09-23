@@ -2052,11 +2052,26 @@ def wer_crash_section(root, cfg, day, out):
     A("|---|---|---|---|---|")
     for r in rec["rows"]:
         ev = r["wer"]
+        # [624차] 감시자 강제 종료는 「없음」과 구분해 적는다 — 2026-09-23 이 칸이
+        # 「없음」으로 찍혀 장후가 감시자 종료를 「무흔적 크래시」로 읽었다.
+        if r["clean_exit"]:
+            _exit_txt = r["clean_exit"]
+        elif r.get("watchdog_exit"):
+            _exit_txt = "없음 · **감시자 종료 %s**" % r["watchdog_exit"]
+        else:
+            _exit_txt = "없음"
         A("| %s | %s | %s | %s | %s |" % (
-            r["pid"], r["started"], r["clean_exit"] or "없음",
+            r["pid"], r["started"], _exit_txt,
             ("%s `%s` %s" % (ev["time"], ev["module"], ev["code"])) if ev else "없음",
             r["verdict"]))
     A("")
+
+    _wd = [r for r in rec["rows"] if r.get("watchdog_exit")]
+    if _wd:
+        A("- 동결 감시자(FreezeWatchdog)가 스스로 끝낸 종료 **%d개**: %s — "
+          "`[CLEAN EXIT]` 가 없어도 **무흔적이 아니다**(`crash_fault.log` 에 판정 블록이 있다)."
+          % (len(_wd), ", ".join("PID %s %s" % (r["pid"], r["watchdog_exit"]) for r in _wd)))
+        A("")
 
     if wer["measured"]:
         native = [r for r in rec["rows"] if r["wer"]]
