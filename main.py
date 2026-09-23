@@ -1031,6 +1031,15 @@ class TradingSystem:
                     _system.position.entry_time,
                 )
         self.dashboard.set_minute_chart_post_reload_hook(_chart_reload_hook)
+        # [MW0601 621차 후속8] 수급 독립 창 상태 줄의 브로커 시계. realtime_data 는
+        #   로그인 뒤에 생기므로 **호출 시점에** 찾는다. 없으면 None(모름) — 창이 PC 시각을
+        #   쓰되 그 사실을 표기한다(계측 4원칙 ④).
+        def _broker_clock_offset():
+            _rt = getattr(_system, "realtime_data", None)
+            _f = getattr(_rt, "broker_clock_offset", None) if _rt is not None else None
+            return _f() if _f is not None else None
+        if hasattr(self.dashboard, "set_broker_clock_provider"):
+            self.dashboard.set_broker_clock_provider(_broker_clock_offset)
         self._reverse_entry_enabled: bool = False
         # [339차] 1계약 TP1 보호모드 기본값 breakeven → atr_profit — 손절은 항상
         # 풀사이즈(ATR×1.5)로 나가는데 TP1은 본전(+0원)에서 캡되던 비대칭 완화.

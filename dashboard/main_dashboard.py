@@ -42,6 +42,7 @@ from PyQt5.QtGui import (
     QFont, QColor, QPalette, QPainter, QBrush, QPen,
     QLinearGradient, QFontDatabase, QIcon, QKeySequence, QPainterPath, QPolygonF, QFontMetricsF,
     QTextCursor, QTextBlockFormat, QTextCharFormat,
+    QPixmap,   # [621차 후속6] 1분봉 차트 배경 캐시
 )
 
 from config.constants import (FUTURES_PT_VALUE, BROKER_CHANNEL_SPECS,
@@ -9446,6 +9447,23 @@ class MinuteChartCanvas(QWidget):
         self._dbg_paint_slow_count: int = 0
         self._dbg_mouse_event_count: int = 0
         self._dbg_mouse_log_ts: float = 0.0  # 마지막 빈도 로그 시각
+        # ── [MW0601 621차 후속6] 배경 캐시 ──────────────────────────────────
+        # 전 레이어를 이미지로 한 번 그려 두고, 마우스 호버·진행 중 봉 틱에는 그 위에
+        # **진행 중 봉 + 크로스헤어만** 덧그린다. 명시 초기화(계측 4원칙 ④).
+        self._base_pm = None          # QPixmap — 크기가 같으면 재사용
+        self._base_size = (0, 0)
+        self._base_meta = None        # 마지막 전체 그리기의 좌표계(plot·lo·hi·봉 목록 …)
+        self._base_dirty = True       # 파이썬 쪽 update() 가 켠다 — 상태가 바뀌었다
+        self._base_ts = 0.0           # 마지막 전체 그리기 시각(monotonic)
+        self._base_fail_logged = False
+        self._skip_candle_idx = None  # 전체 그리기 중 캐시에서 뺄 봉(진행 중 봉)
+        # 이번 전체 그리기에서 어떤 레이어가 **현재가(마지막 봉 종가)** 를 썼는가.
+        #   쓴 프레임은 캐시를 재사용하지 않는다 — 틱마다 선 끝이 움직인다.
+        #   (보유 중 실측 연결선 · GP 섀도 미청산 다리. 구현 중 픽셀 대조로 찾았다)
+        self._frame_live_dep = False
+        self._frame_live_idx = None   # [621차 후속7] 이번 전체 그리기의 진행 중 봉(캐시 모드만)
+        self._frame_live_links = []   # [621차 후속7] 오버레이로 넘긴 현재가 연결선
+        self._dbg_overlay_count: int = 0
         self.setMinimumHeight(S.p(420))
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMouseTracking(True)
@@ -9540,11 +9558,13 @@ class MinuteChartCanvas(QWidget):
         key = minute_dt.strftime("%Y-%m-%d %H:%M:%S")
         _t0 = self._view_total()   # [590차] 진행 중 봉이 새로 생기면 total 이 는다
 
+        _base_changed = True   # [621차 후속6] 진행 중 봉만 바뀌면 False — 캐시 재사용
         if self._closed_candles and self._closed_candles[-1]["ts"] == key:
             self._closed_candles[-1]["close"] = price
             self._closed_candles[-1]["high"] = max(self._closed_candles[-1]["high"], price)
             self._closed_candles[-1]["low"] = min(self._closed_candles[-1]["low"], price)
         elif self._live_candle and self._live_candle["ts"] == key:
+            _base_changed = False
             self._live_candle["close"] = price
             self._live_candle["high"] = max(self._live_candle["high"], price)
             self._live_candle["low"] = min(self._live_candle["low"], price)
@@ -9558,13 +9578,18 @@ class MinuteChartCanvas(QWidget):
                 "volume": 0,
             }
         self._anchor_after_growth(_t0)
+        if _base_changed:
+            self._base_dirty = True   # 요청이 throttle 에 막혀도 무효화는 즉시
         # 틱 update() throttle: 200ms 이내 중복 요청 무시 (초당 수십 틱 × paintEvent 방지)
         import time as _time
         _now_ms = _time.monotonic() * 1000
         if _now_ms - self._last_tick_update_ms >= 200:
             self._last_tick_update_ms = _now_ms
             self._emit_view()
-            self.update()
+            if _base_changed:
+                self.update()
+            else:
+                self._repaint_overlay()
 
     def on_candle_closed(self, candle: dict):
         normalized = self._normalize_candle(candle)
@@ -9671,12 +9696,152 @@ class MinuteChartCanvas(QWidget):
             )
         self.update()
 
+    # ── [MW0601 621차 후속6] 배경 캐시 ──────────────────────────────────────
+    # 🔴 사용자 보고(2026-09-23): 최대화·크기조정 시 「차트영역과 윈도우 영역이 따로 논다」.
+    #   원인은 그리기 빈도였다. 전 레이어를 다시 그리는 데 격리 실측 약 30ms · 라이브
+    #   78~140ms(다른 스레드와 GIL 경합)인데, **마우스 호버가 16ms 마다(최대 60회/초)**,
+    #   틱이 200ms 마다(5회/초) 그것을 통째로 다시 요청했다. 09-15 이후 하루 약
+    #   35,000회 「paintEvent slow」 — 메인 스레드 약 47분/일. 창을 키우면 새로 드러난
+    #   영역을 그릴 차례가 밀려 흰 채로 남았다.
+    #   레이어 하나가 느린 게 아니다(최대 4.6ms) — 그래서 레이어를 깎지 않고 **빈도를 뺀다.**
+    # 규칙: 파이썬 코드의 `update()` 는 전부 「상태가 바뀌었다」다 → 캐시 무효화.
+    #   호버·진행 중 봉 틱만 `_repaint_overlay()` 로 캐시를 재사용한다. 캐시 재사용은
+    #   그리는 시점에 다시 검증한다(`_paint_from_cache`) — 요청 경로를 믿지 않는다.
+    # 안전망 — 무효화를 빠뜨린 경로가 있어도 이 시간 안에 전체를 다시 그린다.
+    #   [621차 후속7] 5 → 10초: 재기동 실측에서 이 안전망이 분당 12회 전체 그리기를 만들었다.
+    BASE_MAX_AGE_S = 10.0
+    # 현재가를 쓰는 레이어(보유 중 연결선 · GP 미청산 다리)가 있는 프레임은 틱이 오면
+    # 전체를 다시 그려야 선 끝이 따라온다. 그 전체 그리기를 **1초에 한 번**으로 묶는다 —
+    # 그 사이 봉 몸통은 오버레이가 매 틱 그리고, 선 끝만 최대 1초 늦는다.
+    # (2026-09-23 실측: GP 미청산 1건이 종일 열려 있어 이것 없이는 캐시가 하루 종일 무력했다)
+    LIVE_DEP_REFRESH_S = 1.0
+
+    def update(self, *args):
+        self._base_dirty = True
+        super().update(*args)
+
+    def _repaint_overlay(self):
+        """캐시를 무효화하지 않는 다시 그리기 요청 — 호버·진행 중 봉 틱 전용."""
+        QWidget.update(self)
+
+    def _paint_from_cache(self) -> bool:
+        """캐시가 지금 화면과 같다고 **증명될 때만** 재사용한다. 아니면 False."""
+        import time as _t
+        m = self._base_meta
+        if (self._base_dirty or self._base_pm is None or m is None
+                or self._base_size != (self.width(), self.height())
+                or _t.monotonic() - self._base_ts > self.BASE_MAX_AGE_S):
+            return False
+        # 보유 중에는 진입→현재가 연결선이 현재가를 따라 움직인다 — 캐시에 들어 있다.
+        live = self._live_candle
+        if (live["ts"] if live else None) != m["live_ts"]:
+            return False                      # 새 봉이 생겼다 — 배치가 바뀐다
+        if live and (live["high"] > m["raw_hi"] or live["low"] < m["raw_lo"]):
+            return False                      # 축 범위가 넓어진다(고·저는 분 안에서 단조)
+        # 현재가를 쓰는 레이어가 있으면: 가격이 그대로면(호버) 재사용, 바뀌었으면
+        #   1초가 지난 뒤에만 전체를 다시 그린다.
+        _dep = m.get("live_dep")
+        if _dep and (live["close"] if live else None) != m["live_close"]:
+            if _t.monotonic() - self._base_ts >= self.LIVE_DEP_REFRESH_S:
+                return False
+        p = QPainter(self)
+        try:
+            p.drawPixmap(0, 0, self._base_pm)
+            self._draw_live_overlay(p)
+        finally:
+            p.end()
+        self._dbg_overlay_count += 1
+        return True
+
+    _cache_err_ts = 0.0   # 클래스 속성 — 스로틀(계측 4원칙 ④)
+
+    def _base_cache_error(self, exc):
+        import time as _t
+        self._base_pm = None
+        self._base_meta = None
+        self._base_dirty = True
+        _now = _t.time()
+        if _now - MinuteChartCanvas._cache_err_ts >= 300.0:
+            MinuteChartCanvas._cache_err_ts = _now
+            logger.warning("[ChartDBG] 배경 캐시 경로 예외 — 이번엔 종전 방식으로 그린다 "
+                           "(5분 스로틀): %s", exc, exc_info=True)
+
+    def _base_target(self):
+        """캐시 이미지(크기가 같으면 재사용). 할당 실패면 None — 위젯에 직접 그린다."""
+        w, h = max(1, self.width()), max(1, self.height())
+        if self._base_pm is not None and self._base_size == (w, h):
+            return self._base_pm
+        self._base_pm = None
+        try:
+            dpr = float(self.devicePixelRatioF())
+        except Exception:
+            dpr = 1.0
+        pm = QPixmap(max(1, int(w * dpr)), max(1, int(h * dpr)))
+        if pm.isNull():
+            # 32-bit 주소공간 단편화 등 — 캐시 없이도 그려진다(종전 방식). 조용히 넘기지 않는다.
+            if not self._base_fail_logged:
+                self._base_fail_logged = True
+                logger.warning("[ChartDBG] 배경 캐시 할당 실패 %dx%d — 캐시 없이 그린다", w, h)
+            return None
+        pm.setDevicePixelRatio(dpr)
+        self._base_pm = pm
+        self._base_size = (w, h)
+        return pm
+
+    def _finish_frame(self, painter, pm, meta):
+        """전체 그리기 마무리 — 캐시에 그렸으면 화면에 옮기고 진행 중 봉·크로스헤어를 얹는다."""
+        import time as _t
+        self._base_meta = meta
+        if pm is None:                        # 위젯에 직접 그렸다 — 크로스헤어도 같은 붓으로
+            if meta is not None:
+                self._draw_crosshair_and_tooltip(painter, meta["plot"], meta["candles"],
+                                                 meta["lo"], meta["hi"])
+            painter.end()
+            self._base_dirty = True           # 캐시가 없으니 다음에도 전체를 그린다
+            return
+        painter.end()
+        self._base_dirty = False
+        self._base_ts = _t.monotonic()
+        p = QPainter(self)
+        try:
+            p.drawPixmap(0, 0, pm)
+            self._draw_live_overlay(p)
+        except Exception as _oe:
+            self._base_cache_error(_oe)
+        finally:
+            p.end()
+
+    def _draw_live_overlay(self, painter):
+        """캐시 위에 진행 중 봉(캐시에서 뺀 것)과 크로스헤어를 그린다."""
+        m = self._base_meta
+        if not m:
+            return
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.TextAntialiasing)
+        candles = m["candles"]
+        li = m["live_idx"]
+        if li is not None and self._live_candle:
+            candles = list(candles)
+            candles[li] = dict(self._live_candle)
+            plot = m["plot"]
+            step = plot.width() / max(m["padded_count"], 1)
+            self._draw_one_candle(painter, plot.left() + step * (li + 0.5), candles[li],
+                                  plot, m["lo"], m["hi"], step)
+            # [621차 후속7] 현재가까지 잇는 선 — 캐시 대신 여기서 그린다
+            _c = float(candles[li].get("close") or 0.0)
+            _x2 = plot.left() + step * (li + 0.5)
+            for _x1, _y1, _col, _w, _st in m.get("live_links") or ():
+                _y2 = self._price_to_y(_c, plot, m["lo"], m["hi"]) if _c > 0 else _y1
+                self._draw_link_line(painter, _x1, _y1, _x2, _y2, _col, width=_w, style=_st)
+        self._draw_crosshair_and_tooltip(painter, m["plot"], candles, m["lo"], m["hi"])
+
     def paintEvent(self, event):
         import time as _t
-        _t0 = _t.monotonic()
+        # [621차 후속6] monotonic() 은 Windows·py3.7 에서 해상도 15.6ms 라 단계별 분해가 그 배수로만 찍혔다 → perf_counter.
+        _t0 = _t.perf_counter()
         del event
         # 비정상 거대 캔버스 가드 — GDI 단편화 크래시 2차 방어
-        # restore_saved_geometry에서 _CHART_MAX_LOGICAL_W/H로 1차 차단되므로
+        # restore_saved_geometry에서 DIB 예산(window_utils.dib_safe_size, 621차 후속5)으로 1차 차단되므로
         # 여기는 세션 중 수동 리사이즈 후 단편화 크래시 대비 안전망
         # 3000×2000: DPI 150% → 4500×3000×4=54MB — 이 이상은 32-bit에서 unsafe
         if self.width() > 3000 or self.height() > 2000:
@@ -9686,7 +9851,18 @@ class MinuteChartCanvas(QWidget):
             )
             QPainter(self).fillRect(self.rect(), QColor(C["bg"]))
             return
-        painter = QPainter(self)
+        # [621차 후속6] 캐시가 유효하면 진행 중 봉·크로스헤어만 얹고 끝낸다.
+        # 🔴 캐시 경로의 예외는 **여기서 삼키고 종전 방식으로 그린다.** PyQt5 는 paintEvent
+        #   안 미처리 예외에서 프로세스를 abort 한다(0xC0000409 — 구현 중 NameError 한 줄로
+        #   실측). 새 경로가 새 크래시 원인이 되면 안 된다. 조용히 삼키지는 않는다.
+        try:
+            if self._paint_from_cache():
+                return
+            _pm = self._base_target()         # None 이면 위젯에 직접(종전 방식)
+        except Exception as _ce:
+            self._base_cache_error(_ce)
+            _pm = None
+        painter = QPainter(_pm) if _pm is not None else QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setRenderHint(QPainter.TextAntialiasing)
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
@@ -9699,6 +9875,7 @@ class MinuteChartCanvas(QWidget):
         if not candles:
             painter.setPen(QColor(C["text2"]))
             painter.drawText(self.rect(), Qt.AlignCenter, "당일 1분봉 데이터가 아직 없습니다.")
+            self._finish_frame(painter, _pm, None)
             return
 
         total_count = len(candles)
@@ -9754,6 +9931,7 @@ class MinuteChartCanvas(QWidget):
             prices = [p for p in prices if p > 0] or [0.0, 1.0]
         lo = min(prices)
         hi = max(prices)
+        _raw_lo, _raw_hi = lo, hi              # [621차 후속6] 캐시 재사용 판정용(패딩 전)
         if hi <= lo:
             hi = lo + 1.0
         # ── [MW0601 591차] 「하루 전체」 ON — Y 를 맥점 모델 범위까지 넓힌다 ──────
@@ -9803,7 +9981,17 @@ class MinuteChartCanvas(QWidget):
 
         import time as _t2
         self._chip_rects = []        # [P8] 이번 paint 의 칩 자리 — 레이어가 공유한다
-        _t_grid = _t2.monotonic(); self._draw_grid(painter, plot, lo, hi)
+        self._frame_live_dep = False # [621차 후속6] 레이어가 현재가를 쓰면 켠다
+        # [621차 후속7] 진행 중 봉 인덱스를 **레이어보다 먼저** 정한다. 현재가까지 잇는 선
+        #   (보유 중 연결선 · GP 미청산 다리)은 캐시에 그리지 않고 오버레이로 넘긴다 —
+        #   재기동 실측(11:53~11:58): GP 미청산 1건 때문에 틱마다 1초 규칙으로 전체를
+        #   다시 그려 전체 그리기가 72회/분 → 35회/분에 그쳤다.
+        _live_idx = (len(candles) - 1
+                     if (self._live_candle and candles
+                         and candles[-1]["ts"] == self._live_candle["ts"]) else None)
+        self._frame_live_idx = _live_idx if _pm is not None else None
+        self._frame_live_links = []
+        _t_grid = _t2.perf_counter(); self._draw_grid(painter, plot, lo, hi)
         self._draw_session_tail(painter, plot, candles, padded_count)
         # [오버레이 P2] 금지 빗금이 가장 아래 — 캔들 판독을 가리지 않는다.
         # 🔴 레벨 레이어보다 **먼저** 부른다. 그래야 「롱 금지」 라벨이 칩 자리를
@@ -9832,7 +10020,7 @@ class MinuteChartCanvas(QWidget):
         self._peter_order_labels = []
         self._peter_aux_labels = []
         self._draw_peter_levels(painter, plot, lo, hi)
-        _t_spans = _t2.monotonic()
+        _t_spans = _t2.perf_counter()
         index_map = {c["ts"]: i for i, c in enumerate(candles)}
         # 지시 깃발은 index_map 이 필요하다 — 맥점(전폭) 바로 뒤 자리다
         self._draw_peter_orders(painter, plot, candles, index_map, lo, hi, padded_count)
@@ -9840,16 +10028,19 @@ class MinuteChartCanvas(QWidget):
         self._draw_trade_spans(painter, plot, candles, index_map, lo, hi, padded_count)
         # 피터 사료는 실측 **아래**에 깐다 — 겹치면 실측이 이긴다
         self._draw_peter_trades(painter, plot, candles, index_map, lo, hi, padded_count)
-        _t_candles = _t2.monotonic(); self._draw_candles(painter, plot, candles, lo, hi, padded_count)
+        # [621차 후속6] 진행 중 봉은 캐시에 넣지 않는다 — 틱마다 오버레이가 그린다.
+        self._skip_candle_idx = _live_idx if _pm is not None else None
+        _t_candles = _t2.perf_counter(); self._draw_candles(painter, plot, candles, lo, hi, padded_count)
+        self._skip_candle_idx = None
         self._draw_peter_labels(painter, plot)   # 라벨은 캔들 위에
         self._draw_peter_order_labels(painter, plot)
         self._draw_peter_aux_labels(painter, plot)
-        _t_dir    = _t2.monotonic();  self._draw_direction_bar(painter, plot, candles, padded_count)
-        _t_regime = _t2.monotonic();  self._draw_regime_bar(painter, plot, candles, padded_count)
+        _t_dir    = _t2.perf_counter();  self._draw_direction_bar(painter, plot, candles, padded_count)
+        _t_regime = _t2.perf_counter();  self._draw_regime_bar(painter, plot, candles, padded_count)
         self._draw_state_lane(painter, plot, candles, padded_count)
         # GP 섀도는 실측 마커보다 **먼저**(=아래에) 그린다 — 겹치면 실측이 이긴다.
         self._draw_gp_layer(painter, plot, candles, index_map, lo, hi, padded_count)
-        _t_markers = _t2.monotonic(); self._draw_markers(painter, plot, candles, index_map, lo, hi, padded_count)
+        _t_markers = _t2.perf_counter(); self._draw_markers(painter, plot, candles, index_map, lo, hi, padded_count)
         # 보조 패널 · 레전드 — x축 라벨은 패널 **아래**에 와야 한다
         _axis_bottom = plot.bottom()
         if _flow_h:
@@ -9858,14 +10049,24 @@ class MinuteChartCanvas(QWidget):
             _axis_bottom = _pr.bottom()
             self._draw_legend(painter, QRectF(plot.left(), self.height() - _leg_h,
                                               plot.width(), _leg_h))
-        _t_axes = _t2.monotonic()
+        _t_axes = _t2.perf_counter()
         self._draw_axes(painter, QRectF(plot.left(), plot.top(), plot.width(),
                                         _axis_bottom - plot.top()),
                         candles, lo, hi, padded_count)
         self._draw_full_y_note(painter, plot)
         self._draw_full_x_note(painter, plot)
-        _t_cross = _t2.monotonic();  self._draw_crosshair_and_tooltip(painter, plot, candles, lo, hi)
-        _t_end = _t2.monotonic()
+        # [621차 후속6] 크로스헤어는 캐시 밖(오버레이)에서 그린다 — `_finish_frame`.
+        _t_cross = _t2.perf_counter()
+        _t_end = _t2.perf_counter()
+        self._finish_frame(painter, _pm, {
+            "plot": QRectF(plot), "candles": candles, "lo": lo, "hi": hi,
+            "padded_count": padded_count, "live_idx": _live_idx,
+            "live_ts": self._live_candle["ts"] if self._live_candle else None,
+            "raw_lo": _raw_lo, "raw_hi": _raw_hi,
+            "live_dep": self._frame_live_dep,
+            "live_close": self._live_candle["close"] if self._live_candle else None,
+            "live_links": list(self._frame_live_links),
+        })
 
         self._dbg_paint_count += 1
         _elapsed_ms = (_t_end - _t0) * 1000
@@ -9874,7 +10075,7 @@ class MinuteChartCanvas(QWidget):
             logger.warning(
                 "[ChartDBG] paintEvent slow %.1fms | size=%dx%d candles=%d "
                 "grid=%.1f spans=%.1f candles=%.1f dir=%.1f regime=%.1f markers=%.1f axes=%.1f cross=%.1f | "
-                "slow_cnt=%d total_cnt=%d",
+                "slow_cnt=%d total_cnt=%d overlay_cnt=%d",
                 _elapsed_ms, self.width(), self.height(), len(candles),
                 (_t_spans  - _t_grid)    * 1000,
                 (_t_candles- _t_spans)   * 1000,
@@ -9885,6 +10086,7 @@ class MinuteChartCanvas(QWidget):
                 (_t_cross  - _t_axes)    * 1000,
                 (_t_end    - _t_cross)   * 1000,
                 self._dbg_paint_slow_count, self._dbg_paint_count,
+                self._dbg_overlay_count,
             )
 
     def wheelEvent(self, event):
@@ -9931,9 +10133,14 @@ class MinuteChartCanvas(QWidget):
             visible_count = min(max(self._visible_count or total, self._min_visible_count), max(total, 1))
             self._view_offset = self._clamp_view_offset(self._drag_start_offset - candle_shift, total, visible_count)
             self._emit_view()
-        if _now_ms - self._last_mouse_update_ms >= 16:
+        # [621차 후속6] 호버는 캐시 위에 크로스헤어만 — 드래그(시야 이동)만 전체를 다시 그린다.
+        #   간격 16ms(최대 60회/초) → 33ms(30회/초): 오버레이도 창 크기 이미지 복사다.
+        if _now_ms - self._last_mouse_update_ms >= 33:
             self._last_mouse_update_ms = _now_ms
-            self.update()
+            if self._dragging:
+                self.update()
+            else:
+                self._repaint_overlay()
         # 디버그: 10초마다 이벤트 빈도 요약 로그
         self._dbg_mouse_event_count += 1
         if _now_ms - self._dbg_mouse_log_ts >= 10_000:
@@ -9976,7 +10183,7 @@ class MinuteChartCanvas(QWidget):
         self._hover_pos = None
         self._dragging = False
         self._drag_start_pos = None
-        self.update()
+        self._repaint_overlay()        # [621차 후속6] 크로스헤어만 지운다
         _elapsed_ms = (_t.monotonic() - _t0) * 1000
         logger.debug(
             "[ChartDBG] leaveEvent → update() 예약 %.2fms | size=%dx%d visible=%s",
@@ -10076,6 +10283,15 @@ class MinuteChartCanvas(QWidget):
         count = max(padded_count, 1)
         step = plot.width() / count
         self._last_step_px = step
+        for idx, candle in enumerate(candles):
+            if idx == self._skip_candle_idx:   # [621차 후속6] 진행 중 봉 — 오버레이가 그린다
+                continue
+            self._draw_one_candle(painter, plot.left() + step * (idx + 0.5), candle,
+                                  plot, lo, hi, step)
+
+    def _draw_one_candle(self, painter: QPainter, x: float, candle, plot: QRectF,
+                         lo: float, hi: float, step: float):
+        """봉 하나 — `_draw_candles` 와 진행 중 봉 오버레이가 **같은 식**으로 그린다."""
         body_w   = max(3.0, min(18.0, step * 0.68))
         wick_w   = max(1.0, min(2.0, body_w * 0.14))
         corner_r = min(2.5, body_w * 0.20)
@@ -10088,8 +10304,7 @@ class MinuteChartCanvas(QWidget):
         DOWN_FILL   = QColor(60, 16, 18, 220)
         DOWN_WICK   = QColor("#F05454")
 
-        for idx, candle in enumerate(candles):
-            x = plot.left() + step * (idx + 0.5)
+        if True:
             high_y  = self._price_to_y(candle["high"],  plot, lo, hi)
             low_y   = self._price_to_y(candle["low"],   plot, lo, hi)
             open_y  = self._price_to_y(candle["open"],  plot, lo, hi)
@@ -11462,14 +11677,19 @@ class MinuteChartCanvas(QWidget):
                 # 「손익 0」이 아니라 「아직 안 끝났다」를 그리는 것이다(계측 4원칙 ②).
                 entry_px = float(self._active_trade.get("entry_price") or 0.0)
                 y1 = self._price_to_y(entry_px, plot, lo, hi)
-                _last_close = float(candles[end_idx].get("close") or 0.0)
-                y2 = (self._price_to_y(_last_close, plot, lo, hi)
-                      if _last_close > 0 else y1)
                 x1 = plot.left() + step * (start_idx + 0.5)
                 x2 = plot.left() + step * (end_idx + 0.5)
                 color = QColor(C["green"] if self._active_trade.get("direction") == "LONG"
                                else C["red"])
-                self._draw_link_line(painter, x1, y1, x2, y2, color)
+                if end_idx == self._frame_live_idx:
+                    # [621차 후속7] 끝이 진행 중 봉 — 오버레이가 현재가까지 잇는다
+                    self._frame_live_links.append((x1, y1, color, 2, Qt.DashLine))
+                else:
+                    _last_close = float(candles[end_idx].get("close") or 0.0)
+                    self._frame_live_dep = True     # [621차 후속6] 현재가를 따라 움직인다
+                    y2 = (self._price_to_y(_last_close, plot, lo, hi)
+                          if _last_close > 0 else y1)
+                    self._draw_link_line(painter, x1, y1, x2, y2, color)
                 if self._is_off_axis(entry_px):
                     self._draw_off_axis_caret(painter, x1, y1, color,
                                               above=entry_px > (self._axis_hi or 0))
@@ -11532,15 +11752,20 @@ class MinuteChartCanvas(QWidget):
             # 보유 중이면 청산점이 없으므로 현재 봉 종가까지 — 「미청산」을 그리는
             # 것이지 「손익 0」이 아니다(계측 4원칙 ②).
             exit_price = float(trade.get("exit_price") or 0.0)
-            if open_leg:
-                _last_close = float(candles[end_idx].get("close") or 0.0)
-                y2 = (self._price_to_y(_last_close, plot, lo, hi)
-                      if _last_close > 0 else y)
-            else:
-                y2 = self._price_to_y(exit_price, plot, lo, hi) if exit_price > 0 else y
             # GP 는 가상이므로 실측(DashLine·2px)과 달리 **DotLine·1px** 를 유지한다.
-            self._draw_link_line(painter, x1, y, x2, y2, color,
-                                 width=1, style=Qt.DotLine)
+            if open_leg and end_idx == self._frame_live_idx:
+                # [621차 후속7] 끝이 진행 중 봉 — 오버레이가 현재가까지 잇는다
+                self._frame_live_links.append((x1, y, color, 1, Qt.DotLine))
+            else:
+                if open_leg:
+                    _last_close = float(candles[end_idx].get("close") or 0.0)
+                    self._frame_live_dep = True     # [621차 후속6] 현재가를 따라 움직인다
+                    y2 = (self._price_to_y(_last_close, plot, lo, hi)
+                          if _last_close > 0 else y)
+                else:
+                    y2 = self._price_to_y(exit_price, plot, lo, hi) if exit_price > 0 else y
+                self._draw_link_line(painter, x1, y, x2, y2, color,
+                                     width=1, style=Qt.DotLine)
 
             self._draw_gp_entry_marker(painter, x1, y, color, up=is_long)
             if self._is_off_axis(entry_price):
@@ -12437,6 +12662,12 @@ class MinuteChartDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setModal(False)
+        # [MW0601 621차 후속4] 최소화 · 최대화/이전 크기 단추 (사용자 지시 2026-09-23).
+        #   QDialog 기본 제목표시줄에는 닫기(와 ?)만 있다. 플래그는 **HWND 가 생기기 전**
+        #   여기서 한 번만 준다 — 나중에 바꾸면 Qt 가 창을 다시 만들어 위치 복원 순서가 깨진다.
+        #   작업표시줄 단추는 `toggle_minute_chart_dialog` 가 show() 직전에 붙인다.
+        self.setWindowFlags(Qt.Window | Qt.WindowTitleHint | Qt.WindowSystemMenuHint
+                            | Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint)
         self.setWindowTitle(f"당일 1분봉 차트 ({self.SHORTCUT_TEXT})")
         self.resize(S.p(1180), S.p(700))
         self._session_date = datetime.now().date().isoformat()
@@ -13852,35 +14083,36 @@ class MinuteChartDialog(QDialog):
     def _coerce_dt(self, value):
         return self._chart._coerce_dt(value)
 
-    def closeEvent(self, event):
+    def _save_geometry(self, why: str) -> None:
+        """[621차 후속5] 창 위치·크기 저장 — 닫기·Esc·프로그램 종료 공통.
+
+        🔴 2026-09-23 사용자 보고 「크기조정 후 닫고 다시 열면 이전 크기가 안 온다」.
+          원인 셋: ① 저장 시 가로·세로를 1920×1060 으로 **잘라** 저장했다(실측 저장값이
+          정확히 1920×1060). ② Esc 는 closeEvent 없이 숨기기만 해 저장되지 않았다.
+          ③ 최대화 상태로 닫으면 저장을 건너뛰어 직전 보통 크기를 잃었다.
+          → 예산을 모니터 배율 기준으로(`dib_safe_size`), Esc 경로는 hideEvent 에서,
+            최대화·최소화 중에는 `normalGeometry()` 를 저장한다.
+        """
         import time as _t
+        from dashboard.window_utils import dib_safe_size
         _t0 = _t.monotonic()
         try:
-            geo = self.geometry()
-            logger.debug(
-                "[ChartDBG] closeEvent 시작 | size=%dx%d pos=(%d,%d) "
-                "paint_slow=%d/%d",
-                geo.width(), geo.height(), geo.x(), geo.y(),
-                self._chart._dbg_paint_slow_count, self._chart._dbg_paint_count,
-            )
-            # ── geometry 저장 스킵 조건 ──────────────────────────────
-            # ① Qt maximize 상태 (setGeometry로는 복원 불가)
-            if self.isMaximized():
-                logger.debug("[ChartDBG] closeEvent isMaximized → 저장 스킵")
-                super().closeEvent(event)
+            # 최대화·최소화 중에도 **되돌아갈 보통 크기**가 있다 — 그것을 저장한다.
+            geo = (self.normalGeometry()
+                   if (self.isMaximized() or self.isMinimized()) else self.geometry())
+            if geo.width() <= 0 or geo.height() <= 0:
                 return
             scr = QApplication.screenAt(geo.center()) or QApplication.primaryScreen()
-            avail = scr.availableGeometry()
-            # ② 화면 크기 초과 — 모니터 분리·DPI 변경 등으로 geometry가 화면 밖인 경우만 스킵
-            #    (이전 90% 체크 제거: screenAt이 잘못된 화면 반환 시 오탐 + 사용자 의도 대형창 차단)
-            if geo.width() > avail.width() or geo.height() > avail.height():
+            # [621차 후속7] 저장은 모니터 폭으로 자르지 않는다(걸친 창) — 예산만 적용
+            w, h, clipped = dib_safe_size(scr, geo.width(), geo.height(),
+                                          clip_to_screen=False)
+            if clipped:
+                # 줄여서 저장한 사실을 남긴다 — 조용히 자르면 「복원이 안 된다」로만 보인다.
                 logger.warning(
-                    "[ChartDBG] closeEvent geometry 초과 — 저장 스킵 "
-                    "size=%dx%d avail=%dx%d",
-                    geo.width(), geo.height(), avail.width(), avail.height(),
-                )
-                super().closeEvent(event)
-                return
+                    "[ChartDBG] 창 크기 저장 축소 %dx%d → %dx%d (%s · 모니터 %s "
+                    "%.0fdpi — 32-bit DIB 예산)", geo.width(), geo.height(), w, h,
+                    why, scr.name() if scr else "?",
+                    scr.logicalDotsPerInch() if scr else 0.0)
             prefs = {}
             if os.path.exists(_UI_PREFS_FILE):
                 try:
@@ -13888,18 +14120,33 @@ class MinuteChartDialog(QDialog):
                         prefs = json.load(_rf)
                 except Exception:
                     prefs = {}
-            prefs["chart_dialog_geometry"] = {
-                "x": geo.x(), "y": geo.y(),
-                "w": min(geo.width(),  _CHART_MAX_LOGICAL_W),
-                "h": min(geo.height(), _CHART_MAX_LOGICAL_H),
-            }
+            prefs["chart_dialog_geometry"] = {"x": geo.x(), "y": geo.y(), "w": w, "h": h}
             with open(_UI_PREFS_FILE, "w", encoding="utf-8") as _wf:
                 json.dump(prefs, _wf, ensure_ascii=False)
+            logger.debug("[ChartDBG] 창 크기 저장(%s) %dx%d pos=(%d,%d)",
+                         why, w, h, geo.x(), geo.y())
             _io_ms = (_t.monotonic() - _t0) * 1000
             if _io_ms > 100:
-                logger.warning("[ChartDBG] closeEvent I/O slow %.1fms", _io_ms)
+                logger.warning("[ChartDBG] 창 크기 저장 I/O slow %.1fms", _io_ms)
         except Exception as _e:
-            logger.warning("[ChartDBG] closeEvent 예외: %s", _e)
+            logger.warning("[ChartDBG] 창 크기 저장 예외(%s): %s", why, _e)
+
+    def hideEvent(self, event):
+        # [621차 후속5] Esc(reject)는 closeEvent 없이 숨기기만 한다 — 그 경로도 저장한다.
+        #   최소화(OS 가 보내는 spontaneous hide)는 닫기가 아니므로 제외.
+        if not event.spontaneous():
+            self._save_geometry("hide")
+        super().hideEvent(event)
+
+    def closeEvent(self, event):
+        import time as _t
+        _t0 = _t.monotonic()
+        logger.debug(
+            "[ChartDBG] closeEvent 시작 | paint_slow=%d/%d",
+            self._chart._dbg_paint_slow_count, self._chart._dbg_paint_count,
+        )
+        # 저장은 hideEvent 가 한다 — super().closeEvent() 가 reject() → hide() 를 부르므로
+        #   닫기·Esc·종료가 전부 그 한 곳을 지난다(두 번 쓰지 않는다).
         _pre_super_ms = (_t.monotonic() - _t0) * 1000
         super().closeEvent(event)
         _total_ms = (_t.monotonic() - _t0) * 1000
@@ -13952,18 +14199,6 @@ class MinuteChartDialog(QDialog):
             x, y = int(geo["x"]), int(geo["y"])
             w, h = int(geo["w"]), int(geo["h"])
 
-            # 32-bit GDI 보호: 초대형 DIB 방지
-            # DPI 150% 환경에서 w×h 논리픽셀 → 물리픽셀 1.5×가 발생,
-            # 가상주소 단편화 후 setGeometry로 CreateDIBSection FAILED → crash 방지
-            if w > _CHART_MAX_LOGICAL_W or h > _CHART_MAX_LOGICAL_H:
-                logger.warning(
-                    "[ChartDBG] restore_saved_geometry: 32-bit GDI 상한 초과 "
-                    "%dx%d → %dx%d (DPI 스케일 후 물리 DIB 과대 방지)",
-                    w, h, min(w, _CHART_MAX_LOGICAL_W), min(h, _CHART_MAX_LOGICAL_H),
-                )
-                w = min(w, _CHART_MAX_LOGICAL_W)
-                h = min(h, _CHART_MAX_LOGICAL_H)
-
             # 팝업 중심점 기준으로 해당 화면을 탐색
             from PyQt5.QtCore import QPoint
             _cx, _cy = x + w // 2, y + h // 2
@@ -13978,7 +14213,28 @@ class MinuteChartDialog(QDialog):
                 self._center_on_second_screen()
                 return
 
+            # 32-bit GDI 보호: 초대형 DIB 방지 (217차 크래시 — 150% 모니터에서 물리 1.5×).
+            # [621차 후속5] 가로·세로 고정 상한(1920×1060) → **대상 모니터 배율 기준 예산**.
+            #   150% 모니터 상한은 종전과 같고, 100% 모니터에서만 더 큰 창을 복원한다.
+            from dashboard.window_utils import dib_safe_size, fits_desktop
+            _w0, _h0 = w, h
+            # [621차 후속7] 여러 모니터에 걸친 창이 네 모서리 모두 화면 위에 있으면 그대로
+            #   복원한다. ⚠ y<0 은 예외 — 217차 DPI 1.5× 확대 크래시 가드(아래)를 거친다.
+            _span = y >= 0 and fits_desktop(x, y, w, h)
+            w, h, _clip = dib_safe_size(target_screen, w, h, clip_to_screen=not _span)
+            if _clip:
+                logger.warning(
+                    "[ChartDBG] restore_saved_geometry: DIB 예산 축소 %dx%d → %dx%d "
+                    "(모니터 %s %.0fdpi)", _w0, _h0, w, h, target_screen.name(),
+                    target_screen.logicalDotsPerInch())
+
             avail = target_screen.availableGeometry()
+            if _span:
+                # 걸친 창 — 한 모니터로 클램프하면 다시 줄어든다. 그대로 둔다.
+                logger.debug("[ChartDBG] restore_saved_geometry: 걸친 창 그대로 %dx%d pos=(%d,%d)",
+                             w, h, x, y)
+                self.setGeometry(x, y, w, h)
+                return
             orig_w, orig_h = w, h
             # 90% 크기 threshold 제거 — 사용자가 의도적으로 대형 창을 사용하는 경우 허용
             # paintEvent guard를 6000×4000으로 상향해 대형 창에서도 차트가 정상 렌더링됨
@@ -14113,6 +14369,8 @@ _UI_PREFS_FILE = os.path.join(DATA_DIR, "ui_prefs.json")
 # DPI 150% 환경: 물리 DIB = 2880×1590×4 ≈ 18 MB → 단편화 후에도 alloc 안전
 # 배경: w=3030, h=1460 저장값이 DPI 150% 스케일로 4547×2124×4=38.6 MB 요구
 #   → 3시간+ 운용 후 32-bit 가상주소 단편화로 CreateDIBSection FAILED → crash
+# [621차 후속5] 저장·복원 상한은 이제 이 두 값이 아니라 `window_utils.dib_safe_size`
+#   (같은 18MB 를 **모니터 배율로 환산**)가 정한다. 두 상수는 그 예산의 출처로 남긴다.
 _CHART_MAX_LOGICAL_W = 1920
 _CHART_MAX_LOGICAL_H = 1060
 
@@ -14202,6 +14460,31 @@ class MireukDashboard(QMainWindow):
         self._balance_refresh_shortcut.activated.connect(
             self.account_info_panel.sig_balance_refresh_requested.emit
         )
+
+        # ── [MW0601 621차] 옵션·선물 수급 증감 독립 창 (Ctrl+Shift+F) ──────
+        # 탭 속 차트는 410분을 약 100px 에 맞춰 봉 하나가 0.25px 였다 — 증감을
+        # 못 읽는다. 독립 창은 탭 차트의 미러로만 값을 받는다(DB 조회 없음).
+        # 창 로드 실패가 대시보드를 못 만들게 하지 않는다.
+        self._option_flow_window = None
+        try:
+            from dashboard.panels.option_flow_delta_chart import (
+                OptionFlowDeltaWindow,
+            )
+            self._option_flow_window = OptionFlowDeltaWindow(
+                self, prefs_path=_UI_PREFS_FILE)
+            _tab_chart = getattr(self.div_panel, "option_flow_chart", None)
+            if _tab_chart is not None:
+                _tab_chart.add_mirror(self._option_flow_window.chart)
+                _tab_chart.popout_requested.connect(self.toggle_option_flow_window)
+            else:
+                logger.warning("[Dashboard] 탭 수급 차트 없음 — 독립 창이 값을 못 받는다")
+            self._option_flow_shortcut = QShortcut(
+                QKeySequence(OptionFlowDeltaWindow.SHORTCUT_TEXT), self)
+            self._option_flow_shortcut.activated.connect(
+                self.toggle_option_flow_window)
+        except Exception as _ofe:
+            logger.warning("[Dashboard] 수급 독립 창 로드 실패: %s", _ofe)
+            self._option_flow_window = None
 
     def _build_ui(self):
         central = QWidget()
@@ -14990,6 +15273,13 @@ class MireukDashboard(QMainWindow):
 
     def toggle_minute_chart_dialog(self, auto_popup=False):
         self._minute_chart_dialog.maybe_roll_session()
+        # [621차 후속4] 최소화된 창도 isVisible() 은 True 다 — 그대로 두면 단축키가
+        #   「되살리기」 대신 「닫기」가 된다. 최소화 상태면 이전 크기로 되살린다.
+        if self._minute_chart_dialog.isMinimized():
+            self._minute_chart_dialog.showNormal()
+            self._minute_chart_dialog.raise_()
+            self._minute_chart_dialog.activateWindow()
+            return
         if self._minute_chart_dialog.isVisible():
             self._minute_chart_dialog.close()
             return
@@ -15005,10 +15295,19 @@ class MireukDashboard(QMainWindow):
         #   second monitor로 지정. Windows가 올바른 DPI 컨텍스트로 HWND를 생성.
         #   show() 이후 singleShot(0)으로 WM_SHOWWINDOW 재배치 보정.
         self._minute_chart_dialog.restore_saved_geometry()   # pre-show: HWND 생성 위치 지정
+        # [621차 후속4] 작업표시줄 단추 — 위치를 잡은 **뒤**, show() **전**(HWND 가 복원 위치에
+        #   생긴다). 없으면 최소화한 창이 화면 왼쪽 아래 작은 막대로만 남는다.
+        from dashboard.window_utils import force_taskbar_button
+        force_taskbar_button(self._minute_chart_dialog)
         self._minute_chart_dialog.show()
         self._minute_chart_dialog.raise_()
         self._minute_chart_dialog.activateWindow()
         QTimer.singleShot(0, self._minute_chart_dialog.restore_saved_geometry)  # post-show: WM_SHOWWINDOW 보정
+
+    def toggle_option_flow_window(self):
+        """[MW0601 621차] 옵션·선물 수급 증감 독립 창 열기/닫기."""
+        if self._option_flow_window is not None:
+            self._option_flow_window.toggle()
 
     def minute_chart_tick(self, price: float, ts=None):
         self._minute_chart_dialog.update_tick(price, ts=ts)
@@ -15866,6 +16165,13 @@ class MireukDashboard(QMainWindow):
                     self._minute_chart_dialog.close()
             except Exception:
                 pass
+        # [621차 후속5] 수급 독립 창도 같은 이유로 먼저 닫아 위치·크기를 저장한다.
+        try:
+            _ofw = getattr(self, "_option_flow_window", None)
+            if _ofw is not None and _ofw.isVisible():
+                _ofw.close()
+        except Exception:
+            pass
 
         # ── [MW0601 618차] 종료 의도를 **두 분기 모두** 남긴다 ─────────────
         # 종전: 완전 종료만 인라인으로 플래그를 썼고 **재시작 분기는 아무 흔적도
@@ -17146,6 +17452,19 @@ def _adapter_set_minute_chart_post_reload_hook(self, hook):
     self._win._minute_chart_dialog._post_reload_hook = hook
 
 
+def _adapter_set_broker_clock_provider(self, provider):
+    """[MW0601 621차 후속8] 브로커 시계 오프셋 공급자 — 수급 독립 창의 상태 줄이 쓴다.
+
+    provider() → 브로커 시각 − PC 시각(초) 또는 None(모름). DB·COM 을 부르지 않는다.
+    """
+    try:
+        _w = getattr(self._win, "_option_flow_window", None)
+        if _w is not None:
+            _w.chart.set_clock_provider(provider)
+    except Exception as _e:
+        logger.warning("[Dashboard] 브로커 시계 배선 실패: %s", _e)
+
+
 def _adapter_minute_chart_reload(self):
     """[MW0601 589차] 외부에서 차트 DB 리로드를 요청한다(당일 마감구간 보충 직후).
 
@@ -17182,6 +17501,7 @@ DashboardAdapter.minute_chart_sync_active_position = _adapter_minute_chart_sync_
 DashboardAdapter.minute_chart_clear_active_position = _adapter_minute_chart_clear_active_position
 DashboardAdapter.set_minute_chart_post_reload_hook = _adapter_set_minute_chart_post_reload_hook
 DashboardAdapter.minute_chart_reload = _adapter_minute_chart_reload
+DashboardAdapter.set_broker_clock_provider = _adapter_set_broker_clock_provider
 DashboardAdapter.push_direction_live = _adapter_push_direction_live
 
 

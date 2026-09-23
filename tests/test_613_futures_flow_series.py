@@ -376,15 +376,23 @@ def test_24_row_height_fills_available_space():
     #   처럼 버리면 즉시 GC 돼 프로세스가 통째로 죽는다(실행 중 실제로 죽었다).
     global _QAPP
     _QAPP = QApplication.instance() or QApplication([])
-    from dashboard.panels.option_flow_delta_chart import _ALL_ROWS, _Plot
+    from dashboard.panels.option_flow_delta_chart import _LAYOUT, _Plot
 
     pl = _Plot()
     # 실사용 높이에서 행이 그 높이를 **거의 다 쓴다**
+    # [621차] 콜↔풋 상대강도 2행(높이 가중 0.6)이 들어와 행 수가 10 → 12 가 됐다.
+    #   그래서 행당 높이 하한을 95 → 85(→ 후속3 80) 로, 「다 쓴다」는 실제 배치(row_spans)로 잰다.
+    #   불변식(비운 세로가 차트로 온다)은 그대로다.
     pl.setFixedHeight(1030)
     r = pl.row_height()
-    used = r * len(_ALL_ROWS) + _Plot.AXIS_H + 2 * _Plot.PAD_V
-    assert r >= 95, "행이 가용 세로를 안 쓴다(상한이 다시 낮아졌다): %d" % r
-    assert used >= 1030 - len(_ALL_ROWS), "아래에 빈칸이 남는다: %d/1030" % used
+    top, hh = pl.row_spans(r)[-1]
+    # [621차 후속2] 시간 눈금 띠가 행 위로 옮겨가 top 에 이미 포함된다.
+    used = top + hh + _Plot.PAD_V
+    # [621차 후속3] 먼스리 콜↔풋 행이 더해져 13행 — 행당 높이 85 → 84. 하한을 80 으로.
+    #   「비운 세로가 차트로 온다」는 바로 아래 used 단언이 그대로 지킨다.
+    assert r >= 80, "행이 가용 세로를 안 쓴다(상한이 다시 낮아졌다): %d" % r
+    assert used >= 1030 - 2 * len(_LAYOUT), "아래에 빈칸이 남는다: %d/1030" % used
+    assert used <= 1030, "행이 위젯 밖으로 넘친다: %d/1030" % used
     # 작은 창에서는 하한을 지킨다
     pl.setFixedHeight(200)
     assert pl.row_height() == _Plot.MIN_ROW_H
