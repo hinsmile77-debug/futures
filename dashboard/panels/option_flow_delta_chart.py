@@ -354,6 +354,9 @@ class _Plot(QWidget):
         self._bar_interval_measured = False
         self._blink = False
         self._status_timer = None
+        # [621차 후속 / MW0602] 슬롯 가드의 1회 로그 플래그. `getattr` 폴백으로 읽지
+        #   않는다 — 명시 초기화가 규약이다(계측 4원칙 ④).
+        self._status_tick_failed = False
         if self._status:
             self._status_timer = QTimer(self)
             self._status_timer.setInterval(500)
@@ -422,8 +425,23 @@ class _Plot(QWidget):
         self._bar_interval_measured = bool(measured)
 
     def _on_status_tick(self) -> None:
-        self._blink = not self._blink
-        self.update()           # 캐시 복사 + 오버레이만 — `_invalidate` 가 아니다
+        """QTimer 슬롯 — 예외를 밖으로 내지 않는다.
+
+        🔴 PyQt5 는 슬롯에서 새어나온 예외를 `qFatal()` 로 처리한다. 트레이스백도
+           로그도 없이 **엔진 프로세스가 죽는다** — 2026-09-22 09:41:56 실사고가
+           그것이었고, 617차가 그래서 `scripts/audit_qtimer_slot_guards.py` 와
+           래칫 테스트를 만들었다.
+
+        이 슬롯은 500ms 주기라 실패가 나면 로그가 폭주한다 — **첫 1회만** 남긴다.
+        """
+        try:
+            self._blink = not self._blink
+            self.update()       # 캐시 복사 + 오버레이만 — `_invalidate` 가 아니다
+        except Exception:       # noqa: BLE001 — 최후 방어선
+            if not self._status_tick_failed:
+                self._status_tick_failed = True
+                logger.exception(
+                    "[OptionFlowWindow] _on_status_tick 예외 — 이후 로그 억제")
 
     def showEvent(self, ev):             # noqa: N802 (Qt) — 보일 때만 시계를 돌린다
         if self._status_timer is not None:
