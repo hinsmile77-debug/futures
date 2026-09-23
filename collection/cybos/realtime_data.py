@@ -105,6 +105,9 @@ class CybosRealtimeData:
         }
         self._tick_event_count = 0
         self._hoga_event_count = 0
+        # [MW0601 621차 후속8] 브로커 시계 — (monotonic, 체결시각−PC시각 초) 표본.
+        #   🔴 COM 콜백 안에서는 **상태 저장만** 한다(절대원칙 §4). 읽기는 GUI 가 한다.
+        self._broker_offsets: Deque = deque(maxlen=240)
         # ── [MW0601 552차] 호가 5단 총잔량 (소비 0, 적재 전용) ──────────────────
         # `_handle_hoga` 는 이미 5단 전부를 파싱해 두고 1단만 봉에 실었다. 나머지
         # 4단은 debug 로그로만 흘러가 버려졌다. 호가창 깊이는 JPG 차트의
@@ -170,6 +173,18 @@ class CybosRealtimeData:
     @property
     def current_bar(self) -> Optional[Dict]:
         return self._current_bar
+
+    def broker_clock_offset(self, window_s: float = 60.0) -> Optional[float]:
+        """[MW0601 621차 후속8] 브로커 시각 − PC 시각(초). 최근 표본이 없으면 None.
+
+        체결시각은 **초 단위로 잘려** 온다 — 표본마다 0~1초 늦게 읽힌다. 그래서 창 안
+        표본의 **최댓값**을 쓴다(잘림이 가장 작은 표본 ≈ 진짜 오프셋 − 최소 전송지연).
+        None 은 「모른다」이지 「0초」가 아니다(계측 4원칙 ②) — 장외·끊김이면 None 이다.
+        """
+        import time as _t_bc
+        now = _t_bc.monotonic()
+        vals = [o for ts, o in list(self._broker_offsets) if now - ts <= window_s]
+        return max(vals) if vals else None
 
     def get_last_n(self, n: int) -> List[Dict]:
         candles = list(self._candles)
@@ -313,6 +328,19 @@ class CybosRealtimeData:
         oi = _safe_int(obj.GetHeaderValue(14))
         raw_tick_time = _safe_str(obj.GetHeaderValue(15))
         tick_time = self._parse_tick_time(raw_tick_time)
+        # [MW0601 621차 후속8] 브로커 시계 표본 — 상태 저장만(절대원칙 §4).
+        #   `_parse_tick_time` 은 파싱 실패 시 **PC 시각을 돌려준다**(폴백). 그 값을 표본으로
+        #   쓰면 오프셋 0 이 「실측」으로 위장되므로 원문 자릿수로 한 번 더 거른다(계측 4원칙 ②).
+        #   버퍼 재생 틱(90초+ 지연)도 시계가 아니므로 ±30초 밖은 버린다.
+        try:
+            _digits = "".join(ch for ch in raw_tick_time if ch.isdigit())
+            if len(_digits) >= 5:
+                import time as _t_bc
+                _off = (tick_time - datetime.now()).total_seconds()
+                if abs(_off) <= 30.0:
+                    self._broker_offsets.append((_t_bc.monotonic(), _off))
+        except Exception:
+            pass
         ask1 = _safe_float(obj.GetHeaderValue(18))
         bid1 = _safe_float(obj.GetHeaderValue(19))
         ask_qty1 = _safe_int(obj.GetHeaderValue(20))
