@@ -264,7 +264,12 @@ def test_x_hold_reason_is_visible():
     assert "self._full_x_note = None" in src, "명시 초기화 필요"
     assert "def _draw_full_x_note" in src
     assert "self._draw_full_x_note(painter, plot)" in src, "그리기 호출이 배선돼야 한다"
-    i = src.index("self._full_x_note = None\n        if self._full_session_x")
+    # [621차 후속11] paintEvent 본문이 Qt 진입점 가드(단일 try)로 한 단 들여써졌다 —
+    #   들여쓰기 폭이 아니라 「초기화 바로 다음 줄이 조건」이라는 순서만 본다.
+    import re
+    m = re.search(r"self\._full_x_note = None\r?\n[ ]+if self\._full_session_x", src)
+    assert m, "보류 사유 초기화 → 조건 순서가 깨졌다"
+    i = m.start()
     assert "self._full_x_note = (" in src[i:i + 500], "보류했으면 사유를 남겨야 한다"
 
 

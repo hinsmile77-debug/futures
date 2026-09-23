@@ -748,3 +748,84 @@ def test_41_strip_number_counts_up_from_zero():
     body = src.split("def _draw_status_strip", 1)[1].split("def _draw_overlay", 1)[0]
     assert 'text("%d초" % int(el)' in body
     assert "int(rem + 0.999)" not in body, "남은 초(감소) 표기가 남았다"
+
+
+# ── [621차 후속11] Qt 진입점 가드 — 617차 래칫 원칙을 621차 진입점 전부로 넓힌다 ─────
+# 래칫(test_617)은 QTimer 슬롯만 센다. 하지만 PyQt5 는 **어떤** Qt 진입점(슬롯·이벤트
+# 처리기)에서 새어나온 예외든 qFatal() 로 프로세스를 죽인다. 621차가 넣거나 고친
+# 진입점은 전부 감사기와 같은 형태(본문 == 단일 Try + Exception 포착)로 고정한다.
+
+_GUARDED_621 = {
+    _CHART: ["_Plot.showEvent", "_Plot.hideEvent", "_Plot.mouseMoveEvent", "_Plot.leaveEvent",
+             "_Plot.mousePressEvent", "_Plot.wheelEvent", "_Plot.paintEvent",
+             "_Plot._on_status_tick",
+             "OptionFlowDeltaChart._on_toggle", "OptionFlowDeltaChart._on_window",
+             "OptionFlowDeltaChart._sync_live_btn", "OptionFlowDeltaChart._on_live_clicked",
+             "OptionFlowDeltaWindow.toggle", "OptionFlowDeltaWindow.hideEvent"],
+    _DASH: ["MinuteChartCanvas.paintEvent", "MinuteChartCanvas.mouseMoveEvent",
+            "MinuteChartCanvas.leaveEvent", "MinuteChartDialog.hideEvent",
+            "MireukDashboard.toggle_option_flow_window",
+            "MireukDashboard.toggle_minute_chart_dialog"],
+}
+
+
+def _is_single_try_guard(fn):
+    import ast
+    body = list(fn.body)
+    if (body and isinstance(body[0], ast.Expr)
+            and isinstance(getattr(body[0], "value", None), ast.Str)):
+        body = body[1:]                                  # docstring 은 밖에 둔다
+    if len(body) != 1 or not isinstance(body[0], ast.Try):
+        return False
+    return any(isinstance(h.type, ast.Name) and h.type.id == "Exception"
+               for h in body[0].handlers)
+
+
+def test_42_all_621_qt_entry_points_are_guarded():
+    import ast
+    bad = []
+    for path, names in _GUARDED_621.items():
+        tree = ast.parse(_src(path))
+        fns = {}
+        for cls in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
+            for fn in cls.body:
+                if isinstance(fn, ast.FunctionDef):
+                    fns["%s.%s" % (cls.name, fn.name)] = fn
+        for n in names:
+            if n not in fns:
+                bad.append("없음 " + n)
+            elif not _is_single_try_guard(fns[n]):
+                bad.append("무가드 " + n)
+    assert not bad, "PyQt5 는 여기서 새는 예외에 프로세스를 죽인다: %s" % bad
+
+
+def test_43_guard_logs_instead_of_swallowing():
+    """삼키지 않는다 — 가드는 `_qt_guard_fail` 로 태그와 함께 남긴다(계측 4원칙 ④)."""
+    for path in (_CHART, _DASH):
+        src = _src(path)
+        assert "def _qt_guard_fail(tag, exc):" in src
+        assert "exc_info=True" in src.split("def _qt_guard_fail", 1)[1][:600]
+    assert "except Exception as _qe:" in _src(_DASH)
+
+
+def test_44_handler_exception_does_not_escape():
+    """처리기 안에서 예외가 나도 밖으로 새지 않는다(= Qt 가 abort 하지 않는다)."""
+    _app()
+    from dashboard.panels.option_flow_delta_chart import _Plot
+
+    pl = _Plot(minimap=True, status=True)
+
+    class _Bad:
+        def pos(self):
+            raise RuntimeError("boom")
+
+        def angleDelta(self):
+            raise RuntimeError("boom")
+
+        def spontaneous(self):
+            raise RuntimeError("boom")
+
+    pl.set_window(60)
+    pl.mouseMoveEvent(_Bad())
+    pl.mousePressEvent(_Bad())
+    pl.wheelEvent(_Bad())
