@@ -144,6 +144,25 @@ def _require_cybos_runtime() -> None:
 # BlockRequest() 타임아웃 (초). COM 데드락 시 청산 불가를 방지.
 BLOCK_REQUEST_TIMEOUT_SEC = 30
 
+# [MW0601 622차] 메인 스레드 메시지 펌프 재진입 가드.
+# `_run_block_request` 의 대기 루프가 부르는 `PumpWaitingMessages()` 는 Windows 메시지를
+# **전부** 디스패치하므로 Qt 타이머(WM_TIMER)도 그 안에서 실행된다 — processEvents 를
+# 안 불러도 재진입은 막히지 않는다. 2026-09-23 13:38:05 에
+#   _poll_kospi200_index → (펌프) → _fetch_investor_data → BlockRequest 모달
+#   → _scheduler_tick → check_rollover → _run_block_request(펌프)
+# 3중첩 뒤 펌프가 네이티브 스핀(CPU 100%)에 갇혀 30초 타임아웃조차 돌지 못했고,
+# FreezeWatchdog 가 13:41:38 os._exit(43) 으로 끊었다.
+# ⇒ 메인 스레드가 펌프 중인지를 노출해, 주기 폴링 콜백이 그 안에서 새 요청을 겹쳐
+#   쌓지 않고 뒤로 미루게 한다(main.py 호출부). 워커 스레드의 호출은 세지 않는다 —
+#   재진입은 메인 스레드 펌프에서만 생긴다.
+_MAIN_PUMP_DEPTH = 0
+MAIN_PUMP_STATS = {"nested_enter": 0}   # 가드 밖 경로가 여전히 중첩되는지 계측
+
+
+def main_pump_busy() -> bool:
+    """메인 스레드가 `_run_block_request` 대기(메시지 펌프) 중이면 True."""
+    return _MAIN_PUMP_DEPTH > 0
+
 
 # ── [MW0602 494차 / F-4③] BlockRequest 재진입 계측 ────────────────────────────
 #
@@ -311,6 +330,17 @@ def _run_block_request(progid, input_pairs, data_reader=None,
     # 호출 → 그 안에서 processEvents() → 재귀 깊이 폭발 + Qt 이벤트 루프 상태 오염.
     # 실증: TickUI 5분 침묵 → 폭발, 차트 응답 없음, 파이프라인 멈춤.
     # processEvents() 는 절대 이 루프에서 호출하지 않는다.
+    #
+    # [MW0601 622차] 이 30초 타임아웃은 PumpWaitingMessages 가 **돌아오지 않으면**
+    # (네이티브 스핀) 검사되지 못한다 — 그 경우 탈출구는 FreezeWatchdog 뿐이다.
+    # 그래서 재진입 자체를 줄이는 것이 대책이다(main_pump_busy 참조).
+    # 중첩 사실의 로그는 위 494차 `reentrant=True` INFO 가 이미 남긴다 — 여기서는 세기만 한다.
+    global _MAIN_PUMP_DEPTH
+    on_main = threading.current_thread() is threading.main_thread()
+    if on_main:
+        if _MAIN_PUMP_DEPTH > 0:
+            MAIN_PUMP_STATS["nested_enter"] += 1
+        _MAIN_PUMP_DEPTH += 1
     deadline = time.time() + timeout_sec
     # [MW0602 494차 F-4③] finally 로 감싼다 — 타임아웃/예외 경로에서도 깊이를 되돌려야
     # 한다. 되돌리지 않으면 이후 모든 호출이 `reentrant=True` 로 오탐된다.
@@ -337,6 +367,8 @@ def _run_block_request(progid, input_pairs, data_reader=None,
 
         return result["ret"], result["status"], result["msg"], result["data"]
     finally:
+        if on_main:
+            _MAIN_PUMP_DEPTH -= 1
         try:
             _blockreq_exit((time.time() - _br_t0) * 1000.0)
         except Exception:
@@ -1414,27 +1446,59 @@ class CybosAPI:
         """
         COM 오브젝트를 Dispatch 하여 BlockRequest 후 헤더/행 데이터를 반환한다.
         실패(연결 불가, status ≠ 0) 시 None 반환.
+
+        [MW0601 622차] 예전에는 **메인 스레드에서 직접** `obj.BlockRequest()` 를 불렀다.
+        그 호출은 Cybos 자체 모달 루프를 돌려 Qt 타이머를 재진입시키는데, 이 경로가
+        2026-09-23 13:38 동결 스택의 가운데 층이었다. 이제 다른 TR 과 같이
+        `_run_block_request`(워커 스레드 + 메인 펌프)로 보내고, 헤더·행 읽기도
+        워커 스레드 안의 `data_reader` 에서 한다(STA 규칙 — 같은 스레드에서 읽기).
         """
         try:
-            obj = Dispatch(progid)
-            for idx, val in inputs:
-                obj.SetInputValue(idx, val)
-            ret = obj.BlockRequest()
-            status = _safe_int(obj.GetDibStatus())
-            msg = _safe_str(obj.GetDibMsg1())
+            # 상시 파싱 폭 결정(아래 긴 주석 참조)은 요청 전에 한다 — 읽기가 워커 안에서 끝난다.
+            is_dump_call = progid not in CybosAPI._probe_dump_done
+            if is_dump_call:
+                field_idx = tuple(range(64))
+            else:
+                field_idx = tuple(sorted(
+                    set(range(15)) | set(self._LIVE_EXTRA_FIELDS.get(progid, ()))
+                ))
+
+            def _read_probe(obj):
+                hdr: Dict[int, str] = {}
+                # CpSvr8111(프로그램매매)은 idx55까지 사용(2026-07-05 검증) — 여유있게 64까지 읽음
+                for i in range(64):
+                    try:
+                        hdr[i] = _safe_str(obj.GetHeaderValue(i))
+                    except Exception:
+                        break
+                rws: List[Dict[int, str]] = []
+                for ri in range(30):
+                    row: Dict[int, str] = {}
+                    any_val = False
+                    for fi in field_idx:
+                        try:
+                            v = _safe_str(obj.GetDataValue(fi, ri))
+                            row[fi] = v
+                            if v:
+                                any_val = True
+                        except Exception:
+                            pass
+                    if not any_val and ri > 0:
+                        break
+                    if row:
+                        rws.append(row)
+                return hdr, rws
+
+            ret, status, msg, data = _run_block_request(
+                progid=progid, input_pairs=list(inputs), data_reader=_read_probe,
+            )
             if ret not in (0, None) or (status != 0 and not allow_status_error):
                 probe_log.warning(
                     "[CybosProbe] %s blocked ret=%s status=%s msg=%s",
                     progid, ret, status, msg,
                 )
                 return None
-            headers: Dict[int, str] = {}
-            # CpSvr8111(프로그램매매)은 idx55까지 사용(2026-07-05 검증) — 여유있게 64까지 읽음
-            for i in range(64):
-                try:
-                    headers[i] = _safe_str(obj.GetHeaderValue(i))
-                except Exception:
-                    break
+            headers, rows = data if data else ({}, [])
             # [MW0601 451차 후속4] 열 폭이 15로 하드코딩돼 있어 **RAW 덤프 자체가 잘리고
             # 있었다.** 공식 문서(cybosplus.github.io/cpsysdib_rtf_1_/cpsvrnew7221.htm)상
             # `CpSvrNew7221`은 GetDataValue **type 0~51**(투자자 12분류 × 매도/매수/순매수)
@@ -1456,29 +1520,7 @@ class CybosAPI:
             # 그래서 배선 검증을 통과했는데 라이브만 비는 형태였다.
             # ⇒ 상시 폭을 **소비하는 열의 집합**으로 명시한다. 새 열을 쓰기 시작하면
             #   `_LIVE_EXTRA_FIELDS` 에 등록할 것. 안 하면 그 열은 0 으로 위장된다.
-            is_dump_call = progid not in CybosAPI._probe_dump_done
-            if is_dump_call:
-                field_idx = tuple(range(64))
-            else:
-                field_idx = tuple(sorted(
-                    set(range(15)) | set(self._LIVE_EXTRA_FIELDS.get(progid, ()))
-                ))
-            rows: List[Dict[int, str]] = []
-            for ri in range(30):
-                row: Dict[int, str] = {}
-                any_val = False
-                for fi in field_idx:
-                    try:
-                        v = _safe_str(obj.GetDataValue(fi, ri))
-                        row[fi] = v
-                        if v:
-                            any_val = True
-                    except Exception:
-                        pass
-                if not any_val and ri > 0:
-                    break
-                if row:
-                    rows.append(row)
+            # (폭 결정·읽기는 [622차] 위 `_read_probe` 로 옮겼다.)
             nonempty_h = sum(1 for v in headers.values() if v)
             probe_log.info(
                 "[CybosProbe] %s ok status=%s nonempty_headers=%d rows=%d",
@@ -1513,7 +1555,11 @@ class CybosAPI:
             # 안 준 것처럼** 보였다(실제로는 우리 코드가 깨진 것).
             # 세션당 progid별 첫 호출에서만 타는 경로라 더 눈에 안 띄었다.
             # ⇒ COM 오류(pywintypes/com_error)와 파이썬 오류를 갈라 적는다.
-            _is_com = exc.__class__.__name__ in ("com_error", "error") or isinstance(
+            if isinstance(exc, TimeoutError):
+                # [622차] 워커 경로로 옮기면서 생긴 새 실패 유형 — 코드 오류가 아니다.
+                probe_log.warning("[CybosProbe] %s timeout: %s", progid, exc)
+                return None
+            _is_com =exc.__class__.__name__ in ("com_error", "error") or isinstance(
                 getattr(exc, "args", (None,))[0], int)
             if _is_com:
                 probe_log.warning(

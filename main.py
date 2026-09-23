@@ -1023,6 +1023,15 @@ class TradingSystem:
         self._main_beat: object = None
         self._freeze_watchdog: object = None
 
+        # ── [MW0601 622차] 메인 펌프 재진입 가드 — 미뤄진 폴링 추적 ────────────
+        # 주기 폴링(수급·현물지수·롤오버)이 `_run_block_request` 펌프 **안에서**
+        # 발화하면 요청을 겹치지 않고 뒤로 민다(`_defer_if_pump_busy`).
+        # pending: 이미 재시도 예약된 키(중복 예약 방지) / count: 키별 누적 연기 횟수.
+        self._pump_defer_pending: set = set()
+        self._pump_defer_count: dict = {}
+        # 롤오버 점검이 연기되면 다음 스케줄러 tick 에 다시 시도한다(30분 대기 방지).
+        self._rollover_check_due: bool = False
+
         # ── [MW0601 471차 F-4] Degraded 선제차단 lookahead 발화 여부(이번 분) ────
         # `_is_degraded_entry_blocked()`가 매 호출 첫머리에서 False로 리셋하고
         # 발화 시 True로 올린다. `ensemble_decisions.health_preblock`에 저장.
@@ -3930,10 +3939,56 @@ class TradingSystem:
     def connect_kiwoom(self) -> bool:
         return self.connect_broker()
 
+    def _defer_if_pump_busy(self, key: str, retry_fn, delay_ms: int = 3000) -> bool:
+        """[MW0601 622차] 메인 스레드가 Cybos 요청 대기(메시지 펌프) 중이면 True.
+
+        `_run_block_request` 의 `PumpWaitingMessages()` 는 Qt 타이머까지 디스패치한다.
+        그 안에서 새 BlockRequest 를 겹치면 2026-09-23 13:38 처럼 3중첩 뒤 네이티브
+        스핀에 갇힌다(FreezeWatchdog 13:41:38 os._exit(43)). 그래서 겹치지 않고
+        `delay_ms` 뒤로 민다. retry_fn 이 None 이면 호출부가 재시도를 직접 챙긴다.
+        연기 사실은 매번 로그로 남긴다(계측 4원칙 ③ — 탈락 가시화).
+        """
+        try:
+            from collection.cybos.api_connector import main_pump_busy
+            busy = bool(main_pump_busy())
+        except Exception:
+            return False    # 판정 불가 — 예전 동작 유지
+        if not busy:
+            return False
+        n = self._pump_defer_count.get(key, 0) + 1
+        self._pump_defer_count[key] = n
+        scheduled = False
+        if retry_fn is not None and key not in self._pump_defer_pending:
+            self._pump_defer_pending.add(key)
+
+            def _retry(_k=key, _fn=retry_fn):
+                # Qt 가 부르는 진입점 — 예외가 새면 qFatal 로 무흔적 종료된다(617차).
+                try:
+                    self._pump_defer_pending.discard(_k)
+                    _fn()
+                except Exception:
+                    logger.exception("[PumpGuard] %s 재시도 예외", _k)
+
+            QTimer.singleShot(int(delay_ms), _retry)
+            scheduled = True
+        # INFO 로 둔다 — SYSTEM 레이어 WARNING 은 exceptions_10m 으로 집계돼 Degraded Mode
+        # (자동진입 conf 62%)를 오발동시킨다(304·307·402차, dev 494차 F-4③ 교훈).
+        # 빈도는 메시지의 `누적 N회` 가 실어 나른다.
+        logger.info(
+            "[PumpGuard] %s 연기 — 메인 펌프(BlockRequest 대기) 중 재진입 회피 "
+            "(누적 %d회, 재시도=%s)",
+            key, n, ("%dms 뒤" % delay_ms) if scheduled else
+            ("이미 예약됨" if retry_fn is not None else "호출부"),
+        )
+        return True
+
     def _fetch_investor_data(self) -> None:
         """수급 TR 수집 — QTimer에서 호출 (COM 콜백 체인 외부)."""
         now = datetime.datetime.now()
         if not is_market_open(now):
+            return
+        # [MW0601 622차] 펌프 안에서 발화했으면 겹치지 않고 미룬다.
+        if self._defer_if_pump_busy("investor", self._fetch_investor_data):
             return
         # [CB⑤ 방어] 09:00~09:02: 장 개시 직후 CpSysDib.CpSvrNew7221 서버 피크 부하
         # → BlockRequest 응답 7초+ 소요 → 메인 스레드 7,187ms 블로킹 실증(6/26 09:01)
@@ -4199,6 +4254,9 @@ class TradingSystem:
         리셋하지 않음) — BasisCalculator/feature 병합부가 결측을 ready=False로 처리.
         """
         if not is_market_open(datetime.datetime.now()):
+            return
+        # [MW0601 622차] 펌프 안에서 발화했으면 겹치지 않고 미룬다.
+        if self._defer_if_pump_busy("kospi200_index", self._poll_kospi200_index):
             return
 
         # ── [MW0602 494차 / F-4②] 무조건 상태 샘플 ────────────────────────────
@@ -13921,7 +13979,10 @@ class TradingSystem:
         self._kospi200_index_timer = QTimer()
         self._kospi200_index_timer.setInterval(60_000)
         self._kospi200_index_timer.timeout.connect(self._poll_kospi200_index)
-        self._kospi200_index_timer.start()
+        # [MW0601 622차] 위상 분리 — 수급 타이머(60s)와 같은 순간에 시작하면 매분 같은
+        # 초에 둘 다 발화해 한쪽의 펌프 안에서 다른 쪽이 재진입한다(2026-09-23 13:38
+        # 동결: 둘 다 :05 에 발화). 시작을 30초 늦춰 반 주기 어긋나게 둔다.
+        QTimer.singleShot(30_000, lambda: self._kospi200_index_timer.start())
         # [612차 후속5] 재기동 직후 즉시 1회 — VKOSPI·현물지수가 60초간 비는 것을
         # 막는다. 이 둘이 없으면 RV-IV 스프레드 카드와 옵션 ATM 기준가도 함께 빈다.
         QTimer.singleShot(8_000, self._poll_kospi200_index)
@@ -14529,9 +14590,15 @@ class TradingSystem:
 
             # 장중 롤오버 감시 — 60 tick(30분)마다 근월물 재확인
             # 롤오버가 감지되면 WARNING 로그 + UI 갱신만 수행; 재구독은 재기동 시 자동 처리
-            if self._heartbeat_count % 60 == 0 and not getattr(self, "_rollover_detected", False):
-                if self.broker_runtime_service.check_rollover(self):
-                    self._rollover_detected = True  # 이후 반복 알림 억제
+            # [MW0601 622차] 2026-09-23 13:38 동결의 맨 안쪽 층이 이 호출이었다 —
+            # 스케줄러가 펌프 안에서 발화하면 연기하고 다음 tick(30초)에 다시 시도한다.
+            if self._heartbeat_count % 60 == 0:
+                self._rollover_check_due = True
+            if self._rollover_check_due and not getattr(self, "_rollover_detected", False):
+                if not self._defer_if_pump_busy("rollover", None):
+                    self._rollover_check_due = False
+                    if self.broker_runtime_service.check_rollover(self):
+                        self._rollover_detected = True  # 이후 반복 알림 억제
 
         _sched_elapsed_ms = (time.perf_counter() - _sched_t0) * 1000
         if _sched_elapsed_ms > 1000:
