@@ -7589,6 +7589,8 @@ OPTION_BOOK_ENABLED = True
 OPTION_BOOK_DB = os.path.join(DB_DIR, "option_book.db")
 OPTION_BOOK_MASTER_DIR = os.path.join(DATA_DIR, "option_master")
 # 다운로드 실패 시 폴백 — 마흐디가 매일 07:30 받는 같은 파일. 없어도 된다.
+# ⚠ MW0602(dev)에는 마흐디·메시아가 없다 — 그 PC 는 **다운로드가 유일한 원천**이다.
+#   실패하면 위클리 2북이 그날 비고(먼스리 북은 계속 쌓인다) 30분 뒤 재시도한다.
 OPTION_BOOK_MASTER_FALLBACKS = (
     os.path.join(os.path.dirname(BASE_DIR), "options", "data", "symbol_master_cache",
                  "fo_idx_code_mts.mst"),

@@ -114,3 +114,71 @@ def test_save_and_load_roundtrip(tmp_path):
     assert got["weekly_thu"][0]["call_wall"] == 1120 and got["weekly_thu"][0]["label"] == "2609W4"
     assert ob.load_day_snaps(db, "2026-09-22") == {}
     assert ob.load_day_snaps(str(tmp_path / "none.db"), "2026-09-23") == {}
+
+
+# ── 수집 경로 가드 (COM 없이 가짜 객체로) ────────────────────────────────
+
+class _SlowMst(object):
+    """BlockRequest 가 느린 상대 — 호출 수를 센다."""
+    def __init__(self):
+        self.calls = 0
+
+    def SetInputValue(self, i, v):
+        pass
+
+    def BlockRequest(self):
+        self.calls += 1
+
+    def GetDibStatus(self):
+        return 0
+
+    def GetHeaderValue(self, i):
+        return 10 if i == 99 else 1.0
+
+
+class _RichQuota(object):
+    """한도가 늘 넉넉하다 — 그래서 `_wait_quota` 는 절대 기다리지 않는다."""
+    LimitRequestRemainTime = 0
+
+    def GetLimitRemainCount(self, t):
+        return 60
+
+
+def _master_dir(tmp_path):
+    d = tmp_path / "m"
+    d.mkdir()
+    (d / ob.MASTER_NAME).write_bytes(_MASTER.encode("cp949"))
+    (d / (ob.MASTER_NAME + ".date")).write_text(dt.date.today().isoformat())
+    return str(d)
+
+
+def test_budget_applies_even_when_quota_is_plentiful(tmp_path, monkeypatch):
+    """예산이 `_wait_quota` 안에서만 검사되면 한도가 넉넉할 때 무시된다(느린 BlockRequest 에 계속 던진다)."""
+    from collection.options import option_chain_worker as w
+    monkeypatch.setattr(ob, "select_nearest",
+                        lambda rows, book, today: ("2609W4", [
+                            {"book": book, "cp": "C", "label": "2609W4", "strike": 1120.0, "code": "X"}] * 5))
+    mst = _SlowMst()
+    out = w.collect_option_books(
+        mst, _RichQuota(), 1120.0, [], "2610", "2026-09-23 10:00:00",
+        {"db_path": str(tmp_path / "ob.db"), "master_dir": _master_dir(tmp_path),
+         "window": 30.0, "reserve": 25, "budget_sec": -1.0})         # 예산 이미 소진
+    assert mst.calls == 0
+    assert out["books"]["weekly_thu"]["n_valid"] == 0
+    assert out["books"]["weekly_thu"]["n_target"] == 5              # 탈락은 행으로 남는다
+    assert out["books"]["weekly_thu"]["gex_bn"] is None             # 미측정 ≠ 0
+
+
+def test_download_failure_backs_off(tmp_path, monkeypatch):
+    """다운로드 실패 뒤에는 폴링마다 20초 타임아웃을 다시 물지 않는다(MW0602 는 마흐디 폴백이 없다)."""
+    calls = []
+
+    def _boom(*a, **k):
+        calls.append(1)
+        raise OSError("offline")
+    monkeypatch.setattr(ob.urllib.request, "urlopen", _boom)
+    monkeypatch.setattr(ob, "_last_dl_fail", None)
+    d = str(tmp_path / "empty")
+    assert ob.load_master(d, dt.date.today()) == ([], "none")
+    assert ob.load_master(d, dt.date.today()) == ([], "none")
+    assert len(calls) == 1

@@ -245,7 +245,11 @@ def collect_option_books(mst_obj: Any, cy: Any, spot: float, monthly_snaps: List
         snaps: List[Dict] = []
         for r in target:
             snap = dict(r)
-            if not _wait_quota(cy, int(cfg.get("reserve", 25)), deadline):
+            # 예산은 **매 요청 전에** 본다. `_wait_quota` 안에서만 보면 한도가 넉넉할 때
+            #   예산이 무시된다 — BlockRequest 자체가 느린 경우(2026-08-19 동결 때 건당 ~25초)
+            #   96건을 끝까지 던진다. FZ-4 ①과 같은 원리(막힌 상대에게 계속 던지지 않는다).
+            if (time.perf_counter() > deadline
+                    or not _wait_quota(cy, int(cfg.get("reserve", 25)), deadline)):
                 snap["error"] = "budget_exceeded"
                 snaps.append(snap)
                 continue

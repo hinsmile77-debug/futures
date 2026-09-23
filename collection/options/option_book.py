@@ -49,6 +49,10 @@ _PTYPES = {
 _MONTHLY_RE = re.compile(r"[CP]\s+(\d{6})\s")          # "C 202610   745.0"
 _WEEKLY_RE = re.compile(r"[CP]\s+(\d{4}W\d)\s")         # "위클리M C 2609W4 970.0"
 
+# 다운로드 실패 후 재시도 간격(초). 프로세스 수명 동안 유지되는 모듈 상태다.
+DOWNLOAD_RETRY_SEC = 1800
+_last_dl_fail: Optional[_dt.datetime] = None
+
 OPTION_MULTIPLIER = 250_000
 GEX_BN = 1e9
 
@@ -142,7 +146,17 @@ def load_master(cache_dir: str, today: _dt.date, fallback_paths=(),
     except OSError:
         got = ""
     src = "cache"
-    if got != today_s or not os.path.exists(path):
+    global _last_dl_fail
+    _backoff = (_last_dl_fail is not None and
+                (_dt.datetime.now() - _last_dl_fail).total_seconds() < DOWNLOAD_RETRY_SEC)
+    if (got != today_s or not os.path.exists(path)) and _backoff:
+        # 방금 실패했다 — 5분 폴링마다 20초 타임아웃을 다시 물지 않는다. 폴백으로 바로 간다.
+        cands = ([path] if os.path.exists(path) else []) + [p for p in fallback_paths if p and os.path.exists(p)]
+        if not cands:
+            return [], "none"
+        path = max(cands, key=os.path.getmtime)
+        src = "stale:%s" % path
+    elif got != today_s or not os.path.exists(path):
         try:
             with urllib.request.urlopen(MASTER_URL, timeout=timeout) as r:
                 blob = r.read()
@@ -154,7 +168,9 @@ def load_master(cache_dir: str, today: _dt.date, fallback_paths=(),
                 f.write(today_s)
             src = "download"
         except Exception as exc:
-            logger.warning("[OptionBook] 마스터 다운로드 실패: %s — 폴백 시도", exc)
+            _last_dl_fail = _dt.datetime.now()
+            logger.warning("[OptionBook] 마스터 다운로드 실패: %s — 폴백 시도 (%d초간 재시도 안 함)",
+                           exc, DOWNLOAD_RETRY_SEC)
             cands = ([path] if os.path.exists(path) else []) + [p for p in fallback_paths if p and os.path.exists(p)]
             if not cands:
                 return [], "none"
