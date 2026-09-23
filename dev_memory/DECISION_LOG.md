@@ -46031,3 +46031,123 @@ git checkout <이 커밋> -- scripts/peter_pull_task_register.ps1 scripts/peter_
 
 1·2 는 내 결함이다(성공 문구를 보증으로 쓴 것, 자가진단을 선택이라 잘못 판단한 것).
 MW0602 가 잡아 줬다. 코드 3파일 중 `tools/peter_pull.py` 는 양쪽이 이미 동일하다.
+
+## 2026-09-23 (MW0601 604차 — 장전 점검)
+
+### 증상
+- `.git/index.lock` 스테일 잔존 지속 — 어제(09-22) 장후부터 회수되지 않은 채 오늘 장전까지 이어짐(`git_lock_guard.py --check` → STALE, exit=2). 저장소 커밋 불가 상태 지속.
+- `SessionStateDrop` — 2026-09-22→2026-09-23 세션 롤오버 시 `p8_last_success_date`·`eod_retrain_ok_date` 두 완료 마커가 새 `session_state.json`에 이어지지 않고 유실(08:41:15 로그 재현, F-1/538-4와 동일 패턴).
+- 미커밋 코드 3건(`levels_store.py`·`premarket_levels.py`·`cybos_autologin.py`, diff 1,332/1,433/4,247줄) 지속 — 사용자 검토 대기 중(606-3).
+- 메인 스레드 09:00:05 5,609ms 순간 정지 1건(개장 버스트) — CB⑤ 잔차 3,642ms(65%). 482차 F-3 섀도 계측이 관찰 중인 패턴과 일치.
+
+### 원인
+- 락: 09-22 12:35경 생성분으로 추정(전날 리포트 근거), 리눅스 샌드박스 세션은 `unlink`가 `EPERM`으로 거부돼 회수 불가.
+- SessionStateDrop: `session_recovery_service.py:increment_session`이 날짜 전환 시 두 마커 키를 이어받는 로직이 없음 (근본원인 F-1 미해결, 538차 후속4부터 매일 재현).
+- 미커밋 3파일: 사용자가 별도 세션에서 작업 중(장전 레벨 산출 롤 정책, 로그인 다이얼로그 판별 개선) — 606-3에서 이미 추적.
+
+### 결정
+- 오늘도 신규 Fix를 내지 않는다 — 셋 다 이미 등록된 이슈(함정① 확인: grep으로 F-1·606-3·git_lock_guard 문서 확인 완료). 사용자 조치로 락 회수만 요청.
+- **SessionStateDrop이 실제 EOD/P8 실패가 아님을 실측으로 재확인**: `logs/retrain_eod_20260922.log`(15:53:19~20) — `EOD_RETRAIN: 재학습 완료: 호라이즌 교체=6/6`, `[P8] session_state p8_last_success_date + eod_retrain_ok_date 기록 완료`. 완료 마커 파일 `data/eod_retrain_done_20260922.txt`도 존재(`horizons_replaced: 6/6`, `daily_close_stalled: false`). 즉 계측 4원칙 ②("미측정 ≠ 0")의 정확한 사례 — 마커만 유실됐고 실제 학습은 정상 완료.
+
+### Why
+- SKILL.md 함정①("이미 반영된 사안을 신규로 올리지 않는다")·계측 4원칙 ②를 지키기 위해 반드시 재학습 로그 원본을 직접 대조해야 했다. `session_state.json` 스냅샷만 보고 "EOD/P8 실패"로 오판하면 08-11 457차·480차와 같은 계열의 오진이 된다.
+
+### How to apply
+- F-1(538-4) 구현 시: `session_recovery_service.py:increment_session`에서 세션 롤오버 딕셔너리 생성 시 `p8_last_success_date`·`eod_retrain_ok_date` 두 키를 이전 세션에서 명시적으로 이관하는 로직 추가. 장후 세션에서 상세 설계 예정.
+- `.git/index.lock`: 사용자가 Windows PC에서 `python scripts/git_lock_guard.py --reclaim` 실행 필요(STALE 확정 상태이므로 안전).
+
+### 검증
+- EOD 재학습 성공 여부는 `session_state.json` 스냅샷이 아니라 `logs/retrain_eod_{date}.log` + `data/eod_retrain_done_{date}.txt` 두 원본으로 교차 확인할 것 — session_state 마커는 F-1 해결 전까지 신뢰할 수 없다.
+- 관측 항목: O-p1(raw_candles "영구결손 367봉" 표시가 09:01 조기 집계 artifact인지 장중 재확인) · O-p2(git lock 회수 여부, 다음 세션 확인).
+
+---
+
+## 2026-09-23 (MW0601 603차 후속4 — 잔존물의 범인은 예약작업이 아니라 「지우지 못하는 git」이었다)
+
+### 0. 치운 것
+
+`.git/HEAD.lock`(9/22 23:45) · `.git/index.lock`(23:46) ·
+`.git/index.lock.stale_20260920` · `tmp_obj_*` **40개**. `git fsck` rc=0
+(dangling 만 남음 — 정상).
+
+### 1. 범인 추적 — 소유자는 단서가 아니었다
+
+처음엔 파일 소유자로 가리려 했으나 **FUSE 마운트가 전부 세션 uid 로 보여준다**
+(윈도우가 쓴 `peter_levels.db` 도 같은 uid). 소유자는 판별에 쓸 수 없다.
+
+실제 증거 셋:
+
+1. **이 세션에서 직접 관측했다.** 내 `git fetch`·`git add` 가
+   `unable to unlink '.git/objects/../tmp_obj_..': Operation not permitted` 를 뱉었다.
+2. 잔존 시각이 09-22 **23:39→23:45→23:46** 으로 이어진다 — tmp_obj 18개 뒤에
+   HEAD.lock, 그 1분 뒤 index.lock. **git 작업 도중 세션이 끊긴 모양**이다.
+   같은 날 커밋이 `Claude 세션 야간 유실 차단 - 최대절전 전환` 이다.
+3. Windows 예약작업 중 **git 을 도는 것은 「피터 사료 송신」 하나뿐**이고, 매매
+   자동화(마흐디·메시아·미륵이·정규수집)는 git 을 안 건드린다.
+
+🔴 결론 — **예약작업의 산물이 아니다.** 코웍(리눅스 샌드박스) 세션의 git 작업이다.
+  그리고 git 이 고장난 것도 아니다. git 은 임시파일을 만들고 **지우면서** 끝나는데
+  마운트가 그 `unlink` 를 EPERM 으로 막는다 — **정상 동작의 청소 단계가 권한에
+  막혀 쓰레기가 된다.** 두 갈래다:
+    tmp_obj_*  이미 있는 객체를 또 쓰면 임시본을 unlink -> 막힘 -> 잔존
+    *.lock     rename 이 아니라 unlink 로 끝나는 경로, 또는 중단(최대절전) -> 잔존
+
+### 2. 이미 알고 있던 문제였고, 도구에 구멍이 있었다
+
+`mireuk-daily-check/SKILL.md` 가 이미 적고 있었다 — 0바이트 `index.lock` 이
+**53.5시간**(08-21) · **3시간 21분**(08-24) 남아 커밋 불가였던 사고, 그리고
+「읽기전용 git 에 `--no-optional-locks` 를 붙인다」는 규약. 도구도 있다
+(`scripts/git_lock_guard.py`, 3중 조건 회수).
+
+**그런데 그 도구는 `index.lock` **하나만** 본다.** `HEAD.lock` 은 커밋을 똑같이
+막는데 보지 않았다 — 이번에 실제로 `HEAD.lock` 이 있는 채로 프리플라이트가
+「정상」이라 답할 뻔했다. `tmp_obj_*` 40개는 아예 시야 밖이었다.
+
+### 3. 고친 것 — 새 도구를 만들지 않고 있는 것을 넓혔다
+
+`scripts/git_lock_guard.py` 에 `scan_extra()` · `sweep_extra()` 추가.
+
+**두 갈래로 나눈다 — 막는 것과 어지르는 것은 다르다.**
+
+| | 대상 | 종료코드 |
+|---|---|---|
+| T1 잠금 | `HEAD.lock` · `config.lock` · `packed-refs.lock` · `refs/**/*.lock` · `logs/**/*.lock` | 2/3 에 **반영** |
+| T2 부스러기 | `objects/**/tmp_obj_*` · `tmp_pack_*` · `*.lock.stale_*` | 세어서 보여만 준다 |
+
+🔴 판정 조건이 `index.lock` 과 **다르다.** 0바이트 조건을 쓰지 않는다 —
+  `HEAD.lock`·ref 락은 새 sha 를 **써 넣은 뒤** rename 하므로 정상적으로도
+  0바이트가 아니다. 0바이트를 요구하면 진짜 스테일을 놓친다. 나이 + git 프로세스
+  0개 둘로 판정하고, 프로세스를 못 세면 판정하지 않는다(계측 4원칙 ②).
+
+🔴 `_fmt()` 가 `index.lock` 만 보므로, T1 이 살아 있는데 「OK」로 찍히는 것을
+  막으려고 요약 표시를 `LOCK` 으로 바꾼다. **요약 한 줄이 거짓말하면 도구가 없는
+  것만 못하다.**
+
+🔴 회수 실패(코웍의 EPERM)는 **성공한 척하지 않는다** — 「회수 실패 … 삭제 권한이
+  없는 환경일 수 있다」로 적고 T1 이면 스테일로 계속 센다.
+
+검증(합성 잔존물 4개): 3시간짜리 T1 2개·T2 1개는 스테일 판정 rc=2, `--check` 로는
+한 개도 안 지웠고, 방금 만든 `config.lock` 은 판정보류로 남겼다. `--reclaim` 에서
+오래된 3개만 사라지고 방금 것은 그대로, rc=3.
+
+### 4. 배선 — 치우는 일은 **삭제가 되는 쪽**이 한다
+
+- MW0601 `scripts/peter_feed_push_MW0601.bat` (작업 「피터 사료 송신」, 평일 16:00)
+- MW0602 `tools/peter_pull.py` (작업 「피터 사료 수신」, 평일 16:30)
+
+둘 다 push/pull **전에** `git_lock_guard.py --reclaim` 을 돌리고 로그에 남긴다.
+🔴 rc 는 무시한다 — 위생은 본작업의 전제조건이 아니다(2/3 은 판정 결과일 뿐).
+
+### 5. 예방 — 애초에 안 만드는 쪽
+
+`peter-daily/SKILL.md` 에 **git 호출 규약**을 실었다(미륵이 스킬과 같은 줄):
+읽기전용 git 전부에 `--no-optional-locks`, **세션이 손으로 치는 명령도 예외 없음**.
+
+⚠ 이 세션이 그 규약을 어겼다. `git log`·`git show`·`git ls-tree` 를 맨손으로 쳤다.
+  미륵이 스킬에만 있고 피터 스킬에는 없었다 — 그래서 옮겨 적었다.
+
+### 6. 자가유발 여부
+
+**절반은 자가유발이다.** 09-22 23:39~23:46 잔존물의 주체는 특정하지 못했지만,
+이 세션이 규약 없이 친 git 명령들이 같은 종류의 잔존물을 만들 수 있었고 실제로
+경고가 찍혔다. 도구의 `HEAD.lock` 구멍은 483차 설계 시점의 누락이다.

@@ -94,6 +94,19 @@ def main():
     stamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     print('[peter_pull] %s  repo=%s' % (stamp, _ROOT))
 
+    # ── [603차 후속4] 받기 전에 죽은 잠금·부스러기부터 치운다 ────────────
+    #   git 은 임시파일을 만들고 **지우면서** 끝난다. 코웍 마운트는 그 unlink 를
+    #   막으므로(EPERM) 정상 동작이 쓰레기를 남긴다 — 2026-09-23 에 잠금 3개와
+    #   tmp_obj 40개가 쌓여 있었다. 삭제가 되는 쪽(Windows)에서 도는 이 스크립트가
+    #   매일 치운다. 🔴 3중 조건을 통과한 것만 지운다 — 도는 git 은 안 건드린다.
+    hy = os.path.join(_ROOT, 'scripts', 'git_lock_guard.py')
+    if os.path.exists(hy):
+        q = subprocess.Popen([sys.executable, hy, '--reclaim'], cwd=_ROOT,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        o = q.communicate()[0].decode('utf-8', 'replace').strip()
+        for ln in o.splitlines():
+            print('  [위생] ' + ln)
+
     busy = _in_progress()
     if busy:
         raise SystemExit('중단: 저장소가 %s 진행 중이다 — 끝내고 다시 돌린다.' % busy)

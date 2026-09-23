@@ -163,6 +163,7 @@ description: 피터리(@PeterLeejoa)의 당일 선물매매 트윗을 수집해 
 | DB 저장이 `disk I/O error` | Cowork 마운트가 sqlite 잠금을 못 받아준다 | DB 를 마운트 밖(`~/`)으로 복사 → 거기서 저장 → 파일을 되돌려 씀. 남은 `-journal` 은 삭제가 막히면 **0바이트로 비운다**(0바이트는 hot 이 아니다) |
 | push 가 `could not read Username` | 마운트에 GitHub 자격증명이 없다 | 로컬 ref 까지만 하고 Windows 작업 「피터 사료 송신」에 맡긴다(10번) |
 | 새로 만든 `.bat` 가 cmd 에서 `DO was unexpected` · 주석이 명령으로 실행 | 마운트로 직접 쓴 파일은 **LF** 다 — git 의 `core.autocrlf=true` 를 안 거친다 | `.bat`/`.ps1` 은 **CRLF 로 저장**한다(실측 2026-09-21). `.ps1` 은 BOM 도 함께 |
+| 잠금·`tmp_obj_*` 가 쌓인다 | 코웍 마운트가 git 의 `unlink` 를 EPERM 으로 막는다 — **정상 동작이 쓰레기를 남긴다** | 읽기전용 git 에 `--no-optional-locks` 를 붙여 애초에 안 만든다. 쌓인 것은 삭제되는 쪽(Windows)의 `scripts/git_lock_guard.py --reclaim` 이 치운다 |
 
 ## 다른 PC(MW0602)
 

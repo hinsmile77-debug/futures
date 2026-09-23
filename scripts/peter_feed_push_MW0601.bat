@@ -83,6 +83,15 @@ SET PYTHONUNBUFFERED=1
 SET PYTHONIOENCODING=utf-8
 SET PYTHONUTF8=1
 
+REM  ── [603차 후위4] 올리기 전에 저장소 위생부터 ─────────────────────
+REM   git 은 임시파일을 만들고 **지우면서** 끝난다. 코웍(리눅스 마운트)은
+REM   그 unlink 를 EPERM 으로 막아 **정상 동작이 쓰레기를 남긴다.**
+REM   2026-09-23 실측: 잠금 3개(HEAD.lock 포함) + tmp_obj 40개 누적.
+REM   삭제가 되는 쪽은 Windows 뿐이라 **여기서** 치운다.
+REM   🔴 3중 조건(나이·git 프로세스 0개)을 통과한 것만 지운다.
+REM   🔴 rc 는 무시한다 — 위생은 푸시의 전제조건이 아니다(2/3 은 판정 결과일 뿐).
+"!PYEXE!" !PYARG! scripts\git_lock_guard.py --reclaim >> "!LOG!" 2>&1
+
 "!PYEXE!" !PYARG! tools\peter_feed_push.py --push >> "!LOG!" 2>&1
 SET "RC=!ERRORLEVEL!"
 ECHO [%DATE% %TIME%] peter_feed_push 종료 rc=!RC! >> "!LOG!"

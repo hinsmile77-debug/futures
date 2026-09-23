@@ -114,7 +114,7 @@ def inspect(repo, min_age_sec=DEFAULT_MIN_AGE_SEC, git_procs=None):
     info["is_repo"] = True
     lock = os.path.join(gitdir, "index.lock")
     if not os.path.exists(lock):
-        info["verdict"] = "정상 — 락 없음"
+        info["verdict"] = "index.lock 없음"
         return info
     info["present"] = True
     try:
@@ -173,6 +173,104 @@ def reclaim(repo, min_age_sec=DEFAULT_MIN_AGE_SEC, git_procs=None):
         return False, info
     info["verdict"] = "회수 완료 — " + info["verdict"]
     return True, info
+
+
+# ── [MW0601 603차 후속4] `index.lock` 만으로는 부족했다 ────────────────────────
+#
+# 2026-09-23 실측: 이 저장소에 `.git/HEAD.lock`(9/22 23:45) · `.git/index.lock`
+# (23:46) · `.git/index.lock.stale_20260920` · `tmp_obj_*` **40개**가 남아 있었다.
+# 위쪽 `inspect()` 는 `index.lock` 하나만 본다 — **HEAD.lock 은 커밋을 똑같이
+# 막는데 이 도구가 보지 않았다.** 프리플라이트가 통과시킨 채 커밋이 죽는다.
+#
+# 두 갈래로 나눈다. 같은 「잔존물」이어도 **막는 것과 어지르는 것은 다르다.**
+#   TIER1 잠금  — 쓰기를 **막는다**. 종료코드 2/3 에 반영한다.
+#   TIER2 부스러기 — 아무것도 안 막고 쌓이기만 한다. 종료코드를 바꾸지 않는다.
+#
+# 🔴 조건이 `index.lock` 과 **다르다.** 0바이트 조건을 쓰지 않는다 —
+#   `HEAD.lock`·ref 락은 새 sha 를 **써 넣은 뒤** rename 하므로 정상적으로도
+#   0바이트가 아니다. 0바이트를 요구하면 진짜 스테일을 놓친다. 대신 나이와
+#   git 프로세스 0개, 둘만으로 판정한다(계측 4원칙 ② — 미측정이면 판정 안 함).
+TIER1_FIXED = ("HEAD.lock", "config.lock", "packed-refs.lock", "ORIG_HEAD.lock")
+TIER1_DIRS = ("refs", "logs")
+TIER2_PREFIX = ("tmp_obj_", "tmp_pack_")
+
+
+def _walk(root, pick):
+    out = []
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for fn in filenames:
+            if pick(fn):
+                out.append(os.path.join(dirpath, fn))
+    return out
+
+
+def scan_extra(repo):
+    """`index.lock` **이외의** 잔존물. (tier1_locks, tier2_debris) 경로 목록."""
+    gitdir = os.path.join(repo, ".git")
+    t1, t2 = [], []
+    if not os.path.isdir(gitdir):
+        return t1, t2
+    for name in TIER1_FIXED:
+        p = os.path.join(gitdir, name)
+        if os.path.exists(p):
+            t1.append(p)
+    for sub in TIER1_DIRS:
+        d = os.path.join(gitdir, sub)
+        if os.path.isdir(d):
+            t1.extend(_walk(d, lambda fn: fn.endswith(".lock")))
+    objs = os.path.join(gitdir, "objects")
+    if os.path.isdir(objs):
+        t2.extend(_walk(objs, lambda fn: fn.startswith(TIER2_PREFIX)))
+    # 지난 세션이 「지우지 못해 이름만 바꿔 둔」 것들 — 코웍 마운트의 흔적이다.
+    t2.extend(_walk(gitdir, lambda fn: ".lock.stale_" in fn))
+    return sorted(set(t1)), sorted(set(t2))
+
+
+def sweep_extra(repo, min_age_sec=DEFAULT_MIN_AGE_SEC, git_procs=None, reclaim_it=False):
+    """(rows, n_stale_t1, n_hold_t1, n_removed). 판정보류는 손대지 않는다."""
+    if git_procs is None:
+        git_procs = _git_process_count()
+    t1, t2 = scan_extra(repo)
+    rows, n_stale, n_hold, n_removed = [], 0, 0, 0
+    now = time.time()
+    for path, tier in [(p, 1) for p in t1] + [(p, 2) for p in t2]:
+        row = {"path": path, "tier": tier, "age_sec": None,
+               "git_procs": git_procs, "stale": False, "removed": False, "verdict": ""}
+        try:
+            row["age_sec"] = max(0.0, now - os.stat(path).st_mtime)
+        except Exception as e:
+            row["verdict"] = "stat 실패: %s" % e
+            rows.append(row)
+            continue
+        fails = []
+        if row["age_sec"] <= min_age_sec:
+            fails.append("나이 %.0f초 <= 임계 %d초" % (row["age_sec"], min_age_sec))
+        if git_procs is None:
+            fails.append("git 프로세스 **미측정**(0으로 간주하지 않는다)")
+        elif git_procs != 0:
+            fails.append("git 프로세스 %d개 실행 중" % git_procs)
+        if fails:
+            row["verdict"] = "판정보류 — " + " / ".join(fails)
+            if tier == 1:
+                n_hold += 1
+        else:
+            row["stale"] = True
+            row["verdict"] = "스테일 — %.1f시간" % (row["age_sec"] / 3600.0)
+            if reclaim_it:
+                try:
+                    os.remove(path)
+                    row["removed"] = True
+                    n_removed += 1
+                    row["verdict"] = "회수 완료 — " + row["verdict"]
+                except Exception as e:
+                    # 🔴 코웍 마운트에서는 여기가 EPERM 으로 떨어진다. **성공한 척하지 않는다.**
+                    row["verdict"] = "회수 실패(%s) — 삭제 권한이 없는 환경일 수 있다" % e
+                    if tier == 1:
+                        n_stale += 1
+            elif tier == 1:
+                n_stale += 1
+        rows.append(row)
+    return rows, n_stale, n_hold, n_removed
 
 
 def discover_repos(scan_root=DEFAULT_SCAN_ROOT):
@@ -243,6 +341,7 @@ def main(argv=None):
 
     procs = _git_process_count()  # 시스템 값이므로 한 번만 센다
     rows, n_stale, n_hold, n_removed = [], 0, 0, 0
+    n_debris = 0
     for r in repos:
         if a.reclaim:
             removed, info = reclaim(r, min_age_sec=a.min_age, git_procs=procs)
@@ -257,12 +356,39 @@ def main(argv=None):
                 n_stale += 1
             elif not info["stale"]:
                 n_hold += 1
+        # [603차 후속4] index.lock 이외의 잔존물. tier1 은 쓰기를 막으므로 종료코드에
+        # 반영하고, tier2(부스러기)는 세어서 보여만 준다 — 아무것도 안 막는다.
+        xrows, xs, xh, xr = sweep_extra(
+            r, min_age_sec=a.min_age, git_procs=procs, reclaim_it=bool(a.reclaim))
+        info["extra"] = xrows
+        n_stale += xs
+        n_hold += xh
+        n_removed += xr
+        n_debris += sum(1 for x in xrows if x["tier"] == 2)
 
     if a.json:
         print(json.dumps(rows, ensure_ascii=False, indent=2))
     else:
         for info in rows:
-            print(_fmt(info))
+            # 🔴 `_fmt` 는 index.lock 만 본다. 그 줄만 믿으면 HEAD.lock 이 막고 있는
+            #   저장소가 「OK」로 보인다 — 2026-09-23 에 실제로 그럴 뻔했다.
+            _x = info.get("extra", [])
+            _bad = [y for y in _x if y["tier"] == 1 and not y["removed"]]
+            _line = _fmt(info)
+            if _bad and " OK    " in _line:
+                _line = _line.replace(" OK    ", " LOCK  ", 1)
+            print(_line)
+            for x in _x:
+                rel = os.path.relpath(x["path"], info["repo"])
+                mark = "T%d" % x["tier"]
+                print("    %s %-44s %s" % (mark, rel, x["verdict"]))
+        if n_debris:
+            print("")
+            print(
+                "부스러기(T2) %d개 — 커밋을 막지는 않는다. 코웍 마운트가 git 의 "
+                "unlink 를 막아 쌓인 것이다. 삭제 권한이 있는 쪽(Windows)에서 "
+                "`--reclaim` 으로 치운다." % n_debris
+            )
         if a.reclaim and n_removed:
             print("")
             print("회수 %d건. 회수 직후 `git status` 로 인덱스가 갱신되는지 확인할 것." % n_removed)
