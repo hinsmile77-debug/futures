@@ -8864,6 +8864,25 @@ def peter_save(session_date: str, offset: float, raw_lv: str, raw_tr: str):
             (session_date, float(offset or 0.0), raw_lv or "", raw_tr or "",
              _dt.datetime.now().isoformat(timespec="seconds")))
 
+# ── [621차 후속11] Qt 진입점 가드 ─────────────────────────────────────────
+# 🔴 PyQt5 는 Qt 가 부른 파이썬 코드(슬롯·이벤트 처리기)에서 새어나온 예외를 `qFatal()` 로
+#   처리한다 — **트레이스백도 로그도 없이 엔진 프로세스가 죽는다**(2026-09-22 09:41:56 실사고,
+#   617차 래칫의 계기). 래칫은 QTimer 슬롯만 세지만 원리는 모든 진입점에 같다.
+#   그래서 이 모듈의 진입점은 본문 전체를 단일 try 로 감싸고 여기로 보낸다.
+#   삼키지 않는다 — 태그별 5분에 한 번 WARNING(마우스 이벤트는 초당 수십 번 온다).
+#   ⚠ 표시 계층 전용이다. 엔진 슬롯을 이렇게 삼키면 주문 실패가 조용히 사라진다(617차 주석).
+_QT_GUARD_TS = {}
+
+
+def _qt_guard_fail(tag, exc):
+    import time as _t
+    _now = _t.time()
+    if _now - _QT_GUARD_TS.get(tag, 0.0) >= 300.0:
+        _QT_GUARD_TS[tag] = _now
+        logger.warning("[QtGuard] %s 예외 — 이번 이벤트만 건너뛴다(5분 스로틀): %s",
+                       tag, exc, exc_info=True)
+
+
 class MinuteChartCanvas(QWidget):
     RIGHT_PADDING_BARS = 10
 
@@ -9377,254 +9396,259 @@ class MinuteChartCanvas(QWidget):
         self._draw_crosshair_and_tooltip(painter, m["plot"], candles, m["lo"], m["hi"])
 
     def paintEvent(self, event):
-        import time as _t
-        # [621차 후속6] monotonic() 은 Windows·py3.7 에서 해상도 15.6ms 라 단계별 분해가 그 배수로만 찍혔다 → perf_counter.
-        _t0 = _t.perf_counter()
-        del event
-        # 비정상 거대 캔버스 가드 — GDI 단편화 크래시 2차 방어
-        # restore_saved_geometry에서 DIB 예산(window_utils.dib_safe_size, 621차 후속5)으로 1차 차단되므로
-        # 여기는 세션 중 수동 리사이즈 후 단편화 크래시 대비 안전망
-        # 3000×2000: DPI 150% → 4500×3000×4=54MB — 이 이상은 32-bit에서 unsafe
-        if self.width() > 3000 or self.height() > 2000:
-            logger.warning(
-                "[ChartDBG] paintEvent 거대 캔버스 차단: %dx%d candles=%d",
-                self.width(), self.height(), len(self._closed_candles),
-            )
-            QPainter(self).fillRect(self.rect(), QColor(C["bg"]))
-            return
-        # [621차 후속6] 캐시가 유효하면 진행 중 봉·크로스헤어만 얹고 끝낸다.
-        # 🔴 캐시 경로의 예외는 **여기서 삼키고 종전 방식으로 그린다.** PyQt5 는 paintEvent
-        #   안 미처리 예외에서 프로세스를 abort 한다(0xC0000409 — 구현 중 NameError 한 줄로
-        #   실측). 새 경로가 새 크래시 원인이 되면 안 된다. 조용히 삼키지는 않는다.
         try:
-            if self._paint_from_cache():
+            import time as _t
+            # [621차 후속6] monotonic() 은 Windows·py3.7 에서 해상도 15.6ms 라 단계별 분해가 그 배수로만 찍혔다 → perf_counter.
+            _t0 = _t.perf_counter()
+            del event
+            # 비정상 거대 캔버스 가드 — GDI 단편화 크래시 2차 방어
+            # restore_saved_geometry에서 DIB 예산(window_utils.dib_safe_size, 621차 후속5)으로 1차 차단되므로
+            # 여기는 세션 중 수동 리사이즈 후 단편화 크래시 대비 안전망
+            # 3000×2000: DPI 150% → 4500×3000×4=54MB — 이 이상은 32-bit에서 unsafe
+            if self.width() > 3000 or self.height() > 2000:
+                logger.warning(
+                    "[ChartDBG] paintEvent 거대 캔버스 차단: %dx%d candles=%d",
+                    self.width(), self.height(), len(self._closed_candles),
+                )
+                QPainter(self).fillRect(self.rect(), QColor(C["bg"]))
                 return
-            _pm = self._base_target()         # None 이면 위젯에 직접(종전 방식)
-        except Exception as _ce:
-            self._base_cache_error(_ce)
-            _pm = None
-        painter = QPainter(_pm) if _pm is not None else QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setRenderHint(QPainter.TextAntialiasing)
-        painter.setRenderHint(QPainter.SmoothPixmapTransform)
-        painter.fillRect(self.rect(), QColor(C["bg"]))
+            # [621차 후속6] 캐시가 유효하면 진행 중 봉·크로스헤어만 얹고 끝낸다.
+            # 🔴 캐시 경로의 예외는 **여기서 삼키고 종전 방식으로 그린다.** PyQt5 는 paintEvent
+            #   안 미처리 예외에서 프로세스를 abort 한다(0xC0000409 — 구현 중 NameError 한 줄로
+            #   실측). 새 경로가 새 크래시 원인이 되면 안 된다. 조용히 삼키지는 않는다.
+            try:
+                if self._paint_from_cache():
+                    return
+                _pm = self._base_target()         # None 이면 위젯에 직접(종전 방식)
+            except Exception as _ce:
+                self._base_cache_error(_ce)
+                _pm = None
+            painter = QPainter(_pm) if _pm is not None else QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.setRenderHint(QPainter.TextAntialiasing)
+            painter.setRenderHint(QPainter.SmoothPixmapTransform)
+            painter.fillRect(self.rect(), QColor(C["bg"]))
 
-        candles = list(self._closed_candles)
-        if self._live_candle:
-            candles.append(dict(self._live_candle))
+            candles = list(self._closed_candles)
+            if self._live_candle:
+                candles.append(dict(self._live_candle))
 
-        if not candles:
-            painter.setPen(QColor(C["text2"]))
-            painter.drawText(self.rect(), Qt.AlignCenter, "당일 1분봉 데이터가 아직 없습니다.")
-            self._finish_frame(painter, _pm, None)
-            return
+            if not candles:
+                painter.setPen(QColor(C["text2"]))
+                painter.drawText(self.rect(), Qt.AlignCenter, "당일 1분봉 데이터가 아직 없습니다.")
+                self._finish_frame(painter, _pm, None)
+                return
 
-        total_count = len(candles)
-        visible_count = min(max(self._visible_count or total_count, self._min_visible_count), total_count)
-        self._view_offset = self._clamp_view_offset(self._view_offset, total_count, visible_count)
-        end_idx = total_count - self._view_offset
-        start_idx = max(0, end_idx - visible_count)
-        candles = candles[start_idx:end_idx]
-        padded_count = self._compute_padded_count(candles, total_count)
-        self._padded_count_cur = padded_count
-        # [MW0601 598차] 가로 격자를 보류했으면 **그 사실을 남긴다**(계측 4원칙 ④).
-        #   Y 쪽은 591차부터 보류 사유를 적고 있었는데 x 는 조용했다 — 그래서
-        #   사용자에게는 「버튼이 저절로 꺼졌다」로 보였다.
-        self._full_x_note = None
-        if self._full_session_x and not self._view_is_full():
-            self._full_x_note = ("가로 전일정 격자 보류 — 줌·패닝 중"
-                                 " (더블클릭하면 전체보기로 돌아온다)")
+            total_count = len(candles)
+            visible_count = min(max(self._visible_count or total_count, self._min_visible_count), total_count)
+            self._view_offset = self._clamp_view_offset(self._view_offset, total_count, visible_count)
+            end_idx = total_count - self._view_offset
+            start_idx = max(0, end_idx - visible_count)
+            candles = candles[start_idx:end_idx]
+            padded_count = self._compute_padded_count(candles, total_count)
+            self._padded_count_cur = padded_count
+            # [MW0601 598차] 가로 격자를 보류했으면 **그 사실을 남긴다**(계측 4원칙 ④).
+            #   Y 쪽은 591차부터 보류 사유를 적고 있었는데 x 는 조용했다 — 그래서
+            #   사용자에게는 「버튼이 저절로 꺼졌다」로 보였다.
+            self._full_x_note = None
+            if self._full_session_x and not self._view_is_full():
+                self._full_x_note = ("가로 전일정 격자 보류 — 줌·패닝 중"
+                                     " (더블클릭하면 전체보기로 돌아온다)")
 
-        left = S.p(58)
-        top = S.p(22)
-        right = S.p(18)
-        bottom = S.p(34)
-        # [오버레이 P7] 가격 아래에 보조 패널 2단 + 전환 레인, 맨 아래 레전드.
-        #   자리를 먼저 떼고 남은 높이를 가격에 준다 — 안 그러면 패널이 x축 위로 겹친다.
-        _flow_h = self._flow_panel_height()
-        _leg_h = _LEGEND_H if _flow_h else 0
-        _reserve = (_flow_h + _FLOW_GAP if _flow_h else 0) + _leg_h
-        plot = QRectF(left, top, max(10, self.width() - left - right),
-                      max(10, self.height() - top - bottom - _reserve))
-        self._last_plot_rect = plot
+            left = S.p(58)
+            top = S.p(22)
+            right = S.p(18)
+            bottom = S.p(34)
+            # [오버레이 P7] 가격 아래에 보조 패널 2단 + 전환 레인, 맨 아래 레전드.
+            #   자리를 먼저 떼고 남은 높이를 가격에 준다 — 안 그러면 패널이 x축 위로 겹친다.
+            _flow_h = self._flow_panel_height()
+            _leg_h = _LEGEND_H if _flow_h else 0
+            _reserve = (_flow_h + _FLOW_GAP if _flow_h else 0) + _leg_h
+            plot = QRectF(left, top, max(10, self.width() - left - right),
+                          max(10, self.height() - top - bottom - _reserve))
+            self._last_plot_rect = plot
 
-        prices = []
-        for candle in candles:
-            prices.extend([candle["open"], candle["high"], candle["low"], candle["close"]])
-        for trade in self._completed_trades:
-            prices.append(float(trade.get("entry_price") or 0.0))
-            prices.append(float(trade.get("exit_price") or 0.0))
-        if self._active_trade:
-            prices.append(float(self._active_trade.get("entry_price") or 0.0))
-        for marker in self._exit_markers:
-            prices.append(float(marker.get("price") or 0.0))
-        # [557차 후속2] GP 가격도 축에 넣는다 — 빼면 마커가 플롯 밖으로 나간다.
-        for gp in self._gp_trades:
-            prices.append(float(gp.get("entry_price") or 0.0))
-            if gp.get("exit_price") is not None:
-                prices.append(float(gp.get("exit_price") or 0.0))
-        prices = [p for p in prices if p > 0]
-        lo = min(prices)
-        hi = max(prices)
-        _raw_lo, _raw_hi = lo, hi              # [621차 후속6] 캐시 재사용 판정용(패딩 전)
-        if hi <= lo:
-            hi = lo + 1.0
-        # ── [MW0601 591차] 「하루 전체」 ON — Y 를 맥점 모델 범위까지 넓힌다 ──────
-        # 🔴 **합집합이다.** 모델 범위'만'으로 잡으면 캔들이 잘린다 — 실측(107 스테이지-일)
-        #   에서 실제 봉이 모델 범위를 벗어난 날이 0850 **89%** · 0930 **76%**,
-        #   벗어난 폭 중앙 13pt(봉 폭이 보통 20~25pt다).
-        # 🔴 **80% 밴드는 넣지 않는다.** 넣으면 캔들 세로 점유율 중앙이 37.6~42.2%,
-        #   최소 15.1% 로 **554차 사고(33.1%)보다 나빠진다.** 점추정+구조만 쓰면
-        #   중앙 72.2%(0850) / 86.5%(0930) 다. 밴드는 면이라 잘려도 읽힌다.
-        #
-        # 🔴 **[MW0601 598차] 봉이 아직 거기까지 안 갔어도 넓힌다**(사용자 결정
-        #   2026-09-17). 591차에는 이 자리가 **거부권**이었다 — 점유율이 하한 미달이면
-        #   확장을 통째로 취소했다. 그 규칙은 「봉이 아직 안 간 곳은 안 보여준다」와
-        #   같은 말이고, 그건 이 버튼의 목적과 **정면으로 어긋난다.** 「하루 전체」는
-        #   조망이다: 모델이 가리키는 데까지 미리 열어 두지 않으면 하루가 어디로 갈
-        #   수 있는지가 화면에 없다.
-        #   ⇒ `FULL_Y_MIN_OCCUPANCY` 는 이제 **거부권이 아니라 표기 임계**다.
-        #     눌린 정도는 계속 화면이 말한다(계측 4원칙 ④) — 값만 조용히 바뀌는 게
-        #     아니라 **무엇을 하는 상수인지**가 바뀌었다.
-        #   ⚠ 좁게 보고 싶으면 「하루 전체」를 끈다 — 그때는 이 블록 자체가 안 돈다.
-        self._full_y_note = None
-        _y_model_padded = False
-        if self._full_session_x:
-            _mlv = self._model_axis_levels()
-            if _mlv:
-                _clo, _chi = lo, hi                      # 봉 범위 — 점유율 계산용
-                _ulo, _uhi = min(lo, min(_mlv)), max(hi, max(_mlv))
-                # 모델 **바깥**으로 마진 — 테두리에 딱 붙으면 더 갈 수 있다는 게 안 읽힌다
-                _m = max((_uhi - _ulo) * self.FULL_Y_MODEL_MARGIN, 0.5)
-                lo, hi = _ulo - _m, _uhi + _m
-                _y_model_padded = True
-                _occ = (_chi - _clo) / max(hi - lo, 1e-9)
-                if _occ >= self.FULL_Y_MIN_OCCUPANCY:
-                    self._full_y_note = None
-                else:
-                    self._full_y_note = (
-                        "조망 우선 — 모델 범위가 넓어 캔들이 세로의 %.0f%% 다"
-                        " (표기 기준 %.0f%%). 좁게 보려면 「하루 전체」를 끈다."
-                        % (_occ * 100, self.FULL_Y_MIN_OCCUPANCY * 100))
-        if not _y_model_padded:
-            # 모델 마진을 이미 줬으면 **두 번 밀지 않는다** — 캔들만 더 눌린다.
-            pad = max((hi - lo) * 0.08, 0.2)
-            lo -= pad
-            hi += pad
-        # 축 밖 판정용 — _is_off_axis / _draw_struct_model 이 참조한다.
-        self._axis_lo, self._axis_hi = lo, hi
+            prices = []
+            for candle in candles:
+                prices.extend([candle["open"], candle["high"], candle["low"], candle["close"]])
+            for trade in self._completed_trades:
+                prices.append(float(trade.get("entry_price") or 0.0))
+                prices.append(float(trade.get("exit_price") or 0.0))
+            if self._active_trade:
+                prices.append(float(self._active_trade.get("entry_price") or 0.0))
+            for marker in self._exit_markers:
+                prices.append(float(marker.get("price") or 0.0))
+            # [557차 후속2] GP 가격도 축에 넣는다 — 빼면 마커가 플롯 밖으로 나간다.
+            for gp in self._gp_trades:
+                prices.append(float(gp.get("entry_price") or 0.0))
+                if gp.get("exit_price") is not None:
+                    prices.append(float(gp.get("exit_price") or 0.0))
+            prices = [p for p in prices if p > 0]
+            lo = min(prices)
+            hi = max(prices)
+            _raw_lo, _raw_hi = lo, hi              # [621차 후속6] 캐시 재사용 판정용(패딩 전)
+            if hi <= lo:
+                hi = lo + 1.0
+            # ── [MW0601 591차] 「하루 전체」 ON — Y 를 맥점 모델 범위까지 넓힌다 ──────
+            # 🔴 **합집합이다.** 모델 범위'만'으로 잡으면 캔들이 잘린다 — 실측(107 스테이지-일)
+            #   에서 실제 봉이 모델 범위를 벗어난 날이 0850 **89%** · 0930 **76%**,
+            #   벗어난 폭 중앙 13pt(봉 폭이 보통 20~25pt다).
+            # 🔴 **80% 밴드는 넣지 않는다.** 넣으면 캔들 세로 점유율 중앙이 37.6~42.2%,
+            #   최소 15.1% 로 **554차 사고(33.1%)보다 나빠진다.** 점추정+구조만 쓰면
+            #   중앙 72.2%(0850) / 86.5%(0930) 다. 밴드는 면이라 잘려도 읽힌다.
+            #
+            # 🔴 **[MW0601 598차] 봉이 아직 거기까지 안 갔어도 넓힌다**(사용자 결정
+            #   2026-09-17). 591차에는 이 자리가 **거부권**이었다 — 점유율이 하한 미달이면
+            #   확장을 통째로 취소했다. 그 규칙은 「봉이 아직 안 간 곳은 안 보여준다」와
+            #   같은 말이고, 그건 이 버튼의 목적과 **정면으로 어긋난다.** 「하루 전체」는
+            #   조망이다: 모델이 가리키는 데까지 미리 열어 두지 않으면 하루가 어디로 갈
+            #   수 있는지가 화면에 없다.
+            #   ⇒ `FULL_Y_MIN_OCCUPANCY` 는 이제 **거부권이 아니라 표기 임계**다.
+            #     눌린 정도는 계속 화면이 말한다(계측 4원칙 ④) — 값만 조용히 바뀌는 게
+            #     아니라 **무엇을 하는 상수인지**가 바뀌었다.
+            #   ⚠ 좁게 보고 싶으면 「하루 전체」를 끈다 — 그때는 이 블록 자체가 안 돈다.
+            self._full_y_note = None
+            _y_model_padded = False
+            if self._full_session_x:
+                _mlv = self._model_axis_levels()
+                if _mlv:
+                    _clo, _chi = lo, hi                      # 봉 범위 — 점유율 계산용
+                    _ulo, _uhi = min(lo, min(_mlv)), max(hi, max(_mlv))
+                    # 모델 **바깥**으로 마진 — 테두리에 딱 붙으면 더 갈 수 있다는 게 안 읽힌다
+                    _m = max((_uhi - _ulo) * self.FULL_Y_MODEL_MARGIN, 0.5)
+                    lo, hi = _ulo - _m, _uhi + _m
+                    _y_model_padded = True
+                    _occ = (_chi - _clo) / max(hi - lo, 1e-9)
+                    if _occ >= self.FULL_Y_MIN_OCCUPANCY:
+                        self._full_y_note = None
+                    else:
+                        self._full_y_note = (
+                            "조망 우선 — 모델 범위가 넓어 캔들이 세로의 %.0f%% 다"
+                            " (표기 기준 %.0f%%). 좁게 보려면 「하루 전체」를 끈다."
+                            % (_occ * 100, self.FULL_Y_MIN_OCCUPANCY * 100))
+            if not _y_model_padded:
+                # 모델 마진을 이미 줬으면 **두 번 밀지 않는다** — 캔들만 더 눌린다.
+                pad = max((hi - lo) * 0.08, 0.2)
+                lo -= pad
+                hi += pad
+            # 축 밖 판정용 — _is_off_axis / _draw_struct_model 이 참조한다.
+            self._axis_lo, self._axis_hi = lo, hi
 
-        import time as _t2
-        self._chip_rects = []        # [P8] 이번 paint 의 칩 자리 — 레이어가 공유한다
-        self._frame_live_dep = False # [621차 후속6] 레이어가 현재가를 쓰면 켠다
-        # [621차 후속7] 진행 중 봉 인덱스를 **레이어보다 먼저** 정한다. 현재가까지 잇는 선
-        #   (보유 중 연결선 · GP 미청산 다리)은 캐시에 그리지 않고 오버레이로 넘긴다 —
-        #   재기동 실측(11:53~11:58): GP 미청산 1건 때문에 틱마다 1초 규칙으로 전체를
-        #   다시 그려 전체 그리기가 72회/분 → 35회/분에 그쳤다.
-        _live_idx = (len(candles) - 1
-                     if (self._live_candle and candles
-                         and candles[-1]["ts"] == self._live_candle["ts"]) else None)
-        self._frame_live_idx = _live_idx if _pm is not None else None
-        self._frame_live_links = []
-        _t_grid = _t2.perf_counter(); self._draw_grid(painter, plot, lo, hi)
-        self._draw_session_tail(painter, plot, candles, padded_count)
-        # [오버레이 P2] 금지 빗금이 가장 아래 — 캔들 판독을 가리지 않는다.
-        # 🔴 레벨 레이어보다 **먼저** 부른다. 그래야 「롱 금지」 라벨이 칩 자리를
-        #   먼저 예약하고, 뒤에 오는 구조/맥점 칩이 그 자리를 피한다(실측 결함).
-        self._draw_state_overlay(painter, plot, candles, padded_count)
-        self._draw_state_vlines(painter, plot, candles, padded_count)
-        # [오버레이 P3] 면 → 선 순. 면이 위로 오면 선을 덮는다
-        self._draw_price_model(painter, plot, lo, hi)
-        self._draw_struct_model(painter, plot, lo, hi)
-        # ── [MW0601 593차] 라벨 2차 패스 큐를 **여기서 비운다** ──────────
-        #
-        # 피터 라벨은 캔들 뒤에 찍어야 해서(584차) 생산자가 큐에 쌓아두고
-        # `_draw_peter_labels` / `_draw_peter_order_labels` 가 나중에 소비한다.
-        # 🔴 생산자는 **네 갈래로** 일찍 빠져나간다 — 레이어 OFF · 데이터 0건 ·
-        #   `painter.save()` 실패 · 루프 중 예외. 그 중 어느 길로 나가도 큐에는
-        #   **지난 paint 의 라벨이 그대로 살아남고**, 소비자는 `_ov` 를 보지 않아
-        #   그걸 계속 찍었다. 실측 2026-09-16: 「거래피터」를 꺼도 `+10.00p 피터리`·
-        #   `LONG 09:00→09:32 · 익절` 이 남고, 「피터맥점」을 꺼도 `⏱09:00 △돌파매수
-        #   1035`·`손절 1032` 가 남았다 — 선은 사라지는데 라벨만 남아 화면이 거짓말을 했다.
-        # 🔴 곁다리 피해가 더 크다. `_chip_rects` 는 레이어가 **공유**하므로 유령 칩이
-        #   자리를 선점하면 살아있는 칩이 아래로 밀리고, 12칸 밀어도 자리가 없으면
-        #   `_place_chip` 이 None 을 돌려 **아예 안 그려진다.**
-        # 이탈 경로마다 비우지 않고 **입구 한 곳에서** 비운다 — 새 return 이 생겨도
-        # 안 깨진다. 소비자쪽 `_ov` 가드는 같은 불변식을 국소적으로 한 번 더 못 박는다.
-        self._peter_label_q = []
-        self._peter_order_labels = []
-        self._peter_aux_labels = []
-        self._draw_peter_levels(painter, plot, lo, hi)
-        _t_spans = _t2.perf_counter()
-        index_map = {c["ts"]: i for i, c in enumerate(candles)}
-        # 지시 깃발은 index_map 이 필요하다 — 맥점(전폭) 바로 뒤 자리다
-        self._draw_peter_orders(painter, plot, candles, index_map, lo, hi, padded_count)
-        self._draw_peter_aux(painter, plot, candles, index_map, lo, hi, padded_count)
-        self._draw_trade_spans(painter, plot, candles, index_map, lo, hi, padded_count)
-        # 피터 사료는 실측 **아래**에 깐다 — 겹치면 실측이 이긴다
-        self._draw_peter_trades(painter, plot, candles, index_map, lo, hi, padded_count)
-        # [621차 후속6] 진행 중 봉은 캐시에 넣지 않는다 — 틱마다 오버레이가 그린다.
-        self._skip_candle_idx = _live_idx if _pm is not None else None
-        _t_candles = _t2.perf_counter(); self._draw_candles(painter, plot, candles, lo, hi, padded_count)
-        self._skip_candle_idx = None
-        self._draw_peter_labels(painter, plot)   # 라벨은 캔들 위에
-        self._draw_peter_order_labels(painter, plot)
-        self._draw_peter_aux_labels(painter, plot)
-        _t_dir    = _t2.perf_counter();  self._draw_direction_bar(painter, plot, candles, padded_count)
-        _t_regime = _t2.perf_counter();  self._draw_regime_bar(painter, plot, candles, padded_count)
-        self._draw_state_lane(painter, plot, candles, padded_count)
-        # ⚠ [dev 이식] v9-dev 는 여기서 _draw_gp_layer 를 부르지만 dev 에는 그
-        #   메서드가 없다(553차 v9-dev 전용). dev 는 GP 를 _draw_markers 경로에서
-        #   이미 그리므로 그 줄은 가져오지 않는다 — 없는 메서드를 부르면 매 프레임
-        #   AttributeError 로 차트가 통째로 빈다.
-        _t_markers = _t2.perf_counter(); self._draw_markers(painter, plot, candles, index_map, lo, hi, padded_count)
-        # 보조 패널 · 레전드 — x축 라벨은 패널 **아래**에 와야 한다
-        _axis_bottom = plot.bottom()
-        if _flow_h:
-            _pr = QRectF(plot.left(), plot.bottom() + _FLOW_GAP, plot.width(), _flow_h)
-            self._draw_flow_panels(painter, _pr, candles, padded_count)
-            _axis_bottom = _pr.bottom()
-            self._draw_legend(painter, QRectF(plot.left(), self.height() - _leg_h,
-                                              plot.width(), _leg_h))
-        _t_axes = _t2.perf_counter()
-        self._draw_axes(painter, QRectF(plot.left(), plot.top(), plot.width(),
-                                        _axis_bottom - plot.top()),
-                        candles, lo, hi, padded_count)
-        self._draw_full_y_note(painter, plot)
-        self._draw_full_x_note(painter, plot)
-        # [621차 후속6] 크로스헤어는 캐시 밖(오버레이)에서 그린다 — `_finish_frame`.
-        _t_cross = _t2.perf_counter()
-        _t_end = _t2.perf_counter()
-        self._finish_frame(painter, _pm, {
-            "plot": QRectF(plot), "candles": candles, "lo": lo, "hi": hi,
-            "padded_count": padded_count, "live_idx": _live_idx,
-            "live_ts": self._live_candle["ts"] if self._live_candle else None,
-            "raw_lo": _raw_lo, "raw_hi": _raw_hi,
-            "live_dep": self._frame_live_dep,
-            "live_close": self._live_candle["close"] if self._live_candle else None,
-            "live_links": list(self._frame_live_links),
-        })
+            import time as _t2
+            self._chip_rects = []        # [P8] 이번 paint 의 칩 자리 — 레이어가 공유한다
+            self._frame_live_dep = False # [621차 후속6] 레이어가 현재가를 쓰면 켠다
+            # [621차 후속7] 진행 중 봉 인덱스를 **레이어보다 먼저** 정한다. 현재가까지 잇는 선
+            #   (보유 중 연결선 · GP 미청산 다리)은 캐시에 그리지 않고 오버레이로 넘긴다 —
+            #   재기동 실측(11:53~11:58): GP 미청산 1건 때문에 틱마다 1초 규칙으로 전체를
+            #   다시 그려 전체 그리기가 72회/분 → 35회/분에 그쳤다.
+            _live_idx = (len(candles) - 1
+                         if (self._live_candle and candles
+                             and candles[-1]["ts"] == self._live_candle["ts"]) else None)
+            self._frame_live_idx = _live_idx if _pm is not None else None
+            self._frame_live_links = []
+            _t_grid = _t2.perf_counter(); self._draw_grid(painter, plot, lo, hi)
+            self._draw_session_tail(painter, plot, candles, padded_count)
+            # [오버레이 P2] 금지 빗금이 가장 아래 — 캔들 판독을 가리지 않는다.
+            # 🔴 레벨 레이어보다 **먼저** 부른다. 그래야 「롱 금지」 라벨이 칩 자리를
+            #   먼저 예약하고, 뒤에 오는 구조/맥점 칩이 그 자리를 피한다(실측 결함).
+            self._draw_state_overlay(painter, plot, candles, padded_count)
+            self._draw_state_vlines(painter, plot, candles, padded_count)
+            # [오버레이 P3] 면 → 선 순. 면이 위로 오면 선을 덮는다
+            self._draw_price_model(painter, plot, lo, hi)
+            self._draw_struct_model(painter, plot, lo, hi)
+            # ── [MW0601 593차] 라벨 2차 패스 큐를 **여기서 비운다** ──────────
+            #
+            # 피터 라벨은 캔들 뒤에 찍어야 해서(584차) 생산자가 큐에 쌓아두고
+            # `_draw_peter_labels` / `_draw_peter_order_labels` 가 나중에 소비한다.
+            # 🔴 생산자는 **네 갈래로** 일찍 빠져나간다 — 레이어 OFF · 데이터 0건 ·
+            #   `painter.save()` 실패 · 루프 중 예외. 그 중 어느 길로 나가도 큐에는
+            #   **지난 paint 의 라벨이 그대로 살아남고**, 소비자는 `_ov` 를 보지 않아
+            #   그걸 계속 찍었다. 실측 2026-09-16: 「거래피터」를 꺼도 `+10.00p 피터리`·
+            #   `LONG 09:00→09:32 · 익절` 이 남고, 「피터맥점」을 꺼도 `⏱09:00 △돌파매수
+            #   1035`·`손절 1032` 가 남았다 — 선은 사라지는데 라벨만 남아 화면이 거짓말을 했다.
+            # 🔴 곁다리 피해가 더 크다. `_chip_rects` 는 레이어가 **공유**하므로 유령 칩이
+            #   자리를 선점하면 살아있는 칩이 아래로 밀리고, 12칸 밀어도 자리가 없으면
+            #   `_place_chip` 이 None 을 돌려 **아예 안 그려진다.**
+            # 이탈 경로마다 비우지 않고 **입구 한 곳에서** 비운다 — 새 return 이 생겨도
+            # 안 깨진다. 소비자쪽 `_ov` 가드는 같은 불변식을 국소적으로 한 번 더 못 박는다.
+            self._peter_label_q = []
+            self._peter_order_labels = []
+            self._peter_aux_labels = []
+            self._draw_peter_levels(painter, plot, lo, hi)
+            _t_spans = _t2.perf_counter()
+            index_map = {c["ts"]: i for i, c in enumerate(candles)}
+            # 지시 깃발은 index_map 이 필요하다 — 맥점(전폭) 바로 뒤 자리다
+            self._draw_peter_orders(painter, plot, candles, index_map, lo, hi, padded_count)
+            self._draw_peter_aux(painter, plot, candles, index_map, lo, hi, padded_count)
+            self._draw_trade_spans(painter, plot, candles, index_map, lo, hi, padded_count)
+            # 피터 사료는 실측 **아래**에 깐다 — 겹치면 실측이 이긴다
+            self._draw_peter_trades(painter, plot, candles, index_map, lo, hi, padded_count)
+            # [621차 후속6] 진행 중 봉은 캐시에 넣지 않는다 — 틱마다 오버레이가 그린다.
+            self._skip_candle_idx = _live_idx if _pm is not None else None
+            _t_candles = _t2.perf_counter(); self._draw_candles(painter, plot, candles, lo, hi, padded_count)
+            self._skip_candle_idx = None
+            self._draw_peter_labels(painter, plot)   # 라벨은 캔들 위에
+            self._draw_peter_order_labels(painter, plot)
+            self._draw_peter_aux_labels(painter, plot)
+            _t_dir    = _t2.perf_counter();  self._draw_direction_bar(painter, plot, candles, padded_count)
+            _t_regime = _t2.perf_counter();  self._draw_regime_bar(painter, plot, candles, padded_count)
+            self._draw_state_lane(painter, plot, candles, padded_count)
+            # ⚠ [dev 이식] v9-dev 는 여기서 _draw_gp_layer 를 부르지만 dev 에는 그
+            #   메서드가 없다(553차 v9-dev 전용). dev 는 GP 를 _draw_markers 경로에서
+            #   이미 그리므로 그 줄은 가져오지 않는다 — 없는 메서드를 부르면 매 프레임
+            #   AttributeError 로 차트가 통째로 빈다.
+            _t_markers = _t2.perf_counter(); self._draw_markers(painter, plot, candles, index_map, lo, hi, padded_count)
+            # 보조 패널 · 레전드 — x축 라벨은 패널 **아래**에 와야 한다
+            _axis_bottom = plot.bottom()
+            if _flow_h:
+                _pr = QRectF(plot.left(), plot.bottom() + _FLOW_GAP, plot.width(), _flow_h)
+                self._draw_flow_panels(painter, _pr, candles, padded_count)
+                _axis_bottom = _pr.bottom()
+                self._draw_legend(painter, QRectF(plot.left(), self.height() - _leg_h,
+                                                  plot.width(), _leg_h))
+            _t_axes = _t2.perf_counter()
+            self._draw_axes(painter, QRectF(plot.left(), plot.top(), plot.width(),
+                                            _axis_bottom - plot.top()),
+                            candles, lo, hi, padded_count)
+            self._draw_full_y_note(painter, plot)
+            self._draw_full_x_note(painter, plot)
+            # [621차 후속6] 크로스헤어는 캐시 밖(오버레이)에서 그린다 — `_finish_frame`.
+            _t_cross = _t2.perf_counter()
+            _t_end = _t2.perf_counter()
+            self._finish_frame(painter, _pm, {
+                "plot": QRectF(plot), "candles": candles, "lo": lo, "hi": hi,
+                "padded_count": padded_count, "live_idx": _live_idx,
+                "live_ts": self._live_candle["ts"] if self._live_candle else None,
+                "raw_lo": _raw_lo, "raw_hi": _raw_hi,
+                "live_dep": self._frame_live_dep,
+                "live_close": self._live_candle["close"] if self._live_candle else None,
+                "live_links": list(self._frame_live_links),
+            })
 
-        self._dbg_paint_count += 1
-        _elapsed_ms = (_t_end - _t0) * 1000
-        if _elapsed_ms > 30:
-            self._dbg_paint_slow_count += 1
-            logger.warning(
-                "[ChartDBG] paintEvent slow %.1fms | size=%dx%d candles=%d "
-                "grid=%.1f spans=%.1f candles=%.1f dir=%.1f regime=%.1f markers=%.1f axes=%.1f cross=%.1f | "
-                "slow_cnt=%d total_cnt=%d overlay_cnt=%d",
-                _elapsed_ms, self.width(), self.height(), len(candles),
-                (_t_spans  - _t_grid)    * 1000,
-                (_t_candles- _t_spans)   * 1000,
-                (_t_dir    - _t_candles) * 1000,
-                (_t_regime - _t_dir)     * 1000,
-                (_t_markers- _t_regime)  * 1000,
-                (_t_axes   - _t_markers) * 1000,
-                (_t_cross  - _t_axes)    * 1000,
-                (_t_end    - _t_cross)   * 1000,
-                self._dbg_paint_slow_count, self._dbg_paint_count,
-                self._dbg_overlay_count,
-            )
+            self._dbg_paint_count += 1
+            _elapsed_ms = (_t_end - _t0) * 1000
+            if _elapsed_ms > 30:
+                self._dbg_paint_slow_count += 1
+                logger.warning(
+                    "[ChartDBG] paintEvent slow %.1fms | size=%dx%d candles=%d "
+                    "grid=%.1f spans=%.1f candles=%.1f dir=%.1f regime=%.1f markers=%.1f axes=%.1f cross=%.1f | "
+                    "slow_cnt=%d total_cnt=%d overlay_cnt=%d",
+                    _elapsed_ms, self.width(), self.height(), len(candles),
+                    (_t_spans  - _t_grid)    * 1000,
+                    (_t_candles- _t_spans)   * 1000,
+                    (_t_dir    - _t_candles) * 1000,
+                    (_t_regime - _t_dir)     * 1000,
+                    (_t_markers- _t_regime)  * 1000,
+                    (_t_axes   - _t_markers) * 1000,
+                    (_t_cross  - _t_axes)    * 1000,
+                    (_t_end    - _t_cross)   * 1000,
+                    self._dbg_paint_slow_count, self._dbg_paint_count,
+                    self._dbg_overlay_count,
+                )
+        except Exception as _qe:  # noqa: BLE001 — Qt 진입점 최후 방어선(621차 후속11)
+            self._base_dirty = True
+            self._base_meta = None
+            _qt_guard_fail('MinuteChartCanvas.paintEvent', _qe)
 
     def wheelEvent(self, event):
         delta = event.angleDelta().y()
@@ -9659,42 +9683,45 @@ class MinuteChartCanvas(QWidget):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        import time as _time
-        _now_ms = _time.monotonic() * 1000
-        pos = event.pos()
-        self._hover_pos = pos
-        if self._dragging and self._drag_start_pos is not None and self._last_step_px > 0:
-            dx = pos.x() - self._drag_start_pos.x()
-            candle_shift = int(round(dx / self._last_step_px))
-            total = len(self._closed_candles) + (1 if self._live_candle else 0)
-            visible_count = min(max(self._visible_count or total, self._min_visible_count), max(total, 1))
-            self._view_offset = self._clamp_view_offset(self._drag_start_offset - candle_shift, total, visible_count)
-            self._emit_view()
-        # [621차 후속6] 호버는 캐시 위에 크로스헤어만 — 드래그(시야 이동)만 전체를 다시 그린다.
-        #   간격 16ms(최대 60회/초) → 33ms(30회/초): 오버레이도 창 크기 이미지 복사다.
-        if _now_ms - self._last_mouse_update_ms >= 33:
-            self._last_mouse_update_ms = _now_ms
-            if self._dragging:
-                self.update()
-            else:
-                self._repaint_overlay()
-        # 디버그: 10초마다 이벤트 빈도 요약 로그
-        self._dbg_mouse_event_count += 1
-        if _now_ms - self._dbg_mouse_log_ts >= 10_000:
-            if self._dbg_mouse_log_ts > 0:
-                _hz = self._dbg_mouse_event_count / 10.0
-                logger.debug(
-                    "[ChartDBG] mouseMoveEvent %.0f ev/s | size=%dx%d paint_slow=%d/%d",
-                    _hz, self.width(), self.height(),
-                    self._dbg_paint_slow_count, self._dbg_paint_count,
-                )
-                if _hz > 200:
-                    logger.warning(
-                        "[ChartDBG] mouseMoveEvent 과부하 %.0f ev/s — throttle 점검 필요", _hz,
+        try:
+            import time as _time
+            _now_ms = _time.monotonic() * 1000
+            pos = event.pos()
+            self._hover_pos = pos
+            if self._dragging and self._drag_start_pos is not None and self._last_step_px > 0:
+                dx = pos.x() - self._drag_start_pos.x()
+                candle_shift = int(round(dx / self._last_step_px))
+                total = len(self._closed_candles) + (1 if self._live_candle else 0)
+                visible_count = min(max(self._visible_count or total, self._min_visible_count), max(total, 1))
+                self._view_offset = self._clamp_view_offset(self._drag_start_offset - candle_shift, total, visible_count)
+                self._emit_view()
+            # [621차 후속6] 호버는 캐시 위에 크로스헤어만 — 드래그(시야 이동)만 전체를 다시 그린다.
+            #   간격 16ms(최대 60회/초) → 33ms(30회/초): 오버레이도 창 크기 이미지 복사다.
+            if _now_ms - self._last_mouse_update_ms >= 33:
+                self._last_mouse_update_ms = _now_ms
+                if self._dragging:
+                    self.update()
+                else:
+                    self._repaint_overlay()
+            # 디버그: 10초마다 이벤트 빈도 요약 로그
+            self._dbg_mouse_event_count += 1
+            if _now_ms - self._dbg_mouse_log_ts >= 10_000:
+                if self._dbg_mouse_log_ts > 0:
+                    _hz = self._dbg_mouse_event_count / 10.0
+                    logger.debug(
+                        "[ChartDBG] mouseMoveEvent %.0f ev/s | size=%dx%d paint_slow=%d/%d",
+                        _hz, self.width(), self.height(),
+                        self._dbg_paint_slow_count, self._dbg_paint_count,
                     )
-            self._dbg_mouse_event_count = 0
-            self._dbg_mouse_log_ts = _now_ms
-        event.accept()
+                    if _hz > 200:
+                        logger.warning(
+                            "[ChartDBG] mouseMoveEvent 과부하 %.0f ev/s — throttle 점검 필요", _hz,
+                        )
+                self._dbg_mouse_event_count = 0
+                self._dbg_mouse_log_ts = _now_ms
+            event.accept()
+        except Exception as _qe:  # noqa: BLE001 — Qt 진입점 최후 방어선(621차 후속11)
+            _qt_guard_fail('MinuteChartCanvas.mouseMoveEvent', _qe)
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -9715,19 +9742,22 @@ class MinuteChartCanvas(QWidget):
         super().mouseDoubleClickEvent(event)
 
     def leaveEvent(self, event):
-        import time as _t
-        _t0 = _t.monotonic()
-        self._hover_pos = None
-        self._dragging = False
-        self._drag_start_pos = None
-        self._repaint_overlay()        # [621차 후속6] 크로스헤어만 지운다
-        _elapsed_ms = (_t.monotonic() - _t0) * 1000
-        logger.debug(
-            "[ChartDBG] leaveEvent → update() 예약 %.2fms | size=%dx%d visible=%s",
-            _elapsed_ms, self.width(), self.height(),
-            self.isVisible(),
-        )
-        super().leaveEvent(event)
+        try:
+            import time as _t
+            _t0 = _t.monotonic()
+            self._hover_pos = None
+            self._dragging = False
+            self._drag_start_pos = None
+            self._repaint_overlay()        # [621차 후속6] 크로스헤어만 지운다
+            _elapsed_ms = (_t.monotonic() - _t0) * 1000
+            logger.debug(
+                "[ChartDBG] leaveEvent → update() 예약 %.2fms | size=%dx%d visible=%s",
+                _elapsed_ms, self.width(), self.height(),
+                self.isVisible(),
+            )
+            super().leaveEvent(event)
+        except Exception as _qe:  # noqa: BLE001 — Qt 진입점 최후 방어선(621차 후속11)
+            _qt_guard_fail('MinuteChartCanvas.leaveEvent', _qe)
 
     def _draw_grid(self, painter: QPainter, plot: QRectF, lo: float, hi: float):
         # 수평 6단계 미세 그리드
@@ -13624,9 +13654,12 @@ class MinuteChartDialog(QDialog):
     def hideEvent(self, event):
         # [621차 후속5] Esc(reject)는 closeEvent 없이 숨기기만 한다 — 그 경로도 저장한다.
         #   최소화(OS 가 보내는 spontaneous hide)는 닫기가 아니므로 제외.
-        if not event.spontaneous():
-            self._save_geometry("hide")
-        super().hideEvent(event)
+        try:
+            if not event.spontaneous():
+                self._save_geometry("hide")
+            super().hideEvent(event)
+        except Exception as _qe:  # noqa: BLE001 — Qt 진입점 최후 방어선(621차 후속11)
+            _qt_guard_fail('MinuteChartDialog.hideEvent', _qe)
 
     def closeEvent(self, event):
         import time as _t
@@ -14756,42 +14789,48 @@ class MireukDashboard(QMainWindow):
         self.ui_auto_tabs.set_startup_mode()
 
     def toggle_minute_chart_dialog(self, auto_popup=False):
-        self._minute_chart_dialog.maybe_roll_session()
-        # [621차 후속4] 최소화된 창도 isVisible() 은 True 다 — 그대로 두면 단축키가
-        #   「되살리기」 대신 「닫기」가 된다. 최소화 상태면 이전 크기로 되살린다.
-        if self._minute_chart_dialog.isMinimized():
-            self._minute_chart_dialog.showNormal()
+        try:
+            self._minute_chart_dialog.maybe_roll_session()
+            # [621차 후속4] 최소화된 창도 isVisible() 은 True 다 — 그대로 두면 단축키가
+            #   「되살리기」 대신 「닫기」가 된다. 최소화 상태면 이전 크기로 되살린다.
+            if self._minute_chart_dialog.isMinimized():
+                self._minute_chart_dialog.showNormal()
+                self._minute_chart_dialog.raise_()
+                self._minute_chart_dialog.activateWindow()
+                return
+            if self._minute_chart_dialog.isVisible():
+                self._minute_chart_dialog.close()
+                return
+            self._minute_chart_dialog._start_reload_thread()  # 재기동 시 DB 새로고침
+            # ── geometry 복원 전략 ────────────────────────────────────────
+            # 수동 재열기: dialog가 이미 HIDDEN 상태이므로 show()가 마지막 위치 그대로 복원.
+            #              singleShot(0) 만으로 충분.
+            # 자동팝업 (재시동): dialog HWND가 최초 생성됨. show() 호출 시 Windows가
+            #   부모(MireukDashboard, PRIMARY 모니터 최대화) 기준으로 HWND를 PRIMARY에 배치.
+            #   이후 singleShot(0)에서 second monitor로 이동하면 WM_DPICHANGED 발생
+            #   → Windows가 DPI 비율로 크기 재조정 → 크기 뒤죽박죽.
+            # 해결: show() 전에 restore_saved_geometry()를 먼저 호출해 HWND 생성 위치를
+            #   second monitor로 지정. Windows가 올바른 DPI 컨텍스트로 HWND를 생성.
+            #   show() 이후 singleShot(0)으로 WM_SHOWWINDOW 재배치 보정.
+            self._minute_chart_dialog.restore_saved_geometry()   # pre-show: HWND 생성 위치 지정
+            # [621차 후속4] 작업표시줄 단추 — 위치를 잡은 **뒤**, show() **전**(HWND 가 복원 위치에
+            #   생긴다). 없으면 최소화한 창이 화면 왼쪽 아래 작은 막대로만 남는다.
+            from dashboard.window_utils import force_taskbar_button
+            force_taskbar_button(self._minute_chart_dialog)
+            self._minute_chart_dialog.show()
             self._minute_chart_dialog.raise_()
             self._minute_chart_dialog.activateWindow()
-            return
-        if self._minute_chart_dialog.isVisible():
-            self._minute_chart_dialog.close()
-            return
-        self._minute_chart_dialog._start_reload_thread()  # 재기동 시 DB 새로고침
-        # ── geometry 복원 전략 ────────────────────────────────────────
-        # 수동 재열기: dialog가 이미 HIDDEN 상태이므로 show()가 마지막 위치 그대로 복원.
-        #              singleShot(0) 만으로 충분.
-        # 자동팝업 (재시동): dialog HWND가 최초 생성됨. show() 호출 시 Windows가
-        #   부모(MireukDashboard, PRIMARY 모니터 최대화) 기준으로 HWND를 PRIMARY에 배치.
-        #   이후 singleShot(0)에서 second monitor로 이동하면 WM_DPICHANGED 발생
-        #   → Windows가 DPI 비율로 크기 재조정 → 크기 뒤죽박죽.
-        # 해결: show() 전에 restore_saved_geometry()를 먼저 호출해 HWND 생성 위치를
-        #   second monitor로 지정. Windows가 올바른 DPI 컨텍스트로 HWND를 생성.
-        #   show() 이후 singleShot(0)으로 WM_SHOWWINDOW 재배치 보정.
-        self._minute_chart_dialog.restore_saved_geometry()   # pre-show: HWND 생성 위치 지정
-        # [621차 후속4] 작업표시줄 단추 — 위치를 잡은 **뒤**, show() **전**(HWND 가 복원 위치에
-        #   생긴다). 없으면 최소화한 창이 화면 왼쪽 아래 작은 막대로만 남는다.
-        from dashboard.window_utils import force_taskbar_button
-        force_taskbar_button(self._minute_chart_dialog)
-        self._minute_chart_dialog.show()
-        self._minute_chart_dialog.raise_()
-        self._minute_chart_dialog.activateWindow()
-        QTimer.singleShot(0, self._minute_chart_dialog.restore_saved_geometry)  # post-show: WM_SHOWWINDOW 보정
+            QTimer.singleShot(0, self._minute_chart_dialog.restore_saved_geometry)  # post-show: WM_SHOWWINDOW 보정
+        except Exception as _qe:  # noqa: BLE001 — Qt 진입점 최후 방어선(621차 후속11)
+            _qt_guard_fail('MireukDashboard.toggle_minute_chart_dialog', _qe)
 
     def toggle_option_flow_window(self):
         """[MW0601 621차] 옵션·선물 수급 증감 독립 창 열기/닫기."""
-        if self._option_flow_window is not None:
-            self._option_flow_window.toggle()
+        try:
+            if self._option_flow_window is not None:
+                self._option_flow_window.toggle()
+        except Exception as _qe:  # noqa: BLE001 — Qt 진입점 최후 방어선(621차 후속11)
+            _qt_guard_fail('MireukDashboard.toggle_option_flow_window', _qe)
 
     def minute_chart_tick(self, price: float, ts=None):
         self._minute_chart_dialog.update_tick(price, ts=ts)

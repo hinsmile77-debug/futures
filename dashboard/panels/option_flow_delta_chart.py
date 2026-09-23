@@ -310,6 +310,25 @@ def _rs_points(call_pts: List[Tuple[int, int]], put_pts: List[Tuple[int, int]]
     return out
 
 
+# ── [621차 후속11] Qt 진입점 가드 ─────────────────────────────────────────
+# 🔴 PyQt5 는 Qt 가 부른 파이썬 코드(슬롯·이벤트 처리기)에서 새어나온 예외를 `qFatal()` 로
+#   처리한다 — **트레이스백도 로그도 없이 엔진 프로세스가 죽는다**(2026-09-22 09:41:56 실사고,
+#   617차 래칫의 계기). 래칫은 QTimer 슬롯만 세지만 원리는 모든 진입점에 같다.
+#   그래서 이 모듈의 진입점은 본문 전체를 단일 try 로 감싸고 여기로 보낸다.
+#   삼키지 않는다 — 태그별 5분에 한 번 WARNING(마우스 이벤트는 초당 수십 번 온다).
+#   ⚠ 표시 계층 전용이다. 엔진 슬롯을 이렇게 삼키면 주문 실패가 조용히 사라진다(617차 주석).
+_QT_GUARD_TS = {}
+
+
+def _qt_guard_fail(tag, exc):
+    import time as _t
+    _now = _t.time()
+    if _now - _QT_GUARD_TS.get(tag, 0.0) >= 300.0:
+        _QT_GUARD_TS[tag] = _now
+        logger.warning("[QtGuard] %s 예외 — 이번 이벤트만 건너뛴다(5분 스로틀): %s",
+                       tag, exc, exc_info=True)
+
+
 def _text_w(fm: QFontMetrics, s: str) -> int:
     try:
         return fm.horizontalAdvance(s)
@@ -444,14 +463,20 @@ class _Plot(QWidget):
                     "[OptionFlowWindow] _on_status_tick 예외 — 이후 로그 억제")
 
     def showEvent(self, ev):             # noqa: N802 (Qt) — 보일 때만 시계를 돌린다
-        if self._status_timer is not None:
-            self._status_timer.start()
-        super().showEvent(ev)
+        try:
+            if self._status_timer is not None:
+                self._status_timer.start()
+            super().showEvent(ev)
+        except Exception as _qe:  # noqa: BLE001 — Qt 진입점 최후 방어선(621차 후속11)
+            _qt_guard_fail('_Plot.showEvent', _qe)
 
     def hideEvent(self, ev):             # noqa: N802 (Qt)
-        if self._status_timer is not None:
-            self._status_timer.stop()
-        super().hideEvent(ev)
+        try:
+            if self._status_timer is not None:
+                self._status_timer.stop()
+            super().hideEvent(ev)
+        except Exception as _qe:  # noqa: BLE001 — Qt 진입점 최후 방어선(621차 후속11)
+            _qt_guard_fail('_Plot.hideEvent', _qe)
 
     def broker_now(self):
         """(지금 시각, 브로커 여부, 오프셋초). 공급자가 None 을 주면 PC 시각이고 False 다."""
@@ -1061,38 +1086,50 @@ class _Plot(QWidget):
         return g["v0"] + int((x - g["x0"]) / g["ppm"])
 
     def mouseMoveEvent(self, ev):        # noqa: N802 (Qt)
-        g = self._geo
-        tm = self._min_at(ev.pos().x()) if g and ev.pos().y() >= g["top"] else None
-        if tm != self._hover_min:        # 분이 바뀔 때만 — 캐시 복사 + 선 하나
-            self._hover_min = tm
-            self.update()
+        try:
+            g = self._geo
+            tm = self._min_at(ev.pos().x()) if g and ev.pos().y() >= g["top"] else None
+            if tm != self._hover_min:        # 분이 바뀔 때만 — 캐시 복사 + 선 하나
+                self._hover_min = tm
+                self.update()
+        except Exception as _qe:  # noqa: BLE001 — Qt 진입점 최후 방어선(621차 후속11)
+            _qt_guard_fail('_Plot.mouseMoveEvent', _qe)
 
     def leaveEvent(self, ev):            # noqa: N802 (Qt)
-        if self._hover_min is not None:
-            self._hover_min = None
-            self.update()
+        try:
+            if self._hover_min is not None:
+                self._hover_min = None
+                self.update()
+        except Exception as _qe:  # noqa: BLE001 — Qt 진입점 최후 방어선(621차 후속11)
+            _qt_guard_fail('_Plot.leaveEvent', _qe)
 
     def mousePressEvent(self, ev):       # noqa: N802 (Qt)
-        mini = self._geo.get("mini") if self._geo else None
-        if not mini or not self._window_min:
-            return
-        mx0, mx1, my, mh = mini
-        pos = ev.pos()
-        if not (mx0 <= pos.x() <= mx1 and my <= pos.y() <= my + mh):
-            return
-        tm = _T0_MIN + (pos.x() - mx0) * (_T1_MIN + 1 - _T0_MIN) / float(max(1, mx1 - mx0))
-        # 클릭한 시각이 구간 가운데에 오게 한다
-        self.set_anchor(int(tm + self._window_min // 2))
+        try:
+            mini = self._geo.get("mini") if self._geo else None
+            if not mini or not self._window_min:
+                return
+            mx0, mx1, my, mh = mini
+            pos = ev.pos()
+            if not (mx0 <= pos.x() <= mx1 and my <= pos.y() <= my + mh):
+                return
+            tm = _T0_MIN + (pos.x() - mx0) * (_T1_MIN + 1 - _T0_MIN) / float(max(1, mx1 - mx0))
+            # 클릭한 시각이 구간 가운데에 오게 한다
+            self.set_anchor(int(tm + self._window_min // 2))
+        except Exception as _qe:  # noqa: BLE001 — Qt 진입점 최후 방어선(621차 후속11)
+            _qt_guard_fail('_Plot.mousePressEvent', _qe)
 
     def wheelEvent(self, ev):            # noqa: N802 (Qt)
-        if not self._window_min:
-            return
-        notches = ev.angleDelta().y() / 120.0
-        if not notches:
-            return
-        _v0, v1 = self.view_range()
-        # 위로 굴리면 과거로 5분씩
-        self.set_anchor(int(v1 - 1 - notches * 5))
+        try:
+            if not self._window_min:
+                return
+            notches = ev.angleDelta().y() / 120.0
+            if not notches:
+                return
+            _v0, v1 = self.view_range()
+            # 위로 굴리면 과거로 5분씩
+            self.set_anchor(int(v1 - 1 - notches * 5))
+        except Exception as _qe:  # noqa: BLE001 — Qt 진입점 최후 방어선(621차 후속11)
+            _qt_guard_fail('_Plot.wheelEvent', _qe)
 
 
 class OptionFlowDeltaChart(QWidget):
@@ -1155,7 +1192,7 @@ class OptionFlowDeltaChart(QWidget):
         self._btn_live.setStyleSheet(
             "color:%s;font-size:9px;padding:1px 6px;" % _COL["orange"])
         self._btn_live.setVisible(False)
-        self._btn_live.clicked.connect(lambda: self._plot.set_anchor(None))
+        self._btn_live.clicked.connect(self._on_live_clicked)   # 람다는 가드를 못 단다
         ctl.addWidget(self._btn_live)
 
         self._chk_shared = QCheckBox("공통 스케일")
@@ -1255,15 +1292,30 @@ class OptionFlowDeltaChart(QWidget):
         self._plot.set_data(self._merged(), self._chk_shared.isChecked())
 
     def _on_toggle(self, _checked: bool) -> None:
-        self._redraw()
+        try:
+            self._redraw()
+        except Exception as _qe:  # noqa: BLE001 — Qt 진입점 최후 방어선(621차 후속11)
+            _qt_guard_fail('OptionFlowDeltaChart._on_toggle', _qe)
 
     def _on_window(self, idx: int) -> None:
-        if 0 <= idx < len(_WINDOW_CHOICES):
-            self._plot.set_window(_WINDOW_CHOICES[idx][1])
+        try:
+            if 0 <= idx < len(_WINDOW_CHOICES):
+                self._plot.set_window(_WINDOW_CHOICES[idx][1])
+        except Exception as _qe:  # noqa: BLE001 — Qt 진입점 최후 방어선(621차 후속11)
+            _qt_guard_fail('OptionFlowDeltaChart._on_window', _qe)
+
+    def _on_live_clicked(self, _checked: bool = False) -> None:
+        try:
+            self._plot.set_anchor(None)
+        except Exception as _qe:  # noqa: BLE001 — Qt 진입점 최후 방어선(621차 후속11)
+            _qt_guard_fail('OptionFlowDeltaChart._on_live_clicked', _qe)
 
     def _sync_live_btn(self) -> None:
-        self._btn_live.setVisible(self._plot.is_zoomed()
-                                  and not self._plot.is_following())
+        try:
+            self._btn_live.setVisible(self._plot.is_zoomed()
+                                      and not self._plot.is_following())
+        except Exception as _qe:  # noqa: BLE001 — Qt 진입점 최후 방어선(621차 후속11)
+            _qt_guard_fail('OptionFlowDeltaChart._sync_live_btn', _qe)
 
     def _render_meta(self) -> None:
         opt = self._payload.get("products") or {}
@@ -1415,21 +1467,24 @@ class OptionFlowDeltaWindow(QDialog):
         self._close_sc.activated.connect(self.close)
 
     def toggle(self) -> None:
-        if self.isVisible() and not self.isMinimized():
-            self.close()
-            return
-        if not self._geo_restored:
-            # show() 전에 위치를 잡아야 보조 모니터 DPI 로 HWND 가 생긴다
-            # (1분봉 차트 창의 WM_DPICHANGED 크기 뒤죽박죽 사고와 같은 대책).
-            self._restore_geometry()
-            self._geo_restored = True
-            # [621차 후속4] 작업표시줄 단추 — 없으면 최소화한 창이 화면 왼쪽 아래
-            #   작은 막대로만 남는다(소유 창). 위치를 잡은 뒤, 처음 보이기 전에.
-            from dashboard.window_utils import force_taskbar_button
-            force_taskbar_button(self)
-        self.showNormal()
-        self.raise_()
-        self.activateWindow()
+        try:
+            if self.isVisible() and not self.isMinimized():
+                self.close()
+                return
+            if not self._geo_restored:
+                # show() 전에 위치를 잡아야 보조 모니터 DPI 로 HWND 가 생긴다
+                # (1분봉 차트 창의 WM_DPICHANGED 크기 뒤죽박죽 사고와 같은 대책).
+                self._restore_geometry()
+                self._geo_restored = True
+                # [621차 후속4] 작업표시줄 단추 — 없으면 최소화한 창이 화면 왼쪽 아래
+                #   작은 막대로만 남는다(소유 창). 위치를 잡은 뒤, 처음 보이기 전에.
+                from dashboard.window_utils import force_taskbar_button
+                force_taskbar_button(self)
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
+        except Exception as _qe:  # noqa: BLE001 — Qt 진입점 최후 방어선(621차 후속11)
+            _qt_guard_fail('OptionFlowDeltaWindow.toggle', _qe)
 
     # ── 위치 기억 ─────────────────────────────────────────────────────────
     def _read_prefs(self) -> Dict[str, Any]:
@@ -1507,6 +1562,9 @@ class OptionFlowDeltaWindow(QDialog):
             logger.warning("[OptionFlowWindow] 위치 저장 실패: %s", exc)
 
     def hideEvent(self, ev):             # noqa: N802 (Qt) — 닫기·Esc 모두 여기로 온다
-        if not ev.spontaneous():         # 최소화(OS 발)는 닫기가 아니다
-            self._save_geometry()
-        super().hideEvent(ev)
+        try:
+            if not ev.spontaneous():         # 최소화(OS 발)는 닫기가 아니다
+                self._save_geometry()
+            super().hideEvent(ev)
+        except Exception as _qe:  # noqa: BLE001 — Qt 진입점 최후 방어선(621차 후속11)
+            _qt_guard_fail('OptionFlowDeltaWindow.hideEvent', _qe)
