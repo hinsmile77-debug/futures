@@ -7632,3 +7632,8 @@ WEEKLY_OPTION_FLOW_PEAK_SKIP = ("09:00", "09:02")
 #   에 남고, 채점이 규칙가·실현가능가를 둘 다 낸다(사전등록 §4).
 SHINDONG_ENABLED = True
 SHINDONG_DB = os.path.join(DB_DIR, "shindong.db")
+# [MW0601 629차] 신동 조건부 러너 섀도 — 미륵이 진입 방향이 그날 신동 R1 방향과 같고 TP1 이
+#   체결됐으면, TP1 뒤 잔량을 「본전 스톱 + 신동 최종목표 + 15:05」로 들고 갔다면을 장후에 기록한다.
+#   🔴 가상이다 — 미륵이 청산 경로는 바뀌지 않는다(절대원칙 §6). 값은 `strategy/shindong/
+#   mireuk_runner.py`(사전등록 고정값), 판정 기준은 `docs/신동거래/조건부러너_섀도_사전등록_20260924.md`.
+SHINDONG_RUNNER_SHADOW_ENABLED = True

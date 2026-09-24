@@ -13258,6 +13258,34 @@ class TradingSystem:
             except Exception as _ce2:
                 logger.warning("[Challenger] update_daily_metrics 실패 (스킵): %s", _ce2)
 
+        # ── [MW0601 629차] 신동 조건부 러너 섀도 — 장후 1회 ──────────
+        # 미륵이 포지션 × 신동 R1 방향 → TP1 뒤 잔량을 신동 최종목표까지 들고 갔다면(가상).
+        # [629차 후속] 같은 행에 진입 필터 B(신동 동방향 보유 중일 때만 진입, 청산은 실제)도 기록.
+        # 🔴 주문·청산 경로와 무관하다(절대원칙 §6) — trades.db 는 읽기만, 기록은 shindong.db.
+        # 마감이 건너뛰어진 날은 `scripts/shindong_runner_shadow.py --backfill` 로 채운다.
+        if getattr(runtime_settings, "SHINDONG_RUNNER_SHADOW_ENABLED", False):
+            try:
+                from strategy.shindong import mireuk_runner as _sdr
+                _sdr_res = _sdr.run_for_date(
+                    now.date().isoformat(),
+                    trades_db=runtime_settings.TRADES_DB,
+                    raw_db=runtime_settings.RAW_DATA_DB,
+                    flow_db=getattr(runtime_settings, "WEEKLY_OPTION_FLOW_DB",
+                                    "data/db/option_flow.db"),
+                    levels_db=runtime_settings.PREMARKET_LEVELS_DB,
+                    sd_db=runtime_settings.SHINDONG_DB, source="eod", now=now)
+                logger.info(
+                    "[ShindongRunner] %s 포지션 %d(보유중 제외 %d) · 러너 적용 %d · 신동방향 %s | "
+                    "실제 %s원 → 러너 %s원 · 필터B %s원(제외 %d) (CREON)",
+                    _sdr_res["trade_date"], _sdr_res["n"], _sdr_res["n_open_skipped"],
+                    _sdr_res["applied"],
+                    {None: "미측정", -1: "하방", 0: "보류", 1: "상방"}.get(_sdr_res["bias"], "?"),
+                    format(_sdr_res["act"], "+,.0f"), format(_sdr_res["shadow"], "+,.0f"),
+                    "미측정" if _sdr_res["filt_b"] is None else format(_sdr_res["filt_b"], "+,.0f"),
+                    _sdr_res["filt_b_excluded"])
+            except Exception as _sdr_e:
+                logger.warning("[ShindongRunner] 장후 섀도 기록 실패 (스킵 — 백필로 복구): %s", _sdr_e)
+
         # ── [260704 감사 P2] 챔피언 heartbeat — 일별 1회 체크 ─────
         # 주의: CHAMPION_BASELINE_ID는 challenger_engine에 shadow 도전자로 등록되어
         # 있지 않아(_register_default_challengers 참조) 자체 거래 이력이 없다 —
