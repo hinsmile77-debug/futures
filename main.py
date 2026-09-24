@@ -4205,11 +4205,11 @@ class TradingSystem:
                     str(t.get("detected_at") or "-")[11:19])
             if self.dashboard is not None and hasattr(self.dashboard, "update_shindong"):
                 self.dashboard.update_shindong(payload)
-            # [628차 — dev 이식판] v9-dev 는 여기서 신동 청산 시 손익 추이 패널을 갱신한다.
-            #   dev 의 손익 패널은 신동을 표시하지 않으므로(MW0602 자체 GP 표시 유지 — 이식 범위
-            #   「계산·기록 + 수급 차트」, 2026-09-24 사용자 결정) 갱신하지 않는다.
-            #   `_newly_closed` 는 로그 판단에만 남는다.
-            _ = _newly_closed
+            # [MW0602 590차] 신동 청산 시 손익 추이 패널 갱신 — 590차부터 dev 패널이
+            #   [미륵]/[신동] 전환으로 신동을 표시한다(2026-09-24 사용자 지시, GP 대체).
+            #   청산이 **새로 생긴** 틱에만 부른다(매분 부르면 90일 조회가 매분 돈다).
+            if _newly_closed:
+                self._refresh_pnl_history()
         except Exception as e:
             if not self._sd_warned:
                 self._sd_warned = True

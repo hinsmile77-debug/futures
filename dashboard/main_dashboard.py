@@ -6826,11 +6826,22 @@ class AlphaPanel(QWidget):
 # 손익 추이 패널 — 일별·주별·월별 누적 P&L 테이블
 # ────────────────────────────────────────────────────────────
 class PnlHistoryPanel(QWidget):
-    """전문 트레이더용 손익 추이 — 일별·주별·월별 누적 테이블"""
+    """전문 트레이더용 손익 추이 — 일별·주별·월별 누적 테이블
+
+    [MW0602 590차] 거래 주체 선택 버튼 **[미륵] / [신동]** (2026-09-24 사용자 지시).
+    557차 「GP(가상) 합산」 체크박스를 대체한다 — 합산이 아니라 **전환**이다.
+    · 미륵 = trades.db 실거래(모의). 일 손익은 브로커 실측 net 우선(493차 F-4).
+    · 신동 = shindong.db 가상거래(MAIN). 🔴 실주문 없음 — 실전 전환 기준 ① 판정에 쓰지 말 것.
+      손익은 **크레온 요율(0.0019% 편도)** 로 재환산해 보인다(`strategy.shindong.display`).
+    두 주체를 한 표에 섞지 않는다 — 섞으면 브로커 net(실측)과 가상 net 이 같은 누적에 들어간다.
+    """
 
     _DAILY_HEADERS   = ["날짜",  "거래", "승", "패", "승률", "P/L pt", "P/L 원",   "누적 원"]
     _WEEKLY_HEADERS  = ["주간",  "거래", "승", "패", "승률", "P/L pt", "P/L 원",   "누적 원", "MDD 원"]
     _MONTHLY_HEADERS = ["월",    "거래", "승", "패", "승률", "P/L pt", "P/L 원",   "누적 원", "샤프"]
+
+    MODE_MIREUK = "mireuk"
+    MODE_SHINDONG = "shindong"
 
     def __init__(self):
         super().__init__()
@@ -6840,20 +6851,17 @@ class PnlHistoryPanel(QWidget):
         # ⚠ 종전에는 브로커 **gross**가 들어와 엔진 net과 섞였다 — refresh() 참조.
         self._broker_pnl: dict = {}
         self._broker_pnl_src: dict = {}   # date → "broker" | "engine" (폴백 가시화)
-        # ── [MW0602 557차] GP(가상) 섀도 별도집계 ──────────────────────
-        # 🔴 GP 는 **실주문이 없는 가상거래**다. `trades` 를 읽지 않으며(원천은
-        #    challenger.db), 아래 값은 실전 전환 기준 ① 판정에 쓰지 말 것.
-        # 계측 4원칙 ②·④: 「미배선」·「미측정」을 0 과 같은 값으로 표현하지 않는다.
-        self._gp_by_day: dict = {}       # date → Σ pnl_pt (원화 환산 전)
-        self._gp_cnt_by_day: dict = {}   # date → 청산 건수
-        self._gp_open_n: int = 0         # 미청산 진입 수 (손익 합산 대상 아님)
-        self._gp_wired: bool = False     # 신호 기록이 있는가 (미배선 ≠ 0건)
-        # 🔴 3분법이다 — None=아직 시도 안 함 / False=조회 실패 / True=성공.
-        # 「미시도」를 「실패」로 말하면 그 자체가 계측 4원칙 ② 위반이다.
-        self._gp_loaded = None
         # date → 그 날의 **실거래 총 건수**(필터 이전). 브로커 net 을 써도 되는
         # 날인지(=그 날 전부가 선택돼 있는지) 판정하는 분모다. _day_is_whole 참조.
         self._day_total_n: dict = {}
+        # ── [MW0602 590차] 신동(가상) ─────────────────────────────────
+        # 🔴 `trades` 를 읽지 않는다(원천은 shindong.db). 계측 4원칙 ②·④:
+        #    「미배선」·「조회 실패」·「0건」을 같은 빈 표로 말하지 않는다.
+        self._sd_rows: list = []          # display.pnl_rows() — 청산 완료만
+        self._sd_open_n: int = 0          # 오늘 보유 중(미청산) — 손익 합산 대상 아님
+        self._sd_wired = None             # None=미조회 / False=DB 없음 / True=있음
+        self._sd_loaded = None            # None=미시도 / False=조회 실패 / True=성공
+        self._mode = self._load_mode_pref()
         self._build()
 
     # ── UI 구성 ────────────────────────────────────────────────
@@ -6894,10 +6902,10 @@ class PnlHistoryPanel(QWidget):
             self._sum[key] = vl
         lay.addWidget(sf)
 
-        # [MW0602 557차] GP(가상) 상태 배너 — 3상태(미배선 / 배선됨·0건 / 가상 존재).
-        self._gp_banner = mk_label("", C['text2'], 9)
-        self._gp_banner.setWordWrap(True)
-        lay.addWidget(self._gp_banner)
+        # [590차] 주체 상태 배너 — 지금 표가 무엇을 담고 있는지 한 줄로 말한다.
+        self._mode_banner = mk_label("", C['text2'], 9)
+        self._mode_banner.setWordWrap(True)
+        lay.addWidget(self._mode_banner)
 
         # 일별·주별·월별 내부 탭
         inner = QTabWidget()
@@ -6918,7 +6926,7 @@ class PnlHistoryPanel(QWidget):
         inner.addTab(self.tbl_weekly,  "주별 (13주)")
         inner.addTab(self.tbl_monthly, "월별")
 
-        # 소스 선택 체크박스 (탭바 우측 코너)
+        # ── 탭바 우측 코너: [미륵][신동] 전환 버튼 + (미륵 전용) 순/역방향 ──
         _cb_style = (
             f"QCheckBox{{color:{C['text2']};font-size:{S.f(9)}px;spacing:{S.p(3)}px;}}"
             f"QCheckBox::indicator{{width:{S.p(11)}px;height:{S.p(11)}px;"
@@ -6937,32 +6945,54 @@ class PnlHistoryPanel(QWidget):
         self._cb_reverse.setStyleSheet(_cb_style)
         self._cb_forward.stateChanged.connect(self._on_source_changed)
         self._cb_reverse.stateChanged.connect(self._on_source_changed)
-        # [MW0602 557차] GP(가상) 합산 스위치 — 🔴 **기본 해제**.
-        # 켜야만 가상 손익이 합산되며, 해제 상태의 표는 종전과 완전 동치다.
-        _cb_gp_style = _cb_style.replace(C['cyan'], C['purple'])
-        self._cb_gp = QCheckBox("GP(가상)")
-        self._cb_gp.setChecked(self._load_gp_pref())
-        self._cb_gp.setStyleSheet(_cb_gp_style)
-        self._cb_gp.setToolTip(
-            "GP(Golden Power) 규칙 섀도의 **가상** 손익을 표에 합산한다.\n"
-            "· 원천: challenger.db (실주문 없음 · trades 무오염)\n"
-            "· 환산: 미니선물 50,000원/pt\n"
-            "🔴 실적이 아니다 — 실전 전환 기준 ① 판정에 쓰지 말 것."
-        )
-        self._cb_gp.stateChanged.connect(self._on_source_changed)
+
+        def _mode_btn(text, col, tip):
+            b = QPushButton(text)
+            b.setCheckable(True)
+            b.setToolTip(tip)
+            b.setStyleSheet(
+                f"QPushButton{{background:{C['bg3']};color:{C['text2']};"
+                f"border:1px solid {C['border']};border-radius:4px;"
+                f"padding:1px {S.p(10)}px;font-size:{S.f(9)}px;font-weight:600;}}"
+                f"QPushButton:checked{{color:{col};border-color:{col};}}"
+            )
+            return b
+
+        self._btn_mireuk = _mode_btn(
+            "미륵", C['cyan'],
+            "미륵이 실거래(모의) 손익 추이.\n"
+            "· 원천: trades.db\n"
+            "· 일 손익: 브로커 실측 net(예탁현금 차액) 우선, 없으면 엔진 net")
+        self._btn_shindong = _mode_btn(
+            "신동", C['purple'],
+            "신동 **가상거래** 손익 추이(MAIN 변형, 청산 완료분).\n"
+            "· 원천: shindong.db (실주문 없음 · trades 무오염)\n"
+            "· 요율: 크레온 0.0019% 편도로 재환산 · 미니 50,000원/pt · 2계약(1차·최종)\n"
+            "🔴 실적이 아니다 — 실전 전환 기준 ① 판정에 쓰지 말 것.")
+        self._mode_grp = QButtonGroup(self)
+        self._mode_grp.setExclusive(True)
+        self._mode_grp.addButton(self._btn_mireuk)
+        self._mode_grp.addButton(self._btn_shindong)
+        (self._btn_shindong if self._mode == self.MODE_SHINDONG
+         else self._btn_mireuk).setChecked(True)
+        self._btn_mireuk.toggled.connect(self._on_mode_toggled)
+        self._btn_shindong.toggled.connect(self._on_mode_toggled)
+
         _corner = QWidget()
         _cl = QHBoxLayout(_corner)
         _cl.setContentsMargins(0, 0, 6, 0)
-        _cl.setSpacing(10)
+        _cl.setSpacing(6)
+        _cl.addWidget(self._btn_mireuk)
+        _cl.addWidget(self._btn_shindong)
+        _cl.addSpacing(S.p(8))
         _cl.addWidget(self._cb_forward)
         _cl.addWidget(self._cb_reverse)
-        _cl.addWidget(self._cb_gp)
         inner.setCornerWidget(_corner, Qt.TopRightCorner)
 
         lay.addWidget(inner, 1)
 
-        # _cb_gp 생성 이후에 부른다 — 배너가 체크 상태를 읽는다.
-        self._update_gp_banner()
+        self._sync_mode_widgets()
+        self._update_mode_banner()
 
     # 날짜/주간/월(0) · 거래(1) · 승(2) · 패(3) · 승률(4) → Fixed 고정폭
     # 나머지 값 열(5+) → Stretch
@@ -7027,7 +7057,11 @@ class PnlHistoryPanel(QWidget):
     # ── 갱신 진입점 ────────────────────────────────────────────
 
     def refresh(self, rows):
-        """trades.db 행 목록으로 전체 갱신. rows: sqlite3.Row list."""
+        """trades.db 행 목록으로 전체 갱신. rows: sqlite3.Row list.
+
+        신동(shindong.db)은 여기서 **함께** 다시 읽는다 — 호출부(`main._refresh_pnl_history`)
+        하나로 두 주체가 같은 시점 값을 갖게 한다.
+        """
         try:
             # ── [MW0601 493차 / F-4] 브로커 **net** 축으로 교체 ──────────────
             #
@@ -7069,184 +7103,121 @@ class PnlHistoryPanel(QWidget):
         for _r in self._rows:
             _d = _r["entry_ts"][:10]
             self._day_total_n[_d] = self._day_total_n.get(_d, 0) + 1
-        self._load_gp_shadow()
+        self._load_shindong()
+        self._rebuild_all()
+
+    def _rebuild_all(self):
         self._build_daily()
         self._build_weekly()
         self._build_monthly()
         self._build_summary()
-        self._update_gp_banner()
+        self._update_mode_banner()
 
-    # ── GP(가상) 섀도 ──────────────────────────────────────────
+    # ── [590차] 신동(가상) ─────────────────────────────────────
 
-    def _load_gp_shadow(self):
-        """challenger.db 의 GP 규칙 **가상** 청산을 날짜별로 접는다.
+    def _load_shindong(self):
+        """shindong.db MAIN 의 **청산 완료** 거래를 패널 행으로 적재(크레온 요율 재환산).
 
         🔴 `trades` 를 읽지 않는다 — 실거래 테이블에 가상거래가 섞이면 브로커 대사·
           전환기준 ①·수수료 재환산·승패 사후검증이 전부 오염된다.
-        ⚠ 빈 결과가 「0건」인지 「미배선」인지는 `gp_shadow_is_wired()` 로만 갈린다
-          (계측 4원칙 ②) — 그래서 두 값을 따로 들고 배너가 구분해 말한다.
+        ⚠ 빈 결과가 「0건」인지 「미배선(DB 없음)」인지 「조회 실패」인지 셋을 가른다.
         """
-        self._gp_by_day = {}
-        self._gp_cnt_by_day = {}
-        self._gp_open_n = 0
-        self._gp_wired = False
-        self._gp_loaded = None
+        self._sd_rows = []
+        self._sd_open_n = 0
+        self._sd_wired = None
+        self._sd_loaded = None
         try:
             import datetime as _dt
-            from utils.db_utils import (fetch_gp_shadow_positions, gp_shadow_is_wired,
-                                        fetch_gp_shadow_chart_markers)
-            self._gp_wired = bool(gp_shadow_is_wired())
-            # 미청산 진입 수 — 손익에는 안 들어가지만 배너가 말해야 한다.
-            self._gp_open_n = sum(
-                1 for _m in fetch_gp_shadow_chart_markers(_dt.date.today().isoformat())
-                if _m.get("exit_ts") is None)
-            for _p in fetch_gp_shadow_positions(90):
-                _d = str(_p.get("exit_ts") or "")[:10]
-                if len(_d) != 10:
-                    continue
-                self._gp_by_day[_d] = self._gp_by_day.get(_d, 0.0) + float(_p["pnl_pt"])
-                self._gp_cnt_by_day[_d] = self._gp_cnt_by_day.get(_d, 0) + 1
-            self._gp_loaded = True
-        except Exception:
-            # 조회 실패는 「0건」이 아니라 **미측정**이다 — 배너가 그렇게 말한다.
-            self._gp_by_day = {}
-            self._gp_cnt_by_day = {}
-            self._gp_loaded = False
+            from config.settings import SHINDONG_DB
+            from strategy.shindong import store as _sd_store
+            from strategy.shindong.display import pnl_rows
+            self._sd_wired = bool(os.path.exists(SHINDONG_DB))
+            if self._sd_wired:
+                self._sd_rows = pnl_rows(_sd_store.load_closed_for_pnl(SHINDONG_DB, 90, "MAIN"))
+                # 미청산 — 손익에는 안 들어가지만 배너가 말해야 한다(미청산 ≠ 없음).
+                self._sd_open_n = sum(
+                    1 for _t in _sd_store.load_trades(
+                        SHINDONG_DB, _dt.date.today().isoformat(), "MAIN")
+                    if _t.get("status") == "OPEN")
+            self._sd_loaded = True
+        except Exception as _e:
+            logger.debug("[PnlHistory] 신동 적재 실패: %s", _e)
+            self._sd_rows = []
+            self._sd_loaded = False
 
-    def _gp_on(self) -> bool:
-        """GP(가상) 합산 스위치. 해제(기본)면 어떤 집계에도 들어가지 않는다."""
-        return bool(self._cb_gp.isChecked())
+    def _sd_mode(self) -> bool:
+        return self._mode == self.MODE_SHINDONG
 
-    def _gp_day_krw(self, date_str) -> float:
-        """그 날 GP 가상 손익의 **원화** 환산.
-
-        🔴 승수는 **미니선물 50,000원/pt** 다. `FUTURES_PT_VALUE`(250,000)를 쓰면
-          가상 손익이 5배로 부풀어 표 전체를 오도한다.
-        """
-        return self._gp_by_day.get(date_str, 0.0) * MINI_FUTURES_PT_VALUE
-
-    def _gp_probe_note(self) -> str:
-        """조회 시도 상태를 문구로. 미시도·실패·성공을 구분한다(계측 4원칙 ②)."""
-        if self._gp_loaded is None:
-            return "  (아직 조회 전 — 첫 갱신을 기다리는 중)"
-        if self._gp_loaded is False:
-            return "  (challenger.db 조회 실패)"
-        return ""
-
-    def _gp_total_count(self) -> int:
-        return sum(self._gp_cnt_by_day.values())
-
-    def _gp_open_count(self) -> int:
-        """아직 안 닫힌 GP 진입 수. 🔴 손익에 **합산되지 않는다** — 미측정이다.
-
-        배너가 이 수를 말하지 않으면 「GP 3건」이 그날 전부인 것처럼 읽힌다
-        (계측 4원칙 ②: 미청산 ≠ 없음).
-
-        ⚠ 값은 `_load_gp_shadow()` 가 적재해 둔 것을 돌려줄 뿐 **DB 를 치지 않는다.**
-          배너는 체크박스를 만질 때마다 갱신되므로, 여기서 조회하면 장중에 클릭
-          한 번마다 DB 를 읽는다.
-        """
-        return int(self._gp_open_n)
-
-    def _gp_banner_state(self) -> str:
-        """배너 3상태: `unwired` / `wired_zero` / `virtual`."""
-        if not self._gp_wired:
-            return "unwired"
-        if self._gp_total_count() <= 0:
-            return "wired_zero"
-        return "virtual"
-
-    def _gp_offtable_days(self) -> int:
-        """표에 **행이 없는** GP 일자 수 — 실거래 0건인 날은 표에 나타나지 않는다.
-
-        계측 4원칙 ③(탈락 가시화): 합산에서 빠진 것을 조용히 두지 않는다.
-        """
-        if not self._gp_on():
-            return 0
-        # 🔴 축이 `self._rows` 가 아니라 **실제로 그려진 일자**다. 종전 구현은
-        # 전자로 재서, 순방향·역방향을 모두 해제해 표가 비었을 때도 0 을 보고했다.
+    def _update_mode_banner(self):
+        """지금 표가 담은 것을 한 줄로. QLabel 은 평문이다 — 마크다운 금지."""
+        if not self._sd_mode():
+            _tail = ""
+            if not (self._cb_forward.isChecked() or self._cb_reverse.isChecked()):
+                _tail = "  · ⚠ 순방향·역방향이 모두 해제돼 표가 비어 있다"
+            self._mode_banner.setStyleSheet(f"color:{C['text2']};")
+            self._mode_banner.setText(
+                "⚪ 미륵 — 실거래(모의) 손익. 일 손익은 브로커 실측 net 우선." + _tail)
+            return
+        if self._sd_loaded is None:
+            _msg = "⚪ 신동 — 아직 조회 전(첫 갱신을 기다리는 중)."
+            self._mode_banner.setStyleSheet(f"color:{C['text2']};")
+            self._mode_banner.setText(_msg)
+            return
+        if self._sd_loaded is False:
+            self._mode_banner.setStyleSheet(f"color:{C['orange']};")
+            self._mode_banner.setText("⚠ 신동 — shindong.db 조회 실패. 표는 미측정이다(0건이 아니다).")
+            return
+        if not self._sd_wired:
+            self._mode_banner.setStyleSheet(f"color:{C['text2']};")
+            self._mode_banner.setText(
+                "⚪ 신동 미배선 — shindong.db 가 없다. 「청산 0건」이 아니라 측정된 적 없음이다.")
+            return
+        _n = len(self._sd_rows)
+        _tail = ""
         _shown = set(d for d, _ in self._group(lambda ts: ts[:10])[-60:])
-        return sum(1 for d in self._gp_by_day if d not in _shown)
+        _off = len(set(r["entry_ts"][:10] for r in self._sd_rows) - _shown)
+        if _off:
+            _tail += f"  · 표 밖 {_off}일(60일 창 밖)"
+        if self._sd_open_n:
+            _tail += f"  · 오늘 보유 중 {self._sd_open_n}건은 미청산이라 빠져 있다"
+        self._mode_banner.setStyleSheet(f"color:{C['purple']};")
+        self._mode_banner.setText(
+            f"🟣 신동 가상거래 {_n}건(최근 90일 청산) — 크레온 요율 0.0019% 재환산 · "
+            "미니 50,000원/pt · 2계약. 실적이 아니며 실전 전환 기준 ① 판정에 쓰지 말 것."
+            + _tail)
 
-    def _update_gp_banner(self):
-        st = self._gp_banner_state()
-        if st == "unwired":
-            self._gp_banner.setStyleSheet(f"color:{C['text2']};")
-            self._gp_banner.setText(
-                "⚪ GP(가상) 미배선 — 챌린저 신호 기록이 없다. "
-                "「청산 0건」이 아니라 측정된 적 없음이다."
-                + self._gp_probe_note()
-            )
+    def _sync_mode_widgets(self):
+        """순방향/역방향은 미륵 전용 필터다 — 신동에서는 숨긴다(눌러도 아무 일 없는 버튼 금지)."""
+        _m = not self._sd_mode()
+        self._cb_forward.setVisible(_m)
+        self._cb_reverse.setVisible(_m)
+
+    def _on_mode_toggled(self, _on=None):
+        _new = self.MODE_SHINDONG if self._btn_shindong.isChecked() else self.MODE_MIREUK
+        if _new == self._mode:
             return
-        if st == "wired_zero":
-            self._gp_banner.setStyleSheet(f"color:{C['text2']};")
-            self._gp_banner.setText(
-                "⚪ GP(가상) 배선됨 · 최근 90일 청산 0건 — 합산할 가상 손익이 없다."
-            )
-            return
-        _n = self._gp_total_count()
-        _off = self._gp_offtable_days()
-        _tail = f"  · 표 밖 {_off}일(60일 창 밖)" if _off else ""
-        _op = self._gp_open_count()
-        if _op:
-            _tail += f"  · 보유 중 {_op}건은 미청산이라 합산에서 빠져 있다"
-        # 계측 4원칙 ③ — 소스 필터로 실거래가 빠져 있으면 그 사실을 말한다.
-        if self._gp_on() and not (self._cb_forward.isChecked()
-                                  or self._cb_reverse.isChecked()):
-            # ⚠ QLabel 은 평문이다 — `**강조**` 를 쓰면 별표가 그대로 보인다.
-            #   (2026-09-10 화면 실측). 마크다운을 넣지 말 것.
-            _tail += "  · ⚠ 순방향·역방향이 모두 해제돼 실거래는 표에서 빠져 있다"
-        if self._gp_on():
-            self._gp_banner.setStyleSheet(f"color:{C['purple']};")
-            self._gp_banner.setText(
-                f"🟣 가상 포함 — GP {_n}건(미니 50,000원/pt)이 합산돼 있다. "
-                "실적이 아니며 실전 전환 기준 ① 판정에 쓰지 말 것." + _tail
-            )
-        else:
-            self._gp_banner.setStyleSheet(f"color:{C['text2']};")
-            self._gp_banner.setText(
-                f"⚪ GP(가상) {_n}건 있음 · 합산 해제 — 표는 실거래만 담고 있다."
-                + _tail
-            )
+        self._mode = _new
+        self._save_cb_prefs()
+        self._sync_mode_widgets()
+        self._rebuild_all()
 
     # ── 그룹화 유틸 ────────────────────────────────────────────
 
     def _active_rows(self):
-        """체크박스 상태에 따라 self._rows 필터링.
-        순방향=reverse_entry_enabled==0, 역방향=reverse_entry_enabled==1.
+        """선택된 주체의 행.
+        신동 = 신동 행 전부. 미륵 = 순방향(reverse_entry_enabled==0)·역방향(==1) 필터.
         """
+        if self._sd_mode():
+            return list(self._sd_rows)
         fwd = self._cb_forward.isChecked()
         rev = self._cb_reverse.isChecked()
         if fwd and rev:
-            base = list(self._rows)
-        elif fwd:
-            base = [r for r in self._rows if not r["reverse_entry_enabled"]]
-        elif rev:
-            base = [r for r in self._rows if r["reverse_entry_enabled"]]
-        else:
-            base = []
-        if not self._gp_on() or not self._gp_by_day:
-            return base
-        # 🔴 [MW0602 557차 후속2] GP 가 켜졌는데 그 날 실거래가 **한 건도 선택되지
-        # 않으면** 그 날은 표에서 통째로 사라진다 — 배너는 「합산돼 있다」는데
-        # 화면 어디에도 없는 상태가 된다(2026-09-10 실제 발생: 순방향·역방향을
-        # 모두 해제한 상태). 그래서 **손익 0 짜리 자리 행**을 넣어 날짜를 살린다.
-        # ⚠ 이 행은 거래가 아니다 — `_gp_only` 표식을 달아 승패·건수 집계에서 뺀다.
-        _have = set(r["entry_ts"][:10] for r in base if r["entry_ts"])
-        _extra = [self._gp_placeholder_row(d)
-                  for d in sorted(self._gp_by_day) if d not in _have]
-        return (base + _extra) if _extra else base
-
-    @staticmethod
-    def _gp_placeholder_row(date_str):
-        """GP 전용 날짜의 자리 행. **거래가 아니다** — 손익 0, 수량 0, `_gp_only`."""
-        return {
-            "entry_ts": date_str + " 00:00:00",
-            "pnl_pts": 0.0, "pnl_krw": 0.0,
-            "forward_pnl_pts": 0.0, "forward_pnl_krw": 0.0,
-            "quantity": 0, "reverse_entry_enabled": 0,
-            "_gp_only": True,
-        }
+            return list(self._rows)
+        if fwd:
+            return [r for r in self._rows if not r["reverse_entry_enabled"]]
+        if rev:
+            return [r for r in self._rows if r["reverse_entry_enabled"]]
+        return []
 
     def _group(self, key_fn):
         from collections import defaultdict
@@ -7268,8 +7239,6 @@ class PnlHistoryPanel(QWidget):
             return ""
 
     def _stats(self, rows, pts_key="pnl_pts", krw_key="pnl_krw"):
-        # GP 전용 자리 행은 거래가 아니다 — 건수·승패·pt 에서 뺀다(계측 4원칙 ①).
-        rows  = [r for r in rows if not r.get("_gp_only")]
         n     = len(rows)
         wins  = sum(1 for r in rows if r[pts_key] > 0)
         ppts  = sum(r[pts_key] * r["quantity"] for r in rows)
@@ -7285,79 +7254,50 @@ class PnlHistoryPanel(QWidget):
         return d
 
     def _effective_day_krw(self, date_str, day_rows):
-        """해당 날짜의 **순손익(net)**. 브로커 실측이 있으면 그 값을, 없으면
-        거래 원시 pnl_krw 합계(엔진 net)를 반환. 일별/주별/월별/요약 카드가
-        모두 이 값을 기준으로 삼아야 누적·MDD·샤프가 서로 어긋나지 않는다.
+        """해당 날짜의 **순손익(net)**. 일별/주별/월별/요약 카드의 단일 관문.
 
-        [493차 F-4] 두 갈래가 **같은 단위(net)** 가 된 것은 이번부터다 —
-        종전 브로커 갈래는 gross였다(refresh() 주석 참조).
-
-        🔴 [MW0602 557차] GP(가상)는 **브로커 분기 밖에서** 더한다.
-        브로커 갈래는 `day_rows` 를 읽지 않고 조기 반환하므로, GP 를 `day_rows` 에
-        섞으면 브로커 실측이 있는 날에 **조용히 전부 사라진다** — 이 브랜치의 최근
-        90일은 브로커 50일 / 엔진 0일, 즉 100%가 그 갈래다.
+        미륵: 브로커 실측이 있고 그 날 실거래 전부가 선택돼 있으면 그 값, 아니면
+              거래 원시 pnl_krw 합계(엔진 net). [493차 F-4] 두 갈래 모두 net 이다.
+        신동: 🔴 브로커 분기를 **타지 않는다** — 예탁금 차액은 미륵 실거래의 것이다.
+              가상 행의 pnl_krw(크레온 요율 재환산) 합계만 쓴다.
         """
-        gp_krw = self._gp_day_krw(date_str) if self._gp_on() else 0.0
+        if self._sd_mode():
+            return sum(r["pnl_krw"] for r in day_rows)
         broker_krw = self._broker_pnl.get(date_str)
         if broker_krw is not None and self._day_is_whole(date_str, day_rows):
-            return broker_krw + gp_krw
-        return sum(r["pnl_krw"] for r in day_rows) + gp_krw
+            return broker_krw
+        return sum(r["pnl_krw"] for r in day_rows)
 
     def _day_is_whole(self, date_str, day_rows) -> bool:
         """그 날의 **실거래 전부**가 선택돼 있는가.
 
         🔴 [MW0602 557차 후속2] 브로커 net 은 그 날 **전체**의 예탁금 차액이라
           쪼갤 수 없다. 순방향/역방향 필터로 일부만 선택된 날에 그 값을 쓰면
-          **빠진 거래의 손익까지** 표시된다 — 557차 검토가 "dev 엔 부분 선택이
-          없으니 이 기계장치도 필요 없다"고 쓴 것은 **틀렸다.** dev 에도 부분
-          선택이 있고(순방향/역방향), 둘 다 해제하면 그 날이 통째로 빠진다.
+          **빠진 거래의 손익까지** 표시된다.
         """
-        real_n = sum(1 for r in day_rows if not r.get("_gp_only"))
+        real_n = len(day_rows)
         return real_n == self._day_total_n.get(date_str, real_n)
 
     def _effective_day_pt(self, date_str, day_rows):
-        """그 날의 **표시용 P/L pt**. GP(가상)가 켜져 있으면 함께 더한다.
-
-        🔴 원(krw) 관문과 달리 **브로커 분기가 없다** — 브로커는 pt 를 주지 않는다.
-          그래서 여기는 언제나 「선택된 실거래 pt + GP pt」다.
-
-        🔴 [MW0602 557차 후속5] 종전에는 pt 열이 실거래만 셌다. 그 결과 GP 전용 날에
-          **원은 값이 있는데 pt 는 `—`** 인 모순이 화면에 보였고, 차트의 GP pt 합
-          (예: −16.96 +8.36 +5.80 = −2.81pt)을 패널에서 대조할 수단이 없었다.
-          pt 는 실거래·GP 가 **같은 단위**이므로 더하는 것이 정당하다(원과 다르다 —
-          그쪽은 브로커 net 이 섞여 pt×승수가 아니다).
-        """
-        real = sum(r["pnl_pts"] * r["quantity"]
-                   for r in day_rows if not r.get("_gp_only"))
-        gp = self._gp_by_day.get(date_str, 0.0) if self._gp_on() else 0.0
-        return real + gp
+        """그 날의 **표시용 P/L pt**(선택된 행 pt × 수량 합). 브로커는 pt 를 주지 않는다."""
+        return sum(r["pnl_pts"] * r["quantity"] for r in day_rows)
 
     def _group_effective_pt(self, grp):
         """grp 의 날짜별 표시용 pt 합계."""
         day_rows = self._daily_bucket(grp)
         return sum(self._effective_day_pt(d, rs) for d, rs in day_rows.items())
 
-    def _group_has_gp(self, grp) -> bool:
-        """그룹(주/월) 안에 가상 손익이 섞인 날이 하나라도 있는가.
-
-        🔴 주별·월별에 표식이 없으면 가상이 **조용히** 섞인다 — 일별에만 표식을
-          달면 탭을 바꾸는 순간 그 사실이 사라진다.
-        """
-        if not self._gp_on() or not self._gp_by_day:
-            return False
-        return any(d in self._gp_by_day for d in self._daily_bucket(grp))
-
-    def _day_has_gp(self, date_str) -> bool:
-        """그 날 값에 가상 손익이 섞여 있는가(🟣 표식 판정 단일 지점)."""
-        return bool(self._gp_on() and self._gp_by_day.get(date_str))
-
     def _group_effective_krw(self, grp):
-        """grp(여러 날짜에 걸친 거래 목록)의 날짜별 브로커 정산 우선 합계."""
+        """grp(여러 날짜에 걸친 거래 목록)의 날짜별 관문 합계."""
         day_rows = self._daily_bucket(grp)
         return sum(self._effective_day_krw(d, rs) for d, rs in day_rows.items())
 
+    def _virtual_mark(self) -> str:
+        """🟣 = 이 값은 가상(신동)이다. 탭을 바꿔도 사라지지 않게 모든 값 셀에 단다."""
+        return "🟣 " if self._sd_mode() else ""
+
     def _mdd(self, rows, krw_key="pnl_krw"):
-        """전체 거래의 날짜별 브로커 정산 우선 손익 기준 MDD."""
+        """전체 거래의 날짜별 관문 손익 기준 MDD."""
         day_rows = self._daily_bucket(rows)
         eq, peak, mdd = 0.0, 0.0, 0.0
         for date_str in sorted(day_rows):
@@ -7367,15 +7307,8 @@ class PnlHistoryPanel(QWidget):
         return round(mdd, 0)
 
     def _mdd_daily(self, grp) -> float:
-        """일별 손익(브로커 정산 우선) 기준 MDD — 거래 단위 진동 제거."""
-        day_rows = self._daily_bucket(grp)
-        eq, peak, mdd = 0.0, 0.0, 0.0
-        for date_str in sorted(day_rows):
-            v = self._effective_day_krw(date_str, day_rows[date_str])
-            eq += v
-            peak = max(peak, eq)
-            mdd = min(mdd, eq - peak)
-        return round(mdd, 0)
+        """일별 손익(관문) 기준 MDD — 거래 단위 진동 제거."""
+        return self._mdd(grp)
 
     @staticmethod
     def _dual_text(executed, forward, decimals=0, suffix=""):
@@ -7430,41 +7363,36 @@ class PnlHistoryPanel(QWidget):
         dp = {d: self._effective_day_krw(d, rs) for d, rs in day_rows.items()}
         return self._sharpe(list(dp.values()))
 
+    def _load_prefs_dict(self) -> dict:
+        try:
+            _f = os.path.join(DATA_DIR, "ui_prefs.json")
+            if not os.path.exists(_f):
+                return {}
+            with open(_f, "r", encoding="utf-8") as _fp:
+                _p = json.load(_fp)
+            return _p if isinstance(_p, dict) else {}
+        except Exception:
+            return {}
+
     def _load_cb_prefs(self):
         """ui_prefs.json에서 순방향/역방향 체크 상태 복원. 기본값: (True, True)."""
-        try:
-            _f = os.path.join(DATA_DIR, "ui_prefs.json")
-            if not os.path.exists(_f):
-                return True, True
-            with open(_f, "r", encoding="utf-8") as _fp:
-                _p = json.load(_fp)
-            return bool(_p.get("pnl_cb_forward", True)), bool(_p.get("pnl_cb_reverse", True))
-        except Exception:
-            return True, True
+        _p = self._load_prefs_dict()
+        return bool(_p.get("pnl_cb_forward", True)), bool(_p.get("pnl_cb_reverse", True))
 
-    def _load_gp_pref(self) -> bool:
-        """GP(가상) 합산 체크 상태 복원. 🔴 기본값 **False** — 켜는 것은 사용자 행위다."""
-        try:
-            _f = os.path.join(DATA_DIR, "ui_prefs.json")
-            if not os.path.exists(_f):
-                return False
-            with open(_f, "r", encoding="utf-8") as _fp:
-                _p = json.load(_fp)
-            return bool(_p.get("pnl_cb_gp", False))
-        except Exception:
-            return False
+    def _load_mode_pref(self) -> str:
+        """[590차] 주체 선택 복원. 🔴 기본값 **미륵** — 가상을 여는 것은 사용자 행위다."""
+        _m = self._load_prefs_dict().get("pnl_mode", self.MODE_MIREUK)
+        return _m if _m in (self.MODE_MIREUK, self.MODE_SHINDONG) else self.MODE_MIREUK
 
     def _save_cb_prefs(self):
-        """현재 체크 상태를 ui_prefs.json에 저장."""
+        """현재 선택 상태를 ui_prefs.json에 저장."""
         try:
             _f = os.path.join(DATA_DIR, "ui_prefs.json")
-            _p = {}
-            if os.path.exists(_f):
-                with open(_f, "r", encoding="utf-8") as _fp:
-                    _p = json.load(_fp)
+            _p = self._load_prefs_dict()
             _p["pnl_cb_forward"] = self._cb_forward.isChecked()
             _p["pnl_cb_reverse"] = self._cb_reverse.isChecked()
-            _p["pnl_cb_gp"] = self._cb_gp.isChecked()
+            _p["pnl_mode"] = self._mode
+            _p.pop("pnl_cb_gp", None)          # 557차 GP 스위치 — 590차에 폐기
             with open(_f, "w", encoding="utf-8") as _fp:
                 json.dump(_p, _fp, ensure_ascii=False)
         except Exception:
@@ -7472,12 +7400,7 @@ class PnlHistoryPanel(QWidget):
 
     def _on_source_changed(self):
         self._save_cb_prefs()
-        self._update_gp_banner()
-        if self._rows:
-            self._build_daily()
-            self._build_weekly()
-            self._build_monthly()
-            self._build_summary()
+        self._rebuild_all()
 
     def _sharpe(self, daily_pnls):
         n = len(daily_pnls)
@@ -7495,27 +7418,19 @@ class PnlHistoryPanel(QWidget):
         groups = self._group(lambda ts: ts[:10])[-60:]
         cum_map, c = {}, 0.0
         for date_str, grp in groups:
-            # [MW0602 557차] 단일 관문 경유. 종전 인라인 분기는 브로커·엔진 갈래
-            # 자체는 관문과 동치였으나, 관문 밖이라 GP 합산이 누적 열에만 빠졌다.
             c += self._effective_day_krw(date_str, grp)
             cum_map[date_str] = c
 
+        _v = self._virtual_mark()
         tbl = self.tbl_daily
         tbl.setRowCount(len(groups))
         for r_idx, (date_str, grp) in enumerate(reversed(groups)):
             n, wins, losses, ppts, pkrw = self._stats(grp)
             cum       = cum_map[date_str]
             disp_krw  = self._effective_day_krw(date_str, grp)
-            krw_text  = self._fmt_single(disp_krw, suffix="원")
             disp_pt   = self._effective_day_pt(date_str, grp)
-            _gp_day   = self._day_has_gp(date_str)
-            # 거래도 GP 도 없으면 「미측정」이다 — 0.00pt 로 쓰면 「본전」으로 읽힌다.
-            pt_text   = (self._fmt_single(disp_pt, decimals=2, suffix="pt")
-                         if (n or _gp_day) else "—")
-            # 🟣 그 날 값에 **가상 손익이 섞여 있다**는 셀 단위 표식.
-            if _gp_day:
-                krw_text = "🟣 " + krw_text
-                pt_text = "🟣 " + pt_text
+            krw_text  = _v + self._fmt_single(disp_krw, suffix="원")
+            pt_text   = _v + self._fmt_single(disp_pt, decimals=2, suffix="pt")
             wr   = f"{wins/n*100:.0f}%" if n else "—"
             bg   = self._row_bg(disp_krw)
             pc   = self._pcol(disp_krw)
@@ -7544,6 +7459,7 @@ class PnlHistoryPanel(QWidget):
             c += eff_krw
             cum_map[wk] = c
 
+        _v = self._virtual_mark()
         tbl = self.tbl_weekly
         tbl.setRowCount(len(groups))
         for r_idx, (wk, grp) in enumerate(reversed(groups)):
@@ -7558,7 +7474,6 @@ class PnlHistoryPanel(QWidget):
             pc   = self._pcol(disp_krw)
             cc   = self._pcol(cum)
             mc   = self._pcol(mdd)
-            _v   = "🟣 " if self._group_has_gp(grp) else ""
             cells = [
                 self._item(wk,                                                  bg=bg, bold=True),
                 self._item(str(n),                                              bg=bg, align=Qt.AlignRight),
@@ -7583,6 +7498,7 @@ class PnlHistoryPanel(QWidget):
             c += eff_krw
             cum_map[mon] = c
 
+        _v = self._virtual_mark()
         tbl = self.tbl_monthly
         tbl.setRowCount(len(groups))
         for r_idx, (mon, grp) in enumerate(reversed(groups)):
@@ -7596,7 +7512,6 @@ class PnlHistoryPanel(QWidget):
             bg   = self._row_bg(disp_krw)
             pc   = self._pcol(disp_krw)
             cc   = self._pcol(cum)
-            _v   = "🟣 " if self._group_has_gp(grp) else ""
             sc   = (C['green'] if sharpe >= 1.0
                     else C['yellow'] if sharpe >= 0.5
                     else C['red']    if sharpe < 0
@@ -7620,24 +7535,23 @@ class PnlHistoryPanel(QWidget):
     def _build_summary(self):
         active = self._active_rows()
         if not active:
+            # 0건은 「미측정」이다 — 0원·0% 로 쓰면 「본전·전패」로 읽힌다(계측 4원칙 ②).
             for v in self._sum.values():
                 v.setText("—")
             return
 
-        # GP 전용 자리 행은 거래가 아니다 — 거래일·건수·승률·연승은 실거래로만 센다.
-        real   = [r for r in active if not r.get("_gp_only")]
-        days   = len(set(r["entry_ts"][:10] for r in real if r["entry_ts"]))
-        trades = len(real)
-        wins   = sum(1 for r in real if r["pnl_pts"] > 0)
+        days   = len(set(r["entry_ts"][:10] for r in active if r["entry_ts"]))
+        trades = len(active)
+        wins   = sum(1 for r in active if r["pnl_pts"] > 0)
         wr     = wins / trades * 100 if trades else 0
-        # 총 손익: 브로커 정산값이 있는 날은 그 합계 사용 (일별/주별/월별과 동일 기준)
+        # 총 손익: 일별/주별/월별과 동일한 관문(_effective_day_krw) 합계
         disp_total = self._group_effective_krw(active)
 
         mdd = self._mdd(active)
 
         # 최장 연승
         best, cur = 0, 0
-        for r in sorted(real, key=lambda x: x["entry_ts"]):
+        for r in sorted(active, key=lambda x: x["entry_ts"]):
             if r["pnl_pts"] > 0:
                 cur  += 1
                 best  = max(best, cur)
@@ -7654,15 +7568,12 @@ class PnlHistoryPanel(QWidget):
                 f"color:{col};font-size:{S.f(12)}px;font-weight:bold;"
             )
 
-        # 실거래가 0건이면 승률·연승은 **미측정**이다 — 0.0%/0연승 으로 쓰면
-        # 「졌다」로 읽힌다(계측 4원칙 ②). GP 만 켠 상태가 정확히 그 경우다.
-        _set("days",    f"{days}일",                              C['blue'])
+        _set("days",    f"{days}일",                               C['blue'])
         _set("trades",  f"{trades}건",                             C['text'])
-        _set("winrate", (f"{wr:.1f}%" if trades else "—"),         (wc if trades else C['text2']))
-        _set("total",   (("🟣 " if self._group_has_gp(active) else "")
-                         + self._fmt_single(disp_total, suffix="원")), pc)
+        _set("winrate", f"{wr:.1f}%",                              wc)
+        _set("total",   self._virtual_mark() + self._fmt_single(disp_total, suffix="원"), pc)
         _set("mdd",     self._fmt_single(mdd, suffix="원"),        C['orange'])
-        _set("streak",  (f"{best}연승" if trades else "—"),        (C['yellow'] if trades else C['text2']))
+        _set("streak",  f"{best}연승",                             C['yellow'])
 
 
 class LogPanel(QWidget):
@@ -8944,9 +8855,11 @@ class MinuteChartCanvas(QWidget):
         self._completed_trades = []
         self._active_trade = None
         self._exit_markers = []
-        # [MW0602 557차 후속2] GP(가상) 섀도 마커 — 🔴 **실주문이 아니다.**
-        # 실거래 마커와 같아 보이면 안 된다(채움 없는 보라 파선 + 'GP' 접두).
-        self._gp_trades = []
+        # [MW0602 590차] 신동 가상거래 마커 — 🔴 **실주문이 아니다.**
+        # (557차 GP 섀도 마커를 대체 — 2026-09-24 사용자 지시 「GB·GS 대신 신동」)
+        # 실거래 마커와 같아 보이면 안 된다(채움 없는 파선 원 + '신동' 접두).
+        # 행 형식은 `strategy.shindong.display.chart_rows()` 다.
+        self._sd_trades = []
         self._visible_count = 0
         self._min_visible_count = 20
         self._view_offset = 0
@@ -8981,6 +8894,7 @@ class MinuteChartCanvas(QWidget):
         # 레이어 토글. 기본은 **전부 꺼짐** — 화면은 빼는 것도 설계다(원칙 6).
         # 거래 스팬은 **기본 켜짐** — 567차 이전부터 그리던 것이라 끄면 퇴행이다.
         self._ov = {"struct": False, "price": False, "trade_mireuk": True,
+                    "trade_sd": True,          # [590차] 신동 가상거래 — 기본 켜짐
                     "peter_lv": False, "trade_peter": False,
                     # [623차] 만기북 GEX·감마월 — 기본 꺼짐(원칙 6)
                     "gw_month": False, "gw_thu": False, "gw_mon": False}
@@ -9064,8 +8978,8 @@ class MinuteChartCanvas(QWidget):
         self._live_candle = None
         self._active_trade = None
         self._exit_markers = list(exit_markers) if exit_markers else []
-        # GP 는 별도 경로로 채운다(set_gp_trades). 여기서 지워 전일 잔여를 막는다.
-        self._gp_trades = []
+        # 신동은 별도 경로로 채운다(set_sd_trades). 여기서 지워 전일 잔여를 막는다.
+        self._sd_trades = []
         total = len(self._closed_candles)
         # ── [MW0601 590차] 같은 날짜 리로드면 줌·위치를 **보존**한다 ───────────
         # 종전에는 리로드마다 무조건 전체보기로 되돌았다. 리로드 트리거에는
@@ -9098,9 +9012,12 @@ class MinuteChartCanvas(QWidget):
         self._emit_view()
         self.update()
 
-    def set_gp_trades(self, rows):
-        """GP(가상) 마커 교체. `reset_session` **뒤에** 부를 것(그쪽이 지운다)."""
-        self._gp_trades = [dict(r) for r in (rows or [])]
+    def set_sd_trades(self, rows):
+        """신동(가상) 마커 교체. `reset_session` **뒤에** 부를 것(그쪽이 지운다).
+
+        rows: `strategy.shindong.display.chart_rows()` 결과.
+        """
+        self._sd_trades = [dict(r) for r in (rows or [])]
         self.update()
 
     def set_regime_at(self, ts_key: str, regime: str):
@@ -9529,11 +9446,13 @@ class MinuteChartCanvas(QWidget):
                 prices.append(float(self._active_trade.get("entry_price") or 0.0))
             for marker in self._exit_markers:
                 prices.append(float(marker.get("price") or 0.0))
-            # [557차 후속2] GP 가격도 축에 넣는다 — 빼면 마커가 플롯 밖으로 나간다.
-            for gp in self._gp_trades:
-                prices.append(float(gp.get("entry_price") or 0.0))
-                if gp.get("exit_price") is not None:
-                    prices.append(float(gp.get("exit_price") or 0.0))
+            # [557차 후속2 → 590차] 신동 가격도 축에 넣는다 — 빼면 마커가 플롯 밖으로 나간다.
+            # 토글이 꺼져 있으면 넣지 않는다 — 안 그리는 마커 때문에 축이 넓어지면 안 된다.
+            if self._ov.get("trade_sd", True):
+                for sd in self._sd_trades:
+                    prices.append(float(sd.get("entry_price") or 0.0))
+                    for _x in sd.get("exits") or []:
+                        prices.append(float(_x.get("price") or 0.0))
             prices = [p for p in prices if p > 0]
             lo = min(prices)
             hi = max(prices)
@@ -9647,8 +9566,8 @@ class MinuteChartCanvas(QWidget):
             _t_regime = _t2.perf_counter();  self._draw_regime_bar(painter, plot, candles, padded_count)
             self._draw_state_lane(painter, plot, candles, padded_count)
             # ⚠ [dev 이식] v9-dev 는 여기서 _draw_gp_layer 를 부르지만 dev 에는 그
-            #   메서드가 없다(553차 v9-dev 전용). dev 는 GP 를 _draw_markers 경로에서
-            #   이미 그리므로 그 줄은 가져오지 않는다 — 없는 메서드를 부르면 매 프레임
+            #   메서드가 없다(553차 v9-dev 전용). dev 는 가상거래(590차부터 신동)를
+            #   _draw_markers 경로에서 그리므로 그 줄은 가져오지 않는다 — 없는 메서드를 부르면 매 프레임
             #   AttributeError 로 차트가 통째로 빈다.
             _t_markers = _t2.perf_counter(); self._draw_markers(painter, plot, candles, index_map, lo, hi, padded_count)
             # 보조 패널 · 레전드 — x축 라벨은 패널 **아래**에 와야 한다
@@ -11480,11 +11399,10 @@ class MinuteChartCanvas(QWidget):
         #   토글이 안 듣는 것처럼 보인다 — 실측으로 확인했다.
         #
         # ⚠ [dev 이식] v9-dev 는 여기서 곧장 `return` 한다. **dev 는 그럴 수 없다** —
-        #   이 함수가 끝에서 GP 섀도(`_draw_gp_markers`)를 부르기 때문이다.
-        #   v9-dev 는 GP 가 paintEvent 직속 별개 레이어(`_draw_gp_layer`)라 영향이
-        #   없지만, dev 에서 그대로 return 하면 「거래미륵」이 **GP 까지 조용히 끈다.**
+        #   이 함수가 끝에서 신동 레이어(`_draw_sd_markers`)를 부르기 때문이다.
+        #   그대로 return 하면 「거래미륵」이 **신동까지 조용히 끈다.**
         #   자기 이름이 아닌 레이어를 끄는 토글은 화면이 거짓말하는 것이다.
-        #   그래서 미륵이 마커만 건너뛰고 GP 는 그대로 그린다.
+        #   그래서 미륵이 마커만 건너뛰고 신동은 자기 토글(「거래신동」)로만 끈다.
         _show = self._ov.get("trade_mireuk", True)
         count = max(padded_count, 1)
         step = plot.width() / count
@@ -11520,148 +11438,152 @@ class MinuteChartCanvas(QWidget):
             if not marker.get("finalize"):
                 self._draw_one_marker(painter, plot, candles, index_map, lo, hi, step, marker, occupied)
 
-        # 실거래를 먼저 그린 뒤 GP 를 얹는다 — 겹칠 때 가상이 실거래를 가리지 않게.
-        # 🔴 `_show` 와 무관하게 그린다(위 주석 참조). 「거래미륵」은 GP 토글이 아니다.
-        self._draw_gp_markers(painter, plot, candles, index_map, lo, hi, step, occupied)
+        # 실거래를 먼저 그린 뒤 신동을 얹는다 — 겹칠 때 가상이 실거래를 가리지 않게.
+        # 🔴 `_show` 와 무관하다(위 주석 참조). 「거래미륵」은 신동 토글이 아니다.
+        if self._ov.get("trade_sd", True):
+            self._draw_sd_markers(painter, plot, candles, index_map, lo, hi, step, occupied)
 
-    def _draw_gp_markers(self, painter, plot, candles, index_map, lo, hi, step, occupied):
-        """GP(가상) 진입·청산 마커 + 보유 구간 점선.
+    def _draw_sd_markers(self, painter, plot, candles, index_map, lo, hi, step, occupied):
+        """[MW0602 590차] 신동(가상) 진입·청산 마커 + 보유 구간 점선.
 
-        🔴 [557차 후속6 / 사용자 지시] 진입은 **방향별**이다 —
-          GB(LONG) 청색 상방 · GS(SHORT) 적색 하방, 청산은 **검은 X**.
-        ⚠ 그 결과 **GS 진입이 실거래 SHORT 와 색·방향이 같아졌다.** 가상임을 말하는
-          것은 ① 채움 없는 파선 원 ② `GS` 라벨 접두 둘뿐이다 — 없애지 말 것.
-          색·라벨의 단일 결정 지점은 `_gp_style()` 이다.
-        ⚠ 미청산 진입은 청산 마커 없이 진입만 그린다(계측 4원칙 ②: 미청산 ≠ 미진입).
-          그 경우 점선은 **마지막 봉까지** 이어 「아직 들고 있다」를 보인다.
+        557차 GP(GB·GS) 마커를 대체한다(2026-09-24 사용자 지시). 모양 규약은 그대로 잇는다:
+          진입 = **방향별** 채움 없는 파선 원 + 화살표 (매수 청색 상방 · 매도 적색 하방)
+          청산 = **검은 X**(밝은 테두리). 신동은 2계약이라 청산이 **최대 두 개**(1차·최종)다.
+        ⚠ 매도 진입(적색 하방)은 실거래 SHORT 마커와 색·방향이 같다. 가상임을 말하는
+          것은 ① 채움 없는 파선 원 ② `신동` 라벨 접두 둘뿐이다 — 없애지 말 것.
+          색·라벨의 단일 결정 지점은 `_sd_style()` 이다.
+        ⚠ 다리가 남아 있으면(보유 중) 점선을 **마지막 봉까지** 이어 「아직 들고 있다」를
+          보인다(계측 4원칙 ②: 미청산 ≠ 미진입).
 
-        ⚠ 두 벌로 도는 이유: `_resolve_marker_overlap` 이 `occupied` 를 갱신하므로
+        ⚠ 세 벌로 도는 이유: `_resolve_marker_overlap` 이 `occupied` 를 갱신하므로
           위치를 **먼저 전부 확정**해야 점선이 실제 마커에 닿는다. 점선을 먼저 깔고
           도형·라벨을 위에 얹어야 선이 마커를 가리지 않는다.
+
+        🔴 paint 경로다 — 여기서 예외가 나면 PyQt5 가 프로세스를 죽인다(CLAUDE.md 557차).
+          strftime 포맷에 한글 금지, 값 변환은 모두 방어한다.
         """
-        if not self._gp_trades or not candles:
+        if not self._sd_trades or not candles:
             return
+
+        def _pos(ts, px):
+            dt = self._coerce_dt(ts)
+            try:
+                price = float(px or 0.0)
+            except (TypeError, ValueError):
+                return None
+            if not dt or price <= 0:
+                return None
+            idx = self._resolve_index(index_map, candles, dt)
+            if idx is None:
+                return None
+            x = plot.left() + step * (idx + 0.5)
+            y = self._price_to_y(price, plot, lo, hi)
+            return self._resolve_marker_overlap(x, y, occupied, "SD") + (dt,)
 
         # ── 1벌: 위치 확정 ────────────────────────────────────────
         spans = []
-        for t in self._gp_trades:
-            pos = {}
-            for role in ("entry", "exit"):
-                _ts = t.get(role + "_ts")
-                _px = t.get(role + "_price")
-                if not _ts or _px is None:
-                    continue
-                dt = self._coerce_dt(_ts)
-                price = float(_px or 0.0)
-                if not dt or price <= 0:
-                    continue
-                idx = self._resolve_index(index_map, candles, dt)
-                if idx is None:
-                    continue
-                x = plot.left() + step * (idx + 0.5)
-                y = self._price_to_y(price, plot, lo, hi)
-                pos[role] = self._resolve_marker_overlap(x, y, occupied, "GP") + (dt,)
-            if pos:
-                spans.append((t, pos))
+        for t in self._sd_trades:
+            ent = _pos(t.get("entry_ts"), t.get("entry_price"))
+            exs = []
+            for _x in t.get("exits") or []:
+                p = _pos(_x.get("ts"), _x.get("price"))
+                if p is not None:
+                    exs.append((_x, p))
+            if ent is not None or exs:
+                spans.append((t, ent, exs))
 
         # ── 2벌: 보유 구간 점선 (마커 아래) ───────────────────────
-        # 연결선은 **보라 유지** — 진입 청/적, 청산 검정과 겹치지 않는 GP 고유색이라
-        # 「이 구간은 가상이다」를 색 하나로 계속 말해 준다.
+        # 연결선은 **보라** — 진입 청/적, 청산 검정과 겹치지 않는 가상 고유색이다.
         _link = QColor(C["purple"])
         _link.setAlpha(150)          # 실거래 마커를 덮지 않도록 옅게
         painter.setBrush(Qt.NoBrush)
-        for t, pos in spans:
-            if "entry" not in pos:
+        for t, ent, exs in spans:
+            if ent is None:
                 continue
-            x1, y1 = pos["entry"][0], pos["entry"][1]
-            if "exit" in pos:
-                x2, y2 = pos["exit"][0], pos["exit"][1]
+            x1, y1 = ent[0], ent[1]
+            for _x, p in exs:
                 painter.setPen(QPen(_link, 1.3, Qt.DotLine))
-            else:
-                # 미청산 — 마지막 봉의 종가까지 이어 「보유 중」을 보인다.
-                _last = candles[-1]
-                x2 = plot.left() + step * (len(candles) - 1 + 0.5)
-                _hold = QColor(C["purple"])
-                _hold.setAlpha(110)   # 확정 구간보다 더 옅게 — 아직 결과가 아니다
-                if len(candles) - 1 == self._frame_live_idx:
-                    # [621차 후속7 · dev 이식] 끝이 진행 중 봉 — 오버레이가 현재가까지 잇는다
-                    self._frame_live_links.append((x1, y1, _hold, 1.3, Qt.DashDotLine))
-                    continue
-                self._frame_live_dep = True     # [621차 후속6] 현재가를 따라 움직인다
-                y2 = self._price_to_y(float(_last["close"] or 0.0), plot, lo, hi)
-                painter.setPen(QPen(_hold, 1.3, Qt.DashDotLine))
+                painter.drawLine(QPointF(x1, y1), QPointF(p[0], p[1]))
+            if not t.get("open"):
+                continue
+            # 보유 중 다리 — 마지막 봉의 종가까지 이어 「보유 중」을 보인다.
+            _hold = QColor(C["purple"])
+            _hold.setAlpha(110)   # 확정 구간보다 더 옅게 — 아직 결과가 아니다
+            if len(candles) - 1 == self._frame_live_idx:
+                # [621차 후속7 · dev 이식] 끝이 진행 중 봉 — 오버레이가 현재가까지 잇는다
+                self._frame_live_links.append((x1, y1, _hold, 1.3, Qt.DashDotLine))
+                continue
+            self._frame_live_dep = True     # [621차 후속6] 현재가를 따라 움직인다
+            _last = candles[-1]
+            x2 = plot.left() + step * (len(candles) - 1 + 0.5)
+            y2 = self._price_to_y(float(_last["close"] or 0.0), plot, lo, hi)
+            painter.setPen(QPen(_hold, 1.3, Qt.DashDotLine))
             painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
 
         # ── 3벌: 도형 + 라벨 ─────────────────────────────────────
-        for t, pos in spans:
+        for t, ent, exs in spans:
             _dir = str(t.get("direction_txt") or "")
-            for role, (x, y, dt) in pos.items():
-                is_entry = (role == "entry")
-                _mcol, _lcol, _tag = self._gp_style(is_entry, _dir)
-                self._draw_gp_shape(painter, x, y, is_entry, _dir)
-                if is_entry:
-                    _open = t.get("exit_ts") is None
-                    # 🔴 strftime 포맷 문자열에 **한글을 넣지 말 것.**
-                    # py37 32-bit Windows 에서 UnicodeEncodeError 가 나고, 그것이
-                    # paintEvent 안이면 PyQt5 가 프로세스를 그냥 죽인다(557차 후속2).
-                    # 시각은 ASCII 포맷으로 만들고 한글은 뒤에 이어붙인다.
-                    label = _tag + " " + dt.strftime("%H:%M") + (" ·보유중" if _open else "")
-                    dy = -S.p(26)
-                else:
-                    # 진입과 대칭으로 「GB청산 시각 손익」 — 부호가 숫자 바로 앞에
-                    # 오게 해 +/− 오독을 줄인다(2026-09-10 사용자가 +5.80 을 −5.80
-                    # 으로 읽었다. 값은 맞았고 배치가 문제였다).
-                    _p = t.get("pnl_pt")
-                    label = _tag + " " + dt.strftime("%H:%M")
-                    if _p is not None:
-                        label += " %+.2fpt" % float(_p)
-                    dy = S.p(26)
-                painter.setPen(_lcol)
-                # 🔴 폭을 **폰트로 실측**한다. 고정 폭(S.p(112))이면 잘린다 —
-                # 2026-09-10 실측 "GP진입 14:29 ·보유중" = 255px 인데 사각형이 112px
-                # 였다. 후속4 의 클램프는 위치만 당겼고 폭은 그대로였다.
-                _w = painter.fontMetrics().width(label) + S.p(6)
-                _x0 = x - S.p(30)
-                if _x0 + _w > plot.right():
-                    _x0 = plot.right() - _w          # 오른쪽 끝은 왼쪽으로 붙인다
-                if _x0 < plot.left():
-                    _x0 = plot.left()
-                painter.drawText(QRectF(_x0, y + dy, _w, S.p(14)),
-                                 Qt.AlignLeft | Qt.AlignVCenter, label)
-
-    # 청산 X 의 검정이 배경(#0D1117)에 묻히지 않도록 먼저 까는 테두리 색.
-    _GP_EXIT_HALO = "#C9D1D9"
+            _rule = str(t.get("rule") or "")
+            if ent is not None:
+                x, y, dt = ent
+                _mcol, _lcol, _tag = self._sd_style(True, _dir)
+                self._draw_sd_shape(painter, x, y, True, _dir)
+                # 🔴 strftime 포맷 문자열에 **한글을 넣지 말 것**(557차 후속2 — 프로세스 사망).
+                label = (_tag + (" " + _rule if _rule else "") + " "
+                         + dt.strftime("%H:%M") + (" ·보유중" if t.get("open") else ""))
+                self._draw_sd_label(painter, plot, x, y - S.p(26), label, _lcol)
+            for _x, (x, y, dt) in exs:
+                _mcol, _lcol, _tag = self._sd_style(False, _dir, _x.get("leg"))
+                self._draw_sd_shape(painter, x, y, False, _dir)
+                # 부호가 숫자 바로 앞에 오게 한다(2026-09-10 +/− 오독 사례).
+                label = _tag + " " + dt.strftime("%H:%M")
+                _p = _x.get("pts")
+                if _p is not None:
+                    label += " %+.2fpt" % float(_p)
+                self._draw_sd_label(painter, plot, x, y + S.p(26), label, _lcol)
 
     @staticmethod
-    def _gp_style(is_entry, direction_txt):
-        """[MW0602 557차 후속6 / 사용자 지시] GP 마커의 색·라벨 접두 단일 결정 지점.
+    def _draw_sd_label(painter, plot, x, y, label, col):
+        painter.setPen(col)
+        # 🔴 폭을 **폰트로 실측**한다. 고정 폭이면 잘린다(557차 후속 실측).
+        _w = painter.fontMetrics().width(label) + S.p(6)
+        _x0 = x - S.p(30)
+        if _x0 + _w > plot.right():
+            _x0 = plot.right() - _w          # 오른쪽 끝은 왼쪽으로 붙인다
+        if _x0 < plot.left():
+            _x0 = plot.left()
+        painter.drawText(QRectF(_x0, y, _w, S.p(14)),
+                         Qt.AlignLeft | Qt.AlignVCenter, label)
 
-        · **GB 진입** = GP LONG  → 청색 상방 화살표
-        · **GS 진입** = GP SHORT → 적색 하방 화살표
-        · **청산** → 검은색 X
+    # 청산 X 의 검정이 배경(#0D1117)에 묻히지 않도록 먼저 까는 테두리 색.
+    _SD_EXIT_HALO = "#C9D1D9"
 
-        🔴 청산의 검정은 차트 배경(`#0D1117`)과 거의 같다 — 그대로 그리면 **보이지
-          않는다.** 밝은 테두리(`_GP_EXIT_HALO`)를 먼저 깔고 그 위에 검정을 얹는다.
-          라벨까지 검정으로 쓰면 읽을 수 없으므로 라벨은 밝은 회색이다.
+    @staticmethod
+    def _sd_style(is_entry, direction_txt, leg=None):
+        """[MW0602 590차] 신동 마커의 색·라벨 접두 단일 결정 지점.
 
-        ⚠ **GS 진입(적색 하방)은 실거래 SHORT 마커와 색·방향이 같다.** 구분은
-          ① 채움 없는 파선 원 ② `GS진입` 라벨 접두 두 가지에 의존한다 —
-          이 둘 중 하나라도 없애면 가상이 실적으로 보인다.
+        · **매수 진입** → 청색 상방 화살표, 라벨 `신동매수`
+        · **매도 진입** → 적색 하방 화살표, 라벨 `신동매도`
+        · **청산**      → 검은색 X, 라벨 `신동1차` / `신동최종`
+
+        🔴 청산의 검정은 배경과 거의 같다 — 밝은 테두리(`_SD_EXIT_HALO`)를 먼저 깐다.
+          라벨까지 검정이면 읽을 수 없으므로 라벨은 밝은 회색이다.
+        ⚠ 매도 진입은 실거래 SHORT 마커와 색·방향이 같다 — 파선 원과 `신동` 접두가 구분자다.
 
         Returns:
             (마커색, 라벨색, 라벨접두)
         """
         _short = str(direction_txt).upper() == "SHORT"
-        tag = ("GS" if _short else "GB") + ("진입" if is_entry else "청산")
         if is_entry:
             col = QColor(C["red"] if _short else C["blue"])
-            return col, col, tag
+            return col, col, ("신동매도" if _short else "신동매수")
+        tag = "신동1차" if leg == 1 else ("신동최종" if leg == 2 else "신동청산")
         return QColor("#000000"), QColor(C["text2"]), tag
 
-    def _draw_gp_shape(self, painter, x, y, is_entry, direction_txt):
+    def _draw_sd_shape(self, painter, x, y, is_entry, direction_txt):
         """진입: 채움 없는 파선 원 + 방향 화살표 / 청산: 검은 X(밝은 테두리)."""
         painter.setBrush(Qt.NoBrush)                      # 🔴 채우지 않는다 = 가상
-        col, _lab, _tag = self._gp_style(is_entry, direction_txt)
+        col, _lab, _tag = self._sd_style(is_entry, direction_txt)
         if is_entry:
             painter.setPen(QPen(col, 1.6, Qt.DashLine))
             r = 8.0
@@ -11676,10 +11598,8 @@ class MinuteChartCanvas(QWidget):
                 painter.drawLine(QPointF(x - 3.4, y - 1.2), QPointF(x, y - 4.6))
                 painter.drawLine(QPointF(x + 3.4, y - 1.2), QPointF(x, y - 4.6))
             return
-        # 청산 — 검은 X. 테두리를 먼저 깔지 않으면 배경에 묻혀 안 보인다.
-        # 테두리는 **얇게**, 검정 심을 **굵게** — 반대로 하면 회색 X 로 읽힌다
-        # (2026-09-10 렌더 대조로 확인).
-        for _c, _w in ((QColor(self._GP_EXIT_HALO), 5.0), (col, 3.4)):
+        # 청산 — 검은 X. 테두리는 **얇게**, 검정 심을 **굵게**(반대면 회색 X 로 읽힌다).
+        for _c, _w in ((QColor(self._SD_EXIT_HALO), 5.0), (col, 3.4)):
             painter.setPen(QPen(_c, _w, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
             painter.drawLine(QPointF(x - 4.6, y - 4.6), QPointF(x + 4.6, y + 4.6))
             painter.drawLine(QPointF(x - 4.6, y + 4.6), QPointF(x + 4.6, y - 4.6))
@@ -12451,10 +12371,9 @@ class MinuteChartDialog(QDialog):
     #   raw_candles DISTINCT 는 인덱스를 못 타는 전체 스캔이다(실측 262일 310ms).
     #   장중 메인 스레드에서 돌리면 그만큼 화면이 멈춘다.
     _sig_dates_ready = pyqtSignal(list, dict)
-    # ⚠ [dev 이식] GP 는 이 시그널에 싣지 않는다 — dev 는 전용 경로
-    #   (_load_gp_markers → set_gp_trades)를 쓴다. v9-dev 는 5인자로 실어
-    #   보내지만 dev 의 fetch_gp_shadow_chart_markers(MW0602 557차 후속2)가
-    #   **미청산 진입까지** 주므로 그쪽이 넓다. dev 구현을 유지한다.
+    # ⚠ [dev] 신동(가상)은 이 시그널에 싣지 않는다 — 전용 경로
+    #   (_load_sd_markers → set_sd_trades)를 쓴다. 590차가 557차 GP 경로를 그대로
+    #   신동으로 바꿨다(2026-09-24 사용자 지시). 장중 갱신은 `update_shindong` push.
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -12589,39 +12508,35 @@ class MinuteChartDialog(QDialog):
             return False
         return any(kw in _r for kw in ("부분청산", "partial", "부분 익절"))
 
-    def _load_gp_markers(self):
-        """당일 GP(가상) 마커. 🔴 실거래가 아니며 손익 대사에 쓰지 않는다.
+    def _load_sd_markers(self):
+        """그날 신동(가상) 마커. 🔴 실거래가 아니며 손익 대사에 쓰지 않는다.
 
-        조회 실패는 **빈 목록**이고 그것은 「GP 진입 0건」이 아니다 — 차트는
-        마커 부재로만 나타나므로, 판단이 필요하면 손익 추이 탭의 배너를 볼 것.
+        [MW0602 590차] 557차 `_load_gp_markers`(GP 섀도)를 대체한다.
+        원천은 `shindong.db` 의 MAIN 변형뿐이다(SHADOW_E2F2 는 기록만 — spec.VARIANTS 주석).
+        조회 실패는 **빈 목록**이고 그것은 「신동 0건」이 아니다 — 배지(`sd_wired`)가 가른다.
         """
         try:
-            from utils.db_utils import fetch_gp_shadow_chart_markers
-            return fetch_gp_shadow_chart_markers(self._session_date)
+            from config.settings import SHINDONG_DB
+            from strategy.shindong import store as _sd_store
+            from strategy.shindong.display import chart_rows
+            return chart_rows(_sd_store.load_trades(SHINDONG_DB, self._session_date, "MAIN"))
         except Exception as _e:
-            logger.debug('[ChartDBG] GP 마커 조회 실패: %s', _e)
+            logger.debug('[ChartDBG] 신동 마커 조회 실패: %s', _e)
             return []
 
     @staticmethod
-    def _gp_wired_state():
-        """GP 섀도 배선 여부. **True / False / None(못 읽음)**.
+    def _sd_wired_state():
+        """신동 배선 여부. **True / False / None(못 읽음)**.
 
-        🔴 dev 의 `gp_shadow_is_wired()` 를 그대로 쓰지 않는 이유: 그 함수는 예외를
-          False 로 접는다. 그러면 「challenger.db 를 못 읽었다」가 화면에서
-          「미배선」으로 둔갑한다 — 미측정이 측정값이 되는 것이다(계측 4원칙 ②·④).
-          여기서는 조회 실패를 None 으로 분리해, 배지가 커버리지 경로로 떨어져
-          「원천없음」으로 표시되게 한다.
+        True = `shindong.db` 가 있다 · False = 파일이 없다(미배선 — 한 번도 안 돌았다) ·
+        None = 확인 자체가 실패했다. 조회 실패를 False 로 접으면 「못 읽었다」가
+        「미배선」으로 둔갑한다(계측 4원칙 ②·④) — 그래서 셋째 상태를 둔다.
         """
         try:
-            from config.settings import CHALLENGER_DB, VALIDATION_CAMPAIGN
-            _ids = VALIDATION_CAMPAIGN["gp_rule_challenger_ids"]
-            return bool(fetchall(
-                CHALLENGER_DB,
-                "SELECT 1 FROM challenger_signals WHERE challenger_id IN (?,?) LIMIT 1",
-                (_ids["long"], _ids["short"]),
-            ))
+            from config.settings import SHINDONG_DB
+            return bool(os.path.exists(SHINDONG_DB))
         except Exception as _e:
-            logger.debug("[ChartDBG] GP 배선 조회 실패: %s", _e)
+            logger.debug("[ChartDBG] 신동 배선 조회 실패: %s", _e)
             return None
 
     # ── [날짜선택 A단계] 날짜 바 · 모드 전환 ───────────────────────────
@@ -12696,6 +12611,8 @@ class MinuteChartDialog(QDialog):
     # ── [오버레이 P3] 레이어 토글 바 ──────────────────────────────────
     _OV_SPEC = (
         ("trade_mireuk", "거래미륵", "#E6EDF3"),
+        # [590차] 신동 가상거래 — 557차 GP(GB·GS) 마커를 대체. 기본 켜짐(GP 가 늘 보였다)
+        ("trade_sd",     "거래신동", "#58A6FF"),
         ("trade_peter",  "거래피터", "#ADBAC7"),
         ("peter_lv",     "피터맥점", "#BC8CFF"),
         ("struct",       "구조모델", "#C2CCD6"),
@@ -12715,11 +12632,14 @@ class MinuteChartDialog(QDialog):
         for _key, _txt, _col in self._OV_SPEC:
             b = QPushButton(_txt)
             b.setCheckable(True)
-            b.setChecked(_key == "trade_mireuk")   # 거래는 기존 동작 유지
+            b.setChecked(_key in ("trade_mireuk", "trade_sd"))   # 거래는 기존 동작 유지
+            # [590차] 가로 여백을 S 로 비례시킨다 — 고정 12px 는 글꼴만 줄어드는 작은 S 에서
+            #   버튼 9개 몫의 여백이 그대로 남아, 「거래신동」 추가로 S=0.80 최소 폭이
+            #   예산(1000·S)을 넘었다(test_625 실측 841 > 800).
             b.setStyleSheet(
                 f"QPushButton{{background:{C['bg3']};color:{C['text2']};"
                 f"border:1px solid {C['border']};border-radius:7px;"
-                f"padding:5px 12px;font-size:{S.f(10)}px;font-weight:600;}}"
+                f"padding:5px {S.p(10)}px;font-size:{S.f(10)}px;font-weight:600;}}"
                 f"QPushButton:checked{{color:{_col};border-color:{_col};}}"
             )
             b.toggled.connect(lambda on, k=_key: self._on_overlay_toggled(k, on))
@@ -13333,18 +13253,16 @@ class MinuteChartDialog(QDialog):
                     TRADES_DB,
                     "SELECT DISTINCT substr(entry_ts,1,10) AS d FROM trades")
             try:
-                # GP 는 사전등록 도전자 2종으로 한정한다 — 전체 challenger_trades 가 아니다.
-                # ⚠ `gp_rule_challenger_ids` 는 **dict** 다({"long":…, "short":…}).
-                #   인덱스로 읽으면 KeyError 로 조용히 죽는다(_load_gp_trades 와 같은 접근).
-                from config.settings import VALIDATION_CAMPAIGN
-                _ids = VALIDATION_CAMPAIGN["gp_rule_challenger_ids"]
-                cov["gp"] = _dset(
-                    CHALLENGER_DB,
-                    "SELECT DISTINCT substr(entry_ts,1,10) AS d FROM challenger_trades"
-                    " WHERE challenger_id IN (?,?)", (_ids["long"], _ids["short"]))
+                # [590차] 신동 — 판정 기록(shindong_day, MAIN)이 있는 날짜.
+                # 거래가 0건인 날도 판정 행은 남으므로 「돌았는데 0건」과 「안 돌았다」가 갈린다.
+                # DB 파일이 없으면 None(원천없음) — 빈 집합(기록없음)과 다르다.
+                from config.settings import SHINDONG_DB
+                from strategy.shindong import store as _sd_store
+                _sc = _sd_store.covered_dates(SHINDONG_DB)
+                cov["sd"] = None if _sc is None else set(_sc)
             except Exception as _e:
-                logger.debug("[ChartDBG] GP 커버리지 실패: %s", _e)
-                cov["gp"] = None
+                logger.debug("[ChartDBG] 신동 커버리지 실패: %s", _e)
+                cov["sd"] = None
             finally:
                 self._dates_running = False
             logger.debug("[ChartDBG] 날짜목록 %d일 · 커버리지 %d층 %.1fms",
@@ -13417,7 +13335,7 @@ class MinuteChartDialog(QDialog):
     #   둘을 같은 회색 0으로 그리면 FP-CRITICAL 죽은 게이트와 같은 착시가 된다.
     #   `_gp_status_text` 가 GP 한 층에 대해 하던 구분을 5개 층으로 넓힌 것이다.
     _LAYER_ORDER = (("candle", "봉"), ("regime", "레짐"), ("direction", "방향"),
-                    ("trade", "거래"), ("gp", "GP"))
+                    ("trade", "거래"), ("sd", "신동"))
 
     def _pipeline_ran(self):
         """그날 파이프라인이 돌았는가. **True / False / None(증인을 못 읽음).**
@@ -13442,11 +13360,11 @@ class MinuteChartDialog(QDialog):
 
     def _layer_state(self, key):
         """(문구, 색). 여섯 상태를 가른다 — 미조회·원천없음·기록없음·보관밖/미수집·0건·n건."""
-        if key == "gp":
+        if key == "sd":
             # 🔴 False(미배선) 와 None(배선 여부를 못 읽음)을 가른다. None 을 여기서
             #   접으면 DB 장애가 「미배선」으로 보인다 — 아래 커버리지 경로가
             #   「원천없음」으로 가르게 흘려보낸다(계측 4원칙 ②).
-            if self._cnt.get("gp_wired") is False:
+            if self._cnt.get("sd_wired") is False:
                 return "미배선", C['purple']
         if key not in self._cov:
             return "미조회", C['purple']          # 커버리지를 아직 안 읽었다
@@ -13463,9 +13381,11 @@ class MinuteChartDialog(QDialog):
             # 레짐만 사유가 다르다 — EOD purge(30일)라 경계가 매일 움직인다
             if key == "regime" and _d < min(_days):
                 return "보관밖", C['orange']
-            # 거래·GP 는 "행이 없다"가 곧 "미수집"이 아니다. 그날 파이프라인이
+            # 거래는 "행이 없다"가 곧 "미수집"이 아니다. 그날 파이프라인이
             # 돌았다면 **무포지션일**이고, 그건 측정된 0 이다.
-            if key in ("trade", "gp"):
+            # ⚠ 신동은 여기 넣지 않는다 — 신동 커버리지는 **판정 기록** 날짜라
+            #   그날 행이 없으면 정말로 그날 신동이 안 돈 것(미수집)이다.
+            if key == "trade":
                 _ran = self._pipeline_ran()
                 if _ran is True:
                     return "0건", C['text2']
@@ -13510,7 +13430,7 @@ class MinuteChartDialog(QDialog):
                 "  보관밖      : 레짐 EOD purge(30일) 이전 — 설계상 없다\n"
                 "  기록없음    : 테이블은 있는데 행이 하나도 없다\n"
                 "  원천없음    : DB·테이블 자체를 못 읽었다\n"
-                "  미배선/미조회: GP 도전자 미등록 / 커버리지 조회 전")
+                "  미배선/미조회: 신동 DB 없음 / 커버리지 조회 전")
         except Exception as _e:
             logger.debug("[ChartDBG] _refresh_layer_badges 예외: %s", _e)
 
@@ -13658,12 +13578,12 @@ class MinuteChartDialog(QDialog):
                     "outcome": self._chart._infer_exit_outcome(True, row["pnl_pts"], row["exit_reason"]),
                 })
         self._chart.reset_session(candles, completed_trades, exit_markers=exit_markers)
-        _gp = self._load_gp_markers()
-        self._chart.set_gp_trades(_gp)
+        _sd = self._load_sd_markers()
+        self._chart.set_sd_trades(_sd)
         # 재시작 복원: 오늘 레짐·방향예측 히스토리를 _regime_map / _dir_map에 채움
         self._cnt = {"candle": len(candles), "tail": _n_tail,
                      "trade": len(completed_trades) + len(exit_markers),
-                     "gp": len(_gp or []), "gp_wired": self._gp_wired_state()}
+                     "sd": len(_sd or []), "sd_wired": self._sd_wired_state()}
         try:
             regime_map = fetch_regime_today(self._session_date)
             self._cnt["regime"] = len(regime_map or {})
@@ -13775,14 +13695,14 @@ class MinuteChartDialog(QDialog):
     def _apply_reload_result(self, candles, completed_trades, exit_markers):
         """메인 스레드에서 reset_session + regime_map 복원 + active position 재동기화를 원자적으로 처리."""
         self._chart.reset_session(candles, completed_trades, exit_markers=exit_markers)
-        # [dev 이식] GP 는 dev 전용 경로. reset_session 이 지우므로 **그 뒤에** 채운다.
-        _gp = self._load_gp_markers()
-        self._chart.set_gp_trades(_gp)
+        # [590차] 신동은 전용 경로. reset_session 이 지우므로 **그 뒤에** 채운다.
+        _sd = self._load_sd_markers()
+        self._chart.set_sd_trades(_sd)
         _cand = candles or []
         self._cnt = {"candle": len(_cand),
                      "tail": sum(1 for _c in _cand if _c.get("tail")),
                      "trade": len(completed_trades or []) + len(exit_markers or []),
-                     "gp": len(_gp or []), "gp_wired": self._gp_wired_state()}
+                     "sd": len(_sd or []), "sd_wired": self._sd_wired_state()}
         try:
             regime_map = fetch_regime_today(self._session_date)
             self._cnt["regime"] = len(regime_map or {})
@@ -13836,7 +13756,7 @@ class MinuteChartDialog(QDialog):
                 "regime":    len(_c._regime_map or {}),
                 "direction": len(_c._dir_map or {}),
                 "trade":     len(_c._completed_trades or []) + len(_c._exit_markers or []),
-                "gp":        len(_c._gp_trades or []),
+                "sd":        len(_c._sd_trades or []),
             }
             for _k, _v in _live.items():
                 # 되돌아가지 않는다 — 재적재 결과가 더 많으면 그쪽을 남긴다
@@ -17089,6 +17009,31 @@ class DashboardAdapter:
     def update_pnl_history(self, rows):
         """📊 손익 추이 탭 갱신 (trades.db rows)."""
         self._win.log_panel.refresh_pnl_history(rows)
+
+    def update_shindong(self, payload: dict) -> None:
+        """[MW0602 590차] 신동 가상거래 재생 결과 → 1분봉 차트 신동 레이어.
+
+        `main._run_shindong()` 이 매분(수급 QTimer — 메인 스레드) 부른다.
+        payload 는 `strategy.shindong.runner.run_and_store()` 반환값이다.
+        조회는 호출부가 이미 했다 — **여기서 DB 를 열지 않는다.**
+
+        차트가 **오늘**(라이브)을 보고 있을 때만 바꾼다. 복기 날짜를 보고 있는데
+        오늘 마커를 덮으면 다른 날 차트에 오늘 거래가 그려진다.
+        """
+        try:
+            _dlg = self._win._minute_chart_dialog
+            if not getattr(_dlg, "_live_mode", False):
+                return
+            if str(payload.get("trade_date") or "") != str(_dlg._session_date):
+                return
+            from strategy.shindong.display import chart_rows
+            _rows = chart_rows(payload.get("trades") or [])
+            _dlg._chart.set_sd_trades(_rows)
+            _dlg._cnt["sd"] = len(_rows)
+            _dlg._cnt["sd_wired"] = True        # 방금 저장했다 — DB 가 있다
+            _dlg._refresh_layer_badges()
+        except Exception as _e:
+            logger.debug("[ChartDBG] update_shindong 스킵: %s", _e)
 
     def notify_pipeline_ran(self):
         """분봉 파이프라인 완료 시 상태 바 + 헤더 생존 바 동시 리셋.
