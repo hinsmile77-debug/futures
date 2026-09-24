@@ -265,9 +265,11 @@ def scan_extra(repo):
 
 def _stale_dirs(gitdir):
     try:
-        return [os.path.join(gitdir, n) for n in sorted(os.listdir(gitdir))
-                if n.startswith(TIER2_STALE_DIR_PREFIX)
-                and os.path.isdir(os.path.join(gitdir, n))]
+        return [
+            os.path.join(gitdir, n)
+            for n in sorted(os.listdir(gitdir))
+            if n.startswith(TIER2_STALE_DIR_PREFIX) and os.path.isdir(os.path.join(gitdir, n))
+        ]
     except Exception:
         return []
 
@@ -293,8 +295,15 @@ def sweep_extra(repo, min_age_sec=DEFAULT_MIN_AGE_SEC, git_procs=None, reclaim_i
     rows, n_stale, n_hold, n_removed = [], 0, 0, 0
     now = time.time()
     for path, tier in [(p, 1) for p in t1] + [(p, 2) for p in t2]:
-        row = {"path": path, "tier": tier, "age_sec": None,
-               "git_procs": git_procs, "stale": False, "removed": False, "verdict": ""}
+        row = {
+            "path": path,
+            "tier": tier,
+            "age_sec": None,
+            "git_procs": git_procs,
+            "stale": False,
+            "removed": False,
+            "verdict": "",
+        }
         try:
             row["age_sec"] = max(0.0, now - os.stat(path).st_mtime)
         except Exception as e:
@@ -373,6 +382,7 @@ def _ensure_utf8_console():
     """
     try:
         from utils.analysis_db import utf8_console
+
         utf8_console()
         return
     except Exception:
@@ -434,7 +444,8 @@ def main(argv=None):
         # [603차 후속4] index.lock 이외의 잔존물. tier1 은 쓰기를 막으므로 종료코드에
         # 반영하고, tier2(부스러기)는 세어서 보여만 준다 — 아무것도 안 막는다.
         xrows, xs, xh, xr = sweep_extra(
-            r, min_age_sec=a.min_age, git_procs=procs, reclaim_it=bool(a.reclaim))
+            r, min_age_sec=a.min_age, git_procs=procs, reclaim_it=bool(a.reclaim)
+        )
         info["extra"] = xrows
         n_stale += xs
         n_hold += xh
