@@ -18,6 +18,13 @@
     **이 PC 에서 손댄 파일을 찾아낸다.** 있으면 `_local_backup_<시각>/` 로 옮겨
     두고 로그에 적는다 — 말없이 지우지 않는다.
 
+종료코드
+    0  정상        2  오늘 사료가 오지 않았다(공급 측 문제)   그 외  재생성 실패
+    🔴 「재생성 N일 · 건너뜀 0일」은 **어제까지의 성공을 세는 것**이다 — 오늘이
+      왔는지는 말해 주지 않는다. 2026-09-21 에 MW0601 이 푸시를 빠뜨렸을 때
+      이 스크립트는 rc=0 으로 끝났고, 사람이 차트를 보고서야 알았다.
+      그래서 마지막에 당일 도착을 따로 확인하고 rc=2 로 경보한다.
+
 실행
     python tools/peter_pull.py              # fetch → 받기 → DB 재생성
     python tools/peter_pull.py --dry        # 무엇이 바뀔지만 보여준다
@@ -84,7 +91,7 @@ def _in_progress():
     return None
 
 
-def main():
+def _run():
     ap = argparse.ArgumentParser()
     ap.add_argument('--dry', action='store_true')
     ap.add_argument('--no-fetch', action='store_true')
@@ -192,6 +199,84 @@ def _rebuild():
         print('  ⚠ 재생성이 %d 로 끝났다 — 위 출력에서 건너뛴 날을 확인한다.'
               % p.returncode)
     return p.returncode
+
+
+RC_STALE = 2
+
+
+def _feed_lv():
+    """받아놓은 _lv 목록 — [(날짜, 바이트수)] 오름차순."""
+    d = os.path.join(_ROOT, SUBDIR.replace('/', os.sep))
+    out = []
+    if os.path.isdir(d):
+        for n in os.listdir(d):
+            if len(n) == 17 and n.endswith('_lv.txt'):
+                out.append((n[:10], os.path.getsize(os.path.join(d, n))))
+    return sorted(out)
+
+
+def _bars(date):
+    """이 PC 가 그날 캔들을 갖고 있나 — 휴장일에 헛경보를 울리지 않기 위해서다.
+    못 재면 None 을 준다 — 미측정과 0 은 다르다(계측 4원칙 ②)."""
+    import sqlite3
+    f = os.path.join(_ROOT, 'data', 'db', 'raw_data.db')
+    if not os.path.exists(f):
+        return None
+    try:
+        with sqlite3.connect('file:%s?mode=ro' % f.replace(os.sep, '/'),
+                             uri=True) as c:
+            return c.execute('SELECT COUNT(*) FROM raw_candles WHERE ts LIKE ?',
+                             (date + '%',)).fetchone()[0]
+    except Exception:
+        return None
+
+
+def _check_today(rc):
+    """오늘 사료가 왔나. 안 왔으면 rc=2 — 스케줄러 기록에 실패로 남긴다.
+
+    넣은 이유는 수신기가 조용했기 때문이다. 공급이 며칠 끊겨도 로그는
+    「재생성 34일 · 건너뜀 0일」로 건강해 보였다 — 없는 것을 정상으로 읽는 형태다.
+    """
+    today = datetime.date.today()
+    iso = today.isoformat()
+    lv = _feed_lv()
+    size = dict(lv)
+    last = lv[-1][0] if lv else None
+
+    if iso in size:
+        if size[iso] == 0:
+            print('  오늘(%s) 사료 도착 — 다만 _lv 가 비어 있다(빈 사료).' % iso)
+        else:
+            print('  오늘(%s) 사료 도착.' % iso)
+        return rc
+
+    bars = _bars(iso)
+    if bars == 0:
+        print('  오늘(%s) 사료 없음 — 이 PC 캔들도 0봉이라 휴장으로 본다. 경보하지 않는다.'
+              % iso)
+        return rc
+
+    gap = ''
+    if last:
+        try:
+            y, m, d = [int(x) for x in last.split('-')]
+            gap = ' (%d일 경과)' % (today - datetime.date(y, m, d)).days
+        except ValueError:
+            pass
+    print('  [미도착] 오늘(%s) 사료가 오지 않았다 — 마지막 수신일 %s%s'
+          % (iso, last or '없음', gap))
+    if bars is None:
+        print('     이 PC 캔들을 확인하지 못했다 — 휴장 여부는 판정 불가.'
+              ' 미판정을 정상으로 삼키지 않는다.')
+    else:
+        print('     이 PC 캔들 %d봉 — 장은 섰는데 공급이 없다.' % bars)
+    print('     확인: MW0601 에서 python tools/peter_feed_push.py --push')
+    return rc or RC_STALE
+
+
+def main():
+    #  받기/재생성이 성공해도 「오늘이 왔는가」는 별개의 질문이다.
+    return _check_today(_run() or 0)
 
 
 if __name__ == '__main__':
