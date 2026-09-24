@@ -45,4 +45,4 @@ IF NOT "%RC%"=="0" (
   ECHO [P7] OK
 )
 
-ENDLOCAL ^& EXIT /B %RC%
+ENDLOCAL & EXIT /B %RC%
