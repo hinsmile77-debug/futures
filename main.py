@@ -640,6 +640,11 @@ class TradingSystem:
         self._weekly_option_flow = None     # 지연 생성 (COM Dispatch 비용)
         self._wof_last_ts = None            # None = 아직 한 번도 수집 안 함
         self._wof_warned = False
+        # [MW0601 626차] 신동 가상거래 — 로그 중복 억제용 「이미 알린 상태」 · 경고 1회.
+        #   {trade_key: 알린 상태 문자열}. 날짜가 바뀌면 비운다(_sd_day).
+        self._sd_seen = {}
+        self._sd_day = None
+        self._sd_warned = False
         # [MW0601 612차 후속5] 수급 첫 호출 실패 시 조기 재시도 — 세션당 1회.
         # 런타임 상태이므로 여기서 명시 초기화한다 — 기본값 폴백으로 읽으면
         # 미설정과 False 가 구분되지 않는다
@@ -4145,11 +4150,71 @@ class TradingSystem:
                         flow.get_individual_session_delta())
                 except Exception as _de:
                     logger.debug("[OptionFlow] 대시보드 push 스킵: %s", _de)
+            # [MW0601 626차] 신동 가상거래 — 방금 적재한 흐름으로 하루치를 재생한다.
+            # 수집이 성공한 틱에서만 돈다(같은 분에 두 번 돌 이유가 없다).
+            self._run_shindong(now)
         except Exception as e:
             # 첫 실패만 남긴다 — 매분 반복이라 폭주를 막는다.
             if not self._wof_warned:
                 self._wof_warned = True
                 logger.warning("[OptionFlow] 수집기 기동 실패(이후 로그 억제): %s", e)
+
+    def _run_shindong(self, now: datetime.datetime) -> None:
+        """[MW0601 626차] 신동(개인 위클리 흐름 + 맥점) **가상거래** 재생·기록·차트 push.
+
+        🔴 주문을 내지 않는다(절대원칙 §6). 결과는 `shindong.db` 와 차트 레이어뿐이다.
+        🔴 어떤 예외도 밖으로 내보내지 않는다 — 보조 기록이 수급 타이머·파이프라인을
+          흔들면 안 된다(611차 후속 교훈). 다만 조용히 삼키지 않는다: 첫 실패는 WARNING.
+        """
+        try:
+            if not getattr(runtime_settings, "SHINDONG_ENABLED", False):
+                return
+            from strategy.shindong import runner as _sd
+            day = now.date().isoformat()
+            if self._sd_day != day:
+                self._sd_day = day
+                self._sd_seen = {}
+            payload = _sd.run_and_store(
+                day,
+                raw_db=runtime_settings.RAW_DATA_DB,
+                flow_db=getattr(runtime_settings, "WEEKLY_OPTION_FLOW_DB",
+                                "data/db/option_flow.db"),
+                levels_db=runtime_settings.PREMARKET_LEVELS_DB,
+                sd_db=runtime_settings.SHINDONG_DB,
+                now=now, live=True)
+            # 진입·청산이 **바뀔 때만** TRADE 로그 한 줄 — 복기의 두 번째 증인이다.
+            _newly_closed = False
+            for t in payload.get("trades") or []:
+                state = "%s|%s|%s" % (t["status"], t.get("leg1_reason"), t.get("leg2_reason"))
+                prev = self._sd_seen.get(t["trade_key"])
+                if prev == state:
+                    continue
+                self._sd_seen[t["trade_key"]] = state
+                if t["status"] == "CLOSED" and not str(prev or "").startswith("CLOSED"):
+                    _newly_closed = True
+                logger.info(
+                    "[Shindong] %s %s %s 진입 %.2f(%s) 손절 %.2f 1차 %s 최종 %s | "
+                    "1차 %s 최종 %s | 순 %s원 | 상품 %s · 탐지 %s",
+                    t["rule"], "매수" if t["side"] > 0 else "매도", t["status"],
+                    t["entry_px"], str(t["entry_ts"])[11:16], t["stop_now"] or 0.0,
+                    ("%.2f" % t["t1"]) if t["t1"] is not None else "-",
+                    ("%.2f" % t["t2"]) if t["t2"] is not None else "-",
+                    t.get("leg1_reason") or "보유", t.get("leg2_reason") or "보유",
+                    # `%+,.0f` 는 printf 포맷이 아니다(ValueError) — format() 을 쓴다
+                    format(float(t.get("net_krw") or 0.0), "+,.0f"), t.get("product"),
+                    str(t.get("detected_at") or "-")[11:19])
+            if self.dashboard is not None and hasattr(self.dashboard, "update_shindong"):
+                self.dashboard.update_shindong(payload)
+            # [628차 — dev 이식판] v9-dev 는 여기서 신동 청산 시 손익 추이 패널을 갱신한다.
+            #   dev 의 손익 패널은 신동을 표시하지 않으므로(MW0602 자체 GP 표시 유지 — 이식 범위
+            #   「계산·기록 + 수급 차트」, 2026-09-24 사용자 결정) 갱신하지 않는다.
+            #   `_newly_closed` 는 로그 판단에만 남는다.
+            _ = _newly_closed
+        except Exception as e:
+            if not self._sd_warned:
+                self._sd_warned = True
+                logger.warning("[Shindong] 가상거래 재생 실패(이후 로그 억제): %s", e,
+                               exc_info=True)
 
     def _save_program_trade_raw(self, now: datetime.datetime) -> None:
         """[MW0601 451차 Phase 1-1] CpSvr8111 원천 56필드를 `raw_program_trade`에 보존.
