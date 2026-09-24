@@ -344,7 +344,10 @@ class WeeklyOptionFlow:
               "last_time":  "HH:MM" | None,
               "products": {
                  key: {"label", "baseline", "baseline_time", "value",
-                       "delta", "last_time", "n", "series": [(HH:MM, delta), ...]}
+                       "delta", "last_time", "n", "series": [(HH:MM, delta), ...],
+                       # [626차] 금액 계열 — 원천에 금액이 있을 때만(없으면 키 자체가 없다)
+                       "unit_amt", "baseline_amt", "baseline_time_amt", "value_amt",
+                       "delta_amt", "last_time_amt", "series_amt"}
               },
             }
             수집 전이면 `products` 안이 비어 있다 — **빈 dict 와 0 을 구분한다.**
@@ -358,7 +361,7 @@ class WeeklyOptionFlow:
         try:
             con = self._conn()
             cur = con.execute(
-                "SELECT product,bar_time,net_qty FROM option_investor_flow "
+                "SELECT product,bar_time,net_qty,net_amt FROM option_investor_flow "
                 "WHERE trade_date=? AND investor='individual' "
                 "  AND bar_time>=? AND bar_time<=? "
                 "  AND product IN (%s) "
@@ -372,10 +375,15 @@ class WeeklyOptionFlow:
             return out
 
         by_prod: Dict[str, List[Tuple[str, int]]] = {}
-        for product, bar_time, net_qty in raw:
-            if net_qty is None:
-                continue        # 미측정 — 0 으로 메우지 않는다
-            by_prod.setdefault(product, []).append((bar_time, int(net_qty)))
+        # [626차] 금액(백만원) 계열도 같이 싣는다 — 차트의 계약수/금액 토글용.
+        #   계약수와 **따로** 모은다: 한쪽만 NULL 인 행이 있을 수 있고, 그 분을
+        #   다른 쪽 때문에 버리거나 0 으로 메우면 안 된다(계측 4원칙 ②).
+        by_prod_amt: Dict[str, List[Tuple[str, int]]] = {}
+        for product, bar_time, net_qty, net_amt in raw:
+            if net_qty is not None:
+                by_prod.setdefault(product, []).append((bar_time, int(net_qty)))
+            if net_amt is not None:
+                by_prod_amt.setdefault(product, []).append((bar_time, int(net_amt)))
 
         last_times = []
         for key in keys:
@@ -400,5 +408,20 @@ class WeeklyOptionFlow:
                 "n":             len(pts),
                 "series":        series,
             }
+            # [626차] 금액 계열 — 시초 기준은 **금액 계열 자신의 첫 관측**이다.
+            #   계약수 첫 분과 다를 수 있다. 없으면 키를 만들지 않는다(없음 ≠ 0).
+            apts = by_prod_amt.get(key) or []
+            if apts:
+                abase_t, abase_v = apts[0]
+                alast_t, alast_v = apts[-1]
+                out["products"][key].update({
+                    "unit_amt":          "백만원",
+                    "baseline_amt":      abase_v,
+                    "baseline_time_amt": abase_t,
+                    "value_amt":         alast_v,
+                    "delta_amt":         alast_v - abase_v,
+                    "last_time_amt":     alast_t,
+                    "series_amt":        [(t, v - abase_v) for t, v in apts],
+                })
         out["last_time"] = max(last_times) if last_times else None
         return out

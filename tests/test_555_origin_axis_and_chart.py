@@ -297,8 +297,9 @@ def test_trade_span_connects_entry_to_exit():
     assert "_draw_link_line" in src
     # 청산가로 두 번째 y 를 만든다.
     assert "exit_price" in src and "y2" in src
-    gp = inspect.getsource(MinuteChartCanvas._draw_gp_layer)
-    assert "_draw_link_line" in gp, "GP 섀도도 같은 방식이어야 한다"
+    # [626차] GP 섀도 레이어는 신동 레이어로 대체됐다 — 같은 방식이어야 한다
+    sd = inspect.getsource(MinuteChartCanvas._draw_shindong_layer)
+    assert "_draw_link_line" in sd, "신동도 같은 방식이어야 한다"
 
 
 def test_link_line_endpoints_differ_for_winning_trade():
@@ -319,51 +320,43 @@ if __name__ == "__main__":
 
 
 # ══════════════════════════════════════════════════════════════════════
-# GP 마커 시각 언어 [555차 후속2 / 사용자 지시]
-#   GB 진입 = 청색 상방 화살표 · GS 진입 = 적색 하방 화살표
-#   청산    = 밝은 테두리 위에 검은 X
+# 가상거래 마커 시각 언어 — [555차 후속2] GP 로 세운 규약을 [626차] 신동이 잇는다
+#   GB/GS(GP 섀도)는 1분봉 차트에서 걷어냈다(사용자 지시 2026-09-24).
+#   진입 = 속 빈 화살표 + `신동` 글리프 · 청산 = 밝은 테두리 위 검은 X
 # ══════════════════════════════════════════════════════════════════════
-def test_gp_entry_colors_are_blue_and_red():
-    from dashboard.main_dashboard import MinuteChartCanvas as M
-    from PyQt5.QtGui import QColor
-    gb, gs = QColor(M.GP_LONG_COLOR), QColor(M.GP_SHORT_COLOR)
-    assert gb.blue() > gb.red() and gb.blue() > gb.green(), "GB 는 청색이어야 한다"
-    assert gs.red() > gs.blue() and gs.red() > gs.green(), "GS 는 적색이어야 한다"
-
-
-def test_gp_entry_glyph_is_gb_gs_not_gp():
-    """어느 규칙이 낸 신호인지 화면에서 바로 읽혀야 한다."""
+def test_gp_layer_is_gone_from_minute_chart():
+    """GB/GS 레이어가 차트에 남아 있으면 안 된다 — 사용자가 제거를 지시했다."""
     import inspect
     from dashboard.main_dashboard import MinuteChartCanvas as M
-    src = inspect.getsource(M._draw_gp_entry_marker)
-    assert '"GB" if up else "GS"' in src
-    assert '"GP")' not in src, "글리프가 아직 GP 다"
+    assert not hasattr(M, "_draw_gp_layer")
+    src = inspect.getsource(M)
+    assert '"GB" if up else "GS"' not in src
 
 
-def test_gp_exit_is_black_x_on_bright_rim():
+def test_shindong_exit_is_black_x_on_bright_rim():
     """🔴 X 는 **언제나 검정**이다 — 손익 색으로 칠하면 실측과 섞인다."""
     import inspect
     from dashboard.main_dashboard import MinuteChartCanvas as M
     from PyQt5.QtGui import QColor
-    src = inspect.getsource(M._draw_gp_exit_marker)
-    assert "GP_EXIT_RIM" in src and "GP_EXIT_X" in src
+    src = inspect.getsource(M._draw_sd_exit_marker)
+    assert "SD_EXIT_RIM" in src and "SD_EXIT_X" in src
     assert src.count("drawLine") >= 2, "X 는 선 2개다"
-    rim, xcol = QColor(M.GP_EXIT_RIM), QColor(M.GP_EXIT_X)
+    rim, xcol = QColor(M.SD_EXIT_RIM), QColor(M.SD_EXIT_X)
     assert rim.lightness() > 200, "테두리 바탕이 밝지 않다"
     assert xcol.lightness() < 40, "X 가 검지 않다"
 
 
-def test_gp_visual_language_still_differs_from_real_markers():
-    """색이 같아져도 **형태·선종**으로 가상/실측이 갈려야 한다(553차 취지 보존)."""
+def test_shindong_visual_language_differs_from_real_markers():
+    """색이 비슷해도 **형태·선종**으로 가상/실측이 갈려야 한다(553차 취지 보존)."""
     import inspect
     from dashboard.main_dashboard import MinuteChartCanvas as M
-    gp = inspect.getsource(M._draw_gp_layer)
+    sd = inspect.getsource(M._draw_shindong_layer)
     real = inspect.getsource(M._draw_trade_spans)
-    assert "Qt.DotLine" in gp, "GP 연결선은 점선이어야 한다"
+    assert "Qt.DotLine" in sd, "신동 연결선은 점선이어야 한다"
     assert "Qt.DotLine" not in real, "실측 연결선은 파선(기본)이어야 한다"
     entry = inspect.getsource(M._draw_entry_marker)
     assert "drawRoundedRect" in entry, "실측 진입은 배지(둥근 사각) 형태다"
-    assert "drawRoundedRect" not in inspect.getsource(M._draw_gp_entry_marker)
+    assert "drawRoundedRect" not in inspect.getsource(M._draw_sd_entry_marker)
 
 
 # ══════════════════════════════════════════════════════════════════════

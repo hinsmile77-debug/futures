@@ -77,12 +77,15 @@ import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from PyQt5.QtCore import QPoint, QRectF, Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import (QColor, QFont, QFontMetrics, QKeySequence, QPainter,
-                         QPen, QPixmap)
-from PyQt5.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
+from PyQt5.QtCore import QDate, QPoint, QRectF, Qt, QTimer, pyqtSignal
+from PyQt5.QtGui import (QBrush, QColor, QFont, QFontMetrics, QKeySequence, QPainter,
+                         QPen, QPixmap, QTextCharFormat)
+from PyQt5.QtWidgets import (QApplication, QCheckBox, QComboBox, QDateEdit, QDialog,
                              QHBoxLayout, QLabel, QPushButton, QShortcut,
                              QSizePolicy, QVBoxLayout, QWidget)
+
+from dashboard.panels.option_flow_replay import (load_replay_dates,  # noqa: E402
+                                                 load_replay_payloads)
 
 logger = logging.getLogger("SYSTEM")
 
@@ -174,7 +177,12 @@ _SYNC_STALE_MIN = 3
 # 종전에는 차트 본체·칩·콤보·체크박스마다 툴팁이 떠서 막대를 보려고 마우스를 올릴 때마다
 # 설명이 가렸다. 필요한 설명은 전부 여기로 모은다.
 _TITLE_TIP = (
-    "개인 옵션 순매수 계약수 + 선물 수급 4종 — 당일 첫 바를 0 으로 놓은 증감.\n"
+    "개인 옵션 순매수 계약수(또는 금액) + 선물 수급 4종 — 당일 첫 바를 0 으로 놓은 증감.\n"
+    "「단위」 단추: 옵션 6행을 계약수 ⇄ 금액(백만원)으로 바꾼다. 선물 4행은 그대로다.\n"
+    "  금액이면 콜↔풋 행의 누적 점선 = 신동 규칙이 보는 「콜−풋」(626차).\n"
+    "달력(627차): 다른 날을 고르면 그날 하루 전체를 복기한다(제목·상태 줄이 주황 「복기」).\n"
+    "  굵은 날 = 옵션 흐름 있음 / 흐린 날 = 선물 수급만(옵션 수집은 2026-09-21 시작).\n"
+    "  복기 중에도 실시간은 뒤에서 계속 받는다 — 「오늘 ▶」 로 즉시 복귀.\n"
     "원천: 옵션 CpSvrNew7222(611차) · 선물 CpSvrNew7221/CpSvr8111(613차).\n"
     "\n"
     "■ 꽉 찬 막대 = 전봉 대비 증가 / □ 속 빈 막대 = 감소 / │ 회색 선 = 변화 없음\n"
@@ -376,6 +384,8 @@ class _Plot(QWidget):
         # [621차 후속 / MW0602] 슬롯 가드의 1회 로그 플래그. `getattr` 폴백으로 읽지
         #   않는다 — 명시 초기화가 규약이다(계측 4원칙 ④).
         self._status_tick_failed = False
+        # [627차] 복기 날짜. None = 실시간 — 상태 줄이 복기 화면을 「LIVE」로 그리면 안 된다.
+        self._replay_date: Optional[str] = None
         if self._status:
             self._status_timer = QTimer(self)
             self._status_timer.setInterval(500)
@@ -395,6 +405,11 @@ class _Plot(QWidget):
         # [621차 후속2] 툴팁은 타이틀에만 둔다(사용자 지시) — `_TITLE_TIP` 참조.
 
     # ── 외부 설정 ─────────────────────────────────────────────────────────
+    def set_replay(self, date: Optional[str]) -> None:
+        """[627차] 복기 표시 — 상태 줄만 바꾼다(데이터는 `set_data` 가 준다)."""
+        self._replay_date = date
+        self.update()
+
     def set_data(self, products: Dict[str, Any], shared: bool) -> None:
         self._products = products or {}
         self._shared = bool(shared)
@@ -945,6 +960,17 @@ class _Plot(QWidget):
         p.fillRect(QRectF(x0, y, x1 - x0, h), QColor(_COL["bg3"]))
         mid = y + h / 2.0
         x = x0 + 8
+        if self._replay_date:
+            # [627차] 복기 중 — 시계·다음 분봉은 과거 화면과 무관하다. 「LIVE」로 착각하지 않게
+            #   상태 줄 전체를 복기 표시로 바꾼다(계측 4원칙 ④ — 과거를 현재처럼 보이지 않게).
+            f_rb = QFont()
+            f_rb.setPointSize(9)
+            f_rb.setBold(True)
+            p.setFont(f_rb)
+            p.setPen(QPen(QColor(_COL["orange"])))
+            p.drawText(QRectF(x, y, x1 - x - 8, h), Qt.AlignVCenter | Qt.AlignLeft,
+                       "■ 복기 %s — 실시간 아님 · 헤더 「오늘」로 복귀" % self._replay_date)
+            return
 
         f_b = QFont("Consolas")
         f_b.setPointSize(10)
@@ -1132,6 +1158,10 @@ class _Plot(QWidget):
             _qt_guard_fail('_Plot.wheelEvent', _qe)
 
 
+# [627차] 복기 적재 함수는 별도 모듈에 둔다 — 이 모듈은 DB 에 직접 접근하지 않는다
+#   (test_612c::test_15). 부르는 곳은 배경 스레드뿐이다.
+
+
 class OptionFlowDeltaChart(QWidget):
     """헤더(기준·갱신·구간·스케일) + 13행 차트.
 
@@ -1146,6 +1176,10 @@ class OptionFlowDeltaChart(QWidget):
     """
 
     popout_requested = pyqtSignal()
+    # [627차] 복기 — 배경 스레드 → 메인 스레드. (순번, 날짜, 옵션 payload, 선물 payload)
+    #   순번은 빠르게 날짜를 바꿨을 때 **늦게 도착한 이전 날짜 결과**를 버리기 위해서다.
+    _sig_replay_loaded = pyqtSignal(int, str, dict, dict)
+    _sig_dates_ready = pyqtSignal(list, str)
 
     def __init__(self, parent=None, window_mode: bool = False):
         super().__init__(parent)
@@ -1195,6 +1229,36 @@ class OptionFlowDeltaChart(QWidget):
         self._btn_live.clicked.connect(self._on_live_clicked)   # 람다는 가드를 못 단다
         ctl.addWidget(self._btn_live)
 
+        # [626차] 옵션 행 단위 토글 — 계약수 ⇄ 금액(백만원). 사용자 지시 2026-09-24.
+        #   선물 4행은 원래 단위 그대로다(토글 대상이 아니다).
+        #   신동 규칙이 보는 값은 **금액**이다 — 금액으로 두면 콜↔풋 행의 누적 점선이
+        #   곧 신동의 「콜−풋」이다.
+        self._btn_unit = QPushButton("단위: 계약수")
+        self._btn_unit.setCheckable(True)
+        self._btn_unit.setChecked(False)
+        self._btn_unit.setStyleSheet(
+            "QPushButton{color:%s;font-size:9px;padding:1px 6px;}"
+            "QPushButton:checked{color:%s;font-weight:bold;}"
+            % (_COL["muted"], _COL["orange"]))
+        self._btn_unit.toggled.connect(self._on_unit_toggled)
+        ctl.addWidget(self._btn_unit)
+
+        # [627차] 복기 달력 — 사용자 지시 2026-09-24. 오늘 = 실시간, 다른 날 = 그날 하루 전체.
+        #   달력에서 **옵션 흐름이 있는 날은 굵게**, 선물 수급만 있는 날은 흐리게(옵션 6행이 빈다).
+        self._date_edit = QDateEdit(QDate.currentDate())
+        self._date_edit.setCalendarPopup(True)
+        self._date_edit.setDisplayFormat("yyyy-MM-dd")
+        self._date_edit.setMaximumDate(QDate.currentDate())
+        self._date_edit.setStyleSheet("font-size:9px;")
+        self._date_edit.dateChanged.connect(self._on_date_changed)
+        ctl.addWidget(self._date_edit)
+        self._btn_today = QPushButton("오늘 ▶")
+        self._btn_today.setStyleSheet(
+            "color:%s;font-size:9px;padding:1px 6px;font-weight:bold;" % _COL["orange"])
+        self._btn_today.setVisible(False)          # 복기 중에만 보인다
+        self._btn_today.clicked.connect(self._on_today_clicked)
+        ctl.addWidget(self._btn_today)
+
         self._chk_shared = QCheckBox("공통 스케일")
         self._chk_shared.setChecked(False)
         self._chk_shared.setStyleSheet(small)
@@ -1224,8 +1288,18 @@ class OptionFlowDeltaChart(QWidget):
         self._plot.view_changed.connect(self._sync_live_btn)
         lay.addWidget(self._plot, 1)
 
-        self._payload: Dict[str, Any] = {}          # 옵션 6종
-        self._fut_payload: Dict[str, Any] = {}      # 선물 4종
+        self._payload: Dict[str, Any] = {}          # 옵션 6종 — **화면에 그리는 것**
+        self._fut_payload: Dict[str, Any] = {}      # 선물 4종 — 〃
+        # [627차] 실시간 push 는 복기 중에도 **계속 받아 둔다** — 「오늘」로 돌아오면 바로 복원.
+        self._live_payload: Dict[str, Any] = {}
+        self._live_fut_payload: Dict[str, Any] = {}
+        self._replay_date: Optional[str] = None     # None = 실시간
+        self._replay_seq = 0
+        self._replay_loading = False
+        self._dates_requested = False
+        self._title_text = self._lbl_title.text()
+        self._sig_replay_loaded.connect(self._on_replay_loaded)
+        self._sig_dates_ready.connect(self._on_dates_ready)
         self._age: Tuple[str, str] = ("수급 ——", "ok")
         self._mirrors: List["OptionFlowDeltaChart"] = []
         # [621차 후속] 원천별 「마감된 마지막 분」 — 받은 시각 기준. None = 자르지 않음(복기).
@@ -1243,8 +1317,36 @@ class OptionFlowDeltaChart(QWidget):
         self._cmb_win.currentIndexChanged.connect(self._on_window)
 
     # ── 내부 ──────────────────────────────────────────────────────────────
+    @staticmethod
+    def _as_amount(d: Dict[str, Any]) -> Dict[str, Any]:
+        """[626차] 옵션 한 행을 금액 계열로 바꾼 사본. 금액이 없으면 **표시하지 않는다**(None).
+
+        🔴 금액이 없는 행을 계약수로 남겨 두면 한 화면에 두 단위가 섞인다 —
+          라벨의 단위가 행마다 다르면 그 자체가 오독이다(계측 4원칙 ①).
+        """
+        if not d.get("series_amt"):
+            return None
+        out = dict(d)
+        out.update({
+            "unit":          d.get("unit_amt") or "백만원",
+            "baseline":      d.get("baseline_amt", 0),
+            "baseline_time": d.get("baseline_time_amt"),
+            "value":         d.get("value_amt", 0),
+            "delta":         d.get("delta_amt", 0),
+            "last_time":     d.get("last_time_amt"),
+            "n":             len(d["series_amt"]),
+            "series":        list(d["series_amt"]),
+        })
+        return out
+
+    def is_amount_mode(self) -> bool:
+        return bool(self._btn_unit.isChecked())
+
     def _merged(self) -> Dict[str, Any]:
         prods = dict(self._payload.get("products") or {})
+        if self.is_amount_mode():
+            prods = {k: v for k, v in ((k, self._as_amount(d)) for k, d in prods.items())
+                     if v is not None}
         prods.update(self._fut_payload.get("products") or {})
         cut = self.display_cutoff()
         if cut is None:
@@ -1297,6 +1399,14 @@ class OptionFlowDeltaChart(QWidget):
         except Exception as _qe:  # noqa: BLE001 — Qt 진입점 최후 방어선(621차 후속11)
             _qt_guard_fail('OptionFlowDeltaChart._on_toggle', _qe)
 
+    def _on_unit_toggled(self, checked: bool) -> None:
+        try:
+            self._btn_unit.setText("단위: 금액(백만원)" if checked else "단위: 계약수")
+            self._redraw()
+            self._render_meta()
+        except Exception as _qe:  # noqa: BLE001 — Qt 진입점 최후 방어선(621차 후속11)
+            _qt_guard_fail('OptionFlowDeltaChart._on_unit_toggled', _qe)
+
     def _on_window(self, idx: int) -> None:
         try:
             if 0 <= idx < len(_WINDOW_CHOICES):
@@ -1320,14 +1430,31 @@ class OptionFlowDeltaChart(QWidget):
     def _render_meta(self) -> None:
         opt = self._payload.get("products") or {}
         fut = self._fut_payload.get("products") or {}
-        if not opt and not fut:
+        if self._replay_date:
+            # [627차] 복기 — 「미수집(09:02 예정)」은 오늘 얘기다. 과거는 다르게 적는다.
+            if self._replay_loading:
+                self._lbl_meta.setText("복기 %s — 불러오는 중…" % self._replay_date)
+                return
+            if self._payload.get("error"):
+                self._lbl_meta.setText("복기 %s — 조회 실패(로그 참조)" % self._replay_date)
+                return
+            if not opt and not fut:
+                self._lbl_meta.setText("복기 %s — 그날 기록 없음" % self._replay_date)
+                return
+        elif not opt and not fut:
             # 09:02 이전이거나 수집 실패. "0" 이 아니라 "아직 없음"이라고 적는다.
             self._lbl_meta.setText("미수집 — 09:02 첫 수집 예정")
             return
         parts = []
+        if self._replay_date:
+            parts.append("복기 %s" % self._replay_date)
+            if not opt:
+                # 옵션 흐름 수집은 2026-09-21 시작 — 그 전 날짜는 옵션 6행이 빈다(없음 ≠ 0)
+                parts.append("옵션 미수집일")
         if opt:
             base_t = min((d.get("baseline_time") or "—") for d in opt.values())
-            parts.append("옵션 %d종 기준 %s" % (len(opt), base_t))
+            parts.append("옵션 %d종 기준 %s%s" % (len(opt), base_t,
+                                                 " · 금액(백만원)" if self.is_amount_mode() else ""))
         if fut:
             parts.append("선물 %d종" % len(fut))
         last = max([t for t in (self._payload.get("last_time"),
@@ -1364,10 +1491,11 @@ class OptionFlowDeltaChart(QWidget):
         if other is self or other in self._mirrors:
             return
         self._mirrors.append(other)
-        if self._payload:
-            other.update_flow(self._payload)
-        if self._fut_payload:
-            other.update_futures_flow(self._fut_payload)
+        # [627차] 미러에는 **실시간** 값을 넘긴다 — 이 차트가 복기 중이어도 미러는 제 날짜를 본다
+        if self._live_payload:
+            other.update_flow(self._live_payload)
+        if self._live_fut_payload:
+            other.update_futures_flow(self._live_fut_payload)
         other.set_age_text(*self._age)
 
     def _note_bar_clock(self) -> None:
@@ -1398,22 +1526,162 @@ class OptionFlowDeltaChart(QWidget):
         self._plot.set_bar_clock(now, med, bool(len(iv) >= 2))
 
     def update_flow(self, payload: Dict[str, Any]) -> None:
-        """`WeeklyOptionFlow.get_individual_session_delta()` 결과를 그린다."""
-        self._payload = payload or {}
+        """`WeeklyOptionFlow.get_individual_session_delta()` 결과를 그린다.
+
+        [627차] 복기 중이면 받아 두기만 하고 그리지 않는다(과거 화면에 오늘이 섞이면 안 된다).
+        """
+        self._live_payload = payload or {}
+        self._each_mirror("update_flow", payload)
+        if self._replay_date:
+            return
+        self._payload = self._live_payload
         self._horizon["opt"] = self._complete_horizon(self._payload)
         self._redraw()
         self._note_bar_clock()
         self._render_meta()
-        self._each_mirror("update_flow", payload)
 
     def update_futures_flow(self, payload: Dict[str, Any]) -> None:
         """[613차] `futures_flow_series.get_futures_session_delta()` 결과를 그린다."""
-        self._fut_payload = payload or {}
+        self._live_fut_payload = payload or {}
+        self._each_mirror("update_futures_flow", payload)
+        if self._replay_date:
+            return
+        self._fut_payload = self._live_fut_payload
         self._horizon["fut"] = self._complete_horizon(self._fut_payload)
         self._redraw()
         self._note_bar_clock()
         self._render_meta()
-        self._each_mirror("update_futures_flow", payload)
+
+    # ── [627차] 복기 ─────────────────────────────────────────────────────
+    def is_replay(self) -> bool:
+        return self._replay_date is not None
+
+    def showEvent(self, ev):             # noqa: N802 (Qt) — 처음 보일 때 달력 표식을 한 번 읽는다
+        super().showEvent(ev)
+        try:
+            if not self._dates_requested:
+                self._dates_requested = True
+                import threading as _thr
+
+                def _run():
+                    dates, first = load_replay_dates()
+                    self._sig_dates_ready.emit(list(dates), first or "")
+                _thr.Thread(target=_run, daemon=True).start()
+        except Exception as _qe:  # noqa: BLE001 — Qt 진입점 최후 방어선
+            _qt_guard_fail('OptionFlowDeltaChart.showEvent', _qe)
+
+    def _on_dates_ready(self, dates, first) -> None:
+        """달력 범위(선물 수급 첫날–오늘)와 표식(옵션 흐름 있는 날 굵게)."""
+        try:
+            today = QDate.currentDate()
+            cands = [d for d in list(dates or []) + ([first] if first else []) if d]
+            lo = QDate.fromString(min(cands), "yyyy-MM-dd") if cands else today
+            self._date_edit.blockSignals(True)
+            self._date_edit.setDateRange(lo, today)
+            self._date_edit.blockSignals(False)
+            cal = self._date_edit.calendarWidget()
+            if cal is None:
+                return
+            on = QTextCharFormat()
+            on.setForeground(QBrush(QColor(_COL["text"])))
+            on.setFontWeight(QFont.Bold)
+            off = QTextCharFormat()
+            off.setForeground(QBrush(QColor(_COL["muted"])))
+            have = set(dates or [])
+            d = QDate(lo)
+            while d <= today:
+                cal.setDateTextFormat(d, on if d.toString("yyyy-MM-dd") in have else off)
+                d = d.addDays(1)
+        except Exception as _qe:  # noqa: BLE001 — Qt 진입점 최후 방어선
+            _qt_guard_fail('OptionFlowDeltaChart._on_dates_ready', _qe)
+
+    def _on_date_changed(self, qd) -> None:
+        try:
+            day = qd.toString("yyyy-MM-dd")
+            if day == QDate.currentDate().toString("yyyy-MM-dd"):
+                self._exit_replay()
+            else:
+                self._enter_replay(day)
+        except Exception as _qe:  # noqa: BLE001 — Qt 진입점 최후 방어선
+            _qt_guard_fail('OptionFlowDeltaChart._on_date_changed', _qe)
+
+    def _on_today_clicked(self, _checked: bool = False) -> None:
+        try:
+            if self._date_edit.date() != QDate.currentDate():
+                self._date_edit.setDate(QDate.currentDate())   # dateChanged → _exit_replay
+            elif self._replay_date:
+                self._exit_replay()
+        except Exception as _qe:  # noqa: BLE001 — Qt 진입점 최후 방어선
+            _qt_guard_fail('OptionFlowDeltaChart._on_today_clicked', _qe)
+
+    def _set_replay_look(self, day: Optional[str]) -> None:
+        if day:
+            self._lbl_title.setText("옵션·선물 수급 — 복기 %s" % day)
+            col = _COL["orange"]
+        else:
+            self._lbl_title.setText(self._title_text)
+            col = _COL["blue"]
+        self._lbl_title.setStyleSheet("color:%s;font-size:%dpx;font-weight:bold;"
+                                      % (col, 13 if self._window_mode else 11))
+        self._btn_today.setVisible(bool(day))
+        self._plot.set_replay(day)
+
+    def _enter_replay(self, day: str) -> None:
+        """그날 하루 전체를 배경 스레드로 읽는다. 도착 전에는 **빈 화면 + 「불러오는 중」**.
+
+        🔴 이전 화면(오늘 또는 다른 날)을 남겨 둔 채 제목만 바꾸면 잠깐이라도
+          다른 날 데이터가 그 날짜 이름을 달고 보인다 — 그래서 먼저 비운다.
+        """
+        import threading as _thr
+        self._replay_date = day
+        self._replay_seq += 1
+        seq = self._replay_seq
+        self._replay_loading = True
+        self._payload, self._fut_payload = {}, {}
+        self._horizon = {"opt": None, "fut": None}      # 과거는 자르지 않는다(하루 전체)
+        self._set_replay_look(day)
+        self._plot.set_anchor(None)
+        self._redraw()
+        self._render_meta()
+
+        def _run():
+            try:
+                opt, fut = load_replay_payloads(day)
+            except Exception as exc:                    # noqa: BLE001
+                logger.warning("[OptionFlowChart] 복기 %s 조회 실패: %s", day, exc)
+                opt, fut = {"error": str(exc)}, {}
+            self._sig_replay_loaded.emit(seq, day, dict(opt or {}), dict(fut or {}))
+        _thr.Thread(target=_run, daemon=True).start()
+
+    def _on_replay_loaded(self, seq, day, opt, fut) -> None:
+        try:
+            if seq != self._replay_seq or day != self._replay_date:
+                return                  # 그사이 날짜가 바뀌었다 — 낡은 결과는 버린다
+            self._replay_loading = False
+            self._payload = opt or {}
+            self._fut_payload = fut or {}
+            self._redraw()
+            self._render_meta()
+        except Exception as _qe:  # noqa: BLE001 — Qt 진입점 최후 방어선
+            _qt_guard_fail('OptionFlowDeltaChart._on_replay_loaded', _qe)
+
+    def _exit_replay(self) -> None:
+        self._replay_date = None
+        self._replay_seq += 1           # 진행 중인 복기 적재 결과를 무효화한다
+        self._replay_loading = False
+        self._payload = self._live_payload
+        self._fut_payload = self._live_fut_payload
+        self._horizon = {
+            "opt": self._complete_horizon(self._payload) if self._payload else None,
+            "fut": self._complete_horizon(self._fut_payload) if self._fut_payload else None}
+        self._last_col = None           # 복귀 순간을 「새 봉 열림」으로 세지 않는다
+        self._set_replay_look(None)
+        self._date_edit.blockSignals(True)
+        self._date_edit.setDate(QDate.currentDate())
+        self._date_edit.blockSignals(False)
+        self._plot.set_anchor(None)
+        self._redraw()
+        self._render_meta()
 
     def set_clock_provider(self, provider) -> None:
         """[621차 후속8] 브로커 시계 오프셋 공급자 — 상태 줄(독립 창)이 쓴다."""

@@ -7622,3 +7622,13 @@ WEEKLY_OPTION_FLOW_START_AFTER = "08:50"
 # 이 구간에서는 수집을 건너뛴다 — 09:00~09:02 는 7221 에서 7초+ 블로킹이 실증된
 # 장 개시 직후 서버 피크다(main.py:_fetch_investor_data 주석, 6/26 09:01 실증).
 WEEKLY_OPTION_FLOW_PEAK_SKIP = ("09:00", "09:02")
+
+# ── [MW0601 626차] 신동(神童) 가상거래 ─────────────────────────────────────
+# 개인 위클리 옵션 흐름(금액) + 구조·거리맥점 규칙의 **가상거래**. 주문 없음(절대원칙 §6).
+# 위클리 흐름 수집 직후 같은 QTimer 경로에서 하루치를 재생해 기록한다.
+# 규격 값은 여기가 아니라 `strategy/shindong/spec.py`(사전등록 고정값)에 있다.
+# ⚠ 위 PEAK_SKIP 때문에 09:00·09:01 흐름은 09:02 수집에서야 들어온다 — 09:01 확정 신호는
+#   구조적으로 1분 이상 늦게 탐지된다. 그 차이는 `shindong_trades.detected_at`·`detect_px`
+#   에 남고, 채점이 규칙가·실현가능가를 둘 다 낸다(사전등록 §4).
+SHINDONG_ENABLED = True
+SHINDONG_DB = os.path.join(DB_DIR, "shindong.db")
