@@ -33,6 +33,7 @@ import os
 import sqlite3
 
 from utils.time_utils import (
+    FORCE_EXIT_AT,
     expected_raw_candle_minutes,
     raw_candles_last_ts,
 )
@@ -200,3 +201,54 @@ def confirm_line(db_path, day):
                      % (len(r["over_cut"]), _fmt_list(r["over_cut"])))
         level = "ERROR"
     return (" | ".join(parts), level)
+
+
+# ── 절단선 경계 봉 도착시각 진단 [MW0602 588차 후속] ─────────────────────────
+#
+# 2026-09-23 이 PC 첫 라이브일에 `confirm_line` 이 「절단선 초과 1봉(15:09)」을
+# ERROR 로 찍었다. 같은 날 SYSTEM 로그:
+#   15:09:01 [BAR-CLOSE][CYBOS] ts=15:08   ← 정상(다음 분 +1초)
+#   15:09:59 [BAR-CLOSE][CYBOS] ts=15:09   ← PC 시각 15:10 **이전**에 마감
+# 봉 롤오버는 **브로커 체결시각**으로, `main.py` force-exit 가드는 **PC 시각**으로
+# 판정한다. 브로커 시계가 PC 보다 앞서면 ts=15:09 봉의 콜백이 PC 15:09:59.x 에
+# 도착해 가드를 통과한다 — `raw_candles_last_ts()` 유도의 전제가 깨지는 경로다.
+# n=1 이라 결론이 아니다. 이 함수는 그 한 줄을 **매일** 남겨 판정 근거를 쌓는다.
+# 🔴 **로그만 만든다** — 가드·저장·판단 경로는 이 함수를 읽지 않는다.
+
+def cutoff_timing_line(bar_ts, now, broker_offset_s=None):
+    """경계 봉(절단선 봉·그 다음 봉) 콜백 도착 한 줄. 경계 봉이 아니면 `None`.
+
+    `bar_ts`  봉 ts (`datetime` — realtime_data 가 그렇게 만든다)
+    `now`     콜백 도착 PC 시각
+    `broker_offset_s`  브로커 시각 − PC 시각(초). `None` 은 **미측정**이지 0 이 아니다
+                       (계측 4원칙 ②) — 그대로 「미측정」으로 찍는다.
+
+    반환: (메시지, 레벨). 기대와 다르면 WARNING.
+    """
+    if not hasattr(bar_ts, "strftime") or not hasattr(now, "time"):
+        return None
+    last = raw_candles_last_ts()
+    _base = datetime.datetime.combine(datetime.date(2000, 1, 1), last)
+    first_cut = (_base + datetime.timedelta(minutes=1)).time()
+    hm = bar_ts.strftime("%H:%M")
+    if hm == last.strftime("%H:%M"):
+        expect_stop = False       # 절단선 봉 — 저장돼야 정상
+    elif hm == first_cut.strftime("%H:%M"):
+        expect_stop = True        # 첫 초과 봉 — 가드가 멈춰야 정상
+    else:
+        return None
+
+    fe = datetime.datetime.combine(now.date(), FORCE_EXIT_AT)
+    delta_s = (now - fe).total_seconds()
+    guard_stop = now.time() >= FORCE_EXIT_AT
+    off = ("미측정" if broker_offset_s is None
+           else "%+.2fs" % float(broker_offset_s))
+    ok = (guard_stop == expect_stop)
+    msg = ("[BarGapTiming] ts=%s 콜백 도착 PC %s (15:10 대비 %+.3fs) | "
+           "가드=%s (기대 %s) | 브로커−PC 시계=%s%s" % (
+               hm, now.strftime("%H:%M:%S.%f")[:-3], delta_s,
+               "중단" if guard_stop else "통과",
+               "중단" if expect_stop else "통과",
+               off,
+               "" if ok else " | ⚠ 경계 역전 — 이 봉이 raw_candles 절단선을 넘는다"))
+    return (msg, "INFO" if ok else "WARNING")

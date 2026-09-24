@@ -5117,6 +5117,23 @@ class TradingSystem:
         except Exception as _ce:
             logger.debug("[ChartWarn] candle_closed 예외 무시: %s", _ce)
 
+        # ── [MW0602 588차 후속] 절단선 경계 봉 도착시각 진단 ─────────────────
+        # 2026-09-23 [BarGap] 「절단선 초과 1봉(15:09)」 — 그 봉이 PC 15:09:59 에
+        # 마감돼 아래 force-exit 가드(PC 시각)를 통과했다. 봉 롤오버는 브로커
+        # 체결시각 기준이라 두 시계가 어긋나면 생기는 경로다(n=1, 가설).
+        # 15:08·15:09 봉에만 한 줄씩 남긴다. **로그만** — 분기·저장·판단 무변경.
+        # 가드보다 앞이어야 가드에 걸리는 날(정상일)에도 기록된다.
+        try:
+            from utils.bar_gap import cutoff_timing_line as _bgt_line
+            _bgt_rt = self.realtime_data
+            _bgt_off_fn = getattr(_bgt_rt, "broker_clock_offset", None)
+            _bgt = _bgt_line(candle.get("ts"), now,
+                             _bgt_off_fn() if callable(_bgt_off_fn) else None)
+            if _bgt is not None:
+                log_manager.system(_bgt[0], _bgt[1])
+        except Exception as _bgt_e:
+            logger.debug("[BarGapTiming] 진단 실패 (무해): %s", _bgt_e)
+
         # ── 프리장 처리 경로 (08:45~09:00) ──────────────────────────
         # 진입 없이 scaler warmup · 피처 검증 · GapOffset 사전 설정만 수행
         if is_pre_market(now):
