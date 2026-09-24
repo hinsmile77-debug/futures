@@ -46636,3 +46636,11 @@ Windows `git status` 수정 개수 배포 전과 동일, 스테이징된 내용 
   체크아웃 전까지 LF 다.** 스케줄러가 돌리는 배치를 고친 뒤엔 CRLF 로 저장할 것.
 - 한글이 든 `.ps1` 은 UTF-8 BOM 으로 저장.
 - 코웍 마운트에서 쓰기 git 금지(`peter_feed_push.py` 만 예외, 사후 `--reclaim` 유지).
+
+**630차 후속 (같은 날) — P5 완료**: 묵은 클론 이동이 「액세스가 거부되었습니다」로 막혔다.
+폴더 권한은 정상(MW0601 전체 권한)이었고, 폴더 안 파일 5,913개를 연 프로세스도 0개였다(Restart Manager).
+**폴더 핸들**을 쥔 것은 `CoworkVMService`(cowork-svc, 09-23 08:22 기동) — 코웍 VM 이 PycharmProjects
+트리를 마운트한 채였다. 사용자가 `net stop CoworkVMService` 후 이동 성공:
+`C:\Users\82108\PycharmArchive\` 로 `futures - 260630_MW0602`(HEAD e096ab6, 미커밋 206 보존) ·
+`futures - 키움버전`(b41911b, 12 보존). 가드 `--all` 대상 10 → 8.
+- How to apply: 코웍이 도는 동안에는 PycharmProjects 아래 폴더 이동·이름 변경이 막힌다. 먼저 서비스를 멈출 것.
