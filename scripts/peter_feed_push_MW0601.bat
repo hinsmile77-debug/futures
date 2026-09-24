@@ -94,6 +94,21 @@ REM   🔴 rc 는 무시한다 — 위생은 푸시의 전제조건이 아니다
 
 "!PYEXE!" !PYARG! tools\peter_feed_push.py --push >> "!LOG!" 2>&1
 SET "RC=!ERRORLEVEL!"
+
+REM  ── [617차] 뒷정리가 **자기가 만든 것**까지 치우게 한다 ─────────────
+REM   93행의 --reclaim 은 푸시보다 **먼저** 돌기 때문에 이번 실행이 남길
+REM   부스러기를 구조적으로 못 본다. 그래서 늘 다음 회차가 이전 회차 것을
+REM   치웠고, 하루의 마지막 회차가 남긴 것은 다음 영업일까지 앉아 있었다
+REM   (2026-09-24 실측: 한 번의 푸시가 tmp_obj 7개를 남겼다).
+REM   🔴 지금은 git 이 이미 끝났다 -- 가드의 3중 조건 중 「git 프로세스 0개」가
+REM     그것을 보증한다. 그래서 나이 임계를 낮춰도 살아 있는 임시파일을
+REM     건드리지 않는다. 0 이 아니라 15 로 두는 것은 벨트를 하나 남기려는 것이다.
+REM   🔴 PING 으로 기다린다. TIMEOUT 은 콘솔이 없는 예약 실행에서
+REM     "Input redirection is not supported" 로 죽는다.
+REM   🔴 rc 는 여기서도 건드리지 않는다 -- 위생은 푸시의 성패와 무관하다.
+PING -n 21 127.0.0.1 >NUL 2>&1
+"!PYEXE!" !PYARG! scripts\git_lock_guard.py --reclaim --min-age 15 >> "!LOG!" 2>&1
+
 ECHO [%DATE% %TIME%] peter_feed_push 종료 rc=!RC! >> "!LOG!"
 
 REM  스케줄러에서 돌 때는 창이 없다. 손으로 돌렸을 때만 결과를 보여준다.

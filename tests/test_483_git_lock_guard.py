@@ -206,3 +206,62 @@ def test_sibling_copy_matches_canonical(name, path):
     assert canon == copy, (
         "%s 사본이 정본과 다르다 — 판정 로직이 저장소별로 갈라졌다. "
         "정본(futures/scripts/git_lock_guard.py)을 복사해 맞출 것" % name)
+
+
+# ── [630차] 가드가 못 보던 잔존물 두 종류 ──────────────────────────────
+
+def _old(path, age_sec=4 * 86400):
+    d = os.path.dirname(path)
+    if not os.path.isdir(d):
+        os.makedirs(d)
+    open(path, "wb").close()
+    t = time.time() - age_sec
+    os.utime(path, (t, t))
+    return path
+
+
+def test_maintenance_lock_and_stale_dir_are_seen(tmpdir):
+    """2026-09-24: 이 둘이 남아 있는데 `--all` 이 「OK」라고 했다."""
+    root = str(tmpdir)
+    gd = os.path.join(root, ".git")
+    m = _old(os.path.join(gd, "objects", "maintenance.lock"))
+    h = _old(os.path.join(gd, "_stale_20260920", "HEAD.lock"))
+    i = _old(os.path.join(gd, "_stale_20260920", "index.lock"))
+    t1, t2 = G.scan_extra(root)
+    assert t1 == [], "커밋을 막지 않으므로 TIER1 이 아니다"
+    assert set(t2) == {m, h, i}
+
+
+def test_stale_dir_reclaimed_and_pruned_but_exit_code_unchanged(tmpdir, monkeypatch, capsys):
+    monkeypatch.setattr(G, "_git_process_count", lambda: 0)
+    root = str(tmpdir)
+    gd = os.path.join(root, ".git")
+    m = _old(os.path.join(gd, "objects", "maintenance.lock"))
+    _old(os.path.join(gd, "_stale_20260920", "HEAD.lock"))
+    assert G.main(["--check", "--repo", root]) == 0, "TIER2 는 종료코드를 바꾸지 않는다"
+    assert os.path.exists(m), "--check 는 지우지 않는다"
+    assert G.main(["--reclaim", "--repo", root]) == 0
+    assert not os.path.exists(m)
+    assert not os.path.exists(os.path.join(gd, "_stale_20260920")), "빈 폴더까지 치운다"
+    capsys.readouterr()
+
+
+def test_stale_dir_kept_when_member_on_hold(tmpdir, monkeypatch, capsys):
+    """판정보류(젊은 파일)가 남으면 폴더를 지우지 않는다."""
+    monkeypatch.setattr(G, "_git_process_count", lambda: 0)
+    root = str(tmpdir)
+    gd = os.path.join(root, ".git")
+    _old(os.path.join(gd, "_stale_x", "HEAD.lock"))
+    young = _old(os.path.join(gd, "_stale_x", "index.lock"), age_sec=5)
+    G.main(["--reclaim", "--repo", root])
+    assert os.path.exists(young)
+    capsys.readouterr()
+
+
+def test_help_survives_cp949_console():
+    """UTF-8 설정이 `parse_args()` 뒤에 있으면 `--help` 가 「—」에서 죽는다."""
+    import subprocess
+    env = dict(os.environ, PYTHONIOENCODING="cp949")
+    p = subprocess.run([sys.executable, os.path.join(_SCRIPTS, "git_lock_guard.py"), "--help"],
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=_ROOT)
+    assert p.returncode == 0, p.stderr.decode("utf-8", "replace")[-400:]

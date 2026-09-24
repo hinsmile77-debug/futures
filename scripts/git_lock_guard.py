@@ -59,6 +59,7 @@ from __future__ import print_function
 import argparse
 import json
 import os
+import stat
 import subprocess
 import sys
 import time
@@ -129,7 +130,7 @@ def inspect(repo, min_age_sec=DEFAULT_MIN_AGE_SEC, git_procs=None):
 
     fails = []
     if info["size"] != 0:
-        fails.append("크기 %s바이트(0 아님 — 인덱스 쓰기가 진행됐다)" % info["size"])
+        fails.append("크기 %s바이트(0 아님 - 인덱스 쓰기가 진행됐다)" % info["size"])
     if info["age_sec"] <= min_age_sec:
         fails.append(
             "나이 %.0f초 <= 임계 %d초(아직 실행 중일 수 있다)" % (info["age_sec"], min_age_sec)
@@ -141,14 +142,33 @@ def inspect(repo, min_age_sec=DEFAULT_MIN_AGE_SEC, git_procs=None):
 
     if fails:
         info["stale"] = False
-        info["verdict"] = "판정보류 — " + " / ".join(fails)
+        info["verdict"] = "판정보류 - " + " / ".join(fails)
     else:
         info["stale"] = True
         info["verdict"] = (
-            "스테일 확정 — 0바이트 · %.1f시간 · git 프로세스 0개 "
+            "스테일 확정 - 0바이트 · %.1f시간 · git 프로세스 0개 "
             "-> 이 저장소는 커밋 불가 상태다" % (info["age_sec"] / 3600.0)
         )
     return info
+
+
+def _force_remove(path):
+    """읽기전용 특성을 걷어내고 지운다.
+
+    git 은 loose object 를 0444 로 만든다. Windows 는 읽기전용 파일의 삭제를
+    WinError 5(액세스 거부)로 막는다 — **잠금이 아니라 특성 문제다**
+    (2026-09-24 실측: attrib 가 'A  R' 을 보여 줬다). 그래서 "삭제 권한이
+    있는 쪽(Windows)"에서 돌려도 회수가 실패했다. 쓰기 비트를 돌려준 뒤
+    한 번 더 시도한다. 그래도 안 되면 그 예외를 그대로 올린다 -- 진짜 잠금과
+    특성 문제를 뭉뚱그리지 않기 위해서다.
+    """
+    try:
+        os.remove(path)
+        return
+    except OSError:
+        pass
+    os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+    os.remove(path)
 
 
 def reclaim(repo, min_age_sec=DEFAULT_MIN_AGE_SEC, git_procs=None):
@@ -164,14 +184,14 @@ def reclaim(repo, min_age_sec=DEFAULT_MIN_AGE_SEC, git_procs=None):
     try:
         st = os.stat(lock)  # 경합 방어: 판정 이후 바뀌지 않았는지 재확인
         if st.st_size != 0:
-            info["verdict"] = "회수 취소 — 판정 직후 크기가 %s바이트로 변했다" % st.st_size
+            info["verdict"] = "회수 취소 - 판정 직후 크기가 %s바이트로 변했다" % st.st_size
             info["stale"] = False
             return False, info
-        os.remove(lock)
+        _force_remove(lock)
     except Exception as e:
         info["verdict"] = "회수 실패: %s" % e
         return False, info
-    info["verdict"] = "회수 완료 — " + info["verdict"]
+    info["verdict"] = "회수 완료 - " + info["verdict"]
     return True, info
 
 
@@ -193,6 +213,16 @@ def reclaim(repo, min_age_sec=DEFAULT_MIN_AGE_SEC, git_procs=None):
 TIER1_FIXED = ("HEAD.lock", "config.lock", "packed-refs.lock", "ORIG_HEAD.lock")
 TIER1_DIRS = ("refs", "logs")
 TIER2_PREFIX = ("tmp_obj_", "tmp_pack_")
+
+# ── [MW0601 630차] 가드가 못 보던 잔존물 두 종류 ─────────────────────────────
+#
+# 2026-09-24 실측: futures·options 에 잠금 5개가 남아 있었는데 `--all` 이 둘 다
+# 「OK」로 보고했다. 전부 아래 두 자리였다 —
+#   objects/maintenance.lock      9/17·9/20 이후 그대로. **자동 gc 가 그때부터 멈췄다.**
+#   _stale_20260920/HEAD.lock 등  지난 세션이 못 지워 「폴더째 이름만 바꿔 둔」 것.
+# 둘 다 커밋은 막지 않는다 → TIER2(종료코드 무변경). 그러나 치우지 않으면 영영 남는다.
+TIER2_FIXED = (os.path.join("objects", "maintenance.lock"),)
+TIER2_STALE_DIR_PREFIX = "_stale_"
 
 
 def _walk(root, pick):
@@ -223,7 +253,36 @@ def scan_extra(repo):
         t2.extend(_walk(objs, lambda fn: fn.startswith(TIER2_PREFIX)))
     # 지난 세션이 「지우지 못해 이름만 바꿔 둔」 것들 — 코웍 마운트의 흔적이다.
     t2.extend(_walk(gitdir, lambda fn: ".lock.stale_" in fn))
+    # [630차] 폴더째 옮겨 둔 형태와 maintenance.lock.
+    for name in TIER2_FIXED:
+        p = os.path.join(gitdir, name)
+        if os.path.exists(p):
+            t2.append(p)
+    for d in _stale_dirs(gitdir):
+        t2.extend(_walk(d, lambda fn: True))
     return sorted(set(t1)), sorted(set(t2))
+
+
+def _stale_dirs(gitdir):
+    try:
+        return [os.path.join(gitdir, n) for n in sorted(os.listdir(gitdir))
+                if n.startswith(TIER2_STALE_DIR_PREFIX)
+                and os.path.isdir(os.path.join(gitdir, n))]
+    except Exception:
+        return []
+
+
+def _prune_stale_dirs(repo):
+    """비워진 `_stale_*` 폴더를 지운다. 안에 뭐라도 남았으면(판정보류) 그대로 둔다."""
+    n = 0
+    for d in _stale_dirs(os.path.join(repo, ".git")):
+        for dirpath, _dirnames, _filenames in os.walk(d, topdown=False):
+            try:
+                os.rmdir(dirpath)  # 비어 있지 않으면 OSError — 의도한 동작이다
+                n += 1 if dirpath == d else 0
+            except OSError:
+                pass
+    return n
 
 
 def sweep_extra(repo, min_age_sec=DEFAULT_MIN_AGE_SEC, git_procs=None, reclaim_it=False):
@@ -250,26 +309,28 @@ def sweep_extra(repo, min_age_sec=DEFAULT_MIN_AGE_SEC, git_procs=None, reclaim_i
         elif git_procs != 0:
             fails.append("git 프로세스 %d개 실행 중" % git_procs)
         if fails:
-            row["verdict"] = "판정보류 — " + " / ".join(fails)
+            row["verdict"] = "판정보류 - " + " / ".join(fails)
             if tier == 1:
                 n_hold += 1
         else:
             row["stale"] = True
-            row["verdict"] = "스테일 — %.1f시간" % (row["age_sec"] / 3600.0)
+            row["verdict"] = "스테일 - %.1f시간" % (row["age_sec"] / 3600.0)
             if reclaim_it:
                 try:
-                    os.remove(path)
+                    _force_remove(path)
                     row["removed"] = True
                     n_removed += 1
-                    row["verdict"] = "회수 완료 — " + row["verdict"]
+                    row["verdict"] = "회수 완료 - " + row["verdict"]
                 except Exception as e:
                     # 🔴 코웍 마운트에서는 여기가 EPERM 으로 떨어진다. **성공한 척하지 않는다.**
-                    row["verdict"] = "회수 실패(%s) — 삭제 권한이 없는 환경일 수 있다" % e
+                    row["verdict"] = "회수 실패(%s) - 삭제 권한이 없는 환경일 수 있다" % e
                     if tier == 1:
                         n_stale += 1
             elif tier == 1:
                 n_stale += 1
         rows.append(row)
+    if reclaim_it and n_removed:
+        _prune_stale_dirs(repo)
     return rows, n_stale, n_hold, n_removed
 
 
@@ -296,7 +357,37 @@ def _fmt(info):
     return "%-24s %s %s" % (name, mark, info["verdict"])
 
 
+def _ensure_utf8_console():
+    """표준 출력·오류를 UTF-8 로 재구성한다. **판정보다 출력이 먼저 죽는 것을 막는다.**
+
+    [MW0601 491차] cp949 콘솔이 em dash(—) 하나에 UnicodeEncodeError 를 내고,
+    그 예외가 `main()` 밖으로 나가 **rc=1** 로 죽는다. 판정 자체는 이미 끝난
+    뒤라 결과가 정상(rc=0)이어도 호출자는 실패로 읽는다 — 하필 이 스크립트는
+    SKILL.md 가 **매 커밋 전 프리플라이트**로 지정한 도구다(478차 후속 §8-2 ·
+    480차 F-2 와 같은 원인). fuoption 쪽은 같은 사고를 2026-08-31 에 따로 겪고
+    따로 고쳤다 — [630차] 두 사본의 고침을 이 함수 하나로 합쳤다.
+
+    `errors="replace"`: 재구성이 부분적으로만 먹는 환경에서도 판정 결과는 나와야 한다.
+    `hasattr` 가드: 파이프로 감싸인 스트림은 `reconfigure()` 가 없을 수 있다.
+    출력 리터럴 자체도 cp949 로 찍히는 글자만 쓴다(fuoption tests/ops 가 고정) — 이중 방어.
+    """
+    try:
+        from utils.analysis_db import utf8_console
+        utf8_console()
+        return
+    except Exception:
+        pass
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            # 재구성 실패가 이 도구의 본업(락 판정)을 막아서는 안 된다.
+            pass
+
+
 def main(argv=None):
+    _ensure_utf8_console()  # [630차] parse_args 보다 앞 — `--help` 도 보호한다
     ap = argparse.ArgumentParser(description="`.git/index.lock` 스테일 판정·회수 (3중 조건)")
     ap.add_argument(
         "--repo",
@@ -306,7 +397,7 @@ def main(argv=None):
     )
     ap.add_argument("--all", action="store_true", help="형제 저장소 전수 (--scan-root 아래)")
     ap.add_argument("--scan-root", default=DEFAULT_SCAN_ROOT)
-    ap.add_argument("--check", action="store_true", help="검사만 한다(기본 동작 — 명시용)")
+    ap.add_argument("--check", action="store_true", help="검사만 한다(기본 동작 - 명시용)")
     ap.add_argument("--reclaim", action="store_true", help="3중 조건 충족 시에만 제거한다")
     ap.add_argument(
         "--min-age",
@@ -316,22 +407,6 @@ def main(argv=None):
     )
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
-
-    # [MW0601 491차] cp949 콘솔이 em dash(—) 하나에 UnicodeEncodeError 를 내고,
-    # 그 예외가 `main()` 밖으로 나가 **rc=1** 로 죽는다. 판정 자체는 이미 끝난
-    # 뒤라 결과가 정상(rc=0)이어도 호출자는 실패로 읽는다 — 하필 이 스크립트는
-    # SKILL.md 가 **매 커밋 전 프리플라이트**로 지정한 도구다. 커밋 전 확인 절차가
-    # 인코딩 때문에 통째로 막히는 형태였다(478차 후속 §8-2 · 480차 F-2 와 같은 원인).
-    # ⚠ 종료코드 의미(0 정상 / 2 스테일 / 3 판정보류)는 무변경이다.
-    try:
-        from utils.analysis_db import utf8_console
-        utf8_console()
-    except Exception:
-        for _stream in ("stdout", "stderr"):
-            try:
-                getattr(sys, _stream).reconfigure(encoding="utf-8", errors="replace")
-            except Exception:
-                pass
 
     repos = list(a.repo)
     if a.all:
@@ -385,7 +460,7 @@ def main(argv=None):
         if n_debris:
             print("")
             print(
-                "부스러기(T2) %d개 — 커밋을 막지는 않는다. 코웍 마운트가 git 의 "
+                "부스러기(T2) %d개 - 커밋을 막지는 않는다. 코웍 마운트가 git 의 "
                 "unlink 를 막아 쌓인 것이다. 삭제 권한이 있는 쪽(Windows)에서 "
                 "`--reclaim` 으로 치운다." % n_debris
             )
@@ -395,7 +470,7 @@ def main(argv=None):
         if n_hold:
             print("")
             print(
-                "⚠ 판정보류가 있다 — **지우지 말 것**. 실행 중인 git 일 수 있다. "
+                "[!] 판정보류가 있다 - **지우지 말 것**. 실행 중인 git 일 수 있다. "
                 "몇 분 뒤 재판정하라."
             )
 
