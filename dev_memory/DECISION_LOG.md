@@ -46580,3 +46580,59 @@ loader_is_safe_before_phase3 — GP 도전자 등록으로 wired=True 가 된 �
 - 남은 불일치(이번 범위 밖): 자동 복원 상한(`dib_safe_size`, 150% 화면 약 2.0M px)과 수동 조정
   상한(3000×2000 = 6M px)이 다르다. 통일은 DIB 예산 재산정이 필요한 별건.
 - 768px 세로 보조모니터(DISPLAY3)에는 버튼 줄(약 880·S)이 안 들어간다 — FlowLayout 은 별건.
+
+## 2026-09-24 (MW0601 630차 — 줄끝 규칙을 저장소 안으로 + 가드가 못 보던 잠금: 「오염 759개」는 오판이었다)
+
+**배경**: 코웍 세션이 futures 의 「수정됨 626개」를 LF 오염으로 보고했다가 정정했다. 실제로는
+**두 git 이 다른 자로 재고 있었다** — Windows git 은 시스템 gitconfig 의 `core.autocrlf=true` 로
+CRLF 를 LF 로 환산해 비교하고, 마운트 git 은 미설정이라 날것으로 비교한다. 10개 저장소 전부
+로컬 설정 없음, options 만 `.gitattributes`(2026-08-19) 보유.
+
+**실측 (Windows 에서, 마운트 관점은 `hash-object` 로 재현)**:
+- 마운트 관점 줄끝 잡음: futures 617 · pykrx 661 · fuoption 482 · auto_trader_kiwoom 264 ·
+  backtest 76 · hot_theme 31 · **options 0** (대조군 — 처방이 효과 있다는 증거).
+- 🔴 **위험한 쪽은 Windows 에서 깨끗하게 보였다.** 스케줄러가 매일 돌리는 `.bat` 14개가 LF
+  (Messiah 4 · hot_theme/tod/wfa · naver_theme 등). autocrlf 가 차이를 가려 줬다. 그중
+  `hot_theme_hanryangi/scripts/schedule_hot_theme_bootstrap_eod.bat` 은 LF + `goto` 레이블 +
+  3929바이트 — cmd 의 LF 레이블 탐색 결함(512바이트 경계)에 노출돼 있었다.
+- MIXED 14개(작업 트리만, 인덱스 `i/mixed` 0). BOM 없는 UTF-8 `.ps1` + 한글 3개.
+- 모든 저장소 인덱스 `i/crlf` 0 → `--renormalize` 커밋 불필요.
+- 가드 `--all` 이 futures·options 를 「OK」로 보고 — 그런데 `objects/maintenance.lock`(9/17·9/20)
+  과 `.git/_stale_20260920/` 안의 잠금·tmp_obj 가 남아 있었다. 가드의 스캔 범위 밖이었다.
+- `git_lock_guard.py --help` 가 cp949 콘솔에서 크래시 — UTF-8 재구성이 `parse_args()` 뒤에 있었다.
+- fuoption 사본은 294줄 구버전으로 갈라져 있었다(형제 동일성 테스트 실패 상태). 두 사본이 같은
+  cp949 사고를 **서로 다른 방식으로** 고쳐 두었다.
+
+**결정·구현**:
+- P1 가드(`feb948a`, `9eee847` / fuoption `8368bfb`): `objects/maintenance.lock`·`_stale_*/` 를
+  TIER2 로(종료코드 무변경), 회수 후 빈 `_stale_*` 폴더 삭제. `_ensure_utf8_console()` 를
+  `main()` 첫 줄로(fuoption 계약과 통합), 출력 리터럴의 「—」「⚠」 → cp949 안전 문자.
+  ruff-format 결과를 정본에 반영해 두 사본 바이트 동일. 617차 `_force_remove` 와 사료 송신 사후
+  `--reclaim` 도 함께 커밋. 테스트: futures test_483·606 29건, fuoption tests/ops 18건 통과.
+  실행: 잔존물 **58건 회수**(futures 48 · options 10 — 잠금 5 + tmp_obj 53).
+- P2 `.gitattributes` 7개 저장소(hot_theme `36b8191` · fuoption `de19507` · auto_trader_kiwoom
+  `fb13bdf` · backtest `017c49a` · futures `6317bf0` · PART1 `8f43efd` · pykrx `42db18e`).
+  options 규칙 + `*.ps1 text eol=crlf`. **`.gitattributes` 한 파일만 커밋** — 미커밋 작업 무접촉.
+  디스크 교정 40파일(LF `.bat`/`.ps1` → CRLF, MIXED → LF, 내용 불변). 교정 전 실행 중 `.bat` 0개
+  확인(cmd 는 배치를 바이트 오프셋으로 읽는다 — 실행 중에 줄끝을 바꾸면 엉뚱한 줄로 튄다).
+- P3 BOM: `auto_trader_kiwoom/scripts/reregister_permission_tasks.ps1`(`848ad57`) ·
+  `backtest_hanryangi/scripts/update_scheduler_portable.ps1`(`7c7861d`) ·
+  `futures/scripts/close_other_windows.ps1`(`e043d5b`).
+- P4 futures·options: `gc.auto 0`, `maintenance.auto false`(로컬 config). 유지보수는 사람이
+  Windows 에서 가끔 `git gc`. 읽기 git `--no-optional-locks` 는 SKILL.md 「git 호출 규약」에 이미 있음.
+- P5 미완: 묵은 클론 `futures - 260630_MW0602`(5.2GB, 06-15) · `futures - 키움버전`(05-09)을
+  PycharmProjects 밖으로 옮기는 이동이 권한 정책에 막혔다. 참조처 없음 확인. 사용자 수동 조치.
+
+**검증**: 마운트 관점 줄끝 잡음 **7개 저장소 전부 0**. 줄끝 스캔 LF `.bat` 0 · MIXED 0(대상 저장소).
+Windows `git status` 수정 개수 배포 전과 동일, 스테이징된 내용 0.
+
+**미해명 단서**: 회수한 `_stale_20260920/tmp_obj_*` 중 38개의 mtime 이 오늘 17:4x 였다. 저장소 안
+어떤 코드도 `_stale_` 로 옮기지 않는다 → 코웍 세션이 쓰기 git 후 손으로 옮긴 것으로 추정.
+같은 시각 사료 송신(17:41·17:51)은 「변경 없음」.
+
+**How to apply**:
+- 새 저장소를 만들면 `.gitattributes` 부터 넣는다(정본: 이 저장소 루트).
+- `.bat`/`.ps1` 을 파이썬·에이전트로 쓰면 LF 로 나온다 — git 이 커밋 시 CRLF 로 바꾸지만 **디스크는
+  체크아웃 전까지 LF 다.** 스케줄러가 돌리는 배치를 고친 뒤엔 CRLF 로 저장할 것.
+- 한글이 든 `.ps1` 은 UTF-8 BOM 으로 저장.
+- 코웍 마운트에서 쓰기 git 금지(`peter_feed_push.py` 만 예외, 사후 `--reclaim` 유지).
