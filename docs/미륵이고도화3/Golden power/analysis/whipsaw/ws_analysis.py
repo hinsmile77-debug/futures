@@ -8,20 +8,22 @@ import numpy as np, pandas as pd
 np.set_printoptions(suppress=True)
 pd.set_option('display.width', 250); pd.set_option('display.max_columns', 40); pd.set_option('display.max_rows', 200)
 HERE = os.path.dirname(os.path.abspath(__file__))
+CACHE = os.path.join(os.path.dirname(HERE), 'GP_test')   # [MW0601 631차] pkl/npy 캐시 — 커밋 제외(GP_test/.gitignore)
+os.makedirs(CACHE, exist_ok=True)
 H = 180; N = 20; BAD = {"2026-05-13"}; COST = 0.246018; LVL = 0.5
 rng = np.random.default_rng(553)
 
-c = pd.read_pickle(HERE + '/candles.pkl')
+c = pd.read_pickle(CACHE + '/candles.pkl')
 c['dt'] = pd.to_datetime(c.ts); c['s'] = c.dt.dt.strftime('%Y-%m-%d'); c['hhmm'] = c.dt.dt.strftime('%H:%M')
 c = c[(c.hhmm >= '09:00') & (c.hhmm <= '15:08')].sort_values('dt').drop_duplicates('dt')
-F = pd.read_pickle(HERE + '/feats.pkl'); F['dt'] = pd.to_datetime(F.ts).dt.floor('min'); F = F.drop_duplicates('dt').set_index('dt')
+F = pd.read_pickle(CACHE + '/feats.pkl'); F['dt'] = pd.to_datetime(F.ts).dt.floor('min'); F = F.drop_duplicates('dt').set_index('dt')
 # [559차 P0-2] 종전 로컬 inv() 는 클립조차 없어 압축 이전 단위 4일에서 inf 가 됐다.
 sys.path.insert(0, os.path.dirname(HERE))
 from inv_unit_guard import invert_investor_log1p  # noqa: E402
 INV = ['foreign_futures_net','retail_futures_net','institution_futures_net','foreign_call_net','foreign_put_net','program_arb_net','program_non_arb_net']
 _sup = F['quality_investor_supported'].values if 'quality_investor_supported' in F.columns else None
 for k in INV: F[k + '_raw'] = invert_investor_log1p(F[k].values, _sup, F.index.astype(str), name=k)
-L = pd.read_pickle(HERE + '/divpanel.pkl')
+L = pd.read_pickle(CACHE + '/divpanel.pkl')
 
 # ── 세션 패널 ──────────────────────────────────────────────
 parts, fwds, dropped = [], [], []
@@ -132,7 +134,7 @@ def ret_from(k, h):
 for h in (10, 30, 60, 90): S['c2_r%d' % h] = ret_from(2, h)
 S['c1_r90'] = ret_from(1, 90)
 S['half'] = np.where(S.s < sorted(S.s.unique())[len(S.s.unique()) // 2], 1, 2)
-S.to_pickle(HERE + '/signals.pkl'); D.to_pickle(HERE + '/panel.pkl')
+S.to_pickle(CACHE + '/signals.pkl'); D.to_pickle(CACHE + '/panel.pkl')
 
 case = S[(S.s == '2026-09-10') & (S.hhmm == '09:22')]
 print('\n=== 2026-09-10 09:22 사례 ===')

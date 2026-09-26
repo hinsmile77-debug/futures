@@ -13,6 +13,8 @@ ROOT = 'C:/Users/82108/PycharmProjects/futures'
 if not os.path.isdir(ROOT):
     ROOT = os.path.expanduser('~/mnt/futures')
 HERE = os.path.dirname(os.path.abspath(__file__))
+CACHE = os.path.join(os.path.dirname(HERE), 'GP_test')   # [MW0601 631차] pkl/npy 캐시 — 커밋 제외(GP_test/.gitignore)
+os.makedirs(CACHE, exist_ok=True)
 sys.path.insert(0, os.path.dirname(HERE))          # [559차 P0-2] analysis/ 를 임포트 경로에
 from inv_unit_guard import invert_investor_log1p   # noqa: E402  단위 불일치 가드
 RAW = os.path.join(ROOT, 'data/db/raw_data.db')
@@ -49,7 +51,7 @@ _sup = F['quality_investor_supported'].values if 'quality_investor_supported' in
 for k in INV:
     F[k + '_raw'] = invert_investor_log1p(F[k].values, _sup, F.index.astype(str), name=k)
 
-L = pd.read_pickle(os.path.join(HERE, 'divpanel_full.pkl'))
+L = pd.read_pickle(os.path.join(CACHE, 'divpanel_full.pkl'))
 L = L[['fi_fut', 'rt_fut', 'inst_fut', 'fi_call', 'rt_call', 'fi_put', 'rt_put']]
 
 parts, fwds, dropped = [], [], []
@@ -131,7 +133,7 @@ S['ret15'] = S.close.values - lag('close', 15)
 S['gb1'] = lead('gb', 1); S['gb2'] = lead('gb', 2)
 S['cl1'] = lead('close', 1); S['cl2'] = lead('close', 2)
 
-D.to_pickle(os.path.join(HERE, 'panel.pkl'))
-S.reset_index(drop=True).to_pickle(os.path.join(HERE, 'signals.pkl'))
-np.save(os.path.join(HERE, 'fwd.npy'), FWD)
+D.to_pickle(os.path.join(CACHE, 'panel.pkl'))
+S.reset_index(drop=True).to_pickle(os.path.join(CACHE, 'signals.pkl'))
+np.save(os.path.join(CACHE, 'fwd.npy'), FWD)
 print('[save] panel/signals/fwd  %.1fs' % (time.time() - t0))

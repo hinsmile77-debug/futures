@@ -1,0 +1,5 @@
+# [MW0601 631차] GP 분석 캐시 — 파일은 남기고 git 미추적 목록에서만 숨긴다.
+# whipsaw/*.py 가 CACHE = ../GP_test 로 읽고 쓴다. 전부 재생성 가능:
+#   raw_data.db → extract_ws.py / logs(+월별 zip) → parse_logs2.py → rebuild_panel.py
+*
+!.gitignore
