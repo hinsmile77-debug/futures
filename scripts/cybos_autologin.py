@@ -166,6 +166,12 @@ CYBOS_PLUS_MENU_CANDIDATE_TEXTS = {
     u"CREON PLUS", u"CREON Plus", u"CREON", u"CREON Trader",
 }
 LOGIN_BUTTON_TEXTS    = {u"로그인", u"모의투자 로그인", u"모의투자로그인", u"확 인", u"확인", u"ENTER", u"enter"}
+
+# "프로그램(XXX.EXE)이 이미 실행중입니다 … 종료하시겠습니까?" 다이얼로그 판별 문구.
+# exe 이름으로 판별하지 않는다 — 같은 다이얼로그가 경로마다 다른 이름을 달고 나온다
+# (CREON=COMAIN.EXE / CYBOS=CPSTART.EXE, 2026-09-17 MW0601 장전 실측).
+# 공백 변형("이미 실행중"/"이미실행 중")을 흡수하려고 공백 제거 후 비교한다.
+ALREADY_RUNNING_DIALOG_PHRASES = (u"이미실행", u"종료하시겠습니까")
 PASSWORD_DIALOG_CONFIRM_TEXTS = {u"확인", u"예", u"Yes", u"OK"}
 MOCK_ACCESS_BUTTON_TEXTS = {
     u"모의투자\r\n접속", u"모의투자\n접속", u"모의투자접속",
@@ -1164,15 +1170,28 @@ def _dismiss_error_dialogs():
 
 # -- 창 탐지 --------------------------------------------------------------------
 
+def _is_already_running_text(text):
+    """'…이 이미 실행중입니다 … 종료하시겠습니까?' 다이얼로그 문구인가.
+
+    exe 이름에 의존하지 않는다. 2026-09-17 장전에 CYBOS 경로가 이 판별에서 막혔는데,
+    원인이 "COMAIN" 하드코딩이었다 — 실제 문구는 'CPSTART.EXE'였다.
+    """
+    if not text:
+        return False
+    flat = u"".join(text.split())
+    return any(p in flat for p in ALREADY_RUNNING_DIALOG_PHRASES)
+
+
 def _find_login_window_once():
     """정확한 제목 일치로 로그인 창 탐지.
 
-    주의: 'CREON Starter' 제목의 COMAIN.EXE 실행중 다이얼로그가 같은 제목을 가짐.
+    주의: 'CYBOS Starter'/'CREON Starter' 제목의 "이미 실행중" 다이얼로그가 로그인 창과
+    같은 제목을 가짐(CYBOS=CPSTART.EXE / CREON=COMAIN.EXE — exe 이름이 갈린다).
     이 경우 Afx 패널이 없고 '예(Y)'/'아니요(N)' 버튼만 존재 → 감지 후 '예' 클릭하고 None 반환.
     """
     SKIP_CLASSES = {"Shell_TrayWnd", "CabinetWClass", "ExploreWClass", "ShellTabWindowClass"}
     result = [None]
-    comain_hwnd = [None]
+    already_hwnd = [None]
 
     def _enum(hwnd, _):
         if result[0]:
@@ -1184,7 +1203,7 @@ def _find_login_window_once():
                 return
             if win32gui.GetWindowText(hwnd) not in LOGIN_WINDOW_TITLES:
                 return
-            # 자식 컨트롤 열거해서 COMAIN 다이얼로그인지 판별
+            # 자식 컨트롤 열거해서 "이미 실행중" 다이얼로그인지 판별
             children = []
             def _ec(c, __):
                 children.append(c)
@@ -1193,13 +1212,13 @@ def _find_login_window_once():
             except Exception:
                 pass
             has_afx = any("Afx" in (win32gui.GetClassName(c) or "") for c in children)
-            has_comain = any(
-                "COMAIN" in (win32gui.GetWindowText(c) or "").upper()
+            has_already_running = any(
+                _is_already_running_text(win32gui.GetWindowText(c))
                 for c in children
             )
-            if has_comain and not has_afx:
-                # COMAIN.EXE "이미 실행중" 다이얼로그 - 로그인 창 아님
-                comain_hwnd[0] = hwnd
+            if has_already_running and not has_afx:
+                # "이미 실행중" 다이얼로그 - 로그인 창 아님
+                already_hwnd[0] = hwnd
                 return
             result[0] = hwnd
         except Exception:
@@ -1210,10 +1229,10 @@ def _find_login_window_once():
     except Exception:
         pass
 
-    # COMAIN.EXE 다이얼로그 감지 시 '예(Y)' 버튼 클릭
-    if comain_hwnd[0] and not result[0]:
-        _chw = comain_hwnd[0]
-        print("[INFO] COMAIN.EXE 실행중 다이얼로그 감지 hwnd=%d -- '예(&Y)' 클릭" % _chw)
+    # "이미 실행중" 다이얼로그 감지 시 '예(Y)' 버튼 클릭
+    if already_hwnd[0] and not result[0]:
+        _chw = already_hwnd[0]
+        print("[INFO] '이미 실행중' 다이얼로그 감지 hwnd=%d -- '예(&Y)' 클릭" % _chw)
         yes_found = [False]
         def _click_yes(c, __):
             if yes_found[0]:
@@ -1224,7 +1243,7 @@ def _find_login_window_once():
                 if cn == "Button" and "예" in t:
                     win32gui.PostMessage(c, win32con.BM_CLICK, 0, 0)
                     yes_found[0] = True
-                    print("[INFO] COMAIN.EXE 다이얼로그 '예' 클릭 완료")
+                    print("[INFO] '이미 실행중' 다이얼로그 '예' 클릭 완료")
             except Exception:
                 pass
         try:
@@ -1235,7 +1254,7 @@ def _find_login_window_once():
             # fallback: WM_CLOSE
             try:
                 win32gui.PostMessage(_chw, win32con.WM_CLOSE, 0, 0)
-                print("[INFO] COMAIN.EXE 다이얼로그 WM_CLOSE 전송")
+                print("[INFO] '이미 실행중' 다이얼로그 WM_CLOSE 전송")
             except Exception:
                 pass
         time.sleep(0.8)
