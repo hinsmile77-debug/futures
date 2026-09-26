@@ -1,0 +1,6 @@
+# 런타임 산출물 — 커밋 금지 (feedback_git_commit_scope)
+# candles.pkl 은 raw_candles 사본, FWD.npy 는 68MB 전방행렬이다.
+# 재현: extract.py (장 마감 후) → step*.py 순서대로.
+*.pkl
+*.npy
+__pycache__/
