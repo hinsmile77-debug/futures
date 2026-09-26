@@ -22157,3 +22157,31 @@ docs/정기점검/매일점검/evidence_MW0601-20260826_post.md
 - [ ] F-5 런처 안전망 보강 · F-6 마감작업 생존 의존성 — 주간회의 안건(604차 후속2 등록분, 변동 없음).
 
 - [ ] **624-6** 2026-09-23 전체 스위트 신규 실패 5건(이번 변경 무관, 당일 타 작업 유래 추정): test_457(peter_paste 폴백 플래그) · test_498(CybosInvestor 대사로그 RECON_INVENTORY 미등록) · test_493(generate_validation_campaign_report.py:7931 라이브 요율) · test_477(step9 batch placeholder) · test_621(force_taskbar_button offscreen). 각 소유 세션 확인 후 수정.
+
+## 2026-09-26 (MW0601 631차 — 휴장일 점검)
+- [ ] **631-1** 9/28(월) 첫 기동 `FaultHandler 활성화 → DB 초기화 완료` 간격 확인(재부팅 직후면 특히). 20초 초과 시 1-1 재현.
+- [ ] **631-2 (F-1)** `utils/db_utils.py:_migrate_predictions_db()` 역채움 UPDATE를 1회 마커(`PRAGMA user_version` 등)로 건너뛰기 — 매 기동 454MB 풀스캔 제거.
+- [ ] **631-3 (F-2)** `init_all_dbs()` 단계별 소요시간 `[DBInit]` 로그(계측 4원칙 ④).
+- [ ] **631-4 (F-3)** 미륵이 런처 STEP 4: 자동로그인 스크립트 실행 중이면 준비 판정 보류.
+- [ ] **631-5 (F-4)** `collect_evidence.py` §11 영업일 판정 — 휴장일 가짜 동결 경보 제거.
+
+## 2026-09-26 (MW0601 632차 — 장중 재점검)
+- [ ] **632-1** `scripts/collect_evidence.py` 실행 중 `.git/index.lock`이 0.1분(약 6초) 생성됐다 자연 해소된 경로 특정 — 어느 내부 호출이 `--no-optional-locks` 없이 인덱스에 쓰는지 grep으로 확인 (P2, 장후 또는 여유 있을 때).
+- [ ] **632-2** 미륵이 점검 예약작업(장중)이 같은 날 약 20분 간격으로 두 번 발화된 것으로 관측됨 — 트리거 설정 확인 필요(코드 사안 아님, 운영 사안. 사용자 확인 권장).
+
+## 2026-09-26 (MW0601 631차 후속 — 장후)
+- [ ] **631-6 (F-4 범위확장)** `collect_evidence.py` §11 적신호 생성부를 `--phase` 무관 영업일 게이트로 — 휴장일이면 8개 규칙 전부 생략, "휴장일" 배너만 출력. 631-1~631-5(장중 등록분)는 변경 없음.
+- [ ] **631-6** 미커밋 3건 커밋 권고(사용자 결정) — 되돌리면 캐시(`roll_adj` 262건) TypeError + 0917 자동로그인 결함 부활. 두 커밋 분리. 근거: 0926 리포트 추기.
+- [ ] **631-7** `premarket_levels.compute_manual()` 에 `roll_adj` 전달 누락 — `ROLL_POLICY=adjust` 켜기 전 수정.
+- [ ] **631-8** `cybos_autologin._is_already_running_text()` any → "이미실행" 필수로 축소(오탐 여지 제거).
+- [ ] **631-9** dev 이식 결정(사용자): `723c208` 은 무충돌 적용 가능(권고) · `46f3ee7` 은 충돌 3곳 + dev 에 roll_days 라벨 배치 없음 → 보류 권고. `v9-dev` push 여부도 함께.
+- [ ] **631-10 (F-1a, 1순위)** `_migrate_predictions_db()` 역채움 UPDATE 앞에 부분 인덱스 `idx_pred_prob_null`(WHERE 세 확률 IS NULL) — 복사본 실측 UPDATE 0.6s→0.0000s, 생성 1회 6.3s. 631-2(user_version 마커안)를 대체.
+- [ ] **631-11 (F-5)** 초기화 중 런처 콘솔에 `[BOOT] DB 초기화 중…` 진행 표시 — 0926 사용자가 "안 올라온다"고 판단해 수동 종료.
+- [ ] **631-12 (F-6/F-7/F-8)** 자동로그인: 재시도 직전 `_is_connected()` 재확인 · kill 실패 가시화 · diag 줄별 시각. F-6은 모의 리허설 1회 후.
+- [ ] **631-13 (F-3/F-3b)** 런처 STEP 4: autologin 락 대기 + IsConnect 연속 10초 유지 판정.
+- [ ] **631-14 (F-4/G-1)** 스킬 폴더 `collect_evidence.py`에 `config/krx_holidays.py`(파일경로 로드) 휴장일 판정 — FZ-6·480차 규칙 스킵 + 배너.
+- [x] **631-10/11** F-1a·F-2·F-5 구현 `95eb59d` — 9/28 첫 기동 `[DBInit] 합계` 1초대 확인 대기
+- [x] **631-12** F-6·F-7·F-8 구현 `4aecc7f` — 라이브 리허설 미실시(다음 LAUNCH_API 진단 로그 시각 확인)
+- [x] **631-13** F-3·F-3b 구현 `bc81108` — 라이브 연결 상태 rc=0 확인(11.8s)
+- [x] **631-14** F-4 구현 `44c0a71` — 영업일 출력 불변 확인
+- [ ] **631-15** `tests/test_458_p0_quiet_window.py:163` 이 운영 DB 경로로 `init_all_dbs()` 를 호출한다 — 임시 DB_DIR 로 격리할 것(2026-09-26 이 테스트가 운영 predictions.db 에 색인을 만들었다; 이번엔 무해).
