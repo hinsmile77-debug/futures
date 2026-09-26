@@ -193,12 +193,8 @@ def wait_for_connect(timeout_sec, interval_sec=5):
     stable_since = None
     while True:
         busy = autologin_in_progress()
-        connected = False
-        try:
-            cp = win32com.client.Dispatch("CpUtil.CpCybos")
-            connected = int(cp.IsConnect) == 1
-        except Exception:
-            pass                      # 미연결 구간의 COM 예외는 정상 상황
+        # [631차 딥다이브2] 자동로그인 진행 중에는 묻지도 않는다 — 곧 교체될 인스턴스다.
+        connected = (not busy) and probe_connected()
         if connected and not busy:
             if stable_since is None:
                 stable_since = time.time()
@@ -224,6 +220,31 @@ def wait_for_connect(timeout_sec, interval_sec=5):
             last_report = elapsed
         step = 1.0 if stable_since is not None else interval_sec
         time.sleep(min(step, max(0.1, remain)))
+
+
+_CONNECT_PROBE = ("import sys, win32com.client as w\n"
+                  "try:\n"
+                  "    sys.exit(0 if w.Dispatch('CpUtil.CpCybos').IsConnect == 1 else 1)\n"
+                  "except Exception:\n"
+                  "    sys.exit(2)\n")
+
+
+def probe_connected():
+    """IsConnect==1 인가 — **매번 새 프로세스에서** 묻는다.
+
+    [MW0601 631차 딥다이브2] 한 프로세스가 CpUtil.CpCybos 를 붙든 뒤 Cybos 인스턴스가
+    교체되면 그 프로세스는 옛 인스턴스를 계속 봐서 영원히 0 을 읽는다
+    (2026-09-26 16:14–16:21 자동로그인 3연속 「실패」 — 실제로는 매번 로그인 성공).
+    """
+    try:
+        import subprocess
+        rc = subprocess.call([sys.executable, "-c", _CONNECT_PROBE],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                             timeout=20)
+        return rc == 0
+    except Exception:
+        return False
 
 
 STABLE_SEC = 10

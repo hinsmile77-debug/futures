@@ -528,12 +528,36 @@ def _force_foreground(hwnd):
 
 # -- 기본 유틸 ------------------------------------------------------------------
 
+_CONNECT_PROBE = ("import sys, win32com.client as w\n"
+                  "try:\n"
+                  "    sys.exit(0 if w.Dispatch('CpUtil.CpCybos').IsConnect == 1 else 1)\n"
+                  "except Exception:\n"
+                  "    sys.exit(2)\n")
+
+
 def _is_connected():
+    """연결 여부 — **매번 새 프로세스에서** 묻는다.
+
+    [MW0601 631차 딥다이브2] 이 프로세스 안에서 `CpUtil.CpCybos` 를 한 번 붙들면,
+    그 뒤 Cybos 인스턴스가 교체돼도(재시도의 "이미 실행중 → 예") 옛 인스턴스를 계속
+    바라봐 **영원히 IsConnect=0** 을 읽는다. 2026-09-26 16:14–16:21 실측: 세 시도 모두
+    로그인 성공(공지사항 창 출현)했는데 전부 120초 타임아웃 → 다음 시도가 성공한 세션을
+    죽였다(DibServer 소켓 종료 16:16:40·16:19:06). 같은 시각 새 프로세스는 IsConnect=1.
+    오전 10:19 실패도 같은 모양이다. 옛 Cybos 가 없던 기동(10:26·10:34)만 성공했다.
+    """
     try:
-        cp = win32com.client.Dispatch("CpUtil.CpCybos")
-        return cp.IsConnect == 1
+        rc = subprocess.call(
+            [sys.executable, "-c", _CONNECT_PROBE],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=20)
+        return rc == 0
     except Exception:
-        return False
+        # 새 프로세스를 못 띄우면 종전 방식으로라도 본다(판정 불가보다는 낫다)
+        try:
+            cp = win32com.client.Dispatch("CpUtil.CpCybos")
+            return cp.IsConnect == 1
+        except Exception:
+            return False
 
 
 def _load_credential():

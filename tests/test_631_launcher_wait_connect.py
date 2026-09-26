@@ -55,6 +55,8 @@ def _fake_com(monkeypatch, is_connect):
     pkg.client = client
     monkeypatch.setitem(sys.modules, "win32com", pkg)
     monkeypatch.setitem(sys.modules, "win32com.client", client)
+    # [딥다이브2] 연결 확인은 새 프로세스로 한다 — 테스트에서는 그 함수를 가짜 COM 값에 묶는다
+    monkeypatch.setattr(C, "probe_connected", lambda: cp.IsConnect == 1)
     return cp
 
 
@@ -98,3 +100,19 @@ def test_autologin_wraps_lock_for_module_callers():
     src = io.open(os.path.join(_ROOT, "scripts", "cybos_autologin.py"), encoding="utf-8").read()
     fn = src[src.index("def autologin():"):src.index('if __name__ == "__main__":')]
     assert "_lock_acquire()" in fn and "_lock_release()" in fn and "finally:" in fn
+
+
+def test_probe_runs_in_fresh_process():
+    """[딥다이브2] 한 프로세스 안에서 CpCybos 를 반복 조회하면 인스턴스 교체 후 영원히 0 을 읽는다."""
+    for rel in ("scripts/check_cybos_account.py", "scripts/cybos_autologin.py"):
+        src = io.open(os.path.join(_ROOT, rel), encoding="utf-8").read()
+        assert "_CONNECT_PROBE" in src and "sys.executable" in src, rel
+    src = io.open(os.path.join(_ROOT, "scripts", "check_cybos_account.py"), encoding="utf-8").read()
+    loop = src[src.index("def wait_for_connect"):src.index("def probe_connected")]
+    assert 'Dispatch("CpUtil.CpCybos")' not in loop, "대기 루프가 다시 같은 프로세스에서 COM 을 붙든다"
+    assert "(not busy) and probe_connected()" in loop
+
+
+def test_probe_connected_live_smoke():
+    """실제 새 프로세스 경로가 예외 없이 bool 을 돌려준다(연결 여부 무관)."""
+    assert C.probe_connected() in (True, False)
