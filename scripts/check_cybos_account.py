@@ -183,27 +183,79 @@ def wait_for_connect(timeout_sec, interval_sec=5):
         sys.stdout.write("[WAIT] pywin32 임포트 실패: %s\n" % exc)
         return EXIT_COM_ERROR
 
+    # [MW0601 631차 F-3·F-3b] 두 조건을 더한다.
+    #   ① 자동로그인(cybos_autologin.py)이 진행 중이면 IsConnect=1 이어도 출발하지 않는다
+    #      — 재시도가 그 세션을 곧 죽일 수 있다(2026-09-26 10:21:59 실측 경위).
+    #   ② IsConnect=1 이 STABLE_SEC 동안 **연속 유지**돼야 통과한다 — 한 번 본 1 은
+    #      로그인 직후의 순간일 수 있다.
     deadline = time.time() + max(0, timeout_sec)
     last_report = -1
+    stable_since = None
     while True:
+        busy = autologin_in_progress()
+        connected = False
         try:
             cp = win32com.client.Dispatch("CpUtil.CpCybos")
-            if int(cp.IsConnect) == 1:
-                return EXIT_OK
+            connected = int(cp.IsConnect) == 1
         except Exception:
             pass                      # 미연결 구간의 COM 예외는 정상 상황
+        if connected and not busy:
+            if stable_since is None:
+                stable_since = time.time()
+            if time.time() - stable_since >= STABLE_SEC:
+                sys.stdout.write("[WAIT] 연결 %d초 연속 유지 확인\n" % STABLE_SEC)
+                return EXIT_OK
+        else:
+            stable_since = None
         remain = deadline - time.time()
         if remain <= 0:
+            if busy:
+                sys.stdout.write("[WAIT] 자동로그인이 %d초 안에 끝나지 않았다\n" % timeout_sec)
             return EXIT_NOT_CONNECTED
         elapsed = int(timeout_sec - remain)
         if elapsed - last_report >= 30 or last_report < 0:
             sys.stdout.write(
-                "[WAIT] Cybos 연결 대기 중... %d/%d초 "
-                "(LAUNCH_API.bat 로그인 진행 중일 수 있음)\n" % (elapsed, timeout_sec)
+                "[WAIT] Cybos 연결 대기 중... %d/%d초 (%s)\n" % (
+                    elapsed, timeout_sec,
+                    "자동로그인 진행 중 — 끝날 때까지 출발하지 않음" if busy
+                    else "LAUNCH_API.bat 로그인 진행 중일 수 있음")
             )
             sys.stdout.flush()
             last_report = elapsed
-        time.sleep(min(interval_sec, max(0.1, remain)))
+        step = 1.0 if stable_since is not None else interval_sec
+        time.sleep(min(step, max(0.1, remain)))
+
+
+STABLE_SEC = 10
+AUTOLOGIN_LOCK = os.path.join(_ROOT, "data", "autologin.lock")
+AUTOLOGIN_LOCK_MAX_AGE = 15 * 60   # 자동로그인 최악 약 7분(3회 × 140초) — 그 두 배를 넘으면 스테일
+
+
+def _pid_alive(pid):
+    try:
+        import psutil
+        return psutil.pid_exists(int(pid))
+    except ImportError:
+        return None        # 판정 불가 — 나이로만 본다
+    except Exception:
+        return False
+
+
+def autologin_in_progress(path=None, now=None):
+    """자동로그인 락이 살아 있는가. 없음·깨짐·PID 사망·15분 초과는 모두 False(스테일)."""
+    path = path or AUTOLOGIN_LOCK
+    now = time.time() if now is None else now
+    try:
+        import json
+        with open(path, "rb") as f:
+            d = json.loads(f.read().decode("utf-8"))
+        pid, started = int(d["pid"]), float(d["started"])
+    except Exception:
+        return False
+    if now - started > AUTOLOGIN_LOCK_MAX_AGE:
+        return False
+    alive = _pid_alive(pid)
+    return True if alive is None else bool(alive)
 
 
 def main(argv=None):

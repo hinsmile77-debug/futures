@@ -2060,7 +2060,7 @@ def _wait_for_connection_realmode(total_timeout=120):
 
 # -- 메인 -----------------------------------------------------------------------
 
-def autologin():
+def _autologin_impl():
     if _is_connected():
         print("[INFO] CybosPlus 이미 연결됨 -- 로그인 생략")
         return True
@@ -2165,6 +2165,42 @@ def autologin():
 
     print("[ERROR] Auto-login failed.")
     return False
+
+
+# [MW0601 631차 F-3] 진행 중 표시. 미륵이 런처(check_cybos_account.py --wait-connect)가
+# 이 파일이 살아 있는 동안은 IsConnect=1 을 봐도 출발하지 않는다 — 재시도가 그 세션을
+# 곧 죽일 수 있기 때문이다(2026-09-26 10:21:59). PID 가 죽었으면 런처가 스테일로 무시한다.
+AUTOLOGIN_LOCK = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "autologin.lock")
+
+
+def _lock_acquire():
+    try:
+        import json as _json
+        with io.open(AUTOLOGIN_LOCK, "w", encoding="utf-8") as f:
+            f.write(u"%s" % _json.dumps({"pid": os.getpid(), "started": time.time()}))
+    except Exception as e:
+        print("[WARN] autologin.lock 생성 실패(런처 대기 안 됨): %s" % e)
+
+
+def _lock_release():
+    try:
+        os.remove(AUTOLOGIN_LOCK)
+    except Exception:
+        pass
+
+
+def autologin():
+    """자동로그인 — 진행 중 락(F-3)을 잡고 본체를 돈다.
+
+    `scripts/ensure_cybos_login.py` 처럼 모듈로 불러 쓰는 경로도 같은 락을 잡도록
+    `__main__` 이 아니라 여기서 감싼다.
+    """
+    _lock_acquire()
+    try:
+        return _autologin_impl()
+    finally:
+        _lock_release()
 
 
 if __name__ == "__main__":
