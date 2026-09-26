@@ -169,8 +169,11 @@ $body = @(
     "REM  Schedule: $Time Mon-Fri"
     'REM ============================================================'
     ''
-    'REM 1) close the app  (no live session at this hour)'
-    'taskkill /IM claude.exe /F >nul 2>&1'
+    'REM 1) close the Claude DESKTOP app only  (no live session at this hour)'
+    'REM    [631] was: taskkill /IM claude.exe /F  - that also killed the VS Code'
+    'REM    Claude Code extension, whose binary is also named claude.exe.'
+    'REM    Now only processes under WindowsApps\Claude_* (the MSIX desktop app).'
+    'powershell -NoProfile -Command "Get-Process -Name claude -ErrorAction SilentlyContinue | Where-Object { $_.Path -like ''*\WindowsApps\Claude_*'' } | Stop-Process -Force" >nul 2>&1'
     'timeout /t 5 /nobreak >nul'
     ''
     'REM 2) relaunch -> forces updater "initial check and auto-updates"'
