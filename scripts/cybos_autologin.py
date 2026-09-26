@@ -31,9 +31,15 @@ if hasattr(sys.stderr, "buffer") and getattr(sys.stderr, "encoding", "").lower()
 
 
 class _TeeStream(object):
-    """stdout을 콘솔과 파일에 동시 기록 (진단 로그)"""
+    """stdout을 콘솔과 파일에 동시 기록 (진단 로그)
+
+    [MW0601 631차 F-8] 파일 쪽에만 줄머리 `HH:MM:SS ` 를 붙인다. 2026-09-26 자동로그인
+    재시도와 미륵이 런처의 선후를 초 단위로 맞출 수 없었다 — 이 로그는 기동 시각 한 줄
+    (`=== autologin start`)뿐이었다. 콘솔 출력은 종전 그대로.
+    """
     def __init__(self, original, log_path):
         self._orig = original
+        self._bol = True     # 파일 쪽이 줄 시작 위치인가
         try:
             log_dir = os.path.dirname(log_path)
             if log_dir and not os.path.exists(log_dir):
@@ -50,10 +56,23 @@ class _TeeStream(object):
             pass
         if self._f:
             try:
-                self._f.write(data)
+                self._f.write(self._stamp(data))
                 self._f.flush()
             except Exception:
                 pass
+
+    def _stamp(self, data):
+        if not data:
+            return data
+        import datetime as _dtm
+        ts = _dtm.datetime.now().strftime("%H:%M:%S ")
+        out = []
+        for piece in data.splitlines(True):
+            if self._bol:
+                out.append(ts)
+            out.append(piece)
+            self._bol = piece.endswith("\n")
+        return "".join(out)
 
     def flush(self):
         try:
@@ -1125,6 +1144,7 @@ def _kill_cybos_procs():
                     print("[WARN] kill 실패: %s" % e)
 
     deadline = time.time() + 8
+    last_err = {}   # pid -> 마지막 kill 예외 (F-7: 삼키지 않고 끝에 보고)
     while time.time() < deadline:
         remaining = _get()
         if not remaining:
@@ -1132,9 +1152,20 @@ def _kill_cybos_procs():
         for p in remaining:
             try:
                 p.kill()
-            except Exception:
-                pass
+            except Exception as e:
+                last_err[p.info.get("pid")] = "%s: %s" % (type(e).__name__, e)
         time.sleep(0.5)
+
+    # [MW0601 631차 F-7] 8초 뒤에도 남았으면 드러낸다. 2026-09-24·26 네 번 모두 종료
+    # 직후 "CPSTART.EXE 이미 실행중" 대화상자가 떴다 = 종료가 실제로는 안 됐는데
+    # 이 함수는 조용히 넘어갔다(계측 4원칙 ④).
+    survivors = _get()
+    for p in survivors:
+        print("[WARN] Cybos 프로세스 종료 실패: %s PID=%s (%s)" % (
+            p.info.get("name"), p.info.get("pid"),
+            last_err.get(p.info.get("pid"), "사유 미상 — 예외 없이 생존")))
+    if not survivors:
+        print("[INFO] 기존 Cybos 프로세스 종료 확인 (%d개)" % len(procs))
 
     time.sleep(2)
 
@@ -2045,6 +2076,14 @@ def autologin():
     for attempt in range(MAX_LOGIN_ATTEMPTS):
         if attempt > 0:
             print("\n[INFO] ===  재시도 %d/%d  ===" % (attempt + 1, MAX_LOGIN_ATTEMPTS))
+            # [MW0601 631차 F-6] 재시도는 기존 Cybos 를 죽이고 시작한다. 그런데 직전 시도가
+            # 타임아웃 판정을 낸 **뒤** 연결이 붙는 경우가 있다 — 2026-09-26 10:19 1차 시도는
+            # 32초째 공지사항(로그인 후에만 뜬다)을 닫고도 IsConnect 를 못 보고 120초를 채웠고,
+            # 2차가 그 세션을 죽이는 사이 미륵이 런처가 IsConnect=1 을 보고 출발했다.
+            # 이미 붙어 있으면 성공으로 끝낸다 — 살아 있는 세션을 죽이지 않는다.
+            if _is_connected():
+                print("[OK] 재시도 직전 연결 확인 -- 이미 연결됨, 기존 Cybos 를 종료하지 않고 성공 처리")
+                return True
 
         # 기존 Cybos 프로세스 정리
         names = set(CYBOS_PROC_NAMES)
