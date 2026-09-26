@@ -47,6 +47,50 @@ MIN_BARS_PER_SESSION = 300      # 수집 결손 세션
 MAX_RANGE_RATIO = 0.20          # 일중 범위 > 시가의 20%
 MAX_GAP_RATIO = 0.15            # 전일 종가 대비 갭 > 15% (2026-05-13 +752pt 오류)
 
+# ── 롤(계약 교체) 정책 ───────────────────────────────────────────────────────
+# 미륵이는 미니 **당월물**을 보는데 시장 기준은 **분기물**이다. 미니가 월물을 갈아타는
+# 날에는 시장이 한 틱도 움직이지 않아도 전일 종가 대비 시가가 만기 격차만큼 튄다.
+#   실측(261거래일, 2026-09-11): 스프레드 중앙 +0.31p / 75% +2.04p / 최대 +11.28p
+#   갭 중 가짜 성분(중앙): 저변동 ATR<20 → 36% · 중변동 → 18% · 고변동 ATR>60 → 7%
+#   2026-06-18 은 gap/ATR 이 +0.009 → −0.015 로 **부호가 뒤집혔다**.
+# MAX_GAP_RATIO(15%) 는 이걸 못 거른다 — 롤 갭은 지수 대비 0.1~0.9% 다.
+#
+#   "off"     기존 동작 그대로 (기본)
+#   "exclude" 롤 당일을 이력에서 제외 — 24/261 = 9.2% 세션 손실. 대조군용
+#   "adjust"  갭에 롤 점프를 더해 상쇄 (`SessionSummary.roll_adj`). 표본 유지
+# 환경변수 MIREUK_ROLL_POLICY 로 덮어쓸 수 있다(백필 비교 실험용).
+ROLL_POLICY = os.environ.get("MIREUK_ROLL_POLICY", "off").strip().lower()
+ROLL_LABEL_DB = os.path.join(DATA_DIR, "db", "regular_candles.db")
+_ROLL_CACHE = None              # {날짜: 점프(p)} — 프로세스 수명 동안 1회만 읽는다
+
+
+def roll_labels(db_path=None):
+    # type: (Optional[str]) -> Dict[str, float]
+    """`regular_candles.db:roll_days` 에서 {날짜: 스프레드 점프(p)} 를 읽는다.
+
+    라벨을 만드는 쪽은 `scripts/mark_roll_and_halts.py`(EOD 배치).
+    **없으면 빈 dict** 를 돌려준다 — 라벨이 없다고 산출이 멈추면 안 된다.
+    원천 데이터 이상치(|점프| ≥ 20p, 2026-05-13~14)는 계약 교체가 아니므로 뺀다.
+    """
+    global _ROLL_CACHE
+    if _ROLL_CACHE is not None and db_path is None:
+        return _ROLL_CACHE
+    out = {}    # type: Dict[str, float]
+    path = db_path or ROLL_LABEL_DB
+    try:
+        con = sqlite3.connect("file:%s?mode=ro" % path.replace("\\", "/"), uri=True, timeout=3.0)
+        try:
+            for d, j in con.execute("SELECT trade_date, jump FROM roll_days"):
+                if j is not None and abs(float(j)) < 20.0:
+                    out[str(d)] = float(j)
+        finally:
+            con.close()
+    except Exception as e:
+        logger.debug("[LEVELS] 롤 라벨 없음(%s) — 정책 미적용: %s", path, e)
+    if db_path is None:
+        _ROLL_CACHE = out
+    return out
+
 STAGE_CUT = {"0850": "08:45", "0930": PL.STAGE2_TIME}
 STAGE_DUE = {"0850": datetime.time(8, 50), "0930": datetime.time(9, 30)}
 STAGE0930_MIN_BARS = 5          # 09:30 이전 봉이 이보다 적으면 미산출
@@ -93,6 +137,7 @@ def load_sessions(since=HISTORY_SINCE, until=None, db_path=None, prev_close=None
                                 c=float(c), v=int(v or 0)))
     clean = []      # type: List[Tuple[str, List[PL.Bar]]]
     excluded = {}   # type: Dict[str, str]
+    rolls = roll_labels() if ROLL_POLICY == "exclude" else {}
     pc = prev_close
     for d in sorted(order):
         b = by_day[d]
@@ -106,6 +151,8 @@ def load_sessions(since=HISTORY_SINCE, until=None, db_path=None, prev_close=None
             reason = "일중 범위 %.1f%%(>%.0f%%)" % ((hi - lo) / op * 100, MAX_RANGE_RATIO * 100)
         elif pc is not None and pc > 0 and abs(op - pc) > MAX_GAP_RATIO * pc:
             reason = "갭 %.1f%%(>%.0f%%)" % (abs(op - pc) / pc * 100, MAX_GAP_RATIO * 100)
+        elif d in rolls:
+            reason = "계약 교체일(롤 점프 %+.2fp)" % rolls[d]
         if reason is None:
             clean.append((d, b))
         else:
@@ -231,6 +278,7 @@ def refresh_history_cache(db_path=None, path=None, force_full=False):
         bars_by_day[d] = bars
         added.append(d)
     summaries.sort(key=lambda x: x.d)
+    apply_roll_adj(summaries)
     PL.fill_derived(summaries)
     keep = set(x.d for x in summaries[-(PL.LOOKBACK + 1):])
     bars_by_day = dict((k, v) for k, v in bars_by_day.items() if k in keep)
@@ -258,6 +306,24 @@ def history_from_cache(path=None):
 
 
 # ---------------------------------------------------------------- 파라미터
+
+def apply_roll_adj(summaries):
+    # type: (List[PL.SessionSummary]) -> int
+    """`ROLL_POLICY == "adjust"` 일 때만 각 요약에 롤 보정폭을 채운다.
+
+    `SessionSummary.roll_adj` 는 `premarket_levels._gap_pt()` 가 갭에 더해 상쇄한다.
+    정책이 off/exclude 면 전부 0 으로 두어 **종전과 완전히 같은 값**이 나오게 한다.
+    """
+    labels = roll_labels() if ROLL_POLICY == "adjust" else {}
+    n = 0
+    for s in summaries:
+        adj = labels.get(s.d, 0.0)
+        s.roll_adj = adj
+        n += int(bool(adj))
+    if n:
+        logger.info("[LEVELS] 롤 보정 적용: %d세션 (정책=%s)", n, ROLL_POLICY)
+    return n
+
 
 def prepare_params(summaries, bars_by_day, target_date, at_key=None):
     # type: (List[PL.SessionSummary], Dict[str, List[PL.Bar]], str, Optional[str]) -> Optional[dict]
@@ -331,7 +397,9 @@ def compute_stage(stage, target_date, today_bars, params):
     try:
         out = PL.compute_stage(stage, bars, params["prev"], params["atr"],
                                params.get("p1"), params.get("p2"), params["candidates"],
-                               params.get("rhat1"), params.get("rhat2"), params.get("atr5"))
+                               params.get("rhat1"), params.get("rhat2"), params.get("atr5"),
+                               roll_adj=(roll_labels().get(target_date, 0.0)
+                                         if ROLL_POLICY == "adjust" else 0.0))
     except Exception as e:
         return dict(out=None, note="산출 실패: %s" % e, bars=len(bars))
     out["date"] = target_date

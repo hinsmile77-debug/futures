@@ -105,6 +105,10 @@ class SessionSummary:
     # [542차] 격자 시각별 경로 {"HHMM": [hp, lp, cp]} — pt 단위(ATR 정규화 전).
     # 키가 없으면 **미측정**이다(그 시각까지 봉이 없었다) — 0 으로 채우지 않는다.
     paths: Optional[Dict[str, List[float]]] = None
+    # [롤 보정] 이 세션의 시가가 **계약 교체** 때문에 전일 종가 대비 인위적으로
+    # 낮아진 폭(pt). 갭을 쓸 때 더해서 상쇄한다 — `_gap_pt()` 참조.
+    # 0 이면 보정 없음(기본). 값은 `levels_store` 가 roll_days 라벨에서 채운다.
+    roll_adj: float = 0.0
 
 
 # ---------------------------------------------------------------- 요약·ATR
@@ -302,7 +306,7 @@ def fit_stage2_at(summaries, end, key=None):
         path = path_of(s, key)
         if s.atr and path is not None:
             u_t, d_t, ret_t = path
-            gap = (s.o - p.c) / s.atr
+            gap = _gap_pt(s, p) / s.atr
             r1 = (p.h - p.l) / s.atr
             rows.append((_x2(gap, r1, u_t, d_t, ret_t),
                          (s.h - s.o) / s.atr, (s.o - s.l) / s.atr, u_t, d_t))
@@ -320,6 +324,19 @@ def fit_stage2_at(summaries, end, key=None):
                 d50=(_q(rd, .25), _q(rd, .75)), d80=(_q(rd, .1), _q(rd, .9)))
 
 
+def _gap_pt(s, prev):
+    # type: (SessionSummary, SessionSummary) -> float
+    """전일 종가 대비 시가 갭(pt) — **계약 교체분을 상쇄한 뒤** 돌려준다.
+
+    미륵이는 미니 **당월물**을 보는데 시장 기준은 **분기물**이라, 미니가 월물을
+    갈아타는 날에는 시장이 움직이지 않아도 시가가 만기 격차만큼 튄다.
+    실측(261거래일): 중앙 +0.31p, 최대 +11.28p. 저변동 국면(ATR<20)에서는
+    갭의 36%가 이 가짜 성분이었고, 부호가 뒤집히는 날도 있었다(2026-06-18).
+    `roll_adj` 가 0 이면 종전과 완전히 같은 값이다.
+    """
+    return (s.o - prev.c) + (getattr(s, "roll_adj", 0.0) or 0.0)
+
+
 def _x_fixed(s, prev, atr5):
     # type: (SessionSummary, SessionSummary, Optional[float]) -> Optional[List[float]]
     if not s.atr or s.atr <= 0 or not atr5 or (prev.h - prev.l) <= 0:
@@ -328,8 +345,8 @@ def _x_fixed(s, prev, atr5):
             math.log(s.atr / s.o),
             math.log(atr5 / s.atr),
             math.log((prev.h - prev.l) / s.atr),
-            (s.o - prev.c) / s.atr,
-            abs(s.o - prev.c) / s.atr,
+            _gap_pt(s, prev) / s.atr,
+            abs(_gap_pt(s, prev)) / s.atr,
             (prev.c - prev.l) / (prev.h - prev.l)]
 
 
@@ -577,7 +594,7 @@ def structure_note(diag, ref):
 # ---------------------------------------------------------------- 단계 산출
 
 def compute_stage(stage, today_bars, prev, atr, p1, p2, candidates,
-                  rhat1=None, rhat2=None, atr5=None):
+                  rhat1=None, rhat2=None, atr5=None, roll_adj=0.0):
     # type: (str, Sequence[Bar], SessionSummary, float, Optional[dict], Optional[dict], Dict[int, List[str]], Optional[dict], Optional[dict], Optional[float]) -> dict
     """stage "0850"|"0930" 산출.
 
@@ -591,7 +608,7 @@ def compute_stage(stage, today_bars, prev, atr, p1, p2, candidates,
     if not atr or atr <= 0:
         raise ValueError("ATR14 가 없다")
     o = today_bars[0].o
-    today = SessionSummary(d="", o=o, h=o, l=o, c=o, atr=atr)
+    today = SessionSummary(d="", o=o, h=o, l=o, c=o, atr=atr, roll_adj=roll_adj or 0.0)
     xf = _x_fixed(today, prev, atr5)
     if stage == "0850":
         ref = o
@@ -606,7 +623,7 @@ def compute_stage(stage, today_bars, prev, atr, p1, p2, candidates,
         ref = early[-1].c
         x2 = (xf + [math.log(max(path[0] + path[1], 1e-3)), abs(path[2])]) if xf else None
         rh_x, rh_params = x2, rhat2
-        dist = (distance_stage2(p2, o, atr, o - prev.c, prev.h - prev.l, path,
+        dist = (distance_stage2(p2, o, atr, _gap_pt(today, prev), prev.h - prev.l, path,
                                 rhat_scale(rhat2, x2)) if p2 else None)
         merged = with_opening_range(candidates, early, STAGE2_TIME)
     ups, dns = select_nearest(merged, ref)
@@ -658,7 +675,7 @@ def compute_manual(at, today_bars, prev, atr, p1, p_at, candidates,
     else:
         path = path_at(early, cut, o, atr)
         x2 = (xf + [math.log(max(path[0] + path[1], 1e-3)), abs(path[2])]) if xf else None
-        dist = (distance_stage2(p_at, o, atr, o - prev.c, prev.h - prev.l, path,
+        dist = (distance_stage2(p_at, o, atr, _gap_pt(today, prev), prev.h - prev.l, path,
                                 rhat_scale(rhat_at, x2)) if p_at else None)
         model = "P@%s" % cut
         rh_x, rh_params = x2, rhat_at
