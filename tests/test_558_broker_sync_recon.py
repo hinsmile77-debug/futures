@@ -275,5 +275,6 @@ def test_registered_in_init_all_dbs():
     with io.open(path, encoding="utf-8") as f:
         t = f.read()
     block = t[t.index("def init_all_dbs():"):]
-    assert "init_broker_sync_recon_db()" in block[:800], \
+    # [631차 F-2] init_all_dbs 가 단계 튜플 + 타이밍 루프로 바뀌어 `()` 없이 참조된다.
+    assert "init_broker_sync_recon_db" in block[:1500], \
         "init_all_dbs 에 등록되지 않으면 라이브에서 테이블이 안 생긴다"

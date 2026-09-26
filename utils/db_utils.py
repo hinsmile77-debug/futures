@@ -376,6 +376,17 @@ def _migrate_predictions_db():
                 conn.execute(
                     "ALTER TABLE predictions ADD COLUMN sigma_at_t REAL DEFAULT 0.0"
                 )
+            # [MW0601 631차 F-1a] 아래 역채움 UPDATE가 매 기동 predictions 전 행을 읽던 문제.
+            # 세 확률 열은 ALTER로 `features`(평균 3.4KB) **뒤**에 붙어 있어 NULL 판정에도
+            # 행 전체(오버플로 페이지 포함)를 읽는다 — 2026-09 기준 약 460MB, 운영 기동
+            # 13–19초(행 수 따라 선형 증가), 2026-09-26 부팅 직후 ≥210초.
+            # NULL 행만 담는 부분 인덱스를 두면 UPDATE가 이 인덱스만 훑는다
+            # (복사본 실측: 쿼리 계획 USING INDEX, 0.6s → 0.0000s). 생성은 최초 1회만 스캔.
+            # 역채움 자체는 유지한다 — NULL 행이 새로 생겨도 여전히 채운다(안전망).
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_pred_prob_null ON predictions(id) "
+                "WHERE up_prob IS NULL OR down_prob IS NULL OR flat_prob IS NULL"
+            )
             conn.execute(
                 """
                 UPDATE predictions
@@ -4873,12 +4884,30 @@ def fetch_premarket_levels_manual(date_str: str, limit: int = 20) -> List[dict]:
 
 
 def init_all_dbs():
-    """전체 DB 초기화 (main.py에서 1회 호출)"""
-    init_predictions_db()
-    init_trades_db()
-    init_daily_stats_db()
-    init_shap_db()
-    init_raw_data_db()
-    init_daily_broker_pnl_db()
-    init_broker_sync_recon_db()   # [558차 후속 / G-3]
-    init_premarket_levels_db()
+    """전체 DB 초기화 (main.py에서 1회 호출)
+
+    [MW0601 631차 F-2] 단계별 소요시간을 `[DBInit]` 한 줄로 남기고 dict로 돌려준다.
+    2026-09-26 기동 지연 때 "어느 단계가 느린가"를 faulthandler 덤프로 역산해야 했다
+    (계측 4원칙 ④). 단계 순서·동작은 종전과 같다.
+    """
+    import time as _t
+    steps = (
+        ("predictions", init_predictions_db),
+        ("trades", init_trades_db),
+        ("daily_stats", init_daily_stats_db),
+        ("shap", init_shap_db),
+        ("raw_data", init_raw_data_db),
+        ("broker_pnl", init_daily_broker_pnl_db),
+        ("broker_recon", init_broker_sync_recon_db),   # [558차 후속 / G-3]
+        ("premarket_levels", init_premarket_levels_db),
+    )
+    timings = {}   # type: Dict[str, float]
+    for name, fn in steps:
+        t0 = _t.time()
+        fn()
+        timings[name] = _t.time() - t0
+    logging.getLogger("SYSTEM").info(
+        "[DBInit] 합계 %.2fs | %s", sum(timings.values()),
+        " ".join("%s=%.2fs" % (k, v) for k, v in timings.items()),
+    )
+    return timings

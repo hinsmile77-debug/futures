@@ -20806,8 +20806,29 @@ def main():
             pass
 
     # DB 초기화
-    init_all_dbs()
-    logger.info("[System] DB 초기화 완료")
+    # [MW0601 631차 F-5] 초기화 동안 콘솔이 무표시라 2026-09-26 사용자가 "안 올라온다"고
+    # 판단해 창을 닫았다(부팅 직후 ≥210초). 진행 중임을 런처 콘솔(=launcher 로그)에 알린다.
+    # 30초마다 "지연 중" 한 줄 — 스레드는 print 만 한다(DB·Qt 무접촉).
+    import threading as _th_boot
+    import time as _t_boot
+    _boot_t0 = _t_boot.time()
+    _boot_done = _th_boot.Event()
+    print("[BOOT] DB 초기화 중... (평소 약 20초 — 창을 닫지 마세요)", flush=True)
+
+    def _boot_progress():
+        while not _boot_done.wait(30.0):
+            print("[BOOT] DB 초기화 지연 중 %.0f초 경과 — 멈춘 것이 아닙니다 "
+                  "(부팅 직후엔 수 분 걸릴 수 있음)" % (_t_boot.time() - _boot_t0),
+                  flush=True)
+
+    _th_boot.Thread(target=_boot_progress, name="BootProgress", daemon=True).start()
+    try:
+        init_all_dbs()
+    finally:
+        _boot_done.set()
+    _boot_sec = _t_boot.time() - _boot_t0
+    print("[BOOT] DB 초기화 완료 (%.1f초)" % _boot_sec, flush=True)
+    logger.info("[System] DB 초기화 완료 (%.1fs)", _boot_sec)
 
     try:
         system = TradingSystem()
