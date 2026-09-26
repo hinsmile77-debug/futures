@@ -2154,8 +2154,33 @@ def devmemory_section(root, cfg, day, out):
 
 
 # ------------------------------------------------------------------ 본문
+def market_closed(root, day):
+    """[MW0601 631차 F-4] 그날이 KRX 휴장일인가 → (True/False/None, 근거 문자열).
+
+    2026-09-26(토, 추석 연휴) 점검에서 FZ-6 이 "장중 로그 침묵 → 동결 가능성"을
+    맨 위에 올렸다 — 휴장일이라 매분 파이프라인이 없는 것이 정상이었다.
+    수집기는 표준 라이브러리 전용이므로 `config/krx_holidays.py` 를 패키지 import 가
+    아니라 **파일 경로로** 읽는다(`config/__init__` 의 무거운 import 회피).
+    None = 판정 불가(목록 로드 실패) — 미측정이지 영업일이 아니다(계측 4원칙 ②).
+    """
+    if day.weekday() >= 5:
+        return True, "주말(%s)" % "월화수목금토일"[day.weekday()]
+    path = os.path.join(root, "config", "krx_holidays.py")
+    try:
+        import importlib.util as _iu
+        spec = _iu.spec_from_file_location("_krx_holidays_cv", path)
+        mod = _iu.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        if mod.is_krx_holiday(day):
+            return True, "KRX 휴장일(`config/krx_holidays.py` 등록)"
+        return False, "영업일"
+    except Exception as e:
+        return None, "휴장일 목록 로드 실패(%s: %s)" % (type(e).__name__, e)
+
+
 def build(root, day, phase, cfg, discover_only=False):
     toks = date_tokens(day)
+    _closed, _closed_why = market_closed(root, day)
     D = toks["y_m_d"]
     phases = {"pre": ["pre"], "intra": ["pre", "intra"],
               "post": ["pre", "intra", "post"], "all": ["pre", "intra", "post"]}[phase]
@@ -2169,6 +2194,12 @@ def build(root, day, phase, cfg, discover_only=False):
     A("- 리포 `%s`" % root)
     A("- 점검 범위: %s (장전=pre / 장중=intra / 장후=post)" % ", ".join(phases))
     A("- 날짜 토큰: %s" % " · ".join("`%s`" % toks[k] for k in DATE_TOKEN_KEYS))
+    if _closed:
+        A("- 🟦 **휴장일** — %s. 매매·매분 파이프라인이 없는 것이 정상이므로 "
+          "장중 로그 침묵(FZ-6)·장후 조기종료(480차) 적신호를 **끈다**. "
+          "목록이 틀렸을 수 있다(2026-09-28 오등록 전례) — 이 판정이 의심되면 파일을 확인하라." % _closed_why)
+    elif _closed is None:
+        A("- ⚠ 영업일 판정 **미측정** — %s. 휴장일 적신호 억제를 적용하지 않았다." % _closed_why)
     if pcid == "UNKNOWN":
         A("- 🔴 호스트명에서 `MW####` 를 못 뽑았다 — **이 파일은 어느 PC의 관찰인지 알 수 없다.**")
         A("  `--pc MW0601` 처럼 인자로 강제하거나 `MIREUK_PC_ID` 환경변수를 줄 것 "
@@ -2676,7 +2707,14 @@ def build(root, day, phase, cfg, discover_only=False):
     A("## 11. 자동 적신호 (출발점이지 결론이 아니다)")
     A("")
     flags = []
-    if not files:
+    # [631차 F-4 · 범위 확장] 휴장일에는 「거래일이면 있어야 할 것」을 요구하는 규칙을
+    # 전부 끈다(2026-09-26 장후 --phase post 에서 8종 전부 거짓양성). 인프라 규칙
+    # (인덱스락·미커밋·설정 불변식·ERROR·크래시 패턴)은 휴장일에도 유효하므로 그대로 본다.
+    if _closed:
+        flags.append("(관측) 휴장일 — 거래일 전제 적신호(당일 파일 0개·매분 루프 커버리지·"
+                     "15:10 청산 흔적·완료 마커·진입 0건·장후 조기종료·장중 로그 침묵·"
+                     "dev_memory 갱신·상태 파일)를 생략했다. 인프라 적신호는 그대로 본다")
+    if not files and not _closed:
         flags.append("당일 날짜 토큰 파일 0개 — 프로그램이 안 돌았거나 탐색 경로가 틀렸다")
     # [MW0601 483차 후속2 / P0-1] 스테일 인덱스락 — 무증상 결함이라 여기서만 드러난다
     if lk["present"] is None:
@@ -2707,7 +2745,7 @@ def build(root, day, phase, cfg, discover_only=False):
         n_err = sum(v for k, v in dg.level_counts.items() if k in ("ERROR", "CRITICAL", "FATAL"))
         if n_err:
             flags.append("`%s`: ERROR 이상 %d건" % (dg.rel, n_err))
-        if dg.records and dg.is_main_loop():
+        if dg.records and dg.is_main_loop() and not _closed:
             have, total, missing = dg.minute_coverage()
             if total and have < total * 0.98:
                 flags.append("`%s`: 매분 루프 커버리지 %d/%d분 (%.1f%%) — 루프가 빠진 구간이 있다" % (
@@ -2732,7 +2770,7 @@ def build(root, day, phase, cfg, discover_only=False):
         for pat in ("0xC0000409", "STACK_BUFFER", "Traceback", "OOM", "MemoryError"):
             if pat in dg.quoted:
                 flags.append("`%s`: **%s** 출현 %d건 — 크래시/메모리 계열" % (dg.rel, pat, len(dg.quoted[pat])))
-    if phase in ("post", "all"):
+    if phase in ("post", "all") and not _closed:
         # [MW0601 471차 F-2] 판정 기준 교체: "강제청산 문자열이 있는가"가 아니라
         # **하트비트 또는 실집행 로그 중 하나가 있는가**로 본다.
         # 종전 기준은 "대상 없음(포지션 FLAT)"과 "코드 사망"을 구분하지 못해
@@ -2751,7 +2789,7 @@ def build(root, day, phase, cfg, discover_only=False):
                          "절대원칙 1 확인 필요 (471차 F-2 배포 이후라면 하트비트 부재 자체가 이상)")
     all_names = " ".join(e["name"] for e in files).lower()
     for em in cfg.get("expected_markers", []):
-        if em["phase"] in phases and em["contains"].lower() not in all_names:
+        if not _closed and em["phase"] in phases and em["contains"].lower() not in all_names:
             flags.append("완료 마커 **`%s`** 없음 — %s" % (em["contains"], em["why"]))
     # --- 미륵이 특화 적신호 ---
     # 이 시스템은 ERROR 를 거의 안 남긴다(2026-08-12 하루 0건). 레벨만 보면 아무 일도
@@ -2774,7 +2812,7 @@ def build(root, day, phase, cfg, discover_only=False):
     en = merged.get("entry", [])
     bl = merged.get("block", [])
     sz = merged.get("sizer", [])
-    if phase in ("post", "all"):
+    if phase in ("post", "all") and not _closed:
         # [MW0601 507차 후속 / F-8] 「엔진 진입」과 「계좌 진입」을 쪼갠다.
         # 종전은 `not en and not ex` 라, 계좌에서 20포지션이 만들어졌다 사라진 날에도
         # `ex`가 차서 적신호가 **아예 뜨지 않았다**(08-31). 반대로 엔진이 0인
@@ -2836,7 +2874,8 @@ def build(root, day, phase, cfg, discover_only=False):
     # ⚠ 이것은 **동결 확정이 아니라 확인 지시**다 — 장 시작 전·점심 저활동·수집 시점
     #   우연도 가능하다. 원본 로그 꼬리와 프로세스 CPU를 직접 볼 것.
     try:
-        if phase in ("pre", "intra") and day == now_kst().date():
+        # [631차 F-4] 휴장일이면 끈다 — 매분 파이프라인이 없는 것이 정상이다.
+        if phase in ("pre", "intra") and day == now_kst().date() and not _closed:
             _live = [e for e in files
                      if e["name"].lower().endswith(".log") and toks["ymd"] in e["name"]]
             if _live:
@@ -2858,8 +2897,22 @@ def build(root, day, phase, cfg, discover_only=False):
     # FZ-6은 "지금 이 순간 로그가 멎었다"를, 이쪽은 "오늘 하루가 평소보다 일찍
     # 끝났다"를 본다. 08-19는 13:51에 끝났고(직전 12거래일은 전부 15:40대),
     # 장후 점검이 아니었으면 다음 거래일까지 몰랐을 사고다.
+    # [631차 F-4] 휴장일 기동은 적신호가 아니라 관측으로 남긴다(UI 점검·리허설은 정당한 용도).
+    if _closed:
+        try:
+            _sp = os.path.join(root, "logs", "%s_SYSTEM.log" % toks["ymd"])
+            _n = 0
+            if os.path.exists(_sp):
+                with io.open(_sp, encoding="utf-8", errors="replace") as _f:
+                    _n = sum(1 for ln in _f if "[FaultHandler] 활성화" in ln)
+            if _n:
+                flags.append("(관측) 휴장일인데 미륵이 기동 **%d회** — 의도한 점검·리허설인지 확인 "
+                             "(적신호 아님)" % _n)
+        except OSError:
+            pass
+
     try:
-        if phase in ("post", "all"):
+        if phase in ("post", "all") and not _closed:
             _b = prior_log_end_baseline(root, day)
             _tp2 = os.path.join(root, "logs", "%s_SYSTEM.log" % toks["ymd"])
             _te = log_end_minute(_tp2)[0] if os.path.exists(_tp2) else None
@@ -2929,10 +2982,11 @@ def build(root, day, phase, cfg, discover_only=False):
                      "dev_memory·리포트가 커밋되지 않은 채로 끝난다")
     for rel in ("dev_memory/DECISION_LOG.md", "dev_memory/NEXT_TODO.md"):
         p = os.path.join(root, rel)
-        if os.path.exists(p) and ts_kst(os.stat(p).st_mtime).date() != day and phase in ("post", "all"):
+        if (os.path.exists(p) and ts_kst(os.stat(p).st_mtime).date() != day
+                and phase in ("post", "all") and not _closed):
             flags.append("`%s` 가 오늘 갱신되지 않았다 — 세션 기록 의무 확인" % rel)
 
-    for sf in cfg.get("state_files", []):
+    for sf in (cfg.get("state_files", []) if not _closed else []):
         p = os.path.join(root, sf["path"])
         if not os.path.exists(p):
             if phase in ("post", "all"):
