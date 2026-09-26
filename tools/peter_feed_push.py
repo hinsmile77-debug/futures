@@ -62,7 +62,9 @@ def main():
     os.close(fd); os.remove(idx)                      # git 이 새로 만들게 둔다
     env = {'GIT_INDEX_FILE': idx}
     try:
-        rc, _, err = git('add', '-A', '--', SUBDIR, env=env)
+        # [MW0601 631차] -f: data/peter_feed/ 는 .gitignore 로 무시된다(코드 브랜치 미추적 목록 정리).
+        # -f 가 없으면 무시된 파일이 빠져 빈 트리가 올라가고 원격 사료가 통째로 지워진다.
+        rc, _, err = git('add', '-A', '-f', '--', SUBDIR, env=env)
         if rc:
             raise SystemExit('인덱스 구성 실패: %s' % err)
         rc, tree, err = git('write-tree', env=env)
