@@ -4311,6 +4311,14 @@ def build(root, day, phase, cfg, discover_only=False):
     # β2(정본 rev 미갱신)는 완전 자동, β1(사본 낡음)은 `--skill-rev` 핸드셰이크.
     _skill = skill_rev_state(root, day)
     _skill_flags = _skill["flags"]
+    # [MW0602 595차 후속 / G-1] 같은 국면 선행 실행 — 중복 예약·병행 세션 탐지.
+    # 예전엔 preserve_existing_digest() 의 stderr 경고뿐이라 다이제스트에 안 남았다.
+    _prior = prior_run_state(os.path.join(root, cfg["evidence_dir"]), pcid, day, phase, now_kst())
+    _prior_flags = _prior["flags"]
+    A("**같은 국면 선행 실행**")
+    L.extend(_prior["lines"])
+    A("")
+
     A("**점검 지침서 세대**")
     for _v in _skill["verdicts"]:
         A("- %s" % _v)
@@ -4657,6 +4665,7 @@ def build(root, day, phase, cfg, discover_only=False):
     # [MW0602 498차 후속] §2 에서 계산한 락·지침서 드리프트를 적신호로 올린다.
     # §2 안에만 찍으면 읽는 사람이 놓친다(3555 줄 §5→§11 승격과 같은 이유).
     flags.extend(_lock_flags or [])
+    flags.extend(_prior_flags or [])
     flags.extend(_skill_flags or [])
     if not files:
         flags.append("당일 날짜 토큰 파일 0개 — 프로그램이 안 돌았거나 탐색 경로가 틀렸다")
@@ -5206,6 +5215,66 @@ def preserve_existing_digest(outp, keep=EVIDENCE_KEEP_PER_PHASE):
             eprint("[collect_evidence] 보존본 FIFO 삭제: %s" % f)
     except Exception as e:
         eprint("[collect_evidence] 보존본 정리 실패(무해): %s" % e)
+
+
+def prior_run_state(evdir, pcid, day, phase, now):
+    """[MW0602 595차 후속 / G-1] 같은 날 같은 국면이 **이미 한 번 돌았는가**를 판정한다.
+
+    2026-09-28 08:55:19 / 08:57:12 — 중복 등록된 예약 두 벌이 2분 간격으로 같은
+    "장전" 점검을 시작했다(592차 최초 발견, 사용자 조치 대기). 예약은 git 으로 공유되지
+    않아 매 점검이 손으로 확인해야 했고, `preserve_existing_digest()` 는 기존본을
+    rename 하며 **stderr 에만** 경고해 다이제스트(§2·§11)에는 아무것도 남지 않았다.
+
+    대상: 이 호출 **이전에** 존재하던 `evidence_<PC>-<YYYYMMDD>_<국면>.md` 와 그 보존본
+    (`_HHMM.md` · `_HHMM-N.md`). build() 는 저장 전에 돌므로 여기서 보이는 파일은 전부
+    앞선 실행의 산출물이다.
+
+    반환: {"measured", "prior": [(파일명, mtime datetime)], "lines", "flags"}
+      · 폴더를 못 읽으면 measured=False — "앞선 실행 없음"과 구분한다(계측 4원칙 ②).
+      · phase="all" 은 대상 파일명이 없어 판정하지 않는다(measured=False, 사유 명시).
+    ⚠ 같은 세션의 재수집도 똑같이 잡힌다 — 병행 세션 **확정**이 아니라 확인 요구다.
+    """
+    st = {"measured": False, "prior": [], "lines": [], "flags": []}
+    if phase not in ("pre", "intra", "post"):
+        st["lines"].append("- 같은 국면 선행 실행: **미측정** — `--phase %s` 는 국면 파일명이 없다" % phase)
+        return st
+    stem = "evidence_%s-%s_%s" % (pcid, day.strftime("%Y%m%d"), phase)
+    rx = re.compile(r"^%s(_\d{4}(-\d+)?)?\.md$" % re.escape(stem))
+    try:
+        names = os.listdir(evdir)
+    except Exception as e:
+        st["lines"].append("- 같은 국면 선행 실행: **미측정** — 폴더 읽기 실패 (%s)" % e)
+        return st
+    st["measured"] = True
+    prior = []
+    for nm in names:
+        if not rx.match(nm):
+            continue
+        try:
+            prior.append((nm, ts_kst(os.path.getmtime(os.path.join(evdir, nm)))))
+        except Exception:
+            prior.append((nm, None))
+    prior.sort(key=lambda x: (x[1] is None, x[1] or datetime.min))
+    st["prior"] = prior
+    if not prior:
+        st["lines"].append("- 같은 국면 선행 실행: 없음 — 오늘 이 국면(`%s`) 첫 수집" % phase)
+        return st
+    parts = []
+    for nm, mt in prior:
+        if mt is None:
+            parts.append("`%s` (시각 미상)" % nm)
+        else:
+            age = int((now - mt).total_seconds() // 60)
+            parts.append("`%s` (%s · %d분 전)" % (nm, mt.strftime("%H:%M"), max(age, 0)))
+    shown = parts[:5]
+    if len(parts) > 5:
+        shown.append("… 외 %d개" % (len(parts) - 5))
+    msg = ("🔴 **같은 국면(`%s`)이 오늘 이미 %d회 돌았다** — 병행 세션 확인 필요 "
+           "(이전 파일: %s). 같은 세션의 재수집이면 무해하다 — 리포트 파일에 같은 국면 "
+           "절이 두 번 append 되지 않았는지 확인할 것" % (phase, len(prior), " · ".join(shown)))
+    st["lines"].append("- " + msg)
+    st["flags"].append(msg)
+    return st
 
 
 # ------------------------------------------------------------------ 설정 로드
