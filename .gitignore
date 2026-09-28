@@ -133,3 +133,6 @@ collect_stderr.txt
 #       git restore --source=origin/peter-feed --worktree -- data/peter_feed/
 #       python tools/peter_build_day.py --rebuild-all
 #   `peter_levels.db` 와 offset 은 PC 의 속성이라 받지 않는다(596차).
+
+# [MW0601 632차 후속] 신동 일일 리포트 PDF — md+svg 에서 재생성 가능한 파생물(메일 첨부용)
+docs/신동거래/일일/*.pdf

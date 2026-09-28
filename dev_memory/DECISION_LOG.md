@@ -39,6 +39,20 @@
   `spec.LATE_SHADOW_START`(X4NF·TR44 채점 9/29~) · 채점표 섀도 판정 일반화 + R1 적중률 절(`raw_candles` 09:00→15:05, 결측=미측정).
 - 재현 TR44: 9/21 +157,978 · 9/22 +1,527,679 · 9/23 +1,776,971 · 9/28 +330,667. R1 적중 3/3.
 - 테스트 `test_632` 19건(TR44·트레일 봉 순서·R1 적중률 추가). 신동 묶음 103건 중 102 통과(실패 1 = 위 ui_prefs 건).
+
+**[632차 후속2] 신동 일일 리포트(사용자 지시 — 「거래 흐름+손익 vs 섀도 흐름+손익」 장후 정리)**
+- `strategy/shindong/daily_report.py` + `scripts/shindong_daily_report.py` → `docs/신동거래/일일/신동_일일_YYYYMMDD.md` + `.svg`.
+  0 한눈에 · 1 차트(변형 4줄 + 개인 콜−풋) · 2 MAIN 타임라인 · 3 섀도별 타임라인 + MAIN 대비 원인(F2 차단/flip 금지/목표가 차이/섀도만 진입) ·
+  4 누적 채점(판정 D-n) · 5 러너 섀도 · 6 자동 관찰(진입 품질 MFE<4pt / 청산 / 맥점 반복 / 목표 없음 / 탐지 지연).
+- 손익은 엔진 재생(`run_day`) — 라이브 기록은 탐지 시각만 붙인다. 라이브 행 없는 변형은 「재계산」 표기(계측 4원칙 ④).
+- 배선: `main.py:daily_close` 러너 섀도 직후 1회(예외 격리) · `SHINDONG_DAILY_REPORT_ENABLED`. 휴장·봉 없음은 파일 안 만듦.
+- 차트는 순수 SVG — py37_32 matplotlib 은 PIL DLL 오류로 못 쓴다. 9/21–9/23·9/28 백필 완료.
+- 테스트 `test_632b` 4건. `test_457::test_db_fallback_columns_have_measured_flag` 실패는 기존 `peter_paste`(HEAD) 건 — 무관.
+- [후속3] PDF·메일(사용자 지시): `utils/report_pdf.py`(Chrome 헤드리스 인쇄, SVG 인라인) · `utils/mailer.py`(SMTP) ·
+  `strategy/shindong/report_mail.py` · `scripts/shindong_report_pdf.py`·`shindong_report_mail.py`. 장후 리포트 직후 **데몬 스레드**에서
+  PDF 생성 + 발송(`SHINDONG_REPORT_MAIL_ENABLED`). 🔴 자격 정보·받는 주소는 **환경변수에만**(MIREUK_SMTP_USER/
+  MIREUK_SMTP_PASSWORD/MIREUK_REPORT_MAIL_TO) — 저장소에 쓰지 말 것. 없으면 PDF 만 만들고 빠진 이름을 로그. test_632b 9건.
+- **체리픽 기록**: 원 커밋 `9d61cfd` · 원 PC MW0601(`v9-dev`) · 이유: 사용자 지시(「커밋하고 dev에도 배포」). 계산·기록 범위(리포트·PDF·메일) — 차트·패널 변경 없음. ⚠ MW0602 는 SMTP 환경변수가 없으면 PDF 만 만들고 발송은 건너뛴다(로그에 빠진 이름).
 - 흐름 4일에서 최선은 F2(SHADOW_E2F2)였다. 가격 대리에서 F2 가 재현 안 된 것이 「흐름 고유 정보」인지 우연인지는
   E2F2·X4NF 두 섀도의 적립으로만 가린다.
 

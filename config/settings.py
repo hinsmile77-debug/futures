@@ -7720,3 +7720,12 @@ SHINDONG_DB = os.path.join(DB_DIR, "shindong.db")
 #   🔴 가상이다 — 미륵이 청산 경로는 바뀌지 않는다(절대원칙 §6). 값은 `strategy/shindong/
 #   mireuk_runner.py`(사전등록 고정값), 판정 기준은 `docs/신동거래/조건부러너_섀도_사전등록_20260924.md`.
 SHINDONG_RUNNER_SHADOW_ENABLED = True
+# [MW0601 632차 후속] 신동 일일 리포트 — 장후 daily_close 에서 1회(러너 섀도 기록 직후).
+#   「거래 흐름 + 손익 vs 섀도 흐름 + 손익」 한 장 + SVG 차트. 읽기 전용 · 주문 없음.
+#   재생성·백필: `python scripts/shindong_daily_report.py YYYY-MM-DD`
+SHINDONG_DAILY_REPORT_ENABLED = True
+SHINDONG_DAILY_REPORT_DIR = os.path.join(BASE_DIR, "docs", "신동거래", "일일")
+# 리포트 생성 뒤 백그라운드 스레드에서 PDF 인쇄 + 메일 발송. 자격 정보·받는 주소는 **환경변수에만**
+#   (MIREUK_SMTP_USER / MIREUK_SMTP_PASSWORD / MIREUK_REPORT_MAIL_TO — `utils/mailer.py`).
+#   환경변수가 없으면 PDF 만 만들고 발송은 건너뛴다(로그에 빠진 이름을 남긴다).
+SHINDONG_REPORT_MAIL_ENABLED = True
