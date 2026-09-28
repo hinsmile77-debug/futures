@@ -28,12 +28,19 @@ _DBS = [os.path.join(_ROOT, "data", "db", p) for p in
         ("raw_data.db", "option_flow.db", "premarket_levels.db", "shindong.db")]
 _DB_OK = all(os.path.exists(p) for p in _DBS[:3])
 
+# [632차 후속5 / MW0602 적용가이드 §10] 아래 수치는 **MW0601 DB 산출**이다. 두 PC 는 별개 계좌·별개 수집
+#   (흐름·맥점·봉)이라 같은 날 같은 값이 나오지 않는다 — 「DB 가 있다」만으로는 대조할 수 없다.
+#   다른 PC 는 `tests/test_632c_shindong_invariants.py`(PC 무관 불변식)가 대신 지킨다.
+from utils.db_utils import pc_id as _pc_id  # noqa: E402
+_SRC_OK = _DB_OK and _pc_id() == "MW0601"
+_SRC_WHY = "기대값은 MW0601 DB 산출 — 이 PC(%s)는 불변식 테스트(test_632c)가 대신한다" % _pc_id()
+
 
 def _build(day, out):
     return daily_report.build(day, _DBS[0], _DBS[1], _DBS[2], _DBS[3], out_dir=str(out))
 
 
-@pytest.mark.skipif(not _DB_OK, reason="로컬 DB 없음(이 PC 의 런타임 산출물)")
+@pytest.mark.skipif(not _SRC_OK, reason=_SRC_WHY)
 def test_report_matches_engine_and_attributes_causes(tmp_path):
     r = _build("2026-09-28", tmp_path)
     if not r["ok"]:

@@ -50,6 +50,7 @@
   PDF 생성 + 발송(`SHINDONG_REPORT_MAIL_ENABLED`). 🔴 자격 정보·받는 주소는 **환경변수에만**(MIREUK_SMTP_USER/
   MIREUK_SMTP_PASSWORD/MIREUK_REPORT_MAIL_TO) — 저장소에 쓰지 말 것. 없으면 PDF 만 만들고 빠진 이름을 로그. test_632b 9건.
 - [후속4] **PC명 표기**(사용자 지시): 파일명 `신동_일일_<PC>_YYYYMMDD.md/.svg/.pdf`(`daily_report.report_stem`, PC = `pc_id()`) · 제목 `# [MW0601] 신동 일일 리포트` · 차트 제목 · 메일 제목 `[신동][MW0601] 일일 리포트`. 기존 4일치는 git mv 로 개명·재생성. test_632b 12건.
+- [후속5] **MW0602 적용가이드 §10 대응** — 신동 재현 테스트가 MW0601 DB 절대 손익을 대조해 MW0602 에서 상시 10건 실패. 수치 대조 13건은 `pc_id()=="MW0601"` 일 때만(`_SRC_OK`), PC 무관 불변식 6종 `test_632c` 신설(R2 변형 무관 · X4NF 무 flip · X4 목표 ≤ MAIN · E2F2 흐름순응 · 트레일 없으면 TR44=MAIN · 리포트=엔진). MW0602 흉내 실행 0 failed. 가이드 §11 에 답변·MW0601 재점검 기록.
 - 흐름 4일에서 최선은 F2(SHADOW_E2F2)였다. 가격 대리에서 F2 가 재현 안 된 것이 「흐름 고유 정보」인지 우연인지는
   E2F2·X4NF 두 섀도의 적립으로만 가린다.
 

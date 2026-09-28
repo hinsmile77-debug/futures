@@ -74,6 +74,14 @@ def test_x4_keeps_current_t1_when_nearer():
 _DB_OK = all(os.path.exists(os.path.join(_ROOT, p)) for p in
              ("data/db/raw_data.db", "data/db/option_flow.db", "data/db/premarket_levels.db"))
 
+# [632차 후속5 / MW0602 적용가이드 §10] 아래 수치는 **MW0601 DB 산출**이다. 두 PC 는 별개 계좌·별개 수집
+#   (흐름·맥점·봉)이라 같은 날 같은 값이 나오지 않는다 — 「DB 가 있다」만으로는 대조할 수 없다.
+#   다른 PC 는 `tests/test_632c_shindong_invariants.py`(PC 무관 불변식)가 대신 지킨다.
+from utils.db_utils import pc_id as _pc_id  # noqa: E402
+_SRC_PC = "MW0601"
+_SRC_OK = _DB_OK and _pc_id() == _SRC_PC
+_SRC_WHY = "기대값은 %s DB 산출 — 이 PC(%s)는 불변식 테스트(test_632c)가 대신한다" % (_SRC_PC, _pc_id())
+
 
 def _compute(day):
     from strategy.shindong import runner
@@ -82,7 +90,7 @@ def _compute(day):
                           os.path.join(_ROOT, "data/db/premarket_levels.db"))
 
 
-@pytest.mark.skipif(not _DB_OK, reason="로컬 DB 없음(이 PC 의 런타임 산출물)")
+@pytest.mark.skipif(not _SRC_OK, reason=_SRC_WHY)
 @pytest.mark.parametrize("day,main,x4nf", [
     # 2026-09-28 딥다이브 하네스(docs/신동거래/r3_딥다이브_20260928/s8.py) R3 값 + R2
     ("2026-09-21", 157978, -43602),
@@ -104,7 +112,7 @@ def test_replay_x4nf(day, main, x4nf):
     assert r2("SHADOW_X4NF") == r2("MAIN")
 
 
-@pytest.mark.skipif(not _DB_OK, reason="로컬 DB 없음(이 PC 의 런타임 산출물)")
+@pytest.mark.skipif(not _SRC_OK, reason=_SRC_WHY)
 def test_x4nf_never_flips_at_same_level_but_main_did():
     r = _compute("2026-09-28")
     if not r["results"]["MAIN"]["trades"]:
@@ -185,7 +193,7 @@ def test_trail_none_is_main_path():
     assert [g.get("reason") for g in a["legs"]] == ["SL", "SL"]
 
 
-@pytest.mark.skipif(not _DB_OK, reason="로컬 DB 없음(이 PC 의 런타임 산출물)")
+@pytest.mark.skipif(not _SRC_OK, reason=_SRC_WHY)
 @pytest.mark.parametrize("day,tr44", [
     # 트레일 딥다이브(c9.py) R3 −1 / +153 / +44 / −68만 + R2(MAIN 과 같다)
     ("2026-09-21", 157978),
