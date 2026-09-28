@@ -171,11 +171,50 @@ def _force_remove(path):
     os.remove(path)
 
 
+def _sideline(path):
+    """지우지 못한 **스테일 확정** 락을 옆으로 치운다. 새 경로를 반환한다.
+
+    [MW0601 636차] 코웍 마운트는 unlink 를 EPERM 으로 막지만 rename 은 허용한다.
+    2026-09-28 장전·장중 두 세션이 같은 순서(`--reclaim` 실패 -> 손으로 `mv`)를
+    반복했다. 이름을 `<이름>.stale_<시각>_<pid>` 로 바꾸면 git 은 더 이상 그 락을
+    보지 않고, 남은 파일은 `scan_extra()` 가 T2 부스러기(`.lock.stale_`)로 세어
+    삭제 권한이 있는 쪽에서 나중에 치운다.
+    ⚠ 판정보류 락에는 절대 쓰지 말 것 — 호출부가 스테일 확정 뒤에만 부른다.
+    """
+    dst = "%s.stale_%s_%d" % (path, time.strftime("%Y%m%d%H%M%S"), os.getpid())
+    os.rename(path, dst)
+    return dst
+
+
+def _is_top_level(path, repo):
+    """`.git` 바로 아래 파일인가 — 이름변경 우회를 허용하는 유일한 자리."""
+    return os.path.normcase(os.path.dirname(os.path.abspath(path))) == os.path.normcase(
+        os.path.abspath(os.path.join(repo, ".git")))
+
+
+def _remove_or_sideline(path):
+    """삭제를 먼저 시도하고, 실패하면 이름변경으로 우회한다.
+
+    반환 (how, dst): how 는 "removed" 또는 "renamed". 둘 다 실패하면 **삭제
+    쪽 예외**를 올린다 — 원인은 그쪽이고, 성공한 척하지 않는다.
+    """
+    try:
+        _force_remove(path)
+        return "removed", None
+    except Exception as e_rm:
+        try:
+            return "renamed", _sideline(path)
+        except Exception:
+            raise e_rm
+
+
 def reclaim(repo, min_age_sec=DEFAULT_MIN_AGE_SEC, git_procs=None):
     """3중 조건을 **다시 확인한 뒤에만** 제거한다.
 
     반환 (removed: bool, info: dict). 판정보류면 손대지 않는다 — 이 함수는
     "지워도 되는가"를 되묻는 자리이지 강제 삭제 도구가 아니다.
+    [636차] 삭제가 권한으로 막히면 이름변경으로 우회한다(`_sideline`). 그때도
+    removed=True 이고 `info["sidelined_to"]` 에 새 경로를 남긴다.
     """
     info = inspect(repo, min_age_sec=min_age_sec, git_procs=git_procs)
     if not info["stale"]:
@@ -187,11 +226,16 @@ def reclaim(repo, min_age_sec=DEFAULT_MIN_AGE_SEC, git_procs=None):
             info["verdict"] = "회수 취소 - 판정 직후 크기가 %s바이트로 변했다" % st.st_size
             info["stale"] = False
             return False, info
-        _force_remove(lock)
+        how, dst = _remove_or_sideline(lock)
     except Exception as e:
         info["verdict"] = "회수 실패: %s" % e
         return False, info
-    info["verdict"] = "회수 완료 - " + info["verdict"]
+    if how == "renamed":
+        info["sidelined_to"] = dst
+        info["verdict"] = "회수 완료(삭제 거부 -> 이름변경 우회: %s) - %s" % (
+            os.path.basename(dst), info["verdict"])
+    else:
+        info["verdict"] = "회수 완료 - " + info["verdict"]
     return True, info
 
 
@@ -326,10 +370,23 @@ def sweep_extra(repo, min_age_sec=DEFAULT_MIN_AGE_SEC, git_procs=None, reclaim_i
             row["verdict"] = "스테일 - %.1f시간" % (row["age_sec"] / 3600.0)
             if reclaim_it:
                 try:
-                    _force_remove(path)
+                    # [636차] T1(쓰기를 막는 락)만 이름변경 우회를 쓴다. T2 부스러기를
+                    #   이름만 바꾸면 새 부스러기가 될 뿐이다.
+                    # 🔴 `.git` 바로 아래 파일로만 한정한다. `refs/heads/x.lock` 을
+                    #   `x.lock.stale_…` 로 바꾸면 **그 이름이 유효한 ref 가 되어**
+                    #   git 이 가짜 브랜치로 읽는다(.lock 으로 끝나지 않으므로).
+                    if tier == 1 and _is_top_level(path, repo):
+                        how, dst = _remove_or_sideline(path)
+                    else:
+                        _force_remove(path)
+                        how, dst = "removed", None
                     row["removed"] = True
                     n_removed += 1
-                    row["verdict"] = "회수 완료 - " + row["verdict"]
+                    if how == "renamed":
+                        row["verdict"] = "회수 완료(이름변경 우회: %s) - %s" % (
+                            os.path.basename(dst), row["verdict"])
+                    else:
+                        row["verdict"] = "회수 완료 - " + row["verdict"]
                 except Exception as e:
                     # 🔴 코웍 마운트에서는 여기가 EPERM 으로 떨어진다. **성공한 척하지 않는다.**
                     row["verdict"] = "회수 실패(%s) - 삭제 권한이 없는 환경일 수 있다" % e

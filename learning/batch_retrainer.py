@@ -2650,7 +2650,19 @@ class BatchRetrainer:
                 deleted, cutoff[:10], keep_weeks,
             )
         except Exception as e:
-            logger.warning("[Retrain] DB pruning 실패: %s", e)
+            # [MW0601 636차] 여기로 오면 **삭제는 반영되지 않았다.** `with sqlite3.connect()`
+            # 는 블록이 예외로 빠지면 롤백한다. 그런데 이전 코드는 롤백된 시도 행수를
+            # 그대로 반환해, 호출부(main.py)가 `[GBM] DB pruning: N행 삭제`를 찍었다 —
+            # 2026-09-28 에 「실패」 경고와 「22,860행 삭제」가 같은 초에 나온 이유다.
+            # 실측(py37_32 임시 DB): 위 체크포인트가 **자기 쓰기 트랜잭션 안에서** 돌아
+            # 정확히 `database table is locked` 를 내고 DELETE 100/100행이 롤백됐다.
+            # 반환값은 실제 반영 행수(0)다 — 시도 행수는 로그에만 남긴다(계측 4원칙 ②).
+            # 실제로 지우게 하는 수정(체크포인트 전 commit)은 NEXT_TODO 636-2(승인 대기).
+            logger.warning(
+                "[Retrain] DB pruning 실패 — 삭제 롤백(반영 0행, 시도 %d행): %s",
+                deleted, e,
+            )
+            return 0
         return deleted
 
     def get_stats(self) -> dict:
