@@ -3,7 +3,7 @@
 
 사용:
     python scripts/shindong_report_pdf.py 2026-09-28
-    python scripts/shindong_report_pdf.py docs/신동거래/일일/신동_일일_20260928.md
+    python scripts/shindong_report_pdf.py docs/신동거래/일일/신동_일일_MW0601_20260928.md
 """
 import os
 import sys
@@ -13,12 +13,13 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from config.settings import SHINDONG_DAILY_REPORT_DIR  # noqa: E402
+from strategy.shindong.daily_report import report_stem  # noqa: E402
 from utils.report_pdf import md_to_pdf  # noqa: E402
 
 
 def main(argv=None) -> int:
     for a in (argv if argv is not None else sys.argv[1:]) or []:
-        p = a if a.endswith(".md") else os.path.join(SHINDONG_DAILY_REPORT_DIR, "신동_일일_%s.md" % a.replace("-", ""))
+        p = a if a.endswith(".md") else os.path.join(SHINDONG_DAILY_REPORT_DIR, report_stem(a) + ".md")
         print(md_to_pdf(p))
     return 0
 

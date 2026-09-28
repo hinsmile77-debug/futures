@@ -49,6 +49,7 @@
   `strategy/shindong/report_mail.py` · `scripts/shindong_report_pdf.py`·`shindong_report_mail.py`. 장후 리포트 직후 **데몬 스레드**에서
   PDF 생성 + 발송(`SHINDONG_REPORT_MAIL_ENABLED`). 🔴 자격 정보·받는 주소는 **환경변수에만**(MIREUK_SMTP_USER/
   MIREUK_SMTP_PASSWORD/MIREUK_REPORT_MAIL_TO) — 저장소에 쓰지 말 것. 없으면 PDF 만 만들고 빠진 이름을 로그. test_632b 9건.
+- [후속4] **PC명 표기**(사용자 지시): 파일명 `신동_일일_<PC>_YYYYMMDD.md/.svg/.pdf`(`daily_report.report_stem`, PC = `pc_id()`) · 제목 `# [MW0601] 신동 일일 리포트` · 차트 제목 · 메일 제목 `[신동][MW0601] 일일 리포트`. 기존 4일치는 git mv 로 개명·재생성. test_632b 12건.
 - 흐름 4일에서 최선은 F2(SHADOW_E2F2)였다. 가격 대리에서 F2 가 재현 안 된 것이 「흐름 고유 정보」인지 우연인지는
   E2F2·X4NF 두 섀도의 적립으로만 가린다.
 

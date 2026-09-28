@@ -149,3 +149,37 @@ def test_mail_job_wired_as_daemon_thread():
     blk = src[i:i + 2200]
     assert 'daemon=True' in blk and "md_to_pdf" in blk and "smtp_config" in blk
     assert "emit(" not in blk            # 스레드에서 Qt 신호 금지
+
+
+# ── G. PC 명 — 파일명 · 제목 · 메일 (632차 후속4) ────────────────────────────
+def test_report_stem_has_pc():
+    assert daily_report.report_stem("2026-09-28", "MW0601") == "신동_일일_MW0601_20260928"
+    from utils.db_utils import pc_id
+    assert daily_report.report_stem("2026-09-28") == "신동_일일_%s_20260928" % pc_id()
+
+
+@pytest.mark.skipif(not _DB_OK, reason="로컬 DB 없음(이 PC 의 런타임 산출물)")
+def test_report_file_and_title_carry_pc(tmp_path):
+    r = daily_report.build("2026-09-28", _DBS[0], _DBS[1], _DBS[2], _DBS[3], out_dir=str(tmp_path), pc="MW9999")
+    if not r["ok"]:
+        pytest.skip("그날 봉이 이 PC DB 에 없다")
+    assert os.path.basename(r["md_path"]) == "신동_일일_MW9999_20260928.md"
+    assert os.path.basename(r["svg_path"]) == "신동_일일_MW9999_20260928.svg"
+    md = open(r["md_path"], encoding="utf-8").read()
+    assert md.splitlines()[0] == "# [MW9999] 신동 일일 리포트 — 2026-09-28"
+    assert "**MW9999 리포트**" in md and "(신동_일일_MW9999_20260928.svg)" in md
+    assert "[MW9999] 신동 2026-09-28" in open(r["svg_path"], encoding="utf-8").read()
+
+
+def test_mail_subject_and_attachment_carry_pc(monkeypatch, tmp_path):
+    from strategy.shindong import report_mail
+    md = tmp_path / "신동_일일_MW9999_20260928.md"
+    md.write_text("# [MW9999] t\n\n**오늘의 한 줄** — x\n\n## 1. 차트\n", encoding="utf-8")
+    got = {}
+    monkeypatch.setattr(report_mail, "md_to_pdf", lambda p: str(tmp_path / (os.path.basename(p)[:-3] + ".pdf")))
+    monkeypatch.setattr(report_mail.mailer, "send_mail",
+                        lambda subj, body, att, to=None: got.update(subj=subj, body=body, att=att) or ["x@y"])
+    report_mail.send_daily("2026-09-28", str(tmp_path), pc="MW9999")
+    assert got["subj"] == "[신동][MW9999] 일일 리포트 2026-09-28"
+    assert got["body"].startswith("[MW9999] 신동 일일 리포트 2026-09-28")
+    assert os.path.basename(got["att"][0]) == "신동_일일_MW9999_20260928.pdf"
