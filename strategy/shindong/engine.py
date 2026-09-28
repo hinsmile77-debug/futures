@@ -116,6 +116,27 @@ def targets(L, t, side, e):
     return t1, t2
 
 
+def targets_x4(L, t, side, e):
+    """[632차] SHADOW_X4NF 청산 — 1차 목표를 **진입 방향의 가장 가까운 구조맥점 −0.5** 로 당긴다.
+
+    현행 1차(거리맥점 끝·OR 끝)가 12pt 넘게 멀어 본전 이동이 안 걸리던 것을 겨냥한다
+    (R3 딥다이브 2026-09-28 §4-2 X4). 후보는 현행과 같은 `T1_MIN_DIST` 이상 떨어진 맥점뿐이고,
+    현행 1차가 더 가까우면 그대로 둔다. 최종은 현행(없으면 1차).
+    """
+    t1, t2 = targets(L, t, side, e)
+    _, lv = levels_at(L, t)
+    near = [x for x in lv if side * (x - e) >= S.T1_MIN_DIST]
+    if near:
+        n = (min(near) if side > 0 else max(near)) - side * S.TP_BUF
+        if t1 is None or side * (t1 - n) > 0:
+            t1 = n
+    if t2 is None:
+        t2 = t1
+    if t1 is not None and side * (t2 - t1) < 0:
+        t2 = t1
+    return t1, t2
+
+
 # ── 손익 ────────────────────────────────────────────────────────────────
 def leg_net(side, e, x, market_exit):
     pts = side * (x - e)
@@ -126,17 +147,23 @@ def leg_net(side, e, x, market_exit):
 
 
 # ── 거래 진행 ───────────────────────────────────────────────────────────
-def run_trade(d: DayFrame, side, t0, stop, t1, t2, e2=False) -> Dict[str, Any]:
+def run_trade(d: DayFrame, side, t0, stop, t1, t2, e2=False,
+              trail: Optional[Tuple[float, float]] = None) -> Dict[str, Any]:
     """두 다리(1차·최종)를 봉마다 진행한다. horizon 에서 멈추면 status=OPEN.
 
     e2=False : MAIN — 1차 익절 즉시 공통 손절을 본전으로(같은 봉의 최종 다리도 그 손절로 검사)
     e2=True  : SHADOW E2 — 최종 다리 손절은 1차–최종 중간 지점 도달 뒤에야 본전
+    trail=(act, dist) : [632차 후속] SHADOW_TR44 — 진입가 대비 유리한 극값이 act pt 이상이면
+               공통 손절 = 극값 − dist(단조). 그 봉 극값은 **다음 봉부터** 반영한다(봉 내부 경로를
+               모르므로 보수적). 1차 익절 때는 손절이 본전보다 불리할 때만 본전으로 올린다.
+               None 이면 이 경로는 한 줄도 타지 않는다(MAIN 과 같다).
     """
     e = d.c[t0]
     legs = [{"leg": 1, "tp": t1, "open": True}, {"leg": 2, "tp": t2, "open": True}]
     st = stop            # MAIN 공통 손절
     st2 = stop           # SHADOW 최종 다리 손절
     half = None
+    best = e             # 트레일용 유리한 극값
     bars = [k for k in d.idx if t0 < k <= S.TIME_EXIT]
     for t in bars:
         h, l = d.h[t], d.l[t]
@@ -146,13 +173,15 @@ def run_trade(d: DayFrame, side, t0, stop, t1, t2, e2=False) -> Dict[str, Any]:
             cur = st if not e2 else (stop if g["leg"] == 1 else st2)
             if (h >= cur) if side < 0 else (l <= cur):
                 g.update(open=False, ts=t, px=cur, mkt=True,
-                         reason=("BE" if cur == e else "SL"))
+                         reason=("BE" if cur == e else
+                                 ("TR" if trail is not None and side * (cur - stop) > 0 else "SL")))
                 continue
             if g["tp"] is not None and ((l <= g["tp"]) if side < 0 else (h >= g["tp"])):
                 g.update(open=False, ts=t, px=g["tp"], mkt=False,
                          reason=("TP1" if g["leg"] == 1 else "TP2"))
                 if not e2:
-                    st = e
+                    if trail is None or side * (e - st) > 0:
+                        st = e
                 elif g["leg"] == 1:
                     if t2 is not None:
                         half = t1 + (t2 - t1) / 2.0
@@ -163,6 +192,12 @@ def run_trade(d: DayFrame, side, t0, stop, t1, t2, e2=False) -> Dict[str, Any]:
             half = None
         if not any(g["open"] for g in legs):
             break
+        if trail is not None:
+            best = max(best, h) if side > 0 else min(best, l)
+            if side * (best - e) >= trail[0]:
+                cand = best - side * trail[1]
+                if side * (cand - st) > 0:
+                    st = cand
     horizon = d.idx[-1] if d.idx else None
     # 시간 청산은 15:05 봉이 **도착한 뒤**에만 확정한다 — 그 전은 보유 중(OPEN)이다.
     if any(g["open"] for g in legs) and horizon is not None and horizon >= S.TIME_EXIT:
@@ -189,6 +224,11 @@ def run_trade(d: DayFrame, side, t0, stop, t1, t2, e2=False) -> Dict[str, Any]:
 def run_day(d: DayFrame, L, variant: str = "MAIN") -> Dict[str, Any]:
     """하루 판정. 반환: {"decision": {...}, "trades": [...]}."""
     e2 = f2 = variant == "SHADOW_E2F2"
+    # [632차] SHADOW_X4NF — R3 만 바꾼다: 1차 목표 X4 + 같은 맥점 방향 뒤집기(flip) 금지. R2 는 MAIN 과 같다.
+    x4nf = variant == "SHADOW_X4NF"
+    # [632차 후속] SHADOW_TR44 — MAIN 과 같은 진입·목표에 R3 만 트레일(+4pt 발동 · 4pt 간격). 비교 기록용.
+    tr44 = (S.TR44_ACT, S.TR44_DIST) if variant == "SHADOW_TR44" else None
+    lvl_side: Dict[float, int] = {}     # 맥점 → 그 맥점에서 마지막으로 **진입한** 방향
     dec: Dict[str, Any] = {"pm_sp": None, "bias": None, "r2": None, "r2_ts": None,
                            "notes": []}
     trades: List[Dict[str, Any]] = []
@@ -258,6 +298,8 @@ def run_day(d: DayFrame, L, variant: str = "MAIN") -> Dict[str, Any]:
         if not sig:
             continue
         side, L0 = sig
+        if x4nf and lvl_side.get(L0, side) != side:
+            continue                    # 같은 맥점에서 방향 뒤집기 — 박스권 양쪽 잡기 방지
         if f2:
             if t not in d.sp:
                 continue
@@ -285,10 +327,11 @@ def run_day(d: DayFrame, L, variant: str = "MAIN") -> Dict[str, Any]:
                 else min(L0 - S.LV_STOP_BUF, min(d.l[k] for k in span) - S.EXT_STOP_BUF))
         if side * (e - stop) <= 0:
             continue
-        t1, t2 = targets(L, ent, side, e)
-        tr = run_trade(d, side, ent, stop, t1, t2, e2=e2)
+        t1, t2 = (targets_x4 if x4nf else targets)(L, ent, side, e)
+        tr = run_trade(d, side, ent, stop, t1, t2, e2=e2, trail=tr44)
         tr.update(rule="R3", touch_level=L0, touch_ts=t)
         trades.append(tr)
+        lvl_side[L0] = side
         busy = tr["exit_ts"] or "99:99"
     return {"decision": dec, "trades": trades}
 
