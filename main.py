@@ -13286,6 +13286,52 @@ class TradingSystem:
             except Exception as _sdr_e:
                 logger.warning("[ShindongRunner] 장후 섀도 기록 실패 (스킵 — 백필로 복구): %s", _sdr_e)
 
+        # ── [MW0601 632차 후속] 신동 일일 리포트 — 러너 섀도 기록 직후 1회 ──────
+        # 「거래 흐름 + 손익 vs 섀도 흐름 + 손익」 md + SVG. 읽기 전용(주문·기록 무변경).
+        # 실패해도 마감은 계속된다 — `scripts/shindong_daily_report.py YYYY-MM-DD` 로 재생성.
+        if getattr(runtime_settings, "SHINDONG_DAILY_REPORT_ENABLED", False):
+            try:
+                from strategy.shindong import daily_report as _sddr
+                _sddr_res = _sddr.build(
+                    now.date().isoformat(),
+                    raw_db=runtime_settings.RAW_DATA_DB,
+                    flow_db=getattr(runtime_settings, "WEEKLY_OPTION_FLOW_DB",
+                                    "data/db/option_flow.db"),
+                    levels_db=runtime_settings.PREMARKET_LEVELS_DB,
+                    sd_db=runtime_settings.SHINDONG_DB,
+                    out_dir=runtime_settings.SHINDONG_DAILY_REPORT_DIR, now=now)
+                if _sddr_res.get("ok"):
+                    logger.info("[ShindongReport] %s | %s", _sddr_res.get("md_path"), " · ".join(
+                        "%s %s" % (v.replace("SHADOW_", ""), format(s["net"], "+,.0f"))
+                        for v, s in _sddr_res["sums"].items()))
+                    # PDF 인쇄(브라우저)·SMTP 는 수 초가 걸린다 — 마감(Qt 메인)을 막지 않게 데몬 스레드.
+                    # 스레드 안에서는 Qt 를 건드리지 않는다(파일·서브프로세스·소켓뿐).
+                    if getattr(runtime_settings, "SHINDONG_REPORT_MAIL_ENABLED", False):
+                        import threading as _th
+                        _sd_day = now.date().isoformat()
+                        _sd_dir = runtime_settings.SHINDONG_DAILY_REPORT_DIR
+
+                        def _sd_mail_job():
+                            try:
+                                from utils import mailer as _ml
+                                from utils.report_pdf import md_to_pdf as _pdf
+                                _pdf_path = _pdf(_sddr_res["md_path"])
+                                _cfg, _miss = _ml.smtp_config()
+                                if _cfg is None:
+                                    logger.info("[ShindongMail] PDF %s · 발송 건너뜀 — 환경변수 없음: %s",
+                                                _pdf_path, ", ".join(_miss))
+                                    return
+                                from strategy.shindong.report_mail import send_daily as _send
+                                logger.info("[ShindongMail] 발송 완료 → %s", _send(_sd_day, _sd_dir))
+                            except Exception as _ml_e:
+                                logger.warning("[ShindongMail] PDF·메일 실패 (수동: scripts/"
+                                               "shindong_report_mail.py %s): %s", _sd_day, _ml_e)
+                        _th.Thread(target=_sd_mail_job, name="ShindongMail", daemon=True).start()
+                else:
+                    logger.info("[ShindongReport] 건너뜀 — %s", _sddr_res.get("why"))
+            except Exception as _sddr_e:
+                logger.warning("[ShindongReport] 일일 리포트 생성 실패 (스킵 — 스크립트로 재생성): %s", _sddr_e)
+
         # ── [260704 감사 P2] 챔피언 heartbeat — 일별 1회 체크 ─────
         # 주의: CHAMPION_BASELINE_ID는 challenger_engine에 shadow 도전자로 등록되어
         # 있지 않아(_register_default_challengers 참조) 자체 거래 이력이 없다 —
