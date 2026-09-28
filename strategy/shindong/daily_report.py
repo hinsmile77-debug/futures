@@ -3,7 +3,8 @@
 
 무엇을 내나
 -----------
-`docs/신동거래/일일/신동_일일_YYYYMMDD.md` + 같은 이름 `.svg`(차트).
+`docs/신동거래/일일/신동_일일_<PC>_YYYYMMDD.md` + 같은 이름 `.svg`(차트). PC = `utils.db_utils.pc_id()`(예: MW0601)
+— 두 PC 리포트가 한 폴더·메일함에 섞여도 출처가 파일명과 제목에서 바로 보인다.
 
   0. 한눈에      — 시장 · R1 · 변형별 순손익 · 오늘의 한 줄
   1. 차트        — 변형마다 한 줄: 가격 + 진입·청산 + 맥점 / 맨 아래 개인 콜−풋
@@ -34,6 +35,14 @@ from strategy.shindong.calendar import select_flow_product
 VLABEL = {"MAIN": "MAIN(본안)", "SHADOW_E2F2": "E2F2(흐름순응)",
           "SHADOW_X4NF": "X4NF(가까운목표·flip금지)", "SHADOW_TR44": "TR44(R3 트레일 4/4)"}
 REASON = {"TP1": "1차", "TP2": "최종", "SL": "손절", "BE": "본전", "TIME": "시간", "TR": "트레일"}
+
+
+def report_stem(trade_date: str, pc: Optional[str] = None) -> str:
+    """파일명 줄기 — 신동_일일_<PC>_YYYYMMDD. 리포트·PDF·메일이 모두 이 함수로 이름을 만든다."""
+    if pc is None:
+        from utils.db_utils import pc_id
+        pc = pc_id()
+    return "신동_일일_%s_%s" % (pc, trade_date.replace("-", ""))
 
 
 def _won(x: Optional[float]) -> str:
@@ -368,22 +377,27 @@ def _timeline(rows: List[Dict], live: bool) -> List[str]:
 
 
 def build(trade_date: str, raw_db: str, flow_db: str, levels_db: str, sd_db: str,
-          out_dir: Optional[str] = None, now: Optional[_dt.datetime] = None) -> Dict[str, Any]:
+          out_dir: Optional[str] = None, now: Optional[_dt.datetime] = None,
+          pc: Optional[str] = None) -> Dict[str, Any]:
     now = now or _dt.datetime.now()
+    if pc is None:
+        from utils.db_utils import pc_id
+        pc = pc_id()
+    stem = report_stem(trade_date, pc)
     day = load_day(trade_date, raw_db, flow_db, levels_db)
     ymd = trade_date.replace("-", "")
     lines: List[str] = []
     w = lines.append
-    w("# 신동 일일 리포트 — %s" % trade_date)
+    w("# [%s] 신동 일일 리포트 — %s" % (pc, trade_date))
     w("")
-    w("> 생성 %s · 규격 `%s` · 상품 `%s` (%s)" % (now.strftime("%Y-%m-%d %H:%M"), S.SPEC_VERSION,
+    w("> **%s 리포트** · 생성 %s · 규격 `%s` · 상품 `%s` (%s)" % (pc, now.strftime("%Y-%m-%d %H:%M"), S.SPEC_VERSION,
                                              day["product"], day["product_note"]))
     w("> 가상거래다 — 주문 없음(절대원칙 §6). 손익은 미니선물 2계약 · CYBOS 요율 · 1틱 슬리피지 기준.")
     w("")
     if not day["ok"]:
         w("**판정 불가 — %s.**" % day["why"])
         # 휴장일·봉 결측일은 파일을 만들지 않는다(빈 리포트가 쌓이면 「그날 거래 0건」으로 오독된다)
-        return _write(lines, None, ymd, None, {"ok": False, "why": day["why"]})
+        return _write(lines, None, stem, None, {"ok": False, "why": day["why"], "pc": pc})
     d, L = day["d"], day["L"]
     live_vs, stored = _stored(sd_db, trade_date)
     rows = {v: trade_rows(d, day["results"][v], stored, v) for v in S.VARIANTS}
@@ -428,10 +442,10 @@ def build(trade_date: str, raw_db: str, flow_db: str, levels_db: str, sd_db: str
     w("")
 
     # 1. 차트
-    svg = svg_chart(day, rows, "신동 %s — 변형별 거래 흐름" % trade_date)
+    svg = svg_chart(day, rows, "[%s] 신동 %s — 변형별 거래 흐름" % (pc, trade_date))
     w("## 1. 차트")
     w("")
-    w("![신동 %s](신동_일일_%s.svg)" % (trade_date, ymd))
+    w("![신동 %s](%s.svg)" % (trade_date, stem))
     w("")
 
     # 2. 거래 흐름
@@ -518,20 +532,20 @@ def build(trade_date: str, raw_db: str, flow_db: str, levels_db: str, sd_db: str
     w("")
     w("---")
     w("재생성: `python scripts/shindong_daily_report.py %s`" % trade_date)
-    return _write(lines, svg, ymd, out_dir, {"ok": True, "sums": sums, "best": best, "hit": hit})
+    return _write(lines, svg, stem, out_dir, {"ok": True, "sums": sums, "best": best, "hit": hit, "pc": pc})
 
 
-def _write(lines, svg, ymd, out_dir, meta):
+def _write(lines, svg, stem, out_dir, meta):
     md = "\n".join(lines) + "\n"
     meta = dict(meta, md=md, svg=svg)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
-        p = os.path.join(out_dir, "신동_일일_%s.md" % ymd)
+        p = os.path.join(out_dir, stem + ".md")
         with open(p, "w", encoding="utf-8") as f:
             f.write(md)
         meta["md_path"] = p
         if svg:
-            q = os.path.join(out_dir, "신동_일일_%s.svg" % ymd)
+            q = os.path.join(out_dir, stem + ".svg")
             with open(q, "w", encoding="utf-8") as f:
                 f.write(svg)
             meta["svg_path"] = q

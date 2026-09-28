@@ -53,6 +53,8 @@
   PDF 생성 + 발송(`SHINDONG_REPORT_MAIL_ENABLED`). 🔴 자격 정보·받는 주소는 **환경변수에만**(MIREUK_SMTP_USER/
   MIREUK_SMTP_PASSWORD/MIREUK_REPORT_MAIL_TO) — 저장소에 쓰지 말 것. 없으면 PDF 만 만들고 빠진 이름을 로그. test_632b 9건.
 - **체리픽 기록**: 원 커밋 `9d61cfd` · 원 PC MW0601(`v9-dev`) · 이유: 사용자 지시(「커밋하고 dev에도 배포」). 계산·기록 범위(리포트·PDF·메일) — 차트·패널 변경 없음. ⚠ MW0602 는 SMTP 환경변수가 없으면 PDF 만 만들고 발송은 건너뛴다(로그에 빠진 이름).
+- [후속4] **PC명 표기**(사용자 지시): 파일명 `신동_일일_<PC>_YYYYMMDD.md/.svg/.pdf`(`daily_report.report_stem`, PC = `pc_id()`) · 제목 `# [MW0601] 신동 일일 리포트` · 차트 제목 · 메일 제목 `[신동][MW0601] 일일 리포트`. 기존 4일치는 git mv 로 개명·재생성. test_632b 12건.
+  **체리픽 기록**: 원 커밋 `054239d` · 원 PC MW0601(`v9-dev`) · 이유: 사용자 지시(「커밋 + dev 배포」). MW0602 에서는 파일명·제목이 자동으로 `MW0602` 가 된다(`pc_id()`).
 - 흐름 4일에서 최선은 F2(SHADOW_E2F2)였다. 가격 대리에서 F2 가 재현 안 된 것이 「흐름 고유 정보」인지 우연인지는
   E2F2·X4NF 두 섀도의 적립으로만 가린다.
 
