@@ -12021,7 +12021,7 @@ class MinuteChartCanvas(QWidget):
     SD_EXIT_RIM = "#F8FAFC"       # 청산 밝은 테두리
     SD_EXIT_X = "#0B0F14"         # 그 위의 검은 X
     SD_GLYPH = "신동"
-    _SD_REASON = {"TP1": "1차", "TP2": "최종", "SL": "손절", "BE": "본전", "TIME": "시간"}
+    _SD_REASON = {"TP1": "1차", "TP2": "최종", "SL": "손절", "BE": "본전", "TIME": "시간", "TR": "트레일"}
 
     def set_shindong(self, trades, wired: bool):
         """신동 가상거래 주입 — 라이브 push(분당) 또는 복기 적재. DB 를 열지 않는다."""

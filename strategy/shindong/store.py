@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 _SCHEMA = (
     """CREATE TABLE IF NOT EXISTS shindong_trades (
         trade_date   TEXT NOT NULL,
-        variant      TEXT NOT NULL,          -- MAIN | SHADOW_E2F2
+        variant      TEXT NOT NULL,          -- MAIN | SHADOW_E2F2 | SHADOW_X4NF | SHADOW_TR44
         trade_key    TEXT NOT NULL,          -- rule|entry_ts|side
         rule         TEXT NOT NULL,          -- R2 | R3
         side         INTEGER NOT NULL,       -- +1 매수 / -1 매도
