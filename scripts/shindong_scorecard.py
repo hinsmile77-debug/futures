@@ -5,13 +5,16 @@
 
 무엇을 내나
 -----------
-1. 변형(MAIN / SHADOW_E2F2 / SHADOW_X4NF / SHADOW_TR44) × 규칙(R2 / R3)별 거래 수 · 승 · 순손익 · 거래당
+1. 변형(MAIN / SHADOW_E2F2 / SHADOW_X4NF / SHADOW_TR44 / SHADOW_X4NFA) × 규칙(R2 / R3)별 거래 수 · 승 · 순손익 · 거래당
 2. 규칙가 vs **실현가능가** — 라이브 행은 처음 알아챈 시각의 최신 종가(`detect_px`)로
    진입했다고 보고 같은 청산가로 다시 잰다. 09:00·09:01 흐름은 09:02 수집(PEAK_SKIP)에서야
    들어오므로 R2 는 구조적으로 늦게 탐지된다 — 그 비용이 여기서 드러난다.
 3. R3 중단 판정 — 채점 시작 후 `R3_KILL_AFTER_DAYS` 거래일이 차면
    MAIN R3 누적 순손익 < 0 **이고** 승률 < 35% 이면 「중단」.
    🔴 판정 기준은 `strategy/shindong/spec.py` 에서 읽는다 — 여기서 값을 바꾸지 말 것.
+
+4. [MW0602 598차] **표시만**(판정 아님) — R3 분리(깨진 맥점 · R1 정렬), R1·R2 경제성(보류일·R2 확정률),
+   「보이는 대로」 손익(철회된 라이브 신호를 철회 시점 시장가로 청산했다고 본 값).
 
 ⚠ 채점 시작일(9/28) 이전 행(9/21–9/23 백필 등)은 **표본에 넣지 않는다** — 규칙을 만든 날이다.
 ⚠ `RETRACTED`(재계산에서 사라진 신호)는 표본에서 빼되 건수는 따로 적는다(탈락 가시화, 계측 4원칙 ③).
@@ -68,6 +71,48 @@ def _realizable_net(t):
     return tot
 
 
+def _is_broken(t):
+    """[598차] R3 진입가가 터치 맥점을 이미 반대로 넘어가 있는가 — SHADOW_X4NFA 가 막는 진입."""
+    if t.get("rule") != "R3" or t.get("touch_level") is None:
+        return None
+    return int(t["side"]) * (float(t["entry_px"]) - float(t["touch_level"])) <= 0
+
+
+def _retract_px(con, t):
+    """철회를 알아챈 벽시계(`updated_at`) 직전에 **완성된** 1분봉 종가. 못 구하면 None(미측정)."""
+    if con is None or not t.get("updated_at"):
+        return None
+    ts = _dt.datetime.strptime(str(t["updated_at"])[:19], "%Y-%m-%d %H:%M:%S")
+    bar = (ts.replace(second=0) - _dt.timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M:59")
+    r = con.execute("SELECT close FROM raw_candles WHERE ts>=? AND ts<=? ORDER BY ts DESC LIMIT 1",
+                    (t["trade_date"] + " 00:00", bar)).fetchone()
+    return float(r[0]) if r else None
+
+
+def _as_seen_net(t, con):
+    """[598차] 철회된 라이브 신호를 화면에서 보고 따랐다면 — 실현가능가(`detect_px`) 진입,
+    철회 전에 닫힌 다리는 그 청산가, 남은 다리는 철회 시점 종가에 시장가 청산.
+    백필 행 · 원천 없음은 None(미측정 ≠ 0)."""
+    if t.get("source") != "live" or t.get("status") != "RETRACTED":
+        return None
+    e = float(t["detect_px"] if t.get("detect_px") is not None else t["entry_px"])
+    side = int(t["side"])
+    rpx = None
+    tot = 0.0
+    for n in (1, 2):
+        if t.get("leg%d_exit_ts" % n):
+            x = float(t["leg%d_exit_px" % n])
+            mkt = (t.get("leg%d_reason" % n) or "") in ("SL", "BE", "TIME", "TR")
+        else:
+            if rpx is None:
+                rpx = _retract_px(con, t)
+                if rpx is None:
+                    return None
+            x, mkt = rpx, True
+        tot += leg_net(side, e, x, mkt)[1]
+    return tot
+
+
 def _r1_hits(days, raw_db):
     """[632차 후속] R1 방향 적중 — 방향대로 09:00 종가 → 15:05 종가가 움직였나.
 
@@ -110,7 +155,7 @@ def build(db=SHINDONG_DB, since=spec.SCORING_START, raw_db=RAW_DATA_DB):
     trades, days = _load(db, since)
     main_days = sorted({d["trade_date"] for d in days if d["variant"] == "MAIN"})
     w("- 판정 기록 거래일: **%d일**" % len(main_days))
-    # [632차] 9/28 결과를 보고 만든 섀도(X4NF·TR44)는 각자의 시작일부터만 센다
+    # [632차·598차] 결과를 보고 만든 섀도(X4NF·TR44·X4NFA)는 각자의 시작일부터만 센다
     for v, st in sorted(spec.LATE_SHADOW_START.items()):
         pre = [t for t in trades if t["variant"] == v and t["trade_date"] < st]
         if pre:
@@ -177,7 +222,7 @@ def build(db=SHINDONG_DB, since=spec.SCORING_START, raw_db=RAW_DATA_DB):
     # [632차] 9/28 결과를 보고 만든 섀도(X4NF·TR44) — 같은 기준으로 MAIN 과 비교
     sec = 4
     for v in sorted(spec.LATE_SHADOW_START):
-        w("## %d. %s 판정 (632차 사전등록)" % (sec, v))
+        w("## %d. %s 판정 (%s 사전등록)" % (sec, v, "598차" if v == "SHADOW_X4NFA" else "632차"))
         w("")
         w("\n".join(_late_judge(live, days, v)))
         w("")
@@ -185,7 +230,106 @@ def build(db=SHINDONG_DB, since=spec.SCORING_START, raw_db=RAW_DATA_DB):
     w("## %d. R1 방향 적중률 (표시 — 판정 아님)" % sec)
     w("")
     w("\n".join(_r1_section(_r1_hits(days, raw_db))))
+    w("")
+    sec += 1
+    w("## %d. R1·R2 경제성 (표시 — 판정 아님)" % sec)
+    w("")
+    w("\n".join(_r2_econ_section(live, days)))
+    w("")
+    sec += 1
+    w("## %d. R3 분리 — 깨진 맥점 · R1 정렬 (MAIN, 표시 — 판정 아님)" % sec)
+    w("")
+    w("\n".join(_r3_split_section(live, days)))
+    w("")
+    sec += 1
+    w("## %d. 보이는 대로 손익 — 철회된 라이브 신호 포함 (표시 — 판정 아님)" % sec)
+    w("")
+    w("\n".join(_as_seen_section(live, retr, raw_db)))
     return "\n".join(lines)
+
+
+def _net(t):
+    return float(t.get("net_krw") or 0)
+
+
+def _grp_row(label, xs):
+    n = len(xs)
+    win = sum(1 for t in xs if _net(t) > 0)
+    tot = sum(_net(t) for t in xs)
+    return "| %s | %d | %d | %s | %s | %s |" % (
+        label, n, win, ("%.0f%%" % (100.0 * win / n)) if n else "-", _fmt(tot), _fmt(tot / n) if n else "-")
+
+
+def _r2_econ_section(live, days):
+    """[598차] R3 중단 판정 뒤 「R2 만 남으면」을 결과 보기 전에 보이게 둔다."""
+    md = [d for d in days if d["variant"] == "MAIN"]
+    if not md:
+        return ["- 판정 기록 없음"]
+    dirs = [d for d in md if d.get("bias")]
+    hold = [d for d in md if not d.get("bias")]
+    conf = [d for d in dirs if d.get("r2_status") == "CONFIRMED"]
+    r2 = [t for t in live if t["variant"] == "MAIN" and t["rule"] == "R2" and t["status"] == "CLOSED"]
+    out = ["| 항목 | 값 |", "|---|---|",
+           "| 판정 거래일 | %d |" % len(md),
+           "| R1 보류일(콜−풋 절댓값 < %d 또는 미수집) | %d (%.0f%%) |" % (
+               spec.BIAS_MIN, len(hold), 100.0 * len(hold) / len(md)),
+           "| R1 방향일 | %d |" % len(dirs),
+           "| R2 확정 / 방향일 | %d / %d%s |" % (
+               len(conf), len(dirs), (" = %.0f%%" % (100.0 * len(conf) / len(dirs))) if dirs else ""),
+           "| R2 닫힌 거래 · 승 · 순손익 | %d · %d · %s원 |" % (
+               len(r2), sum(1 for t in r2 if _net(t) > 0), _fmt(sum(_net(t) for t in r2)))]
+    out.append("")
+    out.append("- 보류일에는 R2 가 없다 — R3 가 중단되면 그날 신동은 거래하지 않는다. 판정 전에 이 비율을 본다.")
+    return out
+
+
+def _r3_split_section(live, days):
+    bias = {d["trade_date"]: d.get("bias") for d in days if d["variant"] == "MAIN"}
+    r3 = [t for t in live if t["variant"] == "MAIN" and t["rule"] == "R3" and t["status"] == "CLOSED"]
+    if not r3:
+        return ["- MAIN R3 닫힌 거래 없음"]
+    out = ["| 구분 | 거래 | 승 | 승률 | 순손익(원) | 거래당 |", "|---|---|---|---|---|---|"]
+    out.append(_grp_row("정상 진입(맥점 이쪽 편)", [t for t in r3 if _is_broken(t) is False]))
+    out.append(_grp_row("**깨진 맥점 진입** (X4NFA 차단 대상)", [t for t in r3 if _is_broken(t)]))
+    miss = [t for t in r3 if _is_broken(t) is None]
+    if miss:
+        out.append("| 맥점 미기록(미측정) | %d | | | | |" % len(miss))
+
+    def al(t):
+        b = bias.get(t["trade_date"])
+        return None if not b else (int(t["side"]) == int(b))
+    out.append(_grp_row("R1 방향과 같음", [t for t in r3 if al(t) is True]))
+    out.append(_grp_row("R1 방향과 반대", [t for t in r3 if al(t) is False]))
+    out.append(_grp_row("R1 보류일", [t for t in r3 if al(t) is None]))
+    out.append("")
+    out.append("- 기록만 한다 — 이 표로 규격을 바꾸지 않는다(사전등록 §6). R1 정렬은 조건으로 올리지 않는다(다중비교).")
+    return out
+
+
+def _as_seen_section(live, retr, raw_db):
+    con = None
+    if raw_db and os.path.exists(raw_db):
+        con = sqlite3.connect("file:%s?mode=ro" % raw_db.replace("\\", "/"), uri=True)
+    out = ["| 변형 | 채점 순손익(닫힌 거래) | 철회 신호(라이브) | 철회분 보이는 대로 | **보이는 대로 합** |",
+           "|---|---|---|---|---|"]
+    try:
+        for v in spec.VARIANTS:
+            closed = sum(_net(t) for t in live if t["variant"] == v and t["status"] == "CLOSED")
+            rv = [t for t in retr if t["variant"] == v and t.get("source") == "live"]
+            vals = [_as_seen_net(t, con) for t in rv]
+            ok = [x for x in vals if x is not None]
+            miss = len(vals) - len(ok)
+            out.append("| %s | %s | %d%s | %s | **%s** |" % (
+                v, _fmt(closed), len(rv), (" (미측정 %d)" % miss) if miss else "",
+                _fmt(sum(ok)) if rv else "-", _fmt(closed + sum(ok))))
+    finally:
+        if con is not None:
+            con.close()
+    out.append("")
+    out.append("- 철회 신호 = 화면에 진입으로 떴다가 원천 흐름 재수신으로 사라진 거래. 채점은 이것을 뺀다(사전등록 §4).")
+    out.append("- 보이는 대로 = 그 신호를 따라 탐지 시각 종가에 들어가, 철회를 알아챈 직전 완성봉 종가에 "
+               "시장가로 나왔다고 본 값. 원천 봉이 없으면 미측정.")
+    return out
 
 
 def _r1_section(hits):
@@ -231,6 +375,11 @@ def _late_judge(live, days, variant):
     out.append("|---|---|---|---|")
     for v, m in (("MAIN", mm), (variant, xx)):
         out.append("| %s | %d | %s | %s |" % (v, len(m), _fmt(sum(m.values())), _fmt(min(m.values()))))
+    if variant == "SHADOW_X4NFA":
+        # [598차] A 필터 몫 — 표시만(판정 기준 아님)
+        bb = by_day(spec.X4NFA_BASE_VARIANT)
+        out.append("| %s (참고 — A 필터 몫, 판정 아님) | %d | %s | %s |" % (
+            spec.X4NFA_BASE_VARIANT, len(bb), _fmt(sum(bb.values())), _fmt(min(bb.values()))))
     if len(xdays) < spec.X4NF_JUDGE_AFTER_DAYS:
         out.append("- 판정: **대기** — %d/%d 거래일" % (len(xdays), spec.X4NF_JUDGE_AFTER_DAYS))
     else:

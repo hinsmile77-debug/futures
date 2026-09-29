@@ -38,7 +38,9 @@ def test_report_matches_engine_and_attributes_causes(tmp_path):
     r = _build("2026-09-28", tmp_path)
     if not r["ok"]:
         pytest.skip("그날 봉이 이 PC DB 에 없다")
-    net = {v: round(s["net"]) for v, s in r["sums"].items()}
+    # [598차] 비교는 632차 당시 네 변형만 — 뒤에 붙은 섀도(X4NFA)는 test_598 이 따로 고정한다
+    net = {v: round(s["net"]) for v, s in r["sums"].items()
+           if v in ("MAIN", "SHADOW_E2F2", "SHADOW_X4NF", "SHADOW_TR44")}
     assert net == pytest.approx({"MAIN": 330667, "SHADOW_E2F2": 1393500,
                                  "SHADOW_X4NF": 828674, "SHADOW_TR44": 330667}, abs=2)
     md = open(r["md_path"], encoding="utf-8").read()

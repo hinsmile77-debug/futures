@@ -148,9 +148,10 @@ def test_scorecard_excludes_build_day_and_waits(tmp_path):
 
 # ── E. [632차 후속] SHADOW_TR44 — R3 트레일 4/4 (비교 기록용) ──────────────────
 def test_tr44_preregistration():
-    assert spec.VARIANTS[-1] == "SHADOW_TR44"
+    assert spec.VARIANTS.index("SHADOW_TR44") == 3      # [598차] 뒤에 SHADOW_X4NFA 가 붙었다
     assert (spec.TR44_ACT, spec.TR44_DIST) == (4.0, 4.0)
-    assert spec.LATE_SHADOW_START == {"SHADOW_X4NF": "2026-09-29", "SHADOW_TR44": "2026-09-29"}
+    assert spec.LATE_SHADOW_START == {"SHADOW_X4NF": "2026-09-29", "SHADOW_TR44": "2026-09-29",
+                                      "SHADOW_X4NFA": "2026-09-30"}   # [598차]
 
 
 def _frame(bars):

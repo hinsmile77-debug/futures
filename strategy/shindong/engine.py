@@ -225,7 +225,9 @@ def run_day(d: DayFrame, L, variant: str = "MAIN") -> Dict[str, Any]:
     """하루 판정. 반환: {"decision": {...}, "trades": [...]}."""
     e2 = f2 = variant == "SHADOW_E2F2"
     # [632차] SHADOW_X4NF — R3 만 바꾼다: 1차 목표 X4 + 같은 맥점 방향 뒤집기(flip) 금지. R2 는 MAIN 과 같다.
-    x4nf = variant == "SHADOW_X4NF"
+    # [MW0602 598차] SHADOW_X4NFA — X4NF 전부 + 깨진 맥점 진입 금지(A). R2 는 MAIN 과 같다.
+    broken_guard = variant == "SHADOW_X4NFA"
+    x4nf = variant == "SHADOW_X4NF" or broken_guard
     # [632차 후속] SHADOW_TR44 — MAIN 과 같은 진입·목표에 R3 만 트레일(+4pt 발동 · 4pt 간격). 비교 기록용.
     tr44 = (S.TR44_ACT, S.TR44_DIST) if variant == "SHADOW_TR44" else None
     lvl_side: Dict[float, int] = {}     # 맥점 → 그 맥점에서 마지막으로 **진입한** 방향
@@ -256,7 +258,7 @@ def run_day(d: DayFrame, L, variant: str = "MAIN") -> Dict[str, Any]:
             bc, bp, bs = d.call[S.CONF_BASE], d.put[S.CONF_BASE], d.sp[S.CONF_BASE]
             conf = None
             for t in d.between(S.CONF_START, S.CONF_END):
-                if t not in d.sp:
+                if t not in d.sp or t not in d.c:    # [598차] 봉 없는 분엔 진입가가 없다
                     continue
                 dc, dp, ds = d.call[t] - bc, d.put[t] - bp, d.sp[t] - bs
                 if bias < 0 and dc > 0 and dp <= 0 and ds >= S.CONF_MIN:
@@ -267,7 +269,10 @@ def run_day(d: DayFrame, L, variant: str = "MAIN") -> Dict[str, Any]:
                     break
             if conf:
                 dec["r2"], dec["r2_ts"] = "CONFIRMED", conf
-                seg = d.between(S.CONF_BASE, conf)
+                # [MW0602 598차] 봉이 없는 분(예: 09:00 1분봉 결손 — 2026-09-29 실측)은 흐름만 있고
+                #   h/l 가 없다. 예전엔 KeyError 로 그날 재생 전체가 죽었다(첫 실패만 WARNING, 이후 억제).
+                #   봉이 있는 분만 쓴다 — 정상일(봉 전부 있음)은 결과가 한 원도 바뀌지 않는다.
+                seg = [k for k in d.between(S.CONF_BASE, conf) if k in d.h]
                 ex = (max(d.h[k] for k in seg) + S.OR_STOP_BUF if bias < 0
                       else min(d.l[k] for k in seg) - S.OR_STOP_BUF)
                 e = d.c[conf]
@@ -322,6 +327,8 @@ def run_day(d: DayFrame, L, variant: str = "MAIN") -> Dict[str, Any]:
         if not ent:
             continue
         e = d.c[ent]
+        if broken_guard and side * (e - L0) <= 0:
+            continue                    # 반전 대기 중 가격이 맥점을 다시 넘어감 — 되밀림 신호 무효
         span = d.between(t, ent)
         stop = (max(L0 + S.LV_STOP_BUF, max(d.h[k] for k in span) + S.EXT_STOP_BUF) if side < 0
                 else min(L0 - S.LV_STOP_BUF, min(d.l[k] for k in span) - S.EXT_STOP_BUF))

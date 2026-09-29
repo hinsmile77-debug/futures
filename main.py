@@ -650,6 +650,8 @@ class TradingSystem:
         # [MW0601 626차] 신동 가상거래 — 로그 중복 억제용 「이미 알린 상태」 · 경고 1회.
         #   {trade_key: 알린 상태 문자열}. 날짜가 바뀌면 비운다(_sd_day).
         self._sd_seen = {}
+        # [MW0602 598차] 마지막으로 알린 거래 행 — 재계산에서 사라진(RETRACTED) 거래를 로그로 남길 때 쓴다.
+        self._sd_last = {}
         self._sd_day = None
         self._sd_warned = False
         # [MW0601 612차 후속5] 수급 첫 호출 실패 시 조기 재시도 — 세션당 1회.
@@ -4181,6 +4183,7 @@ class TradingSystem:
             if self._sd_day != day:
                 self._sd_day = day
                 self._sd_seen = {}
+                self._sd_last = {}
             payload = _sd.run_and_store(
                 day,
                 raw_db=runtime_settings.RAW_DATA_DB,
@@ -4210,6 +4213,22 @@ class TradingSystem:
                     # `%+,.0f` 는 printf 포맷이 아니다(ValueError) — format() 을 쓴다
                     format(float(t.get("net_krw") or 0.0), "+,.0f"), t.get("product"),
                     str(t.get("detected_at") or "-")[11:19])
+                self._sd_last[t["trade_key"]] = t
+            # [MW0602 598차] 재계산에서 사라진 거래(RETRACTED) — 지금까지는 로그가 없어
+            #   「보유 중인데 또 진입」처럼 읽혔다(9/29 3건). DB 는 이미 RETRACTED 로 남기므로
+            #   여기서는 알린 적 있는 거래가 목록에서 빠졌을 때 한 줄만 적는다(계측 4원칙 ③).
+            _cur_keys = {t["trade_key"] for t in payload.get("trades") or []}
+            for _k, _t in list(self._sd_last.items()):
+                if _k in _cur_keys or self._sd_seen.get(_k) == "RETRACTED":
+                    continue
+                self._sd_seen[_k] = "RETRACTED"
+                logger.info(
+                    "[Shindong] %s %s RETRACTED 진입 %.2f(%s) | 철회 전 상태 %s · 현재가 %s · 기준분 %s | "
+                    "원천 흐름 재수신으로 신호 소멸 — 채점 표본 제외",
+                    _t["rule"], "매수" if _t["side"] > 0 else "매도", _t["entry_px"],
+                    str(_t["entry_ts"])[11:16], _t["status"],
+                    ("%.2f" % payload["last_close"]) if payload.get("last_close") is not None else "-",
+                    payload.get("horizon") or "-")
             if self.dashboard is not None and hasattr(self.dashboard, "update_shindong"):
                 self.dashboard.update_shindong(payload)
             # [MW0602 590차] 신동 청산 시 손익 추이 패널 갱신 — 590차부터 dev 패널이
