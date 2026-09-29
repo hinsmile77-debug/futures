@@ -233,8 +233,19 @@ REM ============================================================
 ECHO.
 ECHO [INFO] !BROKER_LABEL! preflight 점검 중...
 IF EXIST "!WORKDIR!\scripts\cybos_plus_preflight.py" (
-    python "!WORKDIR!\scripts\cybos_plus_preflight.py"
+    REM [2026-09-29] preflight 출력(CHECK 4/4 계좌목록 포함)을 로그에도 남긴다 - start_mireuk.bat 와 동일.
+    REM 파일 리다이렉트 시 py37 이 cp949 로 쓰므로 이 호출에만 UTF-8 을 강제하고 복원한다.
+    SET "_PF_OUT=!TEMP!\creon_preflight_!RANDOM!.txt"
+    SET "_PF_OLDENC=!PYTHONIOENCODING!"
+    SET "PYTHONIOENCODING=utf-8"
+    python "!WORKDIR!\scripts\cybos_plus_preflight.py" > "!_PF_OUT!" 2>&1
     SET "PREFLIGHT_ERR=!ERRORLEVEL!"
+    SET "PYTHONIOENCODING=!_PF_OLDENC!"
+    IF EXIST "!_PF_OUT!" (
+        TYPE "!_PF_OUT!"
+        TYPE "!_PF_OUT!" >> "!LOG!"
+        DEL "!_PF_OUT!" >NUL 2>&1
+    )
     IF "!PREFLIGHT_ERR!"=="1" (
         ECHO [ERROR] !BROKER_LABEL! COM 연결 실패.
         ECHO [ERROR] COM connection failed. >> "!LOG!"

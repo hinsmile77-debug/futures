@@ -25,7 +25,12 @@
 초반 줄이 걸려 33일이 오탐된다(설계 중 실제로 밟은 실패).
 
 **D2 — 체인 불연속.** 입출금이 없다면 `전일 익일가 == 당일 예탁`이어야 한다.
-어긋나면 (a) 롤오버 오염 (b) 실제 입출금 (c) 결측 중 하나다.
+어긋나면 (a) 롤오버 오염 (b) 실제 입출금 (c) 결측 (d) **계좌 교체** 중 하나다.
+(d)는 `KNOWN_ACCOUNT_SWITCHES`에 등록된 날만 해당하며, 불연속 건수·종료코드에서
+빠지되 출력에는 계속 표시된다(숨기지 않는다 — 계측 4원칙 ③).
+⚠ `daily_broker_pnl`에는 계좌 컬럼이 없다 — 교체 경계 앞뒤의 예탁금 수준은
+서로 다른 계좌의 값이다. 일별 `broker_net_krw`(당일 익일가 − 당일 예탁)는
+하루 안에서 닫히므로 교체의 영향을 받지 않는다.
 
 **D3 — 거래일 판정 음성 캐싱으로 라이브 저장이 통째로 죽는 증상.**
 `is_krx_trading_date()`가 음성을 영구 캐시하면, 장전 08:41 첫 호출(당일
@@ -243,6 +248,15 @@ def _live_guard_present():
     return base, restart
 
 
+# 계좌 교체일 → 사유. 이 날의 체인 불연속은 입출금·오염이 아니라 다른 계좌의 예탁금이다.
+# 등록하면 strategy_events 에도 METRIC_REDEFINITION 마커를 남길 것.
+KNOWN_ACCOUNT_SWITCHES = {
+    # MW0602: CREON 선물 모의투자 3개월 운영한도 만료 → 재신청.
+    # 777019873 → 777020696 (잔고 30,000,000 으로 초기화). strategy_events id=108.
+    "2026-09-29": "모의계좌 만료·재신청 777019873→777020696 (잔고 3,000만 초기화)",
+}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--since", default="", help="YYYY-MM-DD 이후만")
@@ -254,6 +268,7 @@ def main():
     db = _db_rows()
     traded = _traded_dates()
     days, contaminated, chain_breaks, skip_days = {}, [], [], []
+    account_switches = []
     for stamp, lines in _iter_log_days():
         date = "%s-%s-%s" % (stamp[:4], stamp[4:6], stamp[6:8])
         if args.since and date < args.since:
@@ -288,7 +303,11 @@ def main():
             prev_date, prev_next = date, nxt
             continue
         if prev_next is not None and abs(dep - prev_next) > _CHAIN_EPS:
-            chain_breaks.append((prev_date, prev_next, date, dep, dep - prev_next))
+            brk = (prev_date, prev_next, date, dep, dep - prev_next)
+            if date in KNOWN_ACCOUNT_SWITCHES:
+                account_switches.append(brk)
+            else:
+                chain_breaks.append(brk)
         prev_date, prev_next = date, nxt
 
     guard = _guard_present()
@@ -298,6 +317,10 @@ def main():
                           "last_rollover_line": t} for d, a, b, t in contaminated],
         "chain_breaks": [{"prev_date": a, "prev_next_deposit": b, "date": c,
                           "deposit": d, "gap": g} for a, b, c, d, g in chain_breaks],
+        "known_account_switches": [
+            {"prev_date": a, "prev_next_deposit": b, "date": c, "deposit": d,
+             "gap": g, "reason": KNOWN_ACCOUNT_SWITCHES[c]}
+            for a, b, c, d, g in account_switches],
         "skip_non_trading_days": [{"date": d, "count": n} for d, n in skip_days],
         "d1_guard_present": guard,
     }
@@ -335,6 +358,11 @@ def main():
         print("     원인 후보: (a) 롤오버 오염 → D1 참조  (b) 실제 입출금  (c) 결측")
     else:
         print("  ✅ 불연속 없음")
+    if account_switches:
+        print("  ℹ 알려진 계좌 교체 %d건 (불연속 건수·종료코드에서 제외)" % len(account_switches))
+        for a, b, c, d, g in account_switches:
+            print("     %s 익일가 %14s  vs  %s 예탁 %14s   차 %14s   — %s"
+                  % (a, W(b), c, W(d), W(g), KNOWN_ACCOUNT_SWITCHES[c]))
 
     print("")
     print("── D3. 거래일 판정 음성 캐싱 (라이브 저장 무동작) ──")

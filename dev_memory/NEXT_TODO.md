@@ -24114,3 +24114,37 @@ SizerMatch로 설명됨(기존 관측 연속). P0 없음 · P1 신규 0건 · P2
 - [x] G-1 같은 국면 선행 실행 자동 감지 — `collect_evidence.py:prior_run_state()` + `tests/test_595_collector_prior_run.py` (§2·§11)
 - [ ] (사용자) 계정 예약 6개 중 중복 3개 삭제 — 1-1 / O-85. G-1 은 탐지일 뿐 해결이 아니다
 - [ ] O-85 다음 장전: G-1 적신호가 실제 중복 발화일에 떴는지 확인(두 번째 세션이 수집기를 돌렸을 때만 뜬다)
+
+## 2026-09-29 (MW0602 596차 — 일일 점검: 장전)
+
+### 이월 처리 결과 (전일 → 오늘 장전)
+- O-85(예약 중복 6개 잔존): 🔄 지속(2일째) — 계정 예약 목록 재확인 결과 6개 전부 활성. 오늘 실제로 `Mireuk daily check pre`(08:55)·`Mireuk premarket check`(08:57) 둘 다 오늘자로 소비됨(next_run_at이 내일로 넘어감) — 중복 발화 리스크가 이론이 아니라 오늘 실측됐다.
+- O-86(launcher_guard 연속 발동일수): 관측 불가(오늘) — launcher가 preflight에서 막혀 guard 로직 자체가 안 돎. 카운트 갱신하지 않음.
+
+### 신규 관측 등록
+- O-88: 08:55/08:57 중복 트리거 소비가 실제 두 세션 충돌을 일으켰는지 — 증거파일은 1개뿐이라 판정 보류. 다음 거래일도 같은 패턴이면 P1 격상 검토.
+- O-89: 08:50:06 main.py(PID=6672)를 누가/무엇이 실행했는지 불명(09:01 GUARD가 발견 후 종료·재기동). 사용자 확인 필요.
+- O-90: main.py 재기동 시 당일 로그 파일(`logs/{d}_SYSTEM.log` 등)이 append가 아니라 새로 열리는 것으로 보임 — 하루에 여러 번 재기동하면 앞 인스턴스 기록이 사라진다(오늘 08:50~09:01 인스턴스 기록 소실). 다음 재기동 시 재확인, 사실이면 P1 관측 훼손 이상점으로 승격.
+
+### Fix/고도화 신규 항목 (계획만, 미적용 — 장전 원칙)
+- [ ] F-596-1 (P1) preflight(`scripts/cybos_plus_preflight.py`) stdout을 `start_mireuk.bat`/`start_mireuk_CREON.bat`의 launcher 로그(`:L`)에 캡처 — 대응 이상점 1-2
+- [ ] F-596-2 (P2, 결정 필요) preflight exit 4(계좌 불일치) 시 PC 로컬 팝업 외 원격 알림 채널 검토 — 알림 채널 선택은 사용자 결정 사항
+- [ ] G-596-1 (이번 주 제안) preflight exit 4 후 60초 대기·1회 한정 자동 재시도 검토 — 자동 계좌 채택은 절대 추가하지 않음(2026-08-06 사고 재발 방지)
+- [ ] (사용자) 08:50~09:01 main.py 기동 경위 확인 — O-89 판정에 필요
+
+### 오늘 하루 최종 결과 (장전 시점 — 장중·장후가 갱신)
+- P0 1건(1-1, main.py 미기동) → **09:01:29 해소 확인**(같은 세션 내 실시간 확인)
+- P1 1건(1-2, preflight stdout 미캡처, 관측 훼손) — 지속 예정(F-596-1로 계획)
+- P2 1건(1-3 = O-85, 예약 중복) — 지속(2일째)
+- 커밋 대기: `dev_memory/DECISION_LOG.md`, `dev_memory/NEXT_TODO.md`, `docs/정기점검/매일점검/MW0602-20260929-점검리포트.md`, `docs/정기점검/매일점검/evidence_MW0602-20260929_pre.md`, (기존 미커밋 `docs/신동거래/일일/신동_일일_MW0602_20260928.md`·`.svg` 포함 여부는 사용자 판단)
+
+## 2026-09-29 (MW0602 596차 후속 — 모의계좌 만료 후속)
+
+- [x] F-596-1 preflight 출력 런처 로그 캡처 — `start_mireuk.bat`·`start_mireuk_CREON.bat`·`LAUNCH_API.bat` 3종 (DECISION_LOG 596차 후속)
+- [x] 자동로그인 브라우저 창 오인 제외 — `scripts/cybos_autologin.py` `_is_browser_window()`
+- [x] 계좌 교체 불연속 마커 `strategy_events` id=108 + `broker_net_chain_audit.py:KNOWN_ACCOUNT_SWITCHES`
+- [ ] O-91 다음 exit 4 발생일(또는 리허설)에 런처 로그에 `[CHECK 4/4] 계좌목록=` 줄이 실제로 남는지 확인 — 하니스 검증만 됐고 라이브 미확인
+- [ ] O-92 다음 CREON 자동로그인 때 `creon_autologin_diag.log`에 `브라우저 창 제외` 줄 / 오동작 없음 확인 (Chrome 이 열려 있는 날)
+- [ ] (2026-12-29) 모의계좌 만료 재발 예정 — 재신청 → secrets → PlusDisconnect → LAUNCH_API → start_mireuk, 그리고 `KNOWN_ACCOUNT_SWITCHES`·마커 동반
+- [ ] (검토) 체인 진단 D3가 기동 직후 `SKIP_NON_TRADING` 1건(같은 날 이후 OK)을 적신호로 세는 과민성 — 별건
+- 참고: 장전 기록의 G-596-1(exit 4 후 1회 자동 재시도)은 만료가 원인일 때 효과가 없다(재신청 전엔 재시도해도 같은 계좌). 채택 여부는 원래대로 주간회의.

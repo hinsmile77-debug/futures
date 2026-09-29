@@ -376,8 +376,21 @@ REM ============================================================
 IF EXIST "!WORKDIR!\scripts\cybos_plus_preflight.py" (
     ECHO.
     CALL :L "[INFO] !BROKER! preflight 점검 중..."
-    "!PY32!" "!WORKDIR!\scripts\cybos_plus_preflight.py"
+    REM [2026-09-29] preflight 출력(특히 CHECK 4/4 계좌목록)을 런처 로그에도 남긴다.
+    REM 종전에는 콘솔에만 찍혀, 무인 기동이 exit 4 로 멈췄을 때 로그의 HINT 가
+    REM 가리키는 "위 preflight 출력" 이 어디에도 없었다(계측 4원칙 3).
+    REM 파일 리다이렉트 시 py37 이 cp949 로 쓰므로 이 호출에만 UTF-8 을 강제하고 복원한다.
+    SET "_PF_OUT=!TEMP!\mireuk_preflight_!RANDOM!.txt"
+    SET "_PF_OLDENC=!PYTHONIOENCODING!"
+    SET "PYTHONIOENCODING=utf-8"
+    "!PY32!" "!WORKDIR!\scripts\cybos_plus_preflight.py" > "!_PF_OUT!" 2>&1
     SET "PREFLIGHT_ERR=!ERRORLEVEL!"
+    SET "PYTHONIOENCODING=!_PF_OLDENC!"
+    IF EXIST "!_PF_OUT!" (
+        TYPE "!_PF_OUT!"
+        TYPE "!_PF_OUT!" >> "!_BLOG!"
+        DEL "!_PF_OUT!" >NUL 2>&1
+    )
     IF "!PREFLIGHT_ERR!"=="1" (
         CALL :L "[ERROR] Preflight: COM 연결 실패."
         TIMEOUT /T 30

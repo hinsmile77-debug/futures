@@ -550,9 +550,50 @@ def _normalize_title(text):
     return (text or u"").replace(" ", "").upper()
 
 
+# 브라우저 프로세스 창은 브로커 팝업 후보에서 제외한다 (2026-09-29).
+# 모의투자 재신청 페이지(Chrome, 제목 '크레온-모의투자 - Chrome')가 키워드 '모의투자'
+# 부분일치로 팝업 후보가 되어, 연결 대기 120초 내내 그 창에 Enter 가 반복 전송되고
+# 로그인이 진행되지 않았다. 판정은 창 클래스가 아니라 소유 프로세스 이름으로 한다 —
+# CREON 이 내장 Chromium(CEF)을 쓰더라도 그 창은 브로커 프로세스 소유라 걸리지 않는다.
+_BROWSER_EXES = frozenset([
+    "chrome.exe", "msedge.exe", "firefox.exe", "whale.exe", "iexplore.exe",
+    "opera.exe", "brave.exe", "naverwhale.exe",
+])
+
+
+def _window_process_name(hwnd):
+    """hwnd 소유 프로세스의 실행파일 이름(소문자). 조회 실패 시 None.
+
+    32-bit 파이썬에서 64-bit 프로세스도 읽히도록 QueryFullProcessImageNameW 를 쓴다.
+    """
+    try:
+        pid = ctypes.wintypes.DWORD()
+        ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if not pid.value:
+            return None
+        h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid.value)  # QUERY_LIMITED_INFORMATION
+        if not h:
+            return None
+        try:
+            buf = ctypes.create_unicode_buffer(1024)
+            size = ctypes.wintypes.DWORD(1024)
+            if not ctypes.windll.kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+                return None
+            return os.path.basename(buf.value).lower()
+        finally:
+            ctypes.windll.kernel32.CloseHandle(h)
+    except Exception:
+        return None
+
+
+def _is_browser_window(hwnd):
+    return _window_process_name(hwnd) in _BROWSER_EXES
+
+
 def _find_window_by_keywords(keywords, require_visible=True):
     normalized_keywords = tuple(_normalize_title(kw) for kw in keywords)
     found = []
+    skipped = []
 
     def _enum(hwnd, _):
         try:
@@ -563,6 +604,9 @@ def _find_window_by_keywords(keywords, require_visible=True):
                 return
             normalized = _normalize_title(title)
             if any(kw in normalized for kw in normalized_keywords):
+                if _is_browser_window(hwnd):
+                    skipped.append(title)
+                    return
                 found.append((hwnd, title))
         except Exception:
             pass
@@ -571,7 +615,19 @@ def _find_window_by_keywords(keywords, require_visible=True):
         win32gui.EnumWindows(_enum, None)
     except Exception:
         pass
+    _log_browser_skips(skipped)
     return found
+
+
+_BROWSER_SKIP_LOGGED = set()
+
+
+def _log_browser_skips(titles):
+    """제외한 브라우저 창을 제목당 1회만 남긴다 (매초 루프 스팸 방지)."""
+    for t in titles:
+        if t not in _BROWSER_SKIP_LOGGED:
+            _BROWSER_SKIP_LOGGED.add(t)
+            print("[INFO] 브라우저 창 제외(브로커 팝업 아님): '%s'" % t)
 
 
 def _click_creon_id_tab(hwnd):
@@ -1931,6 +1987,9 @@ def _wait_for_connection_and_mock(total_timeout=120):
                                 if 100 < ww_ < 800:
                                     t = win32gui.GetWindowText(h)
                                     if u"모의투자" in t or u"선택" in t:
+                                        if _is_browser_window(h):
+                                            _log_browser_skips([t])
+                                            return
                                         _small_popup_ref[0] = h
                             except Exception:
                                 pass
