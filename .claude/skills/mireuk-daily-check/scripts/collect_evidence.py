@@ -519,11 +519,19 @@ def run_git(root, args, timeout=25):
       이 삼키기만 해 git 프로세스가 **고아로 남았다**. 그게 인덱스 쓰기 명령이었다면
       정확히 2026-08-21 사고(0바이트 `index.lock` 53시간 잔존)를 만든다.
       ⚠ 사유를 반환 문자열에 남긴다 — 계측 4원칙 ④(폴백 가시화).
+
+    [MW0601 641차 / 638-1] 환경변수 `GIT_OPTIONAL_LOCKS=0` 을 **함께** 건다.
+      2026-09-29 12:27 장중 수집 도중 `git diff` 가 실패하고 0바이트 락이 남았다
+      (옵션을 달고도). 플래그와 환경변수는 git 안에서 같은 스위치지만, 플래그는
+      **최상위 git 에만** 걸리고 환경변수는 git 이 띄우는 **자식 git**(외부 diff·
+      필터·서브모듈)까지 상속된다. 원인이 확정된 것은 아니다 — 이중 방어다.
     """
     p = None
     try:
+        env = dict(os.environ)
+        env["GIT_OPTIONAL_LOCKS"] = "0"
         p = subprocess.Popen(["git", "--no-optional-locks"] + list(args), cwd=root,
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
         out, err = p.communicate(timeout=timeout)
         dec = lambda b: b.decode("utf-8", "replace").strip()
         return dec(out) if p.returncode == 0 else "(git 실패 rc=%s) %s" % (p.returncode, dec(err)[:300])
@@ -620,11 +628,16 @@ def git_change_profile(root):
     Returns:
         dict(tracked_changed, real, code, eol, untracked, deleted, autocrlf, measured)
         `measured=False` 면 git 호출이 실패한 것 — 0 과 구분한다(계측 4원칙 ②).
+        `fail_reason` [641차 / 638-1] 실패한 **명령 + run_git 반환(rc·stderr)**.
+        종전에는 「git diff 실패」만 남아 어느 하위 명령이 왜 죽었는지 알 수 없었다
+        (2026-09-29 12:27 — 그 실패 직후 인덱스락이 남았는데 원인을 특정하지 못했다).
     """
     out = {"tracked_changed": None, "real": None, "code": None, "eol": None,
-           "untracked": 0, "deleted": 0, "autocrlf": "미설정", "measured": False}
+           "untracked": 0, "deleted": 0, "autocrlf": "미설정", "measured": False,
+           "fail_reason": None}
     status = run_git(root, ["status", "--porcelain"])
     if status.startswith("(git "):
+        out["fail_reason"] = "git status --porcelain → %s" % truncate(status, 240)
         return out
     for line in status.splitlines():
         if not line.strip():
@@ -636,8 +649,11 @@ def git_change_profile(root):
             out["deleted"] += 1
 
     def _files(args):
-        raw = run_git(root, ["diff", "--numstat"] + args)
+        cmd = ["diff", "--numstat"] + args
+        raw = run_git(root, cmd)
         if raw.startswith("(git "):
+            if out["fail_reason"] is None:
+                out["fail_reason"] = "git %s → %s" % (" ".join(cmd), truncate(raw, 240))
             return None
         return [l.split("\t")[-1] for l in raw.splitlines() if l.strip()]
 
@@ -2016,7 +2032,7 @@ def wer_crash_section(root, cfg, day, out):
     except Exception as e:
         A("(판정 모듈 로드 실패 — **미측정**) `%s`" % e)
         A("")
-        return
+        return None
 
     day_txt = day.strftime("%Y-%m-%d")
     lau = launcher_processes(root, day.strftime("%Y%m%d"))
@@ -2037,15 +2053,26 @@ def wer_crash_section(root, cfg, day, out):
     else:
         _fau_txt = "측정됨 — PID %d개" % len(fau["by_pid"])
     A("| `crash_fault.log`(정상종료 기록) | %s |" % _fau_txt)
+    # [641차 / 637-2] 프로세스가 **살아남은** 네이티브 오류. 이 파일은 파일명에 날짜가
+    # 없어 §1 당일 인벤토리에 안 잡히므로, 여기서 세지 않으면 어느 절에도 안 뜬다.
+    if not fau["measured"]:
+        _fat_txt = "**미측정** — %s" % fau["reason"]
+    elif not fau.get("covered", bool(fau["by_pid"])):
+        _fat_txt = "**그날 행 없음** — 「0건」으로 읽지 말 것"
+    else:
+        _fat_txt = "측정됨 — **%d건**" % (fau.get("fatal_total") or 0)
+    A("| `crash_fault.log`(`Windows fatal exception` — 살아남은 것 포함) | %s |" % _fat_txt)
     A("| Windows WER(네이티브 예외) | %s |"
       % ("측정됨 — 응용 프로그램 오류 %d건(전체 프로세스)" % len(wer["events"])
          if wer["measured"] else "**미측정** — %s" % wer["reason"]))
     A("")
+    for _line in fatal_exception_lines(fau):
+        A(_line)
 
     if not lau["measured"]:
         A("- 런처 축이 없어 PID 대사를 할 수 없다. **「크래시 0건」이 아니라 「재지 못했다」**이다.")
         A("")
-        return
+        return fau
 
     rec = reconcile(lau, wer, fau)
     A("| 미륵이 PID | 기동 | 정상종료 기록 | WER 네이티브 예외 | 판정 |")
@@ -2103,6 +2130,43 @@ def wer_crash_section(root, cfg, day, out):
       "`TerminateProcess`(하드킬)는 전부 이벤트를 안 남긴다. 종료 *의도*는 "
       "618차가 넣은 `[Shutdown] intent=` 줄과 함께 봐야 갈린다.")
     A("")
+    return fau
+
+
+#: [641차 / 637-2] 정규장 개시. 이 시각 이후의 네이티브 오류는 부팅 구간이 아니다.
+_REGULAR_OPEN = "09:00:00"
+
+
+def fatal_exception_lines(fau):
+    """`crash_fault_events()` 의 `fatal` 목록을 PID 별 한 줄씩 렌더링한다.
+
+    ⚠ 시각은 **발생 시각이 아니라 하한**이다 — faulthandler 머리줄에 시각이 없어
+    직전 표식(`[START]`·`[TS]`)의 시각을 붙인 것이다. 그래서 "이후" 로 적는다.
+    """
+    if not fau or not fau.get("measured"):
+        return []
+    rows = []
+    for pid, rec in sorted(fau.get("by_pid", {}).items()):
+        fat = rec.get("fatal") or []
+        if not fat:
+            continue
+        kinds = {}
+        for f in fat:
+            kinds[f["kind"]] = kinds.get(f["kind"], 0) + 1
+        after = [f["after"] for f in fat if f["after"]]
+        n_open = len([t for t in after if t >= _REGULAR_OPEN])
+        shown = ", ".join(sorted(set(after))[:6])
+        more = (" … 외 %d개" % (len(set(after)) - 6)) if len(set(after)) > 6 else ""
+        rows.append("- PID %s: `Windows fatal exception` **%d건** (%s) — 직전 표식 시각 %s%s"
+                    " · 정규장(09:00) 이후 **%d건**"
+                    % (pid, len(fat),
+                       ", ".join("%s %d" % (k, v) for k, v in sorted(kinds.items())),
+                       shown or "(표식 없음)", more, n_open))
+    if rows:
+        rows.append("  - 시각은 **발생 하한**이다(머리줄에 시각이 없다). 프로세스가 죽지 않은 "
+                    "오류이므로 위 종료 판정과 별개로 읽을 것. 스택은 `logs/crash_fault.log` 원문")
+        rows.append("")
+    return rows
 
 
 def devmemory_section(root, cfg, day, out):
@@ -2276,6 +2340,9 @@ def build(root, day, phase, cfg, discover_only=False):
     _chg = git_change_profile(root)
     if not _chg["measured"]:
         real_txt = " · 실질 변경 **미측정**(git diff 실패)"
+        if _chg.get("fail_reason"):
+            # [641차 / 638-1] 어느 하위 명령이 어떤 rc·stderr 로 죽었는지 남긴다.
+            real_txt += " — 실패 명령: `%s`" % _chg["fail_reason"]
     else:
         real_txt = (" · 실질 변경 %d건 · 코드(.py) %d건 · EOL 파생 %d건"
                     " (추적변경 %d · 미추적 %d · 삭제 %d · core.autocrlf=%s)"
@@ -2675,7 +2742,7 @@ def build(root, day, phase, cfg, discover_only=False):
     bar_gap_section(root, cfg, day, L)
 
     # ---- 9-d. 프로세스 종료 3축 대사 (620차) ----
-    wer_crash_section(root, cfg, day, L)
+    _fau = wer_crash_section(root, cfg, day, L)
 
     # ---- 10. 정기점검 리포트 폴더 ----
     A("## 10. 정기점검 리포트 현황")
@@ -2957,6 +3024,18 @@ def build(root, day, phase, cfg, discover_only=False):
             if pat in dg.quoted:
                 flags.append("`%s`: **%s** %d건(표본)" % (dg.rel, pat, len(dg.quoted[pat])))
 
+    # [MW0601 641차 / 637-2] `crash_fault.log` 의 살아남은 네이티브 오류. 이 파일은
+    # 날짜 토큰이 없어 위 digests 루프에 안 들어온다 — 2026-09-28 access violation
+    # 4건이 그날 장전 리포트에서 통째로 빠진 경로다. 문턱 없이 1건부터 올린다
+    # (경고 문턱 신설은 G-2 — 표본 부족으로 보류 중, 여기서 정하지 않는다).
+    if _fau and _fau.get("measured") and _fau.get("fatal_total"):
+        _n_open = sum(1 for r in _fau["by_pid"].values() for f in (r.get("fatal") or [])
+                      if f["after"] and f["after"] >= _REGULAR_OPEN)
+        flags.append("`logs/crash_fault.log`: `Windows fatal exception` **%d건** "
+                     "(정규장 09:00 이후 %d건) — 프로세스는 살아남았다. §9 「프로세스 종료 "
+                     "3축 대사」 아래 PID별 표를 볼 것 (641차 637-2)"
+                     % (_fau["fatal_total"], _n_open))
+
     if bad_tag:
         flags.append("PC명 태그 누락 커밋 %d건 — 멀티PC 컨벤션 위반" % len(bad_tag))
     # [MW0601 490차 / F-D] 실질 변경이 0이면 올리지 않는다 — 원시 건수만으로 올리면
@@ -2966,7 +3045,8 @@ def build(root, day, phase, cfg, discover_only=False):
     if dirty:
         if not _chg["measured"]:
             flags.append("미커밋 변경 %d건 — **실질 변경 미측정**(git diff 실패). "
-                         "원시 건수만으로는 착시인지 알 수 없다" % len(dirty))
+                         "원시 건수만으로는 착시인지 알 수 없다 · 실패 명령: `%s`"
+                         % (len(dirty), _chg.get("fail_reason") or "(사유 미기록)"))
         elif _chg["code"]:
             flags.append("미커밋 변경 %d건 (실질 %d건 · **코드(.py) %d건**) — "
                          "코드 변경이 커밋되지 않았다"

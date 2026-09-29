@@ -46825,3 +46825,23 @@ Windows `git status` 수정 개수 배포 전과 동일, 스테이징된 내용 
 ⚠ 세션 번호: 오늘 신동 R3 딥다이브 세션이 `632차`를 달았는데(09-28) `632차`는 09-26 장중 재점검이 이미 썼다 — 번호 충돌. 이 기록은 그 세션의 미커밋 항목을 건드리지 않았다.
 
 **검증**: `tests/test_636_autofix_prune_lock_title.py` 11건 — prune 반환값 == 실제 감소 행수(636-2 배포 후에도 성립하는 불변식) · 롤백 로그 문구 · 이름변경 우회/판정보류 비개입/이중실패 보고/ref 락 비개입/HEAD.lock 우회 · 제목 손상 실물 재현/문구변경 비탐지/임시 저장소 통합. test_483·test_606 동반 실행. 전체 스위트 결과는 리포트 제8부.
+
+## 2026-09-29 (MW0601 641차 — 장후 자동조치: 637-2 crash_fault.log 네이티브 오류 집계 + 638-1 git 실패 진단·이중 방어)
+
+**증상**: ① `logs/crash_fault.log` 는 파일명에 날짜가 없어 수집기 §1 당일 인벤토리에 안 잡히고, `utils/wer_crash.py:crash_fault_events()` 는 `[START]`/`[CLEAN EXIT]` 만 파싱해 **프로세스가 살아남은** `Windows fatal exception` 은 어느 절에도 안 떴다 — 2026-09-28 access violation 4건(부팅 3 + 11:33 장중 1)이 그날 장전 리포트에서 0회 등장. ② 2026-09-29 12:27 장중 수집에서 `git diff` 실패 직후 0바이트 `.git/index.lock` 이 남았는데, 다이제스트엔 「git diff 실패」만 있어 어느 하위 명령이 어떤 rc·stderr 로 죽었는지 특정 불가.
+
+**원인**: ① 파서가 종료 판정(3축 대사) 용도로만 설계돼 「살아남은 오류」 축이 없었다. ② `git_change_profile()` 이 `run_git()` 반환 문자열(이미 rc·stderr 를 담고 있음)을 버리고 `measured=False` 만 남겼다.
+
+**결정**:
+1. (637-2) `crash_fault_events()` 에 PID별 `fatal`(kind + 직전 표식 시각 `after`) 과 `fatal_total` 추가. 파일 부재 시 `fatal_total=None`(미측정 ≠ 0). 기존 키·판정 무변경.
+2. 수집기 §9 3축 대사 표에 `crash_fault.log(Windows fatal exception — 살아남은 것 포함)` 행 + PID별 줄(종류별 건수 · 직전 표식 시각 · 정규장 09:00 이후 건수), §11 적신호에 **1건부터** 등재. `wer_crash_section()` 이 `fau` 를 반환하도록 변경.
+3. (638-1) `run_git()` 이 `GIT_OPTIONAL_LOCKS=0` 을 환경변수로도 넘긴다(플래그는 최상위 git 에만, 환경변수는 자식 git 까지 상속). `git_change_profile()` 에 `fail_reason`(실패 명령 + rc·stderr) 추가, §2·§11 에 렌더링.
+4. G-2(access violation 경고 문턱 5건)는 **구현하지 않는다** — 리포트 스스로 「관측일 3건, 313차 미통과, 문턱 확정 안 함」. §11 은 문턱 없이 건수만 올린다. NEXT_TODO 641-1 로 이월.
+5. P5-17 은 관찰 등록 단계(변경대상 「제안 아님」, 기대효과 미산정)라 6칸 미충족 → 구현 대상 아님(640-1 유지).
+
+**Why**: 계측 4원칙 ②·③ — 「파일명 규칙 때문에 안 보인다」는 탈락이 가시화되지 않은 사례이고, 「git diff 실패」는 사유 없는 폴백이었다. 638-1 의 환경변수 이중화는 **원인 확정이 아니라 이중 방어**다(마운트 경유 환경에서 플래그만으로 락을 못 막았다는 것은 추정).
+
+**How to apply**: `after` 는 **발생 시각이 아니라 하한**이다(faulthandler 머리줄에 시각 없음) — 리포트에서 "HH:MM 이후"로 적을 것. §11 에 이 줄이 뜨면 §9 PID별 줄로 부팅 구간/장중을 가른다. 다음 `git diff` 실패 시 §2 「실패 명령:」 문자열로 원인을 좁힐 것.
+
+**검증**: `tests/test_641_crash_fault_fatal_and_git_diag.py` 12건 + `test_620`·`test_624` 회귀 통과(35 passed, py37_32). 실데이터 재생: `--date 2026-09-28` → 4건(09:00 이후 1건, 11:33:47 이후), `--date 2026-09-29` → 3건(09:00 이후 0건) — 장전·장후 리포트의 손 집계와 일치. 수집 후 `.git/index.lock` 없음. 전체 스위트 결과는 아래 줄.
+**전체 스위트**(py37_32): 2448 passed · **12 failed** · 3 skipped — 12건 전부 이번 변경과 무관한 기존 실패(	est_457 main_dashboard peter_paste · 	est_498 CybosInvestor 미등록 · 	est_483 fuoption 사본 · 	est_504 4 · 	est_477·	est_493·	est_554·	est_621·	est_628 각 1). 어느 것도 wer_crash·collect_evidence 를 참조하지 않는다(grep 확인). 전일(636차) 기준선 14건보다 적다.

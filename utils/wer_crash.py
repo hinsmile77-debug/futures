@@ -68,6 +68,11 @@ _RE_FAULT_EVT = re.compile(
 # 시각 줄은 한글 라벨이라 인코딩이 틀어져도 잡히도록 ISO 타임스탬프만 본다.
 _WD_MARK = "[FreezeWatchdog] CRITICAL"
 _RE_ISO_TS = re.compile(r"(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})")
+# [MW0601 641차 / 637-2] faulthandler 가 남기는 네이티브 오류 머리줄.
+#   Windows fatal exception: access violation
+# 줄 안에 시각이 없으므로 **직전 표식(`[START]`·`[TS]`)의 시각**을 "이후" 로 붙인다.
+_FATAL_PREFIX = "Windows fatal exception:"
+_RE_TS_BEAT = re.compile(r"^\[TS\]\s+(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})")
 
 # Application Error(Id=1000) 의 Properties 배열 — **로캘 독립**이다.
 # 메시지 본문("Faulting application name: ...")은 OS 언어에 따라 번역되므로 쓰지 않는다.
@@ -220,23 +225,42 @@ def crash_fault_events(root, day_txt):
     블록을 남긴다. 종전에는 그 블록을 안 읽어서, 2026-09-23 13:41:38 PID 11272
     (감시자가 동결을 판정해 스스로 끝낸 종료)가 장후 리포트에 **「완전 무흔적 크래시」**
     로 올라갔다(이상점 1-9·1-10). 기록은 있었다 — 파서가 안 본 것이다.
+
+    🔴 [641차 / 637-2] `fatal` — 그날 PID 구간의 `Windows fatal exception:` 목록.
+    이 파일은 파일명에 날짜가 없어 수집기 §1 당일 인벤토리에 **구조적으로 안 잡힌다.**
+    그래서 2026-09-28 부팅 구간 access violation 4건이 그날 장전 리포트에서 통째로
+    빠졌다("access violation" 0회 등장). 종전 파서는 `[START]`/`[CLEAN EXIT]` 만 봐
+    **프로세스가 살아남은 네이티브 오류**는 어느 축에도 안 걸렸다.
+    각 항목 = {"kind": 콜론 뒤 문자열, "after": 직전 표식 시각 "HH:MM:SS"}.
+    `after` 는 **발생 시각이 아니라 하한**이다(줄에 시각이 없다) — 표기할 때 밝힐 것.
     """
     p = os.path.join(root, "logs", "crash_fault.log")
     if not os.path.exists(p):
         return {"measured": False, "reason": "logs/crash_fault.log 없음",
-                "by_pid": {}, "covered": False}
+                "by_pid": {}, "covered": False, "fatal_total": None}
     by_pid = {}
     try:
         fh = open(p, "r", encoding="utf-8", errors="replace")
     except Exception as e:
         return {"measured": False, "reason": "crash_fault.log 열기 실패: %s" % e,
-                "by_pid": {}, "covered": False}
+                "by_pid": {}, "covered": False, "fatal_total": None}
     cur_pid = None      # 직전 [START] 의 PID (그날 것이 아니면 None)
     wd_pid = None       # 감시자 블록을 봤고 시각 줄을 기다리는 PID
     wd_wait = 0
+    last_mark = None    # 직전 표식([START]/[TS]) 시각 — 그날 PID 구간에서만 유효
     with fh:
         for line in fh:
             s = line.strip()
+            if cur_pid is not None:
+                if s.startswith(_FATAL_PREFIX):
+                    by_pid[cur_pid]["fatal"].append({
+                        "kind": s[len(_FATAL_PREFIX):].strip() or "(종류 미기재)",
+                        "after": last_mark,
+                    })
+                    continue
+                b = _RE_TS_BEAT.match(s)
+                if b and b.group(1) == day_txt:
+                    last_mark = b.group(2)
             if wd_pid is not None:
                 t = _RE_ISO_TS.search(s)
                 if t:
@@ -258,17 +282,21 @@ def crash_fault_events(root, day_txt):
             if m.group(2) != day_txt:
                 if m.group(1) == "START":
                     cur_pid = None
+                    last_mark = None
                 continue
             kind, tm, pid = m.group(1), m.group(3), int(m.group(4))
             rec = by_pid.setdefault(
-                pid, {"start": None, "clean_exit": None, "watchdog_exit": None})
+                pid, {"start": None, "clean_exit": None, "watchdog_exit": None,
+                      "fatal": []})
             if kind == "START":
                 rec["start"] = tm
                 cur_pid = pid
+                last_mark = tm
             else:
                 rec["clean_exit"] = tm
     return {"measured": True, "reason": "", "by_pid": by_pid,
-            "covered": bool(by_pid)}
+            "covered": bool(by_pid),
+            "fatal_total": sum(len(r["fatal"]) for r in by_pid.values())}
 
 
 def reconcile(launcher, wer, fault):
