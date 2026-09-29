@@ -554,6 +554,13 @@ class TradingSystem:
         # 세션 중간 재기동으로 비어 있으면 levels_store 가 당일 PK 범위 조회로
         # 폴백한다(전수 스캔 아님 — CLAUDE.md 2026-08-10 CB⑤ 전례).
         self._levels_day_bars: list = []
+        # [MW0602 597차] 08:45 시가 결손 보충 — 늦은 기동(2026-09-29 09:01)으로 버퍼·DB
+        # 어디에도 08:45 봉이 없으면 스케줄러 틱이 차트 TR 로 당일 봉을 1회 받아 둔다.
+        # BlockRequest 라 봉 확정 콜백(COM 이벤트 경로)이 아니라 틱에서만 한다(§4).
+        # 산출 훅은 보충 시도 전이면 **미룬다** — 미산출 행이 굳어 버리지 않게.
+        self._levels_chart_bars: list = []            # PL.Bar 리스트
+        self._levels_chart_supp_done = False          # 시도 여부(성공·실패 무관)
+        self._levels_defer_logged: set = set()        # 단계별 「미룸」 로그 1회
         # [MW0601 493차 / F-5] 브로커 실측 당일 net(익일가예탁현금 − 예탁현금).
         # 잔고 push(FLAT일 때)가 채운다. **None이 초기값이다** — 0으로 두면
         # "아직 안 받았다"와 "브로커가 0원이라 한다"가 구분되지 않는다
@@ -4971,13 +4978,23 @@ class TradingSystem:
         # 화면·로그·장후 채점이 같은 수를 보게 한다(가이드 §4 굳히기).
         if (not self._premarket_levels_0850_done
                 and datetime.time(8, 50) <= now_dt.time() < datetime.time(9, 0)):
-            self._premarket_levels_0850_done = True
-            self._compute_premarket_levels("0850")
+            # [597차] 08:45 결손이면 미룬다 — 스케줄러 틱의 차트 보충이 이어 산출한다.
+            if self._compute_premarket_levels("0850"):
+                self._premarket_levels_0850_done = True
 
         # [MW0601 589차] 차트 갱신 호출은 `_on_candle_closed` 선두로 **일원화**됐다.
         #   여기서 또 부르면 같은 봉이 두 번 들어간다(무해하지만 중복).
 
-    def _compute_premarket_levels(self, stage: str) -> None:
+    def _levels_have_0845(self) -> bool:
+        """[597차] 메모리 버퍼에 08:45 시가 봉(08:50 이하 첫 봉)이 있는가."""
+        for _c in self._levels_day_bars:
+            _ts = _c.get("ts")
+            _t = _ts.strftime("%H:%M") if hasattr(_ts, "strftime") else str(_ts)[11:16]
+            if len(_t) == 5 and _t <= "08:50":
+                return True
+        return False
+
+    def _compute_premarket_levels(self, stage: str) -> bool:
         """[MW0601 534차] 당일 맥점 예측 1단계 산출 → DB 굳히기 → 로그 → 대시보드.
 
         🔴 **관측·기록 전용** — 반환값을 진입·청산·사이징 어디에서도 읽지 않는다
@@ -4985,20 +5002,32 @@ class TradingSystem:
 
         이력은 EOD 에 굳힌 캐시(`data/premarket_levels_history.json`)에서 읽는다 —
         장중 `raw_candles` 전수 스캔은 2026-08-10 CB⑤ 자가유발의 원인이었다.
+
+        반환: [597차] False = **미룸**(08:45 봉이 버퍼에 없고 차트 보충 시도 전).
+        그대로 산출하면 「08:45 시가 결손 — 미산출」 행이 굳어 이후 보충이 소용없다.
+        호출측은 True 일 때만 「완료」 플래그를 세운다. 그 밖(성공·미산출·실패)은 True.
         """
+        if not self._levels_have_0845() and not self._levels_chart_supp_done:
+            if stage not in self._levels_defer_logged:
+                self._levels_defer_logged.add(stage)
+                log_manager.system(
+                    f"[LEVELS {stage[:2]}:{stage[2:]}] 08:45 봉 버퍼 결손 — "
+                    "차트 TR 보충(스케줄러 틱) 뒤로 산출을 미룸", "WARNING")
+            return False
         try:
             from features.levels import levels_store as _LS
         except Exception as _lv_ie:
             log_manager.system(f"[LEVELS] 모듈 로드 실패 (무해): {_lv_ie}", "WARNING")
-            return
+            return True
         try:
-            row = _LS.ensure_stage(stage, today_candles=self._levels_day_bars)
+            row = _LS.ensure_stage(stage, today_candles=self._levels_day_bars,
+                                   supplement=self._levels_chart_bars)
         except Exception as _lv_e:
             logger.warning("[LEVELS] %s 산출 실패: %s", stage, _lv_e, exc_info=True)
             log_manager.system(f"[LEVELS] {stage} 산출 실패 (무해): {_lv_e}", "WARNING")
-            return
+            return True
         if not row:
-            return
+            return True
         try:
             if row.get("note"):
                 log_manager.system(
@@ -5022,6 +5051,7 @@ class TradingSystem:
         except Exception:
             pass
         self._push_premarket_levels()
+        return True
 
     def _push_premarket_levels(self) -> None:
         """굳힌 단계 전부를 대시보드로 밀어 넣는다(재기동 복원 경로 겸용)."""
@@ -5052,7 +5082,8 @@ class TradingSystem:
         try:
             from features.levels import levels_store as _LS
             _t0 = time.time()
-            row = _LS.compute_manual(today_candles=self._levels_day_bars)
+            row = _LS.compute_manual(today_candles=self._levels_day_bars,
+                                     supplement=self._levels_chart_bars)
             _ms = (time.time() - _t0) * 1000.0
             for _line in _LS.format_manual_log_lines(row):
                 log_manager.system(_line, "INFO")
@@ -5954,17 +5985,20 @@ class TradingSystem:
             try:
                 _lv_dt = ts_raw if hasattr(ts_raw, "hour") else datetime.datetime.now()
                 if _lv_dt.hour * 100 + _lv_dt.minute >= 930:
-                    self._premarket_levels_0930_done = True
                     # 프리장 봉이 안 와서 08:50 훅이 못 돌았으면 여기서 메운다.
                     # 08:50 산출은 **08:45 시가 하나만** 쓰므로 언제 계산해도 값이
                     # 같다(가이드 §4) — 굳히기가 이미 있으면 ensure_stage 가 무시한다.
+                    # [597차] 08:45 결손 + 차트 보충 전이면 두 단계 모두 **미룬다**
+                    #   (False) — 다음 봉에서 다시 온다. 보충 뒤엔 반드시 True 다.
                     if not self._premarket_levels_0850_done:
-                        self._premarket_levels_0850_done = True
-                        log_manager.system(
-                            "[LEVELS] 08:50 훅 미발화(프리장 봉 없음) — 09:30에 소급 산출",
-                            "WARNING")
-                        self._compute_premarket_levels("0850")
-                    self._compute_premarket_levels("0930")
+                        if self._compute_premarket_levels("0850"):
+                            self._premarket_levels_0850_done = True
+                            log_manager.system(
+                                "[LEVELS] 08:50 훅 미발화(프리장 봉 없음) — 09:30에 소급 산출",
+                                "WARNING")
+                    if (self._premarket_levels_0850_done
+                            and self._compute_premarket_levels("0930")):
+                        self._premarket_levels_0930_done = True
             except Exception as _lv930_e:
                 logger.warning("[LEVELS] 09:30 훅 실패 (무해): %s", _lv930_e)
 
@@ -12809,6 +12843,9 @@ class TradingSystem:
         self._premarket_levels_0850_done    = False
         self._premarket_levels_0930_done    = False
         self._levels_day_bars               = []
+        self._levels_chart_bars             = []
+        self._levels_chart_supp_done        = False
+        self._levels_defer_logged           = set()
         self.shadow_session.reset_daily()
         self.contrarian_mode.reset_daily()
         self.trend_gate.reset_daily()
@@ -14439,6 +14476,53 @@ class TradingSystem:
                         )
             except Exception as _cb_e:
                 logger.warning("[SessionBackfill] 실패 (무해): %s", _cb_e)
+
+        # ── [MW0602 597차] 맥점 산출용 08:45 결손 차트 TR 보충 ─────────────────
+        # 늦은 기동(2026-09-29: 08:40 preflight 실패 → 09:01 기동)으로 08:45 봉이
+        # 버퍼에 없으면 거리·구조 모델이 하루 종일 미산출이었다. 당일 분봉을
+        # `CpSysDib.FutOptChart` 로 1회 받아 **결손 시각만** 메운다(raw_candles 는
+        # 건드리지 않는다 — 산출 입력 전용). BlockRequest 는 스케줄러 틱(§4).
+        # 산출 훅은 이 시도 전까지 미뤄지므로 여기서 이어서 산출한다.
+        try:
+            if (
+                not self._levels_chart_supp_done
+                and is_trading_day(now)
+                and datetime.time(8, 50) <= now.time() < datetime.time(15, 40)
+                and self.broker is not None and self.broker.is_connected
+                and not self._levels_have_0845()
+            ):
+                self._levels_chart_supp_done = True
+                try:
+                    from collection.cybos.chart_backfill import (
+                        request_futopt_minute_bars, mini_code_for_date)
+                    from features.levels import levels_store as _LS_s
+                    _code = mini_code_for_date(now.date())
+                    _t0 = time.time()
+                    _rows = request_futopt_minute_bars(_code, now.date(), now.date(),
+                                                       timeout_sec=20.0)
+                    self._levels_chart_bars = _LS_s.bars_from_chart_rows(
+                        _rows, now.strftime("%Y-%m-%d"))
+                    _cb = self._levels_chart_bars
+                    log_manager.system(
+                        "[LEVELS] 08:45 결손 — 차트 TR 보충 code=%s %d봉 (%s~%s) %.0fms"
+                        % (_code, len(_cb), _cb[0].t if _cb else "-",
+                           _cb[-1].t if _cb else "-", (time.time() - _t0) * 1000.0),
+                        "WARNING")
+                except Exception as _lcs_e:
+                    logger.warning("[LEVELS] 차트 TR 보충 실패: %s", _lcs_e, exc_info=True)
+                    log_manager.system(
+                        f"[LEVELS] 08:45 결손 — 차트 TR 보충 실패 (무해, 미산출로 굳음): {_lcs_e}",
+                        "WARNING")
+                # 미뤄 둔 단계를 이어서 산출한다(보충 실패여도 사유가 남도록 산출).
+                if not self._premarket_levels_0850_done:
+                    self._premarket_levels_0850_done = True
+                    self._compute_premarket_levels("0850")
+                if (not self._premarket_levels_0930_done
+                        and now.time() >= datetime.time(9, 30)):
+                    self._premarket_levels_0930_done = True
+                    self._compute_premarket_levels("0930")
+        except Exception as _lcs_o:
+            logger.warning("[LEVELS] 차트 보충 블록 예외 (무해): %s", _lcs_o)
 
         # ── [MW0601 550차] 마감 뒤 마지막 봉 시간 기준 플러시 ──────────────────
         # 15:35 마감 단일가부터 체결틱이 없어 15:34 봉이 다음 분 롤오버를 영원히

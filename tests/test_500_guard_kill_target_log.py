@@ -113,11 +113,26 @@ def test_probe_precedes_terminate():
 
 # ── ② GUARD 동작 무변경 ───────────────────────────────────────────────────────
 def test_terminate_command_is_untouched():
-    """기존 종료 한 줄은 문자열 동등해야 한다 — 이중 실행 방지가 회귀하면 안 된다."""
-    expected = ('"!PY32!" -c "import psutil, os; [p.terminate() for p in '
-                "psutil.process_iter(['pid','name','cmdline']) if 'python' in "
+    """기존 종료 한 줄은 문자열 동등해야 한다 — 이중 실행 방지가 회귀하면 안 된다.
+
+    [MW0602 597차] 바뀐 것은 **대상 선정 하나뿐**이다 — `own(p)`: 그 프로세스의
+    `*main.py` 인자를 (상대경로면 그 프로세스 cwd 기준으로) 풀어 **`WORKDIR\\main.py`
+    와 같을 때만** 대상이다. 2026-09-29 GUARD 가 다른 프로젝트
+    (`auto_trader_kiwoom` 「한량투자」, `python main.py`)를 kill-target 으로 잡았다.
+    런처는 항상 절대경로 `"!WORKDIR!\\main.py"` 로 띄우므로 cwd 를 못 읽는 권한
+    조합(실측: 비관리자 셸에서 두 프로세스 모두 cwd=None)에서도 미륵이는 잡힌다.
+    ⚠ `!=` 결함은 **그대로다**(아래 known-defect lock) — 되살리는 것은 별도 결정이다.
+    """
+    expected = ('"!PY32!" -c "import psutil, os; '
+                "tgt=os.path.normcase(os.path.join(os.getcwd(),'main.py')); "
+                "res=lambda p: [os.path.normcase(c if os.path.isabs(c) else "
+                "os.path.join(p.info.get('cwd') or '?',c)) for c in "
+                "(p.info.get('cmdline') or []) if (c or '').lower().endswith('main.py')]; "
+                "own=lambda p: tgt in res(p); "
+                "[p.terminate() for p in "
+                "psutil.process_iter(['pid','name','cmdline','create_time','cwd']) if 'python' in "
                 "(p.info.get('name') or '').lower() and any('main.py' in (c or '') "
-                "for c in (p.info.get('cmdline') or [])) and p.pid != os.getpid()]\" 2>NUL")
+                "for c in (p.info.get('cmdline') or [])) and own(p) and p.pid != os.getpid()]\" 2>NUL")
     for name in LAUNCHERS:
         hit = [l for l in _lines(name) if TERMINATE_MARK in l]
         assert hit == [expected], "%s: 종료 명령이 바뀌었다\n%r" % (name, hit)

@@ -385,8 +385,13 @@ def test_main_hooks_are_wired_and_isolated():
     assert "self._premarket_levels_0850_done" in src
     assert "self._premarket_levels_0930_done" in src
     assert "_compute_premarket_levels" in src
-    # 산출 메서드는 아무것도 돌려주지 않는다 — 반환값을 판단에 쓸 수 없게.
-    assert "def _compute_premarket_levels(self, stage: str) -> None:" in src
+    # 산출 메서드는 **레벨 값을** 돌려주지 않는다 — 반환값을 판단에 쓸 수 없게.
+    # [MW0602 597차] 반환은 bool 「미룸」 플래그뿐이다(08:45 결손 + 차트 보충 전 = False).
+    assert "def _compute_premarket_levels(self, stage: str) -> bool:" in src
+    i = src.index("def _compute_premarket_levels(")
+    body = src[i:src.index("\n    def ", i + 10)]
+    returns = [ln.strip() for ln in body.splitlines() if ln.strip().startswith("return")]
+    assert returns and set(returns) <= {"return True", "return False"}, returns
 
 
 def test_pure_module_is_python37_compatible():
