@@ -39,3 +39,9 @@ matplotlib==3.5.1
 # ── 유틸리티 ──────────────────────────────
 python-dateutil==2.8.2
 pytz==2025.2
+
+# ── 리포트 PDF ────────────────────────────
+# [MW0602 598차 후속] 신동 일일 리포트 md→PDF(utils/report_pdf.py). 장후 메일 스레드가 런타임(py37_32)에서 import 한다.
+# 누락 시 [ShindongMail] PDF·메일 실패 — 리포트(md·svg)는 생성되고 메일만 빠진다(2026-09-29 MW0602 실측).
+# markdown 3.5+: Python 3.7 드롭 → 3.4.x 고정
+markdown==3.4.4

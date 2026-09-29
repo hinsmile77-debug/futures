@@ -2,6 +2,22 @@
 
 ---
 
+## 2026-09-29 (MW0602 598차 후속 — py37_32 에 markdown 설치: 신동 장후 메일 복구) — ✅ **설치 · PDF 변환 확인**
+
+**계기** — 9/29 신동 리포트 메일을 수동 발송하려다 py37_32 에서 `ModuleNotFoundError: No module named 'markdown'`.
+`utils/report_pdf.py`(md→PDF) 가 `import markdown` 을 하는데 **라이브 런타임(py37_32)에 그 패키지가 없었다.**
+장후 체인은 리포트(md·svg) 생성 → 백그라운드 스레드에서 PDF·메일 순이라, 리포트는 남고 **메일만 조용히 빠진다.**
+`logs/20260928_*` 에 `[ShindongMail]` 줄이 한 건도 없다 — MW0602 에서는 자동 메일이 **한 번도 나간 적이 없는 것으로 보인다**
+(9/28 은 체인 체리픽 전, 9/29 는 리포트 단계에서 `'09:00'` 으로 먼저 죽음 — 598차 본편).
+
+**조치** — 사용자 승인 후 `py37_32` 에 `markdown==3.4.4` 설치(3.5+ 는 Python 3.7 드롭). 유일한 추가 의존성
+`importlib-metadata` 는 이미 6.7.0 설치돼 있었고 `pip check` 이상 없음. `requirements.txt` 에 고정 추가.
+검증: py37_32 에서 `md_to_pdf(9/29 리포트)` → 527KB PDF 생성, `scripts/shindong_report_mail.py --check` SMTP 설정 확인.
+9/29 메일은 기본 anaconda Python 으로 수동 발송했다(smart1na@naver.com, PDF 첨부).
+
+⚠ PDF 렌더는 Chrome/Edge 실행 파일(`utils/report_pdf.py:BROWSERS`)을 쓴다 — 이 PC 에 있어 통과했다.
+⚠ MW0601 은 별도 환경이다 — 같은 누락이 있는지는 그 PC 에서 확인할 것(여기서는 판단하지 않는다).
+
 ## 2026-09-29 (MW0602 598차 — 신동 수익 개선안 구현: 섀도 SHADOW_X4NFA · 채점표 표시 3종 · RETRACTED 로그 · 09:00 봉 결손 내성) — 🟡 **구현 · 라이브 미배포(다음 재기동부터)**
 
 **계기** — 사용자 지시 「신동거래 흐름 정리 · 레슨런 · 손해거래 원인·개선 수익안」→「구현계획 수립 후 구현」.
