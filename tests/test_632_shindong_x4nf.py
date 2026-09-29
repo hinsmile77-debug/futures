@@ -28,8 +28,8 @@ from strategy.shindong import engine, spec  # noqa: E402
 def test_x4nf_preregistration():
     assert "SHADOW_X4NF" in spec.VARIANTS
     assert spec.VARIANTS[0] == "MAIN"
-    assert (spec.X4NF_SCORING_START, spec.X4NF_JUDGE_AFTER_DAYS) == ("2026-09-29", 10)
-    assert spec.SPEC_VERSION == "SD-2026-09-24-v1"      # MAIN 값 무변경 → 버전 유지
+    assert (spec.X4NF_SCORING_START, spec.X4NF_JUDGE_AFTER_DAYS) == ("2026-09-30", 10)   # 639차 v2 재시작
+    assert spec.SPEC_VERSION == "SD-2026-09-29-v2"      # X4NF 추가는 버전 유지, 639차 목표 개정으로 v2
 
 
 # ── B ────────────────────────────────────────────────────────────────────
@@ -146,11 +146,11 @@ def test_scorecard_excludes_build_day_and_waits(tmp_path):
                     "pts": 10.85, "net": 500000.0}]}
     res = {"decision": {"pm_sp": 279.0, "bias": -1, "r2": "CONFIRMED", "r2_ts": "09:03", "notes": []},
            "trades": [tr]}
-    for day in ("2026-09-28", "2026-09-29"):
+    for day in ("2026-09-29", "2026-09-30"):             # 639차 v2 — 채점 시작 9/30 기준으로 한 칸 이동
         for v in spec.VARIANTS:
             store.save_day(db, day, v, "wk_mon", "", res, "15:08", spec.SPEC_VERSION, source="backfill")
     txt = sc.build(db, spec.SCORING_START)
-    assert "SHADOW_X4NF 채점 시작(2026-09-29) 전 행 **1건** — 표본 제외" in txt
+    assert "판정 기록 거래일: **1일**" in txt                # 9/29 는 SCORING_START 전이라 날짜로 빠진다
     assert "판정: **대기** — 1/10 거래일" in txt
 
 
@@ -158,8 +158,8 @@ def test_scorecard_excludes_build_day_and_waits(tmp_path):
 def test_tr44_preregistration():
     assert spec.VARIANTS.index("SHADOW_TR44") == 3      # [598차] 뒤에 SHADOW_X4NFA 가 붙었다
     assert (spec.TR44_ACT, spec.TR44_DIST) == (4.0, 4.0)
-    assert spec.LATE_SHADOW_START == {"SHADOW_X4NF": "2026-09-29", "SHADOW_TR44": "2026-09-29",
-                                      "SHADOW_X4NFA": "2026-09-30"}   # [598차]
+    assert spec.LATE_SHADOW_START == {"SHADOW_X4NF": "2026-09-30", "SHADOW_TR44": "2026-09-30",
+                                      "SHADOW_X4NFA": "2026-09-30"}   # 639차 v2 재시작 · [598차]
 
 
 def _frame(bars):
@@ -198,7 +198,9 @@ def test_trail_none_is_main_path():
 @pytest.mark.parametrize("day,tr44", [
     # 트레일 딥다이브(c9.py) R3 −1 / +153 / +44 / −68만 + R2(MAIN 과 같다)
     ("2026-09-21", 157978),
-    ("2026-09-22", 1527679),
+    # 639차 v2: 14:16 매수 1111.54 의 1차가 v1 에선 1111.50(진입가 뒤 — 결함 경로) → 본전 −26,809,
+    #   v2 에선 1차 1135.50 → 손절 −129,799. v1 값 1527679 는 결함 재현값이라 버린다
+    ("2026-09-22", 1424689),
     ("2026-09-23", 1776971),
     ("2026-09-28", 330667),
 ])

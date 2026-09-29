@@ -191,10 +191,12 @@ def cumulative(sd_db: str, until: str) -> Dict[str, Dict[str, Any]]:
             st = S.LATE_SHADOW_START.get(v, S.SCORING_START)
             days = [r[0] for r in con.execute(
                 "SELECT trade_date FROM shindong_day WHERE variant=? AND trade_date>=? AND trade_date<=? "
-                "ORDER BY trade_date", (v, st, until))]
+                "AND COALESCE(spec_version, ?)=? ORDER BY trade_date",
+                (v, st, until, S.SPEC_VERSION, S.SPEC_VERSION))]     # v2 개정 — 다른 버전 합산 금지
             trs = [dict(r) for r in con.execute(
                 "SELECT trade_date, rule, net_krw FROM shindong_trades WHERE variant=? AND trade_date>=? "
-                "AND trade_date<=? AND status='CLOSED'", (v, st, until))]
+                "AND trade_date<=? AND status='CLOSED' AND COALESCE(spec_version, ?)=?",
+                (v, st, until, S.SPEC_VERSION, S.SPEC_VERSION))]
             by = {d: 0.0 for d in days}
             for t in trs:
                 by[t["trade_date"]] = by.get(t["trade_date"], 0.0) + float(t["net_krw"] or 0)

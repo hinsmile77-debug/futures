@@ -37,7 +37,7 @@ from strategy.shindong.calendar import select_flow_product  # noqa: E402
 # ── A. 규격 고정 ──────────────────────────────────────────────────────────
 def test_spec_is_preregistered_values():
     """🔴 값이 바뀌면 검증 시계가 초기화된다 — 이 테스트를 고치기 전에 사전등록 문서부터."""
-    assert spec.SPEC_VERSION == "SD-2026-09-24-v1"
+    assert spec.SPEC_VERSION == "SD-2026-09-29-v2"      # 639차 개정 — 최종 목표 최소거리(값 무변경)
     assert (spec.BIAS_MIN, spec.CONF_MIN, spec.CONF_END, spec.REV_MIN, spec.REV_WIN_MIN) == \
         (50, 50, "09:10", 50, 10)
     assert (spec.TOUCH_NEAR, spec.TOUCH_FAR, spec.LV_STOP_BUF, spec.EXT_STOP_BUF) == \
@@ -47,7 +47,7 @@ def test_spec_is_preregistered_values():
     assert spec.VARIANTS == ("MAIN", "SHADOW_E2F2", "SHADOW_X4NF", "SHADOW_TR44",
                              "SHADOW_X4NFA")   # 632차·598차 섀도 추가(MAIN 값 무변경)
     assert (spec.SCORING_START, spec.R3_KILL_AFTER_DAYS, spec.R3_KILL_NET_MAX,
-            spec.R3_KILL_WINRATE_MAX) == ("2026-09-28", 10, 0, 0.35)
+            spec.R3_KILL_WINRATE_MAX) == ("2026-09-30", 10, 0, 0.35)   # v2 채점 재시작
 
 
 # ── B. 상품 선택 ──────────────────────────────────────────────────────────

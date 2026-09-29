@@ -55,7 +55,8 @@ def test_x4nfa_preregistration():
     assert spec.VARIANTS[0] == "MAIN" and spec.VARIANTS[-1] == "SHADOW_X4NFA"
     assert spec.LATE_SHADOW_START["SHADOW_X4NFA"] == "2026-09-30"     # 9/29 를 보고 만들었다
     assert spec.X4NFA_BASE_VARIANT == "SHADOW_X4NF"
-    assert spec.SPEC_VERSION == "SD-2026-09-24-v1"                     # MAIN 값 무변경
+    # [MW0601 체리픽] v9-dev 는 639차 v2 개정 위에 얹혔다 — X4NFA 추가 자체는 MAIN 값을 바꾸지 않는다
+    assert spec.SPEC_VERSION == "SD-2026-09-29-v2"
 
 
 # ── B ────────────────────────────────────────────────────────────────────

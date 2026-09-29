@@ -44,7 +44,7 @@ PT_VALUE_KRW = S.PT_VALUE_KRW
 SLIP_TICK = S.SLIP_TICK             # 본전·시간 청산(시장가) 1틱, 지정가 목표 0
 TIME_EXIT = S.TIME_EXIT             # 15:05
 
-SCORING_START = "2026-09-28"        # 신동 채점 시작과 같다
+SCORING_START = "2026-09-28"        # 신동 v1 채점 시작과 같다 — 별도 사전등록(RUNNER_VERSION)이라 신동 v2 개정(09-29)과 무관
 JUDGE_AFTER_FLOW_DAYS = 20          # 흐름이 측정된 거래일 20일이 차면 판정
 MIN_APPLIED = 10                    # 러너가 실제로 적용된 포지션이 이보다 적으면 판정 불가
 EXCLUDE_TOP_DAYS = 3                # 이번 반사실의 핵심 교훈 — 상위 3일 빼고도 버티는가
@@ -258,7 +258,8 @@ def evaluate_position(p: Dict[str, Any], d: Optional["E.DayFrame"], L: Optional[
     start = E._plus_min(tp1_ts[11:16], 1)
     if start > TIME_EXIT:
         return skip("TP1 이 15:05 이후")
-    _t1, t2 = E.targets(L, p["entry_ts"][11:16], side, e)
+    # 🔒 v1 목표 고정 — 신동 v2 개정(2026-09-29)은 RUNNER_VERSION 사전등록과 별개다
+    _t1, t2 = E.targets_v1(L, p["entry_ts"][11:16], side, e)
     rq = sum(int(l["quantity"]) for l in rest)
     x = run_runner(d, side, e, start, t2)
     if x is None:

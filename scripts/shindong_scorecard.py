@@ -153,6 +153,14 @@ def build(db=SHINDONG_DB, since=spec.SCORING_START, raw_db=RAW_DATA_DB):
         w("- **미배선** — DB 가 없다(0건이 아니다)")
         return "\n".join(lines)
     trades, days = _load(db, since)
+    # [2026-09-29 v2 개정] 다른 규격 버전 행은 합치지 않는다(사전등록 §6-3). 날짜로 이미 갈리지만
+    #   백필·재기동이 옛 버전 행을 남길 수 있어 버전으로 한 번 더 거른다 — 뺀 개수는 적는다.
+    other = [t for t in trades if (t.get("spec_version") or spec.SPEC_VERSION) != spec.SPEC_VERSION]
+    if other:
+        trades = [t for t in trades if t not in other]
+        days = [d for d in days if (d.get("spec_version") or spec.SPEC_VERSION) == spec.SPEC_VERSION]
+        w("- ⚠ 다른 규격 버전 행 **%d건**(%s) — 표본 제외" % (
+            len(other), ", ".join(sorted({t["spec_version"] for t in other}))))
     main_days = sorted({d["trade_date"] for d in days if d["variant"] == "MAIN"})
     w("- 판정 기록 거래일: **%d일**" % len(main_days))
     # [632차·598차] 결과를 보고 만든 섀도(X4NF·TR44·X4NFA)는 각자의 시작일부터만 센다

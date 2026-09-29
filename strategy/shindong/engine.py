@@ -94,6 +94,40 @@ def levels_at(L, t):
 
 
 def targets(L, t, side, e):
+    """[v2 · 2026-09-29 개정] 1차·최종 목표. 두 목표 모두 진입가에서 `T1_MIN_DIST` 이상 떨어진 맥점만 쓴다.
+
+    v1(`targets_v1`)은 최종 목표 후보(가장 먼 구조맥점)를 **버퍼 −0.5 를 빼기 전에** 「진입 방향에
+    있는가」로만 걸렀다. 맥점이 진입가 바로 너머(0.5pt 이내)면 버퍼 뒤 목표가 진입가 **뒤**로
+    넘어가고, 1차·최종 맞바꿈이 그 값을 1차 자리에 넣어 1차 최소거리(2pt)도 우회했다.
+    2026-09-29 MAIN R3 매수 4건(10:37·10:43·10:59·11:19)이 1차 1091.50 에 진입가 1091.04–1091.90
+    — 1차 익절이 곧 본전(또는 손실)이었다. 개정 문서 `docs/신동거래/신동_개정_v2_1차목표역전_20260929.md`.
+    """
+    cur, _ = levels_at(L, t)
+    z = L["0850"]
+    t1c = [cur["dist_low"] if side < 0 else cur["dist_high"]]
+    if t >= "09:31" and "0930" in L:
+        for x in L["0930"]["_up"] + L["0930"]["_dn"]:
+            if any((("OR저" in s) if side < 0 else ("OR고" in s)) for s in x[1]):
+                t1c.append(x[0])
+    t1c = [x for x in t1c if x is not None and side * (x - e) >= S.T1_MIN_DIST]
+    t1 = (max(t1c) if side < 0 else min(t1c)) if t1c else None
+    # v2: 최종 후보도 1차와 같은 최소거리로 거른다 — 없으면 80% 거리맥점 끝, 그것도 가까우면 없음
+    far = [x for x in z["S"] if side * (x - e) >= S.T1_MIN_DIST]
+    t2 = (min(far) if side < 0 else max(far)) if far else (z["low80_lo"] if side < 0 else z["high80_hi"])
+    if t2 is not None and side * (t2 - e) < S.T1_MIN_DIST:
+        t2 = None
+    t1 = t1 - side * S.TP_BUF if t1 else None
+    t2 = t2 - side * S.TP_BUF if t2 else None
+    if t1 and t2 and side * (t2 - t1) < 0:
+        t1, t2 = t2, t1
+    if t1 is None:
+        t1 = t2
+    return t1, t2
+
+
+def targets_v1(L, t, side, e):
+    """🔒 `SD-2026-09-24-v1` 목표 — 동결. 조건부 러너 섀도(`mireuk_runner`, `RUNNER_VERSION` 별도
+    사전등록)가 이 함수를 쓴다. 신동 v2 개정이 그 섀도를 조용히 바꾸지 않게 남겨 둔다 — 고치지 말 것."""
     cur, _ = levels_at(L, t)
     z = L["0850"]
     t1c = [cur["dist_low"] if side < 0 else cur["dist_high"]]
