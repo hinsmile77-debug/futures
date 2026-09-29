@@ -33,7 +33,8 @@ from strategy.shindong import spec as S
 from strategy.shindong.calendar import select_flow_product
 
 VLABEL = {"MAIN": "MAIN(본안)", "SHADOW_E2F2": "E2F2(흐름순응)",
-          "SHADOW_X4NF": "X4NF(가까운목표·flip금지)", "SHADOW_TR44": "TR44(R3 트레일 4/4)"}
+          "SHADOW_X4NF": "X4NF(가까운목표·flip금지)", "SHADOW_TR44": "TR44(R3 트레일 4/4)",
+          "SHADOW_X4NFA": "X4NFA(X4NF+깨진맥점금지)"}
 REASON = {"TP1": "1차", "TP2": "최종", "SL": "손절", "BE": "본전", "TIME": "시간", "TR": "트레일"}
 
 
@@ -139,11 +140,14 @@ def attribute(main: List[Dict], sh: List[Dict], variant: str, d: "E.DayFrame") -
                 trend = -1 if d.sp[r["entry_ts"]] - sp0 > 0 else 1
                 if trend != r["side"]:
                     why = "F2 차단(당일 흐름 역방향)"
-            if variant == "SHADOW_X4NF":
+            if variant in ("SHADOW_X4NF", "SHADOW_X4NFA"):
                 prev = [x for x in main if x["rule"] == "R3" and x["level"] == r["level"]
                         and x["entry_ts"] < r["entry_ts"]]
                 if prev and prev[-1]["side"] != r["side"]:
                     why = "flip 금지(같은 맥점 %.1f 반대 방향)" % r["level"]
+            # [598차] 깨진 맥점 — 진입가가 이미 맥점 반대편(flip 과 겹치면 flip 을 먼저 적는다)
+            if variant == "SHADOW_X4NFA" and why == "진입 없음" and is_broken_level(r):
+                why = "깨진 맥점 차단(진입 %.2f · 맥점 %.1f)" % (r["entry_px"], r["level"])
             if why == "진입 없음":
                 why = "앞 거래 보유 중/시점 이동"
         out.append("%s %s %s: MAIN 진입 %s → **%s** (MAIN 손익 %s 제외)" % (
@@ -153,6 +157,16 @@ def attribute(main: List[Dict], sh: List[Dict], variant: str, d: "E.DayFrame") -
             out.append("%s %s %s: **섀도만 진입** %.2f (앞 거래가 없어 신호가 살아남) → %s" % (
                 s["entry_ts"], s["rule"], _side(s["side"]), s["entry_px"], _man(s["net"])))
     return out
+
+
+def is_broken_level(r: Dict[str, Any]) -> bool:
+    """[598차] R3 진입가가 터치 맥점을 이미 반대로 넘어가 있는가(매도인데 맥점 위 · 매수인데 맥점 아래).
+
+    SHADOW_X4NFA 가 막는 진입이다. R2·맥점 없는 행은 False.
+    """
+    if r.get("rule") != "R3" or r.get("level") is None:
+        return False
+    return r["side"] * (r["entry_px"] - r["level"]) <= 0
 
 
 def summarize(rows: List[Dict]) -> Dict[str, Any]:
@@ -227,7 +241,7 @@ def observations(day: Dict[str, Any], rows: Dict[str, List[Dict]], sums: Dict[st
         deep = [r for r in losers if r["mfe"] >= S.TR44_ACT]
         if shallow:
             obs.append("**진입 품질** — MAIN 손실 %d건 중 %d건은 유리한 쪽으로 %.0fpt 도 못 갔다(MFE %s). "
-                       "청산을 바꿔서는 못 막는 손실이다 → 진입 필터(E2F2·X4NF) 쪽 관찰 대상."
+                       "청산을 바꿔서는 못 막는 손실이다 → 진입 필터(E2F2·X4NF·X4NFA) 쪽 관찰 대상."
                        % (len(losers), len(shallow), S.TR44_ACT,
                           ", ".join("%.1f" % r["mfe"] for r in shallow)))
         if deep:
@@ -244,6 +258,13 @@ def observations(day: Dict[str, Any], rows: Dict[str, List[Dict]], sums: Dict[st
                        % (L0, len(xs), "→".join(_side(x["side"]) for x in xs),
                           _man(sum(x["net"] or 0 for x in xs)),
                           "양쪽으로 번갈아 잡았다" if len(sides) > 1 else "반복해서 잡았다"))
+    broken = [r for r in main if is_broken_level(r)]
+    if broken:
+        obs.append("**깨진 맥점 진입 %d건** — 흐름 반전을 기다리는 사이 가격이 맥점을 다시 넘어간 뒤 들어갔다(%s) "
+                   "· 합 %s → X4NFA 가 막는 진입이다."
+                   % (len(broken), ", ".join("%s %s %.2f/맥점 %.1f %s" % (
+                       r["entry_ts"], _side(r["side"]), r["entry_px"], r["level"], _man(r["net"])) for r in broken),
+                      _man(sum(r["net"] or 0 for r in broken))))
     notgt = [r for r in main if r["t1"] is None]
     if notgt:
         obs.append("**목표 없는 진입 %d건** — 가격이 08:50 맥점 범위 밖이라 손절·15:05 로만 끝날 수 있었다(%s)."
@@ -406,8 +427,9 @@ def build(trade_date: str, raw_db: str, flow_db: str, levels_db: str, sd_db: str
     bias = dec.get("bias")
     hit = r1_hit(d, bias)
     o9, c15 = d.c.get("09:00"), d.c.get(d.last_at_or_before(S.TIME_EXIT) or "")
-    hi = max(d.h[k] for k in d.idx if "09:00" <= k <= "15:05")
-    lo = min(d.l[k] for k in d.idx if "09:00" <= k <= "15:05")
+    # [MW0602 598차] 봉 있는 분만 — 09:00 1분봉 결손일(2026-09-29)에 KeyError 로 리포트·메일이 통째로 빠졌다
+    hi = max(d.h[k] for k in d.idx if "09:00" <= k <= "15:05" and k in d.h)
+    lo = min(d.l[k] for k in d.idx if "09:00" <= k <= "15:05" and k in d.l)
 
     # 0. 한눈에
     w("## 0. 한눈에")
@@ -415,7 +437,7 @@ def build(trade_date: str, raw_db: str, flow_db: str, levels_db: str, sd_db: str
     w("| 시장 | R1 장전 | R2 개장확정 | R1 적중(09:00→15:05) |")
     w("|---|---|---|---|")
     w("| %s → %s (%s) · 고 %.2f · 저 %.2f · 폭 %.1fpt | 콜−풋 %s → **%s** | %s | %s |" % (
-        ("%.2f" % o9) if o9 else "-", ("%.2f" % c15) if c15 else "-",
+        ("%.2f" % o9) if o9 else "09:00봉 결손", ("%.2f" % c15) if c15 else "-",
         ("%+.2f" % (c15 - o9)) if (o9 and c15) else "-", hi, lo, hi - lo,
         ("%+.0f" % dec["pm_sp"]) if dec.get("pm_sp") is not None else "미수집",
         {-1: "하방", 0: "보류", 1: "상방"}.get(bias, "?"),

@@ -113,5 +113,6 @@ def run_and_store(trade_date: str, raw_db: str, flow_db: str, levels_db: str, sd
                        detect_px=r["last_close"], now=now)
     return {"trade_date": trade_date, "product": r["product"],
             "product_note": r["product_note"], "horizon": r["horizon"],
+            "last_close": r["last_close"],       # [598차] RETRACTED 로그의 현재가
             "decision": r["results"]["MAIN"]["decision"],
             "trades": store.load_trades(sd_db, trade_date, "MAIN")}
