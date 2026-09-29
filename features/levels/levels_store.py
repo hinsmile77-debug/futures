@@ -95,6 +95,15 @@ STAGE_CUT = {"0850": "08:45", "0930": PL.STAGE2_TIME}
 STAGE_DUE = {"0850": datetime.time(8, 50), "0930": datetime.time(9, 30)}
 STAGE0930_MIN_BARS = 5          # 09:30 이전 봉이 이보다 적으면 미산출
 
+# [MW0602 597차] 08:45 시가 결손 → 차트 TR(`CpSysDib.FutOptChart`) 보충의 머리말.
+# 2026-09-29 preflight 실패로 09:01 에 늦게 기동해 08:45~09:00 봉이 버퍼·DB 어디에도
+# 없었고, 거리·구조 모델이 둘 다 「08:45 시가 결손 — 미산출」로 하루 종일 비었다.
+# 보충은 **결손 시각만** 메운다(실시간 봉이 있으면 그것이 우선). 보충했다는 사실은
+# 이 머리말로 행의 warnings 에 남긴다 — 폴백 가시화(계측 4원칙 ④).
+# ⚠ 차트의 08:45 시가는 **개장 체결가**라 실시간 첫 틱 시가와 다를 수 있다
+#   (565차 실측 09-11: 차트 1076.06 vs 실시간 1072.72). 훈련 이력은 실시간 원천이다.
+CHART_SUPPLEMENT_MARK = "08:45 결손 — 차트 TR 보충"
+
 
 # ---------------------------------------------------------------- DB 읽기
 
@@ -211,6 +220,56 @@ def bars_from_candles(candles, until=None):
         out.append(bar)
     out.sort(key=lambda b: b.t)
     return out
+
+
+def bars_from_chart_rows(rows, date_str, until="15:40"):
+    # type: (Sequence[dict], str, Optional[str]) -> List[PL.Bar]
+    """`chart_backfill.request_futopt_minute_bars()` 행 → 그 날짜의 Bar.
+
+    라벨→ts 변환(라벨은 **종료 시각**, ts = 라벨 − 1분)은 `chart_rows_to_bars` 를
+    그대로 쓴다 — 규약을 두 곳에 두지 않는다.
+    """
+    from collection.cybos.chart_backfill import chart_rows_to_bars
+    out = []
+    for ts, _session, b in chart_rows_to_bars(list(rows or [])):
+        if ts[:10] != date_str:
+            continue
+        t = ts[11:16]
+        if until and t > until:
+            continue
+        try:
+            out.append(PL.Bar(t=t, o=float(b["open"]), h=float(b["high"]),
+                              l=float(b["low"]), c=float(b["close"]),
+                              v=int(b.get("volume") or 0)))
+        except (KeyError, TypeError, ValueError):
+            continue
+    out.sort(key=lambda x: x.t)
+    return out
+
+
+def supplement_bars(bars, supplement, until=None):
+    # type: (List[PL.Bar], Optional[Sequence[PL.Bar]], Optional[str]) -> Tuple[List[PL.Bar], int]
+    """08:45 시가가 결손일 때만 보충 봉으로 **빈 시각만** 메운다. 반환: (봉, 보충 개수).
+
+    첫 봉이 이미 08:50 이하면 아무것도 하지 않는다 — 보충은 결손 복구이지 원천 교체가
+    아니다. 같은 시각의 실시간/DB 봉이 있으면 그것을 유지한다.
+    """
+    bars = list(bars or [])
+    if not supplement or (bars and bars[0].t <= "08:50"):
+        return bars, 0
+    have = set(b.t for b in bars)
+    add = [b for b in supplement
+           if b.t not in have and (until is None or b.t <= until)]
+    if not add:
+        return bars, 0
+    merged = sorted(bars + add, key=lambda b: b.t)
+    return merged, len(add)
+
+
+def _supplement_warning(n):
+    # type: (int) -> str
+    return ("%s %d봉(FutOptChart · 개장 체결가라 실시간 시가와 다를 수 있음)"
+            % (CHART_SUPPLEMENT_MARK, n))
 
 
 # ---------------------------------------------------------------- 이력 캐시
@@ -470,12 +529,13 @@ def format_manual_log_lines(row):
 # ---------------------------------------------------------------- 오케스트레이션
 
 def ensure_stage(stage, now=None, today_candles=None, db_path=None, cache_path=None,
-                 extra=None):
-    # type: (str, Optional[datetime.datetime], Optional[Sequence[dict]], Optional[str], Optional[str], Optional[dict]) -> Optional[dict]
+                 extra=None, supplement=None):
+    # type: (str, Optional[datetime.datetime], Optional[Sequence[dict]], Optional[str], Optional[str], Optional[dict], Optional[Sequence[PL.Bar]]) -> Optional[dict]
     """때가 됐고 아직 안 굳혔으면 단계를 산출해 DB에 굳히고, **DB에서 되읽어** 돌려준다.
 
     today_candles: main.py 메모리 버퍼(candle dict 리스트). 없거나 부족하면 당일 봉을
     PK 범위 조회로 폴백한다(전수 스캔 아님).
+    supplement: [597차] 둘 다 08:45 시가가 없을 때 빈 시각을 메울 차트 TR 봉(Bar).
     반환: 굳힌 행 dict (미산출이면 note 가 채워진 행), 때가 안 됐으면 None.
     """
     from utils import db_utils
@@ -501,6 +561,10 @@ def ensure_stage(stage, now=None, today_candles=None, db_path=None, cache_path=N
         bars = load_today_bars(date_str, until=cut, db_path=db_path)
         bars_source = ("db_fallback(버퍼 0봉)" if buf_n == 0
                        else "db_fallback(버퍼 %d봉 첫봉부적합)" % buf_n)
+    bars, n_sup = supplement_bars(bars, supplement, until=cut)
+    sup_w = [_supplement_warning(n_sup)] if n_sup else []
+    if n_sup:
+        bars_source = "%s+chart(%d봉)" % (bars_source, n_sup)
 
     summaries, bars_by_day = history_from_cache(cache_path)
     params = prepare_params(summaries, bars_by_day, date_str)
@@ -508,11 +572,17 @@ def ensure_stage(stage, now=None, today_candles=None, db_path=None, cache_path=N
     if params is None:
         db_utils.save_premarket_levels(
             date_str, stage, computed_at, None,
-            note="이력 캐시 없음 — EOD refresh_history_cache() 미실행", bars=len(bars),
-            bars_source=bars_source)
+            note="이력 캐시 없음 — EOD refresh_history_cache() 미실행",
+            warnings=sup_w or None, bars=len(bars), bars_source=bars_source)
         return db_utils.fetch_premarket_levels(date_str).get(stage)
 
     res = compute_stage(stage, date_str, bars, params)
+    if sup_w:
+        # [MW0602 597차] 보충 사실을 행에 남긴다 — 산출이면 warnings 맨 앞, 미산출이면 note 뒤.
+        if res["out"] is not None:
+            res["out"]["warnings"] = sup_w + list(res["out"].get("warnings") or [])
+        else:
+            res["note"] = "%s / %s" % (res["note"], sup_w[0])
     db_utils.save_premarket_levels(date_str, stage, computed_at, res["out"],
                                    note=res["note"],
                                    warnings=(res["out"] or {}).get("warnings")
@@ -523,8 +593,8 @@ def ensure_stage(stage, now=None, today_candles=None, db_path=None, cache_path=N
 
 
 def compute_manual(now=None, today_candles=None, db_path=None, cache_path=None,
-                   persist=True):
-    # type: (Optional[datetime.datetime], Optional[Sequence[dict]], Optional[str], Optional[str], bool) -> dict
+                   persist=True, supplement=None):
+    # type: (Optional[datetime.datetime], Optional[Sequence[dict]], Optional[str], Optional[str], bool, Optional[Sequence[PL.Bar]]) -> dict
     """[MW0601 542차] **수동 산출** — 클릭 시각 기준 거리·구조 맥점.
 
     08:50/09:30 과 다른 점은 셋뿐이다.
@@ -577,6 +647,9 @@ def compute_manual(now=None, today_candles=None, db_path=None, cache_path=None,
         except Exception as e:
             return _row(note="당일 봉 조회 실패: %s" % e, bars=0,
                         bars_source="db_fallback(실패)")
+    bars, n_sup = supplement_bars(bars, supplement, until=cut)
+    if n_sup:
+        bars_source = "%s+chart(%d봉)" % (bars_source, n_sup)
     if not bars:
         return _row(note="당일 봉 0개 — 미산출", bars=0, bars_source=bars_source)
     if bars[0].t > "08:50":
@@ -601,6 +674,8 @@ def compute_manual(now=None, today_candles=None, db_path=None, cache_path=None,
     out["train_n"] = ((params.get("p_at") or {}).get("n") if at
                       else (params.get("p1") or {}).get("n"))
     out["warnings"] = list(params.get("warnings") or [])
+    if n_sup:
+        out["warnings"].insert(0, _supplement_warning(n_sup))
     if at is None:
         out["warnings"].append("09:00 이전 — 시점 조건부 모델 없음, M1(시가 기준) 사용")
     if out.get("distance") is None:

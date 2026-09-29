@@ -2,6 +2,39 @@
 
 ---
 
+## 2026-09-29 (MW0602 597차 체리픽 → v9-dev — 맥점 08:45 결손 차트 TR 보충 · ②런처 GUARD 는 보류) — 🟡 **v9-dev 반영 · MW0601 라이브 미배포(재기동 대기)**
+
+**체리픽 기록** — 원 커밋 `2e46abc` · 원 PC **MW0602**(`dev`) · 사용자 지시 「597차 v9-dev에 배포해」.
+원 커밋은 두 건을 담았다: ① 맥점 08:45 결손 차트 TR 보충 ② 런처 GUARD 대상을 `WORKDIR\main.py` 로 한정.
+**v9-dev 에는 ①만 들어왔다.**
+
+**① 맥점 08:45 결손 차트 TR 보충 — 반영(수동 병합)**
+늦은 기동(MW0602 9/29: preflight 실패 → 09:01)으로 08:45~09:00 봉이 버퍼·DB 어디에도 없으면 거리·구조 모델이
+「08:45 시가 결손 — 미산출」로 굳어 하루 종일 비었다. 스케줄러 틱에서 `CpSysDib.FutOptChart` 당일 분봉을 1회 받아
+**결손 시각만** 메우고(`raw_candles` 무기록), 보충 시도 전 산출은 **미룬다**(`_compute_premarket_levels` → bool).
+v9-dev 는 dev 와 달리 `ensure_stage(extra=…)`·`bars_source`(534차 후속 F-2·F-5)를 갖고 있어 수동 병합했다:
+- `ensure_stage(…, extra=None, supplement=None)` — 둘 다 받는다. 보충하면 `bars_source` 에 `+chart(N봉)` 가 붙고
+  warnings 맨 앞(미산출이면 note 뒤)에 `08:45 결손 — 차트 TR 보충 N봉` 이 남는다(계측 4원칙 ④).
+- `_compute_premarket_levels` — v9-dev 의 구독지연(`subscribe_lag_sec`) 계산을 그대로 두고 `supplement=` 만 더했다.
+- dev 전용인 538차 `STALE_HISTORY_MARK` · `stage_warnings()` 는 **가져오지 않았다**(v9-dev 에 없는 기능).
+- 병합 경로 가드: `tests/test_597_levels_chart_supplement.py::test_v9_ensure_stage_records_supplement_with_bars_source_and_extra`
+  (v9-dev 에만 있는 테스트).
+⚠ 차트 08:45 시가는 개장 체결가라 실시간 첫 틱 시가와 다를 수 있다(565차 실측) — 보충된 날의 08:50 채점은 감안할 것.
+
+**② 런처 GUARD — 보류(사용자 결정 대기)**
+v9-dev 런처는 이미 인라인 GUARD 대신 `scripts/guard_single_instance.py --workdir`(498차)를 쓴다 → 원 커밋의 bat 변경·
+`test_597_guard_workdir_scope.py`·`test_500_guard_kill_target_log.py`(v9-dev 에서 삭제된 파일)는 **적용 대상이 없어 제외**.
+🔴 그러나 **같은 구멍이 v9-dev 스크립트에도 있다.** `scan()` 은 `cwd()` 를 못 읽으면(비관리자 셸 — MW0602 실측 두 프로세스 모두
+`cwd=None`) WORKDIR 밖 판정을 건너뛰고 `matched`(종료 대상)에 넣는다. MW0602 9/29 에 잡힌 타 프로젝트
+(`auto_trader_kiwoom`, 명령줄 `python main.py` 상대경로)가 정확히 이 조건이다.
+597차 규칙은 「상대경로 + cwd 미확인 = 우리 것 아님」인데, v9-dev 는 `test_493::test_cwd_unreadable_falls_back_to_legacy`
+에서 **반대로 의도했다**(「미륵이 잔류를 놓치는 것이 더 나쁘다」). 두 정책이 충돌하므로 조용히 옮기지 않았다 → NEXT_TODO 597-2.
+참고: v9-dev 런처는 `"!PY32!" "!WORKDIR!\main.py"` 로 **항상 절대경로**로 띄운다 — 절대경로가 `WORKDIR\main.py` 와
+같으면 cwd 없이도 우리 것으로 잡을 수 있어, 597차 규칙을 옮겨도 자기 잔류를 놓치지 않는다(`test_493` 의 그 테스트도
+절대경로 사례라 통과할 것). 다만 그것은 MW0601 안전장치 정책 변경이라 결정이 필요하다.
+
+**검증**(v9-dev worktree): `test_534`·`test_597_levels`·`test_493`·`test_498`·`test_542*`·`test_589` 95 passed. py37_32 컴파일 확인.
+
 ## 2026-09-29 (MW0602 598차 체리픽 → v9-dev — 신동 섀도 SHADOW_X4NFA · 채점표 표시 3종 · RETRACTED 로그 · 09:00 봉 결손 내성) — 🟡 **v9-dev 반영 · MW0601 라이브 미배포(재기동 대기)**
 
 **체리픽 기록** — 원 커밋 `6b71762`(+ 후속 `3edd93d`) · 원 PC **MW0602**(`dev`) · 사용자 지시 「v9-dev에 배포해」.
