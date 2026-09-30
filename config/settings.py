@@ -7724,7 +7724,7 @@ SHINDONG_RUNNER_SHADOW_ENABLED = True
 #   「거래 흐름 + 손익 vs 섀도 흐름 + 손익」 한 장 + SVG 차트. 읽기 전용 · 주문 없음.
 #   재생성·백필: `python scripts/shindong_daily_report.py YYYY-MM-DD`
 SHINDONG_DAILY_REPORT_ENABLED = True
-SHINDONG_DAILY_REPORT_DIR = os.path.join(BASE_DIR, "docs", "신동거래", "일일")
+SHINDONG_DAILY_REPORT_DIR = os.path.join(BASE_DIR, "docs", "신동거래_V2", "일일")   # [604차] v2 부터 V2 폴더(사용자 지시)
 # 리포트 생성 뒤 백그라운드 스레드에서 PDF 인쇄 + 메일 발송. 자격 정보·받는 주소는 **환경변수에만**
 #   (MIREUK_SMTP_USER / MIREUK_SMTP_PASSWORD / MIREUK_REPORT_MAIL_TO — `utils/mailer.py`).
 #   환경변수가 없으면 PDF 만 만들고 발송은 건너뛴다(로그에 빠진 이름을 남긴다).

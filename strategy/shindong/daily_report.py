@@ -3,13 +3,15 @@
 
 무엇을 내나
 -----------
-`docs/신동거래/일일/신동_일일_<PC>_YYYYMMDD.md` + 같은 이름 `.svg`(차트). PC = `utils.db_utils.pc_id()`(예: MW0601)
+`docs/신동거래_V2/일일/신동_일일_<PC>_YYYYMMDD.md` + 같은 이름 `.svg`(차트). PC = `utils.db_utils.pc_id()`(예: MW0601)
+[604차] v2 부터 V2 폴더(`SHINDONG_DAILY_REPORT_DIR`). v1 시대 리포트는 `docs/신동거래/일일/` 에 그대로 있다.
 — 두 PC 리포트가 한 폴더·메일함에 섞여도 출처가 파일명과 제목에서 바로 보인다.
 
   0. 한눈에      — 시장 · R1 · 변형별 순손익 · 오늘의 한 줄
   1. 차트        — 변형마다 한 줄: 가격 + 진입·청산 + 맥점 / 맨 아래 개인 콜−풋
   2. 거래 흐름   — MAIN 타임라인(누적 손익 포함)
-  3. 섀도 흐름   — 섀도별 타임라인 + **MAIN 과 무엇이 달랐나**(차단·시점 이동·청산 차이)
+  3. 섀도 흐름   — 섀도별 타임라인. v1 계열(V1X4)은 **V1 과 무엇이 달랐나**(차단·시점 이동·청산 차이),
+                   family 계열(FLOWF·BRKC)은 별개 규칙이라 대조 없이 자기 거래표만
   4. 누적 채점   — 채점 시작 이후 변형별 · 판정 진행(D-n) · R1 적중률
   5. 러너 섀도   — 미륵이 × 신동(장후 기록)
   6. 개선 방향   — 자동 관찰(판정 아님)
@@ -32,9 +34,15 @@ from strategy.shindong import runner as RN
 from strategy.shindong import spec as S
 from strategy.shindong.calendar import select_flow_product
 
-VLABEL = {"MAIN": "MAIN(본안)", "SHADOW_E2F2": "E2F2(흐름순응)",
+# [604차] 라벨은 spec.SHADOW_META 가 준다. v1 시대 이름은 종료됐지만 옛 리포트 재생성을 위해 남긴다.
+VLABEL = {"MAIN": "MAIN(v2 FLOWC)", "SHADOW_E2F2": "E2F2(흐름순응)",
           "SHADOW_X4NF": "X4NF(가까운목표·flip금지)", "SHADOW_TR44": "TR44(R3 트레일 4/4)",
           "SHADOW_X4NFA": "X4NFA(X4NF+깨진맥점금지)"}
+VLABEL.update({k: m["label"] for k, m in S.SHADOW_META})
+
+
+def _kind(v: str) -> str:
+    return S.MAIN_KIND if v == "MAIN" else S.SHADOW_META_D.get(v, {}).get("kind", "v1")
 REASON = {"TP1": "1차", "TP2": "최종", "SL": "손절", "BE": "본전", "TIME": "시간", "TR": "트레일"}
 
 
@@ -71,10 +79,12 @@ def load_day(trade_date: str, raw_db: str, flow_db: str, levels_db: str) -> Dict
         out["why"] = "봉 없음" if not candles else "08:50 맥점 없음"
         return out
     L = E.prepare_levels(lvrows)
-    d = E.DayFrame(candles, flow)
+    d = E.DayFrame(candles, flow, fx=RN.load_fx(trade_date, raw_db))
     out.update(ok=True, L=L, d=d)
+    # [604차] runner.compute 와 같은 분기 — v1 판정 한 번, family 는 그 decision 을 실어 받는다
+    v1 = E.run_day(d, L, "SHADOW_V1")
     for v in S.VARIANTS:
-        out["results"][v] = E.run_day(d, L, v)
+        out["results"][v] = v1 if v == "SHADOW_V1" else RN.run_variant(d, L, v, v1_decision=v1["decision"])
     return out
 
 
@@ -113,8 +123,8 @@ def trade_rows(d: "E.DayFrame", res: Dict[str, Any], stored: Dict, variant: str)
     return out
 
 
-def attribute(main: List[Dict], sh: List[Dict], variant: str, d: "E.DayFrame") -> List[str]:
-    """MAIN 과 섀도가 어디서 갈렸나 — 차단 · 새 진입 · 청산 차이."""
+def attribute(main: List[Dict], sh: List[Dict], variant: str, d: "E.DayFrame", base: str = "MAIN") -> List[str]:
+    """기준(MAIN 또는 [604차] V1)과 섀도가 어디서 갈렸나 — 차단 · 새 진입 · 청산 차이."""
     mk = {r["key"]: r for r in main}
     sk = {r["key"]: r for r in sh}
     out = []
@@ -129,7 +139,7 @@ def attribute(main: List[Dict], sh: List[Dict], variant: str, d: "E.DayFrame") -
                     why = "목표가 차이 — 1차 %s → %s" % (
                         ("%.2f" % r["t1"]) if r["t1"] else "-", ("%.2f" % s["t1"]) if s["t1"] else "-")
                 else:
-                    why = "청산 차이 — MAIN %s → %s" % (ra, sa)
+                    why = "청산 차이 — %s %s → %s" % (base, ra, sa)
                 out.append("%s %s %s: %s (%s → %s, 차 %s)" % (
                     r["entry_ts"], r["rule"], _side(r["side"]), why, _man(r["net"]), _man(s["net"]),
                     _man((s["net"] or 0) - (r["net"] or 0))))
@@ -140,7 +150,7 @@ def attribute(main: List[Dict], sh: List[Dict], variant: str, d: "E.DayFrame") -
                 trend = -1 if d.sp[r["entry_ts"]] - sp0 > 0 else 1
                 if trend != r["side"]:
                     why = "F2 차단(당일 흐름 역방향)"
-            if variant in ("SHADOW_X4NF", "SHADOW_X4NFA"):
+            if variant in ("SHADOW_X4NF", "SHADOW_X4NFA") or S.SHADOW_META_D.get(variant, {}).get("x4nf"):
                 prev = [x for x in main if x["rule"] == "R3" and x["level"] == r["level"]
                         and x["entry_ts"] < r["entry_ts"]]
                 if prev and prev[-1]["side"] != r["side"]:
@@ -150,8 +160,8 @@ def attribute(main: List[Dict], sh: List[Dict], variant: str, d: "E.DayFrame") -
                 why = "깨진 맥점 차단(진입 %.2f · 맥점 %.1f)" % (r["entry_px"], r["level"])
             if why == "진입 없음":
                 why = "앞 거래 보유 중/시점 이동"
-        out.append("%s %s %s: MAIN 진입 %s → **%s** (MAIN 손익 %s 제외)" % (
-            r["entry_ts"], r["rule"], _side(r["side"]), "%.2f" % r["entry_px"], why, _man(r["net"])))
+        out.append("%s %s %s: %s 진입 %s → **%s** (%s 손익 %s 제외)" % (
+            r["entry_ts"], r["rule"], _side(r["side"]), base, "%.2f" % r["entry_px"], why, base, _man(r["net"])))
     for k, s in sk.items():
         if k not in mk:
             out.append("%s %s %s: **섀도만 진입** %.2f (앞 거래가 없어 신호가 살아남) → %s" % (
@@ -172,10 +182,14 @@ def is_broken_level(r: Dict[str, Any]) -> bool:
 def summarize(rows: List[Dict]) -> Dict[str, Any]:
     closed = [r for r in rows if r["net"] is not None]
     net = sum(r["net"] for r in closed)
+    by_rule: Dict[str, float] = {}
+    for r in closed:
+        by_rule[r["rule"]] = by_rule.get(r["rule"], 0.0) + r["net"]
     return dict(n=len(rows), win=sum(1 for r in closed if r["net"] > 0), net=net,
                 worst=min([r["net"] for r in closed] or [0.0]),
                 r2=sum(r["net"] for r in closed if r["rule"] == "R2"),
                 r3=sum(r["net"] for r in closed if r["rule"] == "R3"),
+                by_rule=by_rule,                     # [604차] v2 family 는 FLOW · BRK
                 open=len(rows) - len(closed))
 
 
@@ -241,12 +255,12 @@ def observations(day: Dict[str, Any], rows: Dict[str, List[Dict]], sums: Dict[st
         deep = [r for r in losers if r["mfe"] >= S.TR44_ACT]
         if shallow:
             obs.append("**진입 품질** — MAIN 손실 %d건 중 %d건은 유리한 쪽으로 %.0fpt 도 못 갔다(MFE %s). "
-                       "청산을 바꿔서는 못 막는 손실이다 → 진입 필터(E2F2·X4NF·X4NFA) 쪽 관찰 대상."
+                       "청산을 바꿔서는 못 막는 손실이다 → 진입 조건(문턱 K·R1 방향) 쪽 관찰 대상."
                        % (len(losers), len(shallow), S.TR44_ACT,
                           ", ".join("%.1f" % r["mfe"] for r in shallow)))
         if deep:
             obs.append("**청산** — MAIN 손실 %d건은 %.0fpt 이상 유리하게 갔다가 손절됐다(MFE %s) → "
-                       "트레일(TR44) 쪽 관찰 대상." % (len(deep), S.TR44_ACT, ", ".join("%.1f" % r["mfe"] for r in deep)))
+                       "트레일 발동·거리 쪽 관찰 대상." % (len(deep), S.TR44_ACT, ", ".join("%.1f" % r["mfe"] for r in deep)))
     lv = {}
     for r in main:
         if r["rule"] == "R3":
@@ -276,10 +290,13 @@ def observations(day: Dict[str, Any], rows: Dict[str, List[Dict]], sums: Dict[st
                    % (len(lag), _won(cost)))
     best = max(sums, key=lambda v: sums[v]["net"])
     if best != "MAIN":
-        obs.append("**오늘 최선은 %s** (%s, MAIN 대비 %s). 하루 결과다 — 판정은 사전등록 창(10거래일)으로만."
-                   % (VLABEL[best], _man(sums[best]["net"]), _man(sums[best]["net"] - sums["MAIN"]["net"])))
+        obs.append("**오늘 최선은 %s** (%s, MAIN 대비 %s). 하루 결과다 — 판정은 사전등록 창(%d거래일)으로만."
+                   % (VLABEL[best], _man(sums[best]["net"]), _man(sums[best]["net"] - sums["MAIN"]["net"]), S.JUDGE_AFTER_DAYS))
     else:
         obs.append("**오늘은 MAIN 이 최선** (%s)." % _man(sums["MAIN"]["net"]))
+    if "SHADOW_V1" in sums:
+        obs.append("**v1 대조** — V1 %s vs MAIN %s (차 %s). 되돌림 판정은 20거래일 누적으로만." % (
+            _man(sums["SHADOW_V1"]["net"]), _man(sums["MAIN"]["net"]), _man(sums["MAIN"]["net"] - sums["SHADOW_V1"]["net"])))
     obs.append("⚠ 규격 변경은 사전등록 §6(새 버전 · 재채점)으로만. 이 절은 관찰이다.")
     return obs
 
@@ -388,8 +405,9 @@ def _timeline(rows: List[Dict], live: bool) -> List[str]:
         ent = "%s %.2f" % (r["entry_ts"], r["entry_px"])
         if live and r["detected_at"]:
             ent += " (탐지 %s)" % r["detected_at"]
-        out.append("| %d | %s | %s | %s | %s | %.2f | %s · %s | %s | %.1f | **%s** | %s |" % (
-            n, r["rule"], _side(r["side"]), ent, ("%.1f" % r["level"]) if r["level"] else "-", r["stop"],
+        out.append("| %d | %s | %s | %s | %s | %s | %s · %s | %s | %.1f | **%s** | %s |" % (
+            n, r["rule"], _side(r["side"]), ent, ("%.1f" % r["level"]) if r["level"] else "-",
+            ("%.2f" % r["stop"]) if r["stop"] is not None else "-",      # [604차] FLOW 는 손절 없음(트레일)
             ("%.2f" % r["t1"]) if r["t1"] else "-", ("%.2f" % r["t2"]) if r["t2"] else "-", legs,
             r["mfe"], _man(r["net"]), _man(r["cum"])))
     if not rows:
@@ -434,7 +452,7 @@ def build(trade_date: str, raw_db: str, flow_db: str, levels_db: str, sd_db: str
     # 0. 한눈에
     w("## 0. 한눈에")
     w("")
-    w("| 시장 | R1 장전 | R2 개장확정 | R1 적중(09:00→15:05) |")
+    w("| 시장 | R1 장전 | R2 개장확정(V1) | R1 적중(09:00→15:05) |")
     w("|---|---|---|---|")
     w("| %s → %s (%s) · 고 %.2f · 저 %.2f · 폭 %.1fpt | 콜−풋 %s → **%s** | %s | %s |" % (
         ("%.2f" % o9) if o9 else "09:00봉 결손", ("%.2f" % c15) if c15 else "-",
@@ -444,12 +462,14 @@ def build(trade_date: str, raw_db: str, flow_db: str, levels_db: str, sd_db: str
         (dec.get("r2") or "-") + ((" " + dec["r2_ts"]) if dec.get("r2_ts") else ""),
         {True: "✅ 적중", False: "❌ 불적중", None: "미측정/보류"}[hit]))
     w("")
-    w("| 변형 | 거래 | 승 | R2 | R3 | **순손익** | 최악 거래 | MAIN 대비 | 기록 |")
-    w("|---|---|---|---|---|---|---|---|---|")
+    w("| 변형 | 거래 | 승 | 규칙별 | **순손익** | 최악 거래 | MAIN 대비 | 기록 |")
+    w("|---|---|---|---|---|---|---|---|")
     for v in S.VARIANTS:
         s = sums[v]
-        w("| %s | %d | %d | %s | %s | **%s** | %s | %s | %s |" % (
-            VLABEL[v], s["n"], s["win"], _man(s["r2"]), _man(s["r3"]), _man(s["net"]), _man(s["worst"]),
+        w("| %s | %d | %d | %s | **%s** | %s | %s | %s |" % (
+            VLABEL[v], s["n"], s["win"],
+            " · ".join("%s %s" % (k, _man(x)) for k, x in sorted(s["by_rule"].items())) or "-",
+            _man(s["net"]), _man(s["worst"]),
             "—" if v == "MAIN" else _man(s["net"] - sums["MAIN"]["net"]),
             "라이브" if v in live_vs else "재계산"))
     best = max(S.VARIANTS, key=lambda v: sums[v]["net"])
@@ -477,17 +497,19 @@ def build(trade_date: str, raw_db: str, flow_db: str, levels_db: str, sd_db: str
     w("")
 
     # 3. 섀도 흐름
-    w("## 3. 섀도 흐름 — MAIN 과 무엇이 달랐나")
+    w("## 3. 섀도 흐름 — 변형별 거래(v1 계열은 V1 과 무엇이 달랐나)")
     w("")
     for v in S.VARIANTS[1:]:
         w("### %s — %s (MAIN 대비 %s)" % (VLABEL[v], _man(sums[v]["net"]), _man(sums[v]["net"] - sums["MAIN"]["net"])))
         w("")
-        diff = attribute(rows["MAIN"], rows[v], v, d)
-        if diff:
-            for x in diff:
-                w("- " + x)
+        if v == "SHADOW_V1":
+            w("- v1(R1/R2/R3) 대조군 — 되돌림 판정의 기준. 아래 v1 계열 섀도는 이 거래와 대조한다")
+        elif _kind(v) == "v1" and "SHADOW_V1" in rows:
+            diff = attribute(rows["SHADOW_V1"], rows[v], v, d, base="V1")
+            for x in (diff or ["- V1 과 같다"]):
+                w(x if x.startswith("- ") else "- " + x)
         else:
-            w("- MAIN 과 같다")
+            w("- 별개 규칙(family) — MAIN·V1 과 거래 단위 대조는 하지 않는다. 손익·최악·거래 수로만 비교")
         w("")
         lines.extend(_timeline(rows[v], v in live_vs))
         w("")
@@ -505,18 +527,18 @@ def build(trade_date: str, raw_db: str, flow_db: str, levels_db: str, sd_db: str
                 w("| %s | %s | 0 | - | - | - | - | - | 기록 전 |" % (VLABEL[v], c.get("start", "-")))
                 continue
             if v == "MAIN":
-                jd = "R3 중단 판정 %d/%d일" % (c["days"], S.R3_KILL_AFTER_DAYS)
-            elif v in S.LATE_SHADOW_START:
-                jd = "MAIN 비교 %d/%d일" % (c["days"], S.X4NF_JUDGE_AFTER_DAYS)
+                jd = "v2 vs V1 되돌림 판정 %d/%d일" % (c["days"], S.JUDGE_AFTER_DAYS)
+            elif v == "SHADOW_V1":
+                jd = "대조군 %d/%d일 (v1 R3 중단 판정은 채점표)" % (c["days"], S.JUDGE_AFTER_DAYS)
             else:
-                jd = "MAIN 비교 %d/%d일" % (c["days"], S.R3_KILL_AFTER_DAYS)
+                jd = "MAIN 비교 %d/%d일" % (c["days"], S.JUDGE_AFTER_DAYS)
             w("| %s | %s | %d | %d | %s | **%s** | %s | %d · %s · %s | %s |" % (
                 VLABEL[v], c["start"], c["days"], c["n"],
                 ("%.0f%%" % (100.0 * c["win"] / c["n"])) if c["n"] else "-", _man(c["net"]), _man(c["worst_day"]),
                 c["r3n"], ("%.0f%%" % (100.0 * c["r3win"] / c["r3n"])) if c["r3n"] else "-", _man(c["r3net"]), jd))
         w("")
-        w("> 판정 전 집계다 — 인용·규격 변경 근거로 쓰지 말 것. R3 중단 기준: 순손익 < 0 **그리고** 승률 < %.0f%%."
-          % (100 * S.R3_KILL_WINRATE_MAX))
+        w("> 판정 전 집계다 — 인용·규격 변경 근거로 쓰지 말 것. 되돌림: V1 이 MAIN 보다 순손익·최악일 **둘 다** 나으면 v1 복귀. "
+          "섀도: MAIN 대비 순손익 우위 **그리고** 최악일 개선 → 채택 후보(자동 승격 없음).")
     else:
         w("- 기록 DB 없음(미배선 — 0건이 아니다)")
     w("")

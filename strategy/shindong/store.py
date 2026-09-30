@@ -24,9 +24,9 @@ from typing import Any, Dict, List, Optional
 _SCHEMA = (
     """CREATE TABLE IF NOT EXISTS shindong_trades (
         trade_date   TEXT NOT NULL,
-        variant      TEXT NOT NULL,          -- MAIN | SHADOW_E2F2 | SHADOW_X4NF | SHADOW_TR44 | SHADOW_X4NFA
+        variant      TEXT NOT NULL,          -- MAIN | SHADOW_* (spec.VARIANTS). v1 시대 행(E2F2·X4NF·TR44·X4NFA)은 보존
         trade_key    TEXT NOT NULL,          -- rule|entry_ts|side
-        rule         TEXT NOT NULL,          -- R2 | R3
+        rule         TEXT NOT NULL,          -- R2 | R3 (v1) | FLOW | BRK (v2 family)
         side         INTEGER NOT NULL,       -- +1 매수 / -1 매도
         product      TEXT,                   -- wk_mon | wk_thu | mon
         entry_ts     TEXT NOT NULL,          -- YYYY-MM-DD HH:MM:00 (진입봉)
@@ -101,7 +101,8 @@ def save_day(db_path: str, trade_date: str, variant: str, product: str, product_
                        product=excluded.product, product_note=excluded.product_note,
                        pm_sp=excluded.pm_sp, bias=excluded.bias, r2_status=excluded.r2_status,
                        r2_ts=excluded.r2_ts, horizon=excluded.horizon, notes=excluded.notes,
-                       spec_version=excluded.spec_version, updated_at=excluded.updated_at""",
+                       spec_version=excluded.spec_version, updated_at=excluded.updated_at
+                   WHERE shindong_day.spec_version IS NULL OR shindong_day.spec_version=excluded.spec_version""",
                 (trade_date, variant, product, product_note, dec.get("pm_sp"), dec.get("bias"),
                  dec.get("r2"), dec.get("r2_ts"), horizon, " / ".join(dec.get("notes") or []),
                  spec_version, now_s))
@@ -128,7 +129,8 @@ def save_day(db_path: str, trade_date: str, variant: str, product: str, product_
                            leg2_exit_ts=excluded.leg2_exit_ts, leg2_exit_px=excluded.leg2_exit_px,
                            leg2_reason=excluded.leg2_reason, leg2_pts=excluded.leg2_pts,
                            leg2_net=excluded.leg2_net, net_krw=excluded.net_krw,
-                           spec_version=excluded.spec_version, updated_at=excluded.updated_at""",
+                           spec_version=excluded.spec_version, updated_at=excluded.updated_at
+                       WHERE shindong_trades.spec_version IS NULL OR shindong_trades.spec_version=excluded.spec_version""",
                     (trade_date, variant, key, tr["rule"], tr["side"], product,
                      pre + tr["entry_ts"] + ":00", tr["entry_px"], tr["stop_init"], tr["stop_now"],
                      tr["t1"], tr["t2"], tr.get("touch_level"),
@@ -139,15 +141,18 @@ def save_day(db_path: str, trade_date: str, variant: str, product: str, product_
                      detect_px if source == "live" else None,
                      source, spec_version, now_s))
             # 이번 계산에서 사라진 거래 — 지우지 않고 표시만 한다
+            # [604차] **같은 규격 세대의 행만** 철회한다 — 다른 spec_version 행(예: v1 시대 MAIN)은 사료라
+            #   v2 코드가 같은 날짜를 다시 돌려도 건드리지 않는다(같은 이름 다른 뜻 금지 · 461차 교훈).
+            gen = "AND (spec_version IS NULL OR spec_version=?) "
             if keys:
                 q = ("UPDATE shindong_trades SET status='RETRACTED', updated_at=? "
-                     "WHERE trade_date=? AND variant=? AND status!='RETRACTED' "
+                     "WHERE trade_date=? AND variant=? AND status!='RETRACTED' " + gen +
                      "AND trade_key NOT IN (%s)" % ",".join("?" * len(keys)))
-                con.execute(q, [now_s, trade_date, variant] + keys)
+                con.execute(q, [now_s, trade_date, variant, spec_version] + keys)
             else:
                 con.execute("UPDATE shindong_trades SET status='RETRACTED', updated_at=? "
-                            "WHERE trade_date=? AND variant=? AND status!='RETRACTED'",
-                            (now_s, trade_date, variant))
+                            "WHERE trade_date=? AND variant=? AND status!='RETRACTED' " + gen,
+                            (now_s, trade_date, variant, spec_version))
     finally:
         con.close()
 

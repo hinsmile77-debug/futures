@@ -286,7 +286,9 @@ def run_for_date(trade_date: str, trades_db: str, raw_db: str, flow_db: str, lev
     candles, flow, lvrows = _rn.load_inputs(trade_date, product, raw_db, flow_db, levels_db)
     d = E.DayFrame(candles, flow) if candles else None
     L = E.prepare_levels(lvrows) if "0850" in lvrows else None
-    day_res = E.run_day(d, L, "MAIN") if (d is not None and L is not None) else None
+    # [604차] 러너 섀도의 「신동」은 사전등록(SDR-2026-09-24-v1) 당시의 v1 규칙(R1/R2/R3)이다 —
+    #   MAIN 이 v2(FLOWC)로 바뀌어도 이 섀도의 정의는 바꾸지 않는다(같은 이름 다른 뜻 금지).
+    day_res = E.run_day(d, L, "SHADOW_V1") if (d is not None and L is not None) else None
     decision = day_res["decision"] if day_res else None
     sd_trades = None
     if day_res is not None and d.sp:          # 흐름이 없으면 신동 보유 상태는 미측정

@@ -52,10 +52,11 @@ def _levels(struct, dist_low=1080.0, dist_high=1120.0):
 
 # ── A ────────────────────────────────────────────────────────────────────
 def test_x4nfa_preregistration():
-    assert spec.VARIANTS[0] == "MAIN" and spec.VARIANTS[-1] == "SHADOW_X4NFA"
-    assert spec.LATE_SHADOW_START["SHADOW_X4NFA"] == "2026-09-30"     # 9/29 를 보고 만들었다
+    # [604차] X4NFA 는 2026-09-30 부로 종료(RETIRED) — 엔진 플래그·재현 테스트는 유지된다
+    assert spec.VARIANTS[0] == "MAIN" and "SHADOW_X4NFA" in spec.RETIRED_SHADOWS
+    assert "SHADOW_X4NFA" not in spec.VARIANTS
     assert spec.X4NFA_BASE_VARIANT == "SHADOW_X4NF"
-    assert spec.SPEC_VERSION == "SD-2026-09-24-v1"                     # MAIN 값 무변경
+    assert spec.V1_SPEC_VERSION == "SD-2026-09-24-v1"                  # v1 값 무변경(SHADOW_V1)
 
 
 # ── B ────────────────────────────────────────────────────────────────────
@@ -99,9 +100,9 @@ _DB_OK = all(os.path.exists(os.path.join(_ROOT, p)) for p in
 @pytest.mark.parametrize("day", ["2026-09-21", "2026-09-22", "2026-09-23", "2026-09-28", "2026-09-29"])
 def test_replay_x4nfa_never_enters_broken_level_and_keeps_r2(day):
     from strategy.shindong import runner
-    r = runner.compute(day, os.path.join(_ROOT, "data/db/raw_data.db"),
-                       os.path.join(_ROOT, "data/db/option_flow.db"),
-                       os.path.join(_ROOT, "data/db/premarket_levels.db"))["results"]
+    r = runner.compute_legacy(day, os.path.join(_ROOT, "data/db/raw_data.db"),      # [604차] v1 이름 재현
+                              os.path.join(_ROOT, "data/db/option_flow.db"),
+                              os.path.join(_ROOT, "data/db/premarket_levels.db"))["results"]
     if not r["MAIN"]["trades"] and "봉 없음" in str(r["MAIN"]["decision"]):
         pytest.skip("그날 봉이 이 PC DB 에 없다")
     for t in r["SHADOW_X4NFA"]["trades"]:
@@ -174,7 +175,7 @@ def test_daily_report_survives_missing_0900_bar(tmp_path):
     assert r["ok"] is True
     md = open(r["md_path"], encoding="utf-8").read()
     assert "09:00봉 결손" in md                                     # 결손을 숨기지 않는다(계측 4원칙 ④)
-    assert "X4NFA(X4NF+깨진맥점금지)" in md
+    assert "V1X4(R2+X4NF)" in md and "MAIN(v2 FLOWC)" in md         # [604차] v2 변형 라벨
 
 
 # ── D. 채점표 ─────────────────────────────────────────────────────────────

@@ -26,10 +26,11 @@ from strategy.shindong import engine, spec  # noqa: E402
 
 # ── A ────────────────────────────────────────────────────────────────────
 def test_x4nf_preregistration():
-    assert "SHADOW_X4NF" in spec.VARIANTS
+    # [604차] X4NF 는 SHADOW_V1X4 로 승계(종료) — 엔진 플래그는 그대로
+    assert "SHADOW_X4NF" in spec.RETIRED_SHADOWS and spec.SHADOW_META_D["SHADOW_V1X4"]["x4nf"] is True
     assert spec.VARIANTS[0] == "MAIN"
-    assert (spec.X4NF_SCORING_START, spec.X4NF_JUDGE_AFTER_DAYS) == ("2026-09-29", 10)
-    assert spec.SPEC_VERSION == "SD-2026-09-24-v1"      # MAIN 값 무변경 → 버전 유지
+    assert (spec.X4NF_SCORING_START, spec.X4NF_JUDGE_AFTER_DAYS) == ("2026-09-29", 10)   # v1 시대 값(사료)
+    assert spec.V1_SPEC_VERSION == "SD-2026-09-24-v1"   # v1 값 무변경
 
 
 # ── B ────────────────────────────────────────────────────────────────────
@@ -77,7 +78,8 @@ _DB_OK = all(os.path.exists(os.path.join(_ROOT, p)) for p in
 
 def _compute(day):
     from strategy.shindong import runner
-    return runner.compute(day, os.path.join(_ROOT, "data/db/raw_data.db"),
+    # [604차] v1 이름 재현(legacy). 라이브 compute 의 MAIN 은 v2(FLOWC)다
+    return runner.compute_legacy(day, os.path.join(_ROOT, "data/db/raw_data.db"),
                           os.path.join(_ROOT, "data/db/option_flow.db"),
                           os.path.join(_ROOT, "data/db/premarket_levels.db"))
 
@@ -142,16 +144,16 @@ def test_scorecard_excludes_build_day_and_waits(tmp_path):
         for v in spec.VARIANTS:
             store.save_day(db, day, v, "wk_mon", "", res, "15:08", spec.SPEC_VERSION, source="backfill")
     txt = sc.build(db, spec.SCORING_START)
-    assert "SHADOW_X4NF 채점 시작(2026-09-29) 전 행 **1건** — 표본 제외" in txt
-    assert "판정: **대기** — 1/10 거래일" in txt
+    # [604차] 9/28·9/29 행은 v2 창(10/01~) 밖 — v2 는 0일, v1 레거시 창(SHADOW_V1 의 R3)만 센다
+    assert "v2 판정 기록 거래일: **0일**" in txt
+    assert "v1 R3 닫힌 거래 2건" in txt and "판정: **대기** — 2/10 거래일" in txt
 
 
 # ── E. [632차 후속] SHADOW_TR44 — R3 트레일 4/4 (비교 기록용) ──────────────────
 def test_tr44_preregistration():
-    assert spec.VARIANTS.index("SHADOW_TR44") == 3      # [598차] 뒤에 SHADOW_X4NFA 가 붙었다
-    assert (spec.TR44_ACT, spec.TR44_DIST) == (4.0, 4.0)
-    assert spec.LATE_SHADOW_START == {"SHADOW_X4NF": "2026-09-29", "SHADOW_TR44": "2026-09-29",
-                                      "SHADOW_X4NFA": "2026-09-30"}   # [598차]
+    assert "SHADOW_TR44" in spec.RETIRED_SHADOWS and "SHADOW_TR44" not in spec.VARIANTS   # [604차] 종료
+    assert (spec.TR44_ACT, spec.TR44_DIST) == (4.0, 4.0)                                  # 엔진 플래그 값은 사료로 유지
+    assert all(v == spec.SCORING_START for v in spec.LATE_SHADOW_START.values())         # [604차] v2 섀도는 모두 10/01
 
 
 def _frame(bars):

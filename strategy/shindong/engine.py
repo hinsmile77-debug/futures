@@ -36,7 +36,8 @@ class DayFrame:
 
     def __init__(self, candles: Dict[str, Tuple[float, float, float, float]],
                  flow: Dict[str, Tuple[Optional[float], Optional[float]]],
-                 horizon: Optional[str] = None, last_minute: str = "15:08"):
+                 horizon: Optional[str] = None, last_minute: str = "15:08",
+                 fx: Optional[Dict[str, float]] = None):
         keys = sorted(set(candles) | set(flow))
         keys = [k for k in keys if k <= last_minute]
         if horizon is not None:
@@ -44,9 +45,17 @@ class DayFrame:
         self.idx: List[str] = keys
         self.o, self.h, self.l, self.c = {}, {}, {}, {}
         self.call, self.put, self.sp = {}, {}, {}
+        # [604차] fx = 외국인 선물 순매수 누적(계약수) — SHADOW_FLOWF 만 쓴다. 봉·흐름 분 인덱스에만 붙이고
+        #   결손 분은 직전 값으로 잇는다(흐름과 같다). 없으면 빈 dict — 0 으로 메우지 않는다(계측 4원칙 ②).
+        self.fx: Dict[str, float] = {}
         last_bar = None
         lc = lp = None          # 콜·풋은 **각자** 잇는다(pandas ffill 과 같다)
+        lfx = None
         for k in keys:
+            if fx and fx.get(k) is not None:
+                lfx = float(fx[k])
+            if lfx is not None:
+                self.fx[k] = lfx
             if k in candles:
                 last_bar = candles[k]
             if last_bar is not None:
@@ -223,13 +232,16 @@ def run_trade(d: DayFrame, side, t0, stop, t1, t2, e2=False,
 # ── 하루 ────────────────────────────────────────────────────────────────
 def run_day(d: DayFrame, L, variant: str = "MAIN") -> Dict[str, Any]:
     """하루 판정. 반환: {"decision": {...}, "trades": [...]}."""
-    e2 = f2 = variant == "SHADOW_E2F2"
-    # [632차] SHADOW_X4NF — R3 만 바꾼다: 1차 목표 X4 + 같은 맥점 방향 뒤집기(flip) 금지. R2 는 MAIN 과 같다.
-    # [MW0602 598차] SHADOW_X4NFA — X4NF 전부 + 깨진 맥점 진입 금지(A). R2 는 MAIN 과 같다.
-    broken_guard = variant == "SHADOW_X4NFA"
-    x4nf = variant == "SHADOW_X4NF" or broken_guard
-    # [632차 후속] SHADOW_TR44 — MAIN 과 같은 진입·목표에 R3 만 트레일(+4pt 발동 · 4pt 간격). 비교 기록용.
-    tr44 = (S.TR44_ACT, S.TR44_DIST) if variant == "SHADOW_TR44" else None
+    # [604차] 이 함수는 **v1 규칙**(R1/R2/R3)이다. "MAIN"·"SHADOW_V1" 은 v1 그대로, 나머지는 플래그로 변형한다.
+    #   v1 시대 이름(SHADOW_E2F2·X4NF·TR44·X4NFA)은 종료됐지만 재현 테스트가 부르므로 계속 알아듣는다.
+    meta = S.SHADOW_META_D.get(variant, {})
+    e2 = f2 = variant == "SHADOW_E2F2" or bool(meta.get("e2"))
+    # [632차] X4NF — R3 만 바꾼다: 1차 목표 X4 + 같은 맥점 방향 뒤집기(flip) 금지. R2 는 MAIN 과 같다.
+    # [MW0602 598차] X4NFA — X4NF 전부 + 깨진 맥점 진입 금지(A). R2 는 MAIN 과 같다.
+    broken_guard = variant == "SHADOW_X4NFA" or bool(meta.get("broken"))
+    x4nf = variant == "SHADOW_X4NF" or broken_guard or bool(meta.get("x4nf"))
+    # [632차 후속] TR44 — MAIN 과 같은 진입·목표에 R3 만 트레일(+4pt 발동 · 4pt 간격). 비교 기록용.
+    tr44 = (S.TR44_ACT, S.TR44_DIST) if (variant == "SHADOW_TR44" or meta.get("tr44")) else None
     lvl_side: Dict[float, int] = {}     # 맥점 → 그 맥점에서 마지막으로 **진입한** 방향
     dec: Dict[str, Any] = {"pm_sp": None, "bias": None, "r2": None, "r2_ts": None,
                            "notes": []}

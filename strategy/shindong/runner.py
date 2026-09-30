@@ -67,12 +67,76 @@ def load_inputs(trade_date: str, product: str, raw_db: str, flow_db: str, levels
     return candles, {k: tuple(v) for k, v in flow.items()}, levels
 
 
+def load_fx(trade_date: str, raw_db: str) -> Dict[str, float]:
+    """[604차] 외국인 선물 순매수 누적(계약수) — `raw_investor_futures.foreign_net_qty`(613차 보존).
+    SHADOW_FLOWF 의 원천. 없으면 빈 dict(미측정 ≠ 0)."""
+    nxt = (_dt.date.fromisoformat(trade_date) + _dt.timedelta(days=1)).isoformat()
+    out: Dict[str, float] = {}
+    if not os.path.exists(raw_db):
+        return out
+    con = _ro(raw_db)
+    try:
+        try:
+            rows = con.execute("SELECT ts, fields FROM raw_investor_futures WHERE ts>=? AND ts<? ORDER BY ts",
+                               (trade_date, nxt)).fetchall()
+        except sqlite3.OperationalError:
+            return out                       # 테이블 없음(613차 이전 DB) — 미측정
+        import json as _json
+        for r in rows:
+            try:
+                v = _json.loads(r["fields"]).get("foreign_net_qty")
+            except (TypeError, ValueError):
+                v = None
+            if v is not None:
+                out[str(r["ts"])[11:16]] = float(v)
+    finally:
+        con.close()
+    return out
+
+
+def run_variant(d: "engine.DayFrame", L, variant: str, v1_decision: Optional[Dict[str, Any]] = None):
+    """[604차] 변형 하나 — kind 로 분기. "MAIN" 은 spec.MAIN_KIND(v2 = family/flowc)."""
+    from strategy.shindong import families
+    if variant == "MAIN":
+        kind, fam = spec.MAIN_KIND, spec.MAIN_FAMILY
+    else:
+        m = spec.SHADOW_META_D.get(variant, {"kind": "v1"})
+        kind, fam = m.get("kind", "v1"), m.get("family")
+    if kind == "family":
+        return families.run_family_day(d, L, fam, v1_decision=v1_decision)
+    return engine.run_day(d, L, variant)
+
+
+LEGACY_VARIANTS = ("MAIN", "SHADOW_E2F2", "SHADOW_X4NF", "SHADOW_TR44", "SHADOW_X4NFA")
+
+
+def compute_legacy(trade_date: str, raw_db: str, flow_db: str, levels_db: str,
+                   variants: Tuple[str, ...] = LEGACY_VARIANTS) -> Dict[str, Any]:
+    """[604차] v1 시대 변형 이름으로 `engine.run_day` 재생 — 재현 테스트·복기 전용(라이브 경로 아님).
+    "MAIN" 은 여기서 **v1**(R1/R2/R3)이다. 반환 형식은 `compute` 와 같다."""
+    d0 = _dt.date.fromisoformat(trade_date)
+    product, _exp, note = select_flow_product(d0)
+    candles, flow, lvrows = load_inputs(trade_date, product, raw_db, flow_db, levels_db)
+    out = {"product": product, "product_note": note, "horizon": None, "last_close": None, "results": {}}
+    if not candles or not lvrows or "0850" not in lvrows:
+        why = "봉 없음" if not candles else "08:50 맥점 없음"
+        for v in variants:
+            out["results"][v] = {"decision": {"notes": [why]}, "trades": []}
+        return out
+    L = engine.prepare_levels(lvrows)
+    d = engine.DayFrame(candles, flow)
+    for v in variants:
+        out["results"][v] = engine.run_day(d, L, v)
+    return out
+
+
 def compute(trade_date: str, raw_db: str, flow_db: str, levels_db: str,
             now: Optional[_dt.datetime] = None, live: bool = False):
     """변형별 결과. 반환 {"product","product_note","horizon","last_close","results":{variant:res}}."""
     d0 = _dt.date.fromisoformat(trade_date)
     product, _exp, note = select_flow_product(d0)
     candles, flow, lvrows = load_inputs(trade_date, product, raw_db, flow_db, levels_db)
+    fx = load_fx(trade_date, raw_db)
     horizon = None
     if live:
         # 봉·흐름이 **둘 다** 도착한 마지막 분, 그리고 진행 중인 분은 제외한다.
@@ -93,12 +157,15 @@ def compute(trade_date: str, raw_db: str, flow_db: str, levels_db: str,
             out["results"][v] = {"decision": {"notes": [why]}, "trades": []}
         return out
     L = engine.prepare_levels(lvrows)
-    d = engine.DayFrame(candles, flow, horizon=horizon)
+    d = engine.DayFrame(candles, flow, horizon=horizon, fx=fx)
     if d.idx:
         out["last_close"] = d.c.get(d.idx[-1])
         out["horizon"] = d.idx[-1]
+    # [604차] v1 판정(R1/R2)은 한 번만 계산해 family 변형의 decision 에도 실어 준다
+    #   (채점표 R1 적중률·R1/R2 경제성·BRKC 의 R1 방향이 쓴다). SHADOW_V1 결과는 그대로 재사용.
+    v1 = engine.run_day(d, L, "SHADOW_V1")
     for v in spec.VARIANTS:
-        out["results"][v] = engine.run_day(d, L, v)
+        out["results"][v] = v1 if v == "SHADOW_V1" else run_variant(d, L, v, v1_decision=v1["decision"])
     return out
 
 

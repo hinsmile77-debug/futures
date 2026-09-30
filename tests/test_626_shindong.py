@@ -35,16 +35,16 @@ from strategy.shindong.calendar import select_flow_product  # noqa: E402
 # ── A. 규격 고정 ──────────────────────────────────────────────────────────
 def test_spec_is_preregistered_values():
     """🔴 값이 바뀌면 검증 시계가 초기화된다 — 이 테스트를 고치기 전에 사전등록 문서부터."""
-    assert spec.SPEC_VERSION == "SD-2026-09-24-v1"
+    assert spec.V1_SPEC_VERSION == "SD-2026-09-24-v1"          # [604차] v1 규칙 — SHADOW_V1 이 이 규칙으로 기록
+    assert spec.SPEC_VERSION == "SD-2026-09-30-v2.1"            # [604차] MAIN = FLOWC (test_604 가 v2 값을 고정)
     assert (spec.BIAS_MIN, spec.CONF_MIN, spec.CONF_END, spec.REV_MIN, spec.REV_WIN_MIN) == \
         (50, 50, "09:10", 50, 10)
     assert (spec.TOUCH_NEAR, spec.TOUCH_FAR, spec.LV_STOP_BUF, spec.EXT_STOP_BUF) == \
         (1.0, 1.5, 1.5, 0.5)
     assert (spec.T1_MIN_DIST, spec.TP_BUF, spec.OR_STOP_BUF) == (2.0, 0.5, 1.0)
     assert (spec.R3_START, spec.NEW_ENTRY_END, spec.TIME_EXIT) == ("09:30", "14:30", "15:05")
-    assert spec.VARIANTS == ("MAIN", "SHADOW_E2F2", "SHADOW_X4NF", "SHADOW_TR44",
-                             "SHADOW_X4NFA")   # 632차·598차 섀도 추가(MAIN 값 무변경)
-    assert (spec.SCORING_START, spec.R3_KILL_AFTER_DAYS, spec.R3_KILL_NET_MAX,
+    assert spec.VARIANTS == ("MAIN", "SHADOW_V1", "SHADOW_V1X4", "SHADOW_FLOWF", "SHADOW_BRKC")   # [604차] v2
+    assert (spec.V1_SCORING_START, spec.R3_KILL_AFTER_DAYS, spec.R3_KILL_NET_MAX,
             spec.R3_KILL_WINRATE_MAX) == ("2026-09-28", 10, 0, 0.35)
 
 
@@ -153,9 +153,10 @@ _DB_OK = all(os.path.exists(os.path.join(_ROOT, p)) for p in
 ])
 def test_replay_reproduces_preregistration_analysis(day, main, shadow):
     from strategy.shindong import runner
-    r = runner.compute(day, os.path.join(_ROOT, "data/db/raw_data.db"),
-                       os.path.join(_ROOT, "data/db/option_flow.db"),
-                       os.path.join(_ROOT, "data/db/premarket_levels.db"))
+    # [604차] v1 재현 — "MAIN" 이 v1 인 legacy 경로. 라이브 compute 의 MAIN 은 v2(FLOWC)다
+    r = runner.compute_legacy(day, os.path.join(_ROOT, "data/db/raw_data.db"),
+                              os.path.join(_ROOT, "data/db/option_flow.db"),
+                              os.path.join(_ROOT, "data/db/premarket_levels.db"))
     if not r["results"]["MAIN"]["trades"] and "봉 없음" in str(r["results"]["MAIN"]["decision"]):
         pytest.skip("그날 봉이 이 PC DB 에 없다")
     got = {v: round(sum(engine.trade_net(t) for t in res["trades"]))
