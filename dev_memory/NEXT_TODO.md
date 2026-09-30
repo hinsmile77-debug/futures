@@ -22291,3 +22291,14 @@ docs/정기점검/매일점검/evidence_MW0601-20260826_post.md
 - [x] **637-2 완료** — `crash_fault.log` 의 `Windows fatal exception` 을 PID별로 집계해 수집기 §9 표·§11 적신호에 올린다(`utils/wer_crash.py` `fatal`/`fatal_total`, `collect_evidence.py:fatal_exception_lines`). 검증: 09-28 4건 · 09-29 3건 재현. `tests/test_641_*`.
 - [x] **638-1 완료** — `run_git()` 에 `GIT_OPTIONAL_LOCKS=0` 환경변수 이중 전달 + `git_change_profile()` `fail_reason`(실패 명령·rc·stderr) 을 §2·§11 에 표기. ⚠ 락 생성 원인 확정이 아니다 — 다음 `git diff` 실패 때 §2 「실패 명령:」 으로 원인을 좁혀 이 항목을 재평가할 것.
 - [ ] **641-1 (G-2, 보류)** 부팅 구간 access violation 경고 **문턱** 신설 여부 — 관측일 3건(09-17·09-28·09-29)뿐이라 313차 가드 미통과. 지금 §11 은 문턱 없이 1건부터 건수만 올린다. 관측일이 더 쌓이면(예: 10거래일) 분포를 보고 문턱을 정할 것. 606-4(원인 조사 우선순위, 사용자 결정 대기)와 함께 볼 것.
+
+## 2026-09-30 (MW0601 645차 — 장후 자동조치)
+
+- [x] **644-1 / F-4 완료** — `scripts/git_lock_diag.py`(락 주인 진단 ORPHAN/HELD/… + `--recheck`) 신설, 수집기 §2 배선. 판정 정본 `git_lock_guard.py` 무변경.
+- [x] **642-2 / G-1 완료** — 수집기 §9 「PreRetrain 우회 확인」 한 줄(`preretrain_bypass_lines`).
+- [x] **643 G-2 완료(도구만)** — `scripts/git_snapshot.py`(git 1회 상태 스냅샷). 사용 권고 문구는 645-3.
+- [x] **642-1 완료** — `dev_memory/_tmp_append_20260929*.txt` 0바이트 2건 삭제.
+- [ ] **645-1 (O-i1 보강)** 다음 `.git/index.lock` 재현 시 `python scripts/git_lock_diag.py --recheck 30` 결과(갈래 1/2)를 리포트에 기록 — 3건 이상 쌓이면 원인 가설 재검토.
+- [ ] **645-2 (사용자/별도 세션, fuoption 저장소)** `fuoption/scripts/git_lock_guard.py` 사본을 정본(futures, 636차 `_sideline` 반영본)과 재통일 — `test_483::test_sibling_copy_matches_canonical` 이 636차 이후 계속 실패 중. 다른 저장소라 자동조치 범위 밖.
+- [ ] **645-3 (사용자 확인, 스킬 개정)** SKILL.md §0-③·§7 에 ① 「상태 확인은 `scripts/git_snapshot.py` 한 번으로」 ② 「보고서 마무리 직전 `git_lock_diag.py --recheck 30` 실행 결과를 자동 기재」(G-3) 추가 여부 — 저장소 정본 + 앱 저장본 동시 수정 필요라 자동조치에서 보류.
+- [ ] **644-3 / F-5 유지(C — 사용자 승인 대기)** evidence_map.md §8 스키마 갱신 — 리포트가 「사용자 승인 후 별도 세션」 지정.

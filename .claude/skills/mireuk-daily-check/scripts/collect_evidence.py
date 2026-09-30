@@ -572,6 +572,15 @@ def git_index_lock(root):
             sys.path.insert(0, os.path.dirname(guard))
         import git_lock_guard as _glg
         info = _glg.inspect(root)
+        # [645차 F-4] 락이 있으면 주인 진단(ORPHAN/HELD/…)을 덧붙인다. 진단 모듈은
+        #   판정 정본과 분리돼 있다(정본은 fuoption 사본과 바이트 일치가 강제된다).
+        if info.get("present"):
+            try:
+                import git_lock_diag as _gld
+                info["diag"] = _gld.diagnose_lock(root)
+            except Exception as _de:
+                info["diag"] = {"origin": "UNMEASURED", "origin_text": "진단 실패 — **미측정**: %s" % _de,
+                                "lock_mtime_txt": "?", "procs": None}
         info["note"] = ""
         return info
     except Exception as e:
@@ -1894,6 +1903,68 @@ def state_snapshot_section(root, cfg, day, out):
     A("> 「아니오」거나 「키 없음」이면 그 마커를 남기는 경로(EOD 재학습·P8 재적합)가 "
       "어제 것을 못 남겼거나 오늘 아침 누군가 덮었다는 뜻이다 — 2026-09-03 이상점 1-1 계열.")
     A("")
+    preretrain_bypass_lines(root, day, out)
+
+
+#: [MW0601 645차 / G-1] `main.py` 08:55 PreRetrain 분기의 로그 문구 → 분류 키.
+#: 순서가 중요하다 — "직접 확인 실패" 가 "직접 확인" 보다 먼저 걸려야 한다.
+_PRERETRAIN_KINDS = (
+    ("마커 파일 직접 확인 실패", "bypass_failed"),
+    ("EOD 마커 파일 직접 확인", "bypass_used"),
+    ("EOD 재학습 날짜 복원", "restored"),
+    ("사전 재학습 스킵", "skipped"),
+    ("사전 재학습 시작", "ran"),
+)
+
+
+def preretrain_bypass_verdict(kinds):
+    """분류 키 집합 → (표식, 문장). 읽기 전용 판정 — 로그가 없으면 미측정."""
+    if not kinds:
+        return ("—", "PreRetrain 로그 없음 — **미측정** (08:55 이전 수집이거나 그날 미기동)")
+    if "bypass_failed" in kinds:
+        return ("🔴", "우회 확인 **실패** — session_state 마커도 파일 확인도 못 했다. "
+                      "이상점 1-1 계열 P0 격상 검토")
+    if "bypass_used" in kinds and "skipped" in kinds:
+        return ("✅", "우회 확인 **성공** → 스킵. session_state 마커는 비어 있었고 "
+                      "EOD 마커 파일로 메웠다(SessionStateDrop 재현, 실질 피해 없음)")
+    if "restored" in kinds and "skipped" in kinds:
+        return ("✅", "session_state 마커로 스킵 — 우회 불필요(정상 경로)")
+    if "ran" in kinds:
+        return ("⚠", "사전 재학습 **실행** — 전날 EOD 성공을 확인하지 못했다%s"
+                     % (" (우회 확인은 시도됨)" if "bypass_used" in kinds else ""))
+    return ("⚠", "판정 불가 — 알려진 조합이 아니다(%s)" % ", ".join(sorted(kinds)))
+
+
+def preretrain_bypass_lines(root, day, out):
+    """[MW0601 645차 / G-1] 08:55 PreRetrain 이 session_state 결손을 우회했는가.
+
+    위 표는 마커 **유무**만 보여준다. 마커가 비어도 PreRetrain 은 EOD 마커 파일을
+    직접 확인해 정상 스킵하는데(2026-09-21~09-30 매 거래일), 그 성공 여부는
+    `SYSTEM.log` 를 손으로 grep 해야 알 수 있었다. 한 줄로 올린다. 읽기 전용.
+    """
+    A = out.append
+    path = os.path.join(root, "logs", "%s_SYSTEM.log" % day.strftime("%Y%m%d"))
+    kinds, hits = set(), []
+    if os.path.exists(path):
+        f = open_text(path)
+        try:
+            for line in f:
+                if "[PreRetrain]" not in line:
+                    continue
+                for pat, key in _PRERETRAIN_KINDS:
+                    if pat in line:
+                        kinds.add(key)
+                        break
+                hits.append(line.rstrip())
+        finally:
+            f.close()
+    mark, text = preretrain_bypass_verdict(kinds)
+    A("- **PreRetrain 우회 확인**: %s %s" % (mark, text))
+    for h in hits[:4]:
+        A("  - `%s`" % truncate(h, 200))
+    if len(hits) > 4:
+        A("  - … 외 %d줄" % (len(hits) - 4))
+    A("")
 
 
 def bar_gap_section(root, cfg, day, out):
@@ -2351,6 +2422,15 @@ def build(root, day, phase, cfg, discover_only=False):
                        _chg["autocrlf"]))
     A("- HEAD `%s` · 브랜치 `%s` · 미커밋 %d건%s%s"
       % (head, branch, len(dirty), real_txt, lock_txt))
+    _dg = lk.get("diag") if lk.get("present") else None
+    if _dg:
+        # [645차 F-4] 두 갈래(주인 없는 잔재 vs 실행 중 git 이 쥔 락)를 가른다.
+        _pr = _dg.get("procs") or []
+        A("  - 락 주인 진단 `[%s]` %s (락 mtime %s)%s"
+          % (_dg["origin"], _dg["origin_text"], _dg["lock_mtime_txt"],
+             ("" if not _pr else " — " + "; ".join(
+                 "pid %s `%s`" % (p["pid"], (p.get("cmd") or "")[:80]) for p in _pr[:3])
+              + (" … 외 %d개" % (len(_pr) - 3) if len(_pr) > 3 else ""))))
     if _chg["measured"] and _chg["real"]:
         _rf = _chg.get("real_files") or []
         A("  - 실질 변경 파일: %s%s"

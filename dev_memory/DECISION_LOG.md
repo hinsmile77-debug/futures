@@ -46982,3 +46982,23 @@ Windows `git status` 수정 개수 배포 전과 동일, 스테이징된 내용 
 
 **검증**: `tests/test_641_crash_fault_fatal_and_git_diag.py` 12건 + `test_620`·`test_624` 회귀 통과(35 passed, py37_32). 실데이터 재생: `--date 2026-09-28` → 4건(09:00 이후 1건, 11:33:47 이후), `--date 2026-09-29` → 3건(09:00 이후 0건) — 장전·장후 리포트의 손 집계와 일치. 수집 후 `.git/index.lock` 없음. 전체 스위트 결과는 아래 줄.
 **전체 스위트**(py37_32): 2448 passed · **12 failed** · 3 skipped — 12건 전부 이번 변경과 무관한 기존 실패(	est_457 main_dashboard peter_paste · 	est_498 CybosInvestor 미등록 · 	est_483 fuoption 사본 · 	est_504 4 · 	est_477·	est_493·	est_554·	est_621·	est_628 각 1). 어느 것도 wer_crash·collect_evidence 를 참조하지 않는다(grep 확인). 전일(636차) 기준선 14건보다 적다.
+
+## 2026-09-30 (MW0601 645차 — 장후 자동조치: F-4 락 주인 진단 · G-1 PreRetrain 우회 표시 · G-2 git 1회 스냅샷)
+
+**증상**: ① `.git/index.lock` 이 2026-09-30 하루 세 번 생겼다(장전·장중 STALE → 회수, 장후 HOLD → 4분 뒤 자연소멸). `git_lock_guard.py` 는 git 프로세스 **개수**만 남겨 「주인 없는 잔재」와 「실행 중 git 이 잠깐 쥔 락」을 가를 수 없었다. ② 08:55 PreRetrain 이 session_state 결손을 EOD 마커 파일로 우회했는지는 `SYSTEM.log` 수동 grep 으로만 확인됐다(09-21~09-30 매 거래일 재현). ③ 점검 세션이 `branch`·`status`·`log` 를 연달아 치는 시점마다 락이 생겼다.
+
+**원인**: ① 진단 축 부재(판정 축만 있음). ② §9 는 session_state 마커 **유무**만 표시. ③ 원인 미특정 — 호출 횟수 자체가 노출면.
+
+**결정**:
+1. (F-4) `scripts/git_lock_diag.py` 신설 — 락이 있을 때만 git 프로세스 pid·시작시각·명령줄을 찍고 락 mtime 과 비교해 `ORPHAN`(쥔 주인 없음, 갈래 1) / `HELD`(락보다 먼저 시작한 git 생존, 갈래 2) / `UNRELATED` / `UNKNOWN` / `UNMEASURED` 로 표기. `--recheck SEC` 로 판정보류 락의 자연소멸 여부를 재관측(스테일 확정 락은 기다리지 않음). **판정·회수는 하지 않는다**(삭제·이름변경 코드 없음 — 테스트 고정). 수집기 §2 가 락 존재 시 이 진단을 한 줄 붙인다.
+2. 🔴 **판정 정본 `scripts/git_lock_guard.py` 는 손대지 않았다** — 처음엔 거기에 넣었으나 `test_483::test_sibling_copy_matches_canonical` 이 fuoption 사본과의 바이트 일치를 강제한다는 것을 확인하고 되돌렸다. ⚠ 그 테스트는 **이번 변경 전부터 실패 중**이다 — fuoption 사본이 636차(`1c4afed`, 09-28 `_sideline` 이름변경 우회) 이후 재통일되지 않았다(fuoption 최종 동기화 `8368bfb` 09-24). 다른 저장소라 자동조치 범위 밖 → NEXT_TODO 645-2.
+3. (G-1) 수집기 §9 `state_snapshot_section()` 끝에 `preretrain_bypass_lines()` — 「PreRetrain 우회 확인: ✅ 성공 → 스킵 / ✅ 정상 경로 / ⚠ 실행 / 🔴 우회 실패 / — 미측정(로그 없음)」 한 줄 + 원문 최대 4줄(`… 외 N줄`). 분류 문구 5종은 `main.py` 원문과 대조하는 테스트로 고정(문구가 바뀌면 조용히 죽는 것을 막는다).
+4. (G-2) `scripts/git_snapshot.py` 신설 — `status --porcelain=v2 --branch` **1회**로 브랜치·HEAD·upstream·앞섬/뒤짐·변경 수를 뽑고, `--log N` 은 +1회. 호출 전후 락 유무를 비교해 「이 유틸이 락을 남겼다」면 rc=2. **선택적 도구** — SKILL.md §0-③ 에 「이걸 쓰라」는 권고 추가는 스킬 개정(저장소 정본 + 앱 저장본 동시 수정)이라 하지 않았다 → NEXT_TODO 645-3.
+5. (F-1) `dev_memory/_tmp_append_20260929.txt`·`_tmp_append_todo_20260929.txt` 삭제(0바이트·미추적 확인 후). 커밋 대상 아님.
+6. 하지 않은 것: F-2(문서 제목 복원 — 리포트가 사용자 판단으로 지정), F-3(락 부스러기 — 사용자 손 작업. 참고: Windows 쪽 실측상 `index.lock.stale_20260930*` 2개는 **보이지 않고** `index.lock.stale.5`(09-28 08:59) 1개만 남아 있다), F-5(evidence_map.md 스키마 — 리포트가 「사용자 승인 후」 지정 → C), G-3(세션 종료 직전 자동 락체크 — SKILL.md 절차 개정이라 사용자 확인 필요 → 대기. 도구는 `git_lock_diag.py --recheck` 로 준비됨).
+
+**Why**: 계측 4원칙 ②(프로세스 목록 미측정은 `None`, 0개와 구분) · ④(우회 성공 여부를 다이제스트에 가시화). 판정/진단 분리는 「같은 판정을 두 곳에 적으면 한쪽만 고쳐져 갈라진다」(483차 후속3) 원칙의 연장.
+
+**How to apply**: 락을 발견하면 `python scripts/git_lock_diag.py --recheck 30` → `ORPHAN` 이면 `git_lock_guard.py --reclaim` 대상, `HELD` 면 명령줄의 git 이 범인 후보이니 기다린다, 재관측 소멸이면 갈래 2 로 기록. 다음 락 재현 표본부터 갈래별로 센다(O-i1).
+
+**검증**: `tests/test_645_git_lock_diag_preretrain_snapshot.py` 신규 + `test_483`·`test_523`·`test_641`·`test_620`·`test_631` 회귀: 86 passed · 1 failed(`test_483` fuoption 사본 — 기존 실패, 위 2번). 실데이터: `preretrain_bypass_lines(2026-09-30)` → 「✅ 우회 확인 성공 → 스킵」(장전 리포트 손 판정과 일치), `git_snapshot.snapshot(log_n=2)` → git 호출 2회·브랜치 v9-dev, 수집 후 `.git/index.lock` 없음.
