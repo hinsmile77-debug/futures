@@ -12520,7 +12520,7 @@ class TradingSystem:
                                                 _pdf_path, ", ".join(_miss))
                                     return
                                 from strategy.shindong.report_mail import send_daily as _send
-                                logger.info("[ShindongMail] 발송 완료 → %s", _send(_sd_day, _sd_dir))
+                                logger.info("[ShindongMail] 발송 완료 → %s", _send(_sd_day, _sd_dir, pdf=_pdf_path))
                             except Exception as _ml_e:
                                 logger.warning("[ShindongMail] PDF·메일 실패 (수동: scripts/"
                                                "shindong_report_mail.py %s): %s", _sd_day, _ml_e)

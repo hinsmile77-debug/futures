@@ -6,8 +6,10 @@ py37_32 의 matplotlib/PIL 은 DLL 오류로 못 쓰므로 브라우저 인쇄�
 """
 import os
 import re
+import shutil
 import subprocess
 import tempfile
+import time
 
 import markdown
 
@@ -54,12 +56,28 @@ def md_to_pdf(md_path: str, pdf_path: str = None) -> str:
     fd, tmp = tempfile.mkstemp(suffix=".html")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(html)
+    # [MW0602 599차] 라이브(관리자 권한)에서 Chrome 이 비관리자로 자기 재실행하고 원 프로세스는 rc=0 즉시
+    #   종료 → PDF 미생성(2026-09-30 관리자 창 재현). --do-not-de-elevate 로 막고, 전용 임시 프로필로
+    #   떠 있는 사용자 Chrome 에 위임되지 않게 한다. 기존 PDF 가 있으면 실패가 성공처럼 보이므로
+    #   임시 이름으로 인쇄한 뒤 교체한다. 실패 시 rc·stderr 를 남긴다(계측 4원칙 ④).
+    tmp_pdf = pdf_path + ".tmp.pdf"
+    profile = tempfile.mkdtemp(prefix="mireuk_pdf_")
+    if os.path.exists(tmp_pdf):
+        os.remove(tmp_pdf)
+    t0 = time.time()
     try:
-        subprocess.run([exe, "--headless", "--disable-gpu", "--no-pdf-header-footer",
-                        "--print-to-pdf=%s" % pdf_path, "file:///" + tmp.replace("\\", "/")],
-                       check=True, timeout=120, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        r = subprocess.run([exe, "--headless", "--disable-gpu", "--no-pdf-header-footer",
+                            "--do-not-de-elevate", "--no-first-run", "--no-default-browser-check",
+                            "--user-data-dir=%s" % profile,
+                            "--print-to-pdf=%s" % tmp_pdf, "file:///" + tmp.replace("\\", "/")],
+                           timeout=120, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     finally:
         os.remove(tmp)
-    if not os.path.exists(pdf_path):
-        raise RuntimeError("PDF 가 만들어지지 않았다: %s" % pdf_path)
+        shutil.rmtree(profile, ignore_errors=True)
+    if r.returncode != 0 or not os.path.exists(tmp_pdf):
+        err = (r.stderr or b"").decode("utf-8", "replace").strip().replace("\n", " | ")[-300:]
+        raise RuntimeError("PDF 가 만들어지지 않았다: %s (rc=%s · %.1fs · %s · stderr=%s)"
+                           % (pdf_path, r.returncode, time.time() - t0,
+                              os.path.basename(exe), err or "없음"))
+    os.replace(tmp_pdf, pdf_path)
     return pdf_path

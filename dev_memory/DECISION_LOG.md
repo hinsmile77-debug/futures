@@ -2,6 +2,25 @@
 
 ---
 
+## 2026-09-30 (MW0602 602차 — 신동 PDF 인쇄: 관리자 권한에서 Chrome 즉시 종료 → 자동 메일 실패) — ✅ **수정 · 관리자 창 재현/해소 확인**
+
+**증상** — 598차 후속(markdown 설치) 뒤 첫 자동 확인일. 15:40:24 리포트 생성 → 15:40:25 `[ShindongMail] PDF·메일 실패: PDF 가 만들어지지 않았다`.
+비관리자 창에서 같은 md 를 인쇄하면 2.4초에 428KB 로 정상 생성돼 재현되지 않았다.
+
+**원인** — 라이브 미륵이는 `LAUNCH_API.bat` 가 **관리자 권한**(RunAs)으로 띄운다. 관리자 프로세스가 부른 Chrome 은 비관리자로
+자기 재실행하고 원 프로세스는 rc=0 으로 즉시 끝난다 → `md_to_pdf` 가 PDF 없음으로 판정(임시 HTML 도 `finally` 로 즉시 삭제).
+사용자 관리자 PowerShell ISE(High Mandatory Level)에서 `shindong_report_pdf.py 2026-09-30` 으로 **재현 확인**, 비관리자 창은 성공.
+원인이 로그에 안 남은 이유: `stdout/stderr=DEVNULL` — rc·stderr 를 버렸다(계측 4원칙 ④).
+
+**결정** —
+1. `utils/report_pdf.py`: `--do-not-de-elevate` + 전용 임시 프로필(`--user-data-dir`, 끝나면 삭제) + `--no-first-run`.
+   **관리자 창 재실행에서 PDF 생성 확인**(16:45, 428KB). 비관리자도 정상(2.3s).
+2. 임시 이름(`.tmp.pdf`)으로 인쇄 후 `os.replace` — 종전엔 기존 PDF 가 있으면 인쇄 실패가 성공처럼 보였다.
+3. 실패 시 예외 메시지에 `rc · 경과초 · 브라우저 · stderr 끝 300자`.
+4. `report_mail.send_daily(pdf=)` — 장후 스레드가 이미 만든 PDF 를 넘겨 **이중 인쇄 제거**(`main.py` 한 줄).
+- 기존 실패 1건 `test_632b::test_report_matches_engine_and_attributes_causes`(손익 기대값) 은 **수정 전에도 실패** — 이번 범위 밖.
+- ⚠ 라이브 반영은 다음 재기동부터. 09-30 메일은 사용자 지시로 수동 발송 완료(py37_32 `scripts/shindong_report_mail.py 2026-09-30`).
+
 ## 2026-09-29 (MW0602 598차 후속 — py37_32 에 markdown 설치: 신동 장후 메일 복구) — ✅ **설치 · PDF 변환 확인**
 
 **계기** — 9/29 신동 리포트 메일을 수동 발송하려다 py37_32 에서 `ModuleNotFoundError: No module named 'markdown'`.

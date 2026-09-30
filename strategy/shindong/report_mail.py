@@ -27,8 +27,11 @@ def _summary(md_text: str) -> str:
     return "\n".join(out)
 
 
-def send_daily(trade_date: str, report_dir: str, to=None, pc=None) -> str:
-    """md → PDF → 메일. 반환: 받는 사람 문자열. 리포트가 없으면 FileNotFoundError."""
+def send_daily(trade_date: str, report_dir: str, to=None, pc=None, pdf=None) -> str:
+    """md → PDF → 메일. 반환: 받는 사람 문자열. 리포트가 없으면 FileNotFoundError.
+
+    `pdf` 를 주면 인쇄를 건너뛰고 그 파일을 첨부한다(장후 스레드가 이미 인쇄한 것 — 이중 인쇄 방지).
+    """
     from strategy.shindong.daily_report import report_stem
     if pc is None:
         from utils.db_utils import pc_id
@@ -36,7 +39,8 @@ def send_daily(trade_date: str, report_dir: str, to=None, pc=None) -> str:
     md = os.path.join(report_dir, report_stem(trade_date, pc) + ".md")
     if not os.path.exists(md):
         raise FileNotFoundError("리포트 없음: %s" % md)
-    pdf = md_to_pdf(md)
+    if pdf is None:
+        pdf = md_to_pdf(md)
     with open(md, encoding="utf-8") as f:
         text = f.read()
     body = ("[%s] 신동 일일 리포트 %s — %s PC 의 리포트다. 전문은 첨부 PDF.\n\n%s\n\n"
