@@ -234,6 +234,20 @@ def test_e2_sd_drawing_keeps_dotted_span_and_label_clamp():
     assert 'if self._ov.get("trade_sd", True):' in _SRC
 
 
+def test_e3_sd_link_color_differs_by_direction():
+    """[2026-10-01] 연결선은 방향별 색이다 — 상방 청록 · 하방 주홍. 미상은 보라(조용한 롱 폴백 금지)."""
+    from dashboard.main_dashboard import MinuteChartCanvas as _M, C as _C
+    lo, sh, un = (_M._sd_link_color(d, 190) for d in ("LONG", "short", ""))
+    assert lo.name().upper() == _C["cyan"].upper()
+    assert sh.name().upper() == _M._SD_LINK_SHORT.upper() != _C["red"].upper()
+    assert un.name().upper() == _C["purple"].upper()
+    assert lo.alpha() == sh.alpha() == 190
+    body = _SRC[_SRC.index("    def _draw_sd_markers"):]
+    body = body[:body.index("    def _draw_sd_label")]
+    assert 'C["purple"]' not in body, "연결선 색이 다시 고정색으로 돌아갔다"
+    assert body.count("self._sd_link_color(") == 2      # 확정 구간 + 보유 중 다리
+
+
 # ── F. offscreen 스모크 — 실제로 그린다 ───────────────────────────
 
 @pytest.fixture

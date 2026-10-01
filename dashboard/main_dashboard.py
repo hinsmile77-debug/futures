@@ -11493,22 +11493,23 @@ class MinuteChartCanvas(QWidget):
                 spans.append((t, ent, exs))
 
         # ── 2벌: 보유 구간 점선 (마커 아래) ───────────────────────
-        # 연결선은 **보라** — 진입 청/적, 청산 검정과 겹치지 않는 가상 고유색이다.
-        _link = QColor(C["purple"])
-        _link.setAlpha(150)          # 실거래 마커를 덮지 않도록 옅게
+        # 연결선은 **방향별 색**이다(2026-10-01 사용자 지시) — 상방 청록 · 하방 주홍.
+        #   종전의 단일 보라는 같은 날 상·하방이 겹치면 어느 진입의 선인지 읽히지 않았다.
+        #   색의 단일 결정 지점은 `_sd_link_color()` 이다.
         painter.setBrush(Qt.NoBrush)
         for t, ent, exs in spans:
             if ent is None:
                 continue
             x1, y1 = ent[0], ent[1]
+            _dir = t.get("direction_txt")
+            _link = self._sd_link_color(_dir, 190)   # 실거래 마커를 덮지 않도록 반투명
             for _x, p in exs:
-                painter.setPen(QPen(_link, 1.3, Qt.DotLine))
+                painter.setPen(QPen(_link, 1.4, Qt.DotLine))
                 painter.drawLine(QPointF(x1, y1), QPointF(p[0], p[1]))
             if not t.get("open"):
                 continue
             # 보유 중 다리 — 마지막 봉의 종가까지 이어 「보유 중」을 보인다.
-            _hold = QColor(C["purple"])
-            _hold.setAlpha(110)   # 확정 구간보다 더 옅게 — 아직 결과가 아니다
+            _hold = self._sd_link_color(_dir, 140)   # 확정 구간보다 옅게 — 아직 결과가 아니다
             if len(candles) - 1 == self._frame_live_idx:
                 # [621차 후속7 · dev 이식] 끝이 진행 중 봉 — 오버레이가 현재가까지 잇는다
                 self._frame_live_links.append((x1, y1, _hold, 1.3, Qt.DashDotLine))
@@ -11557,6 +11558,25 @@ class MinuteChartCanvas(QWidget):
 
     # 청산 X 의 검정이 배경(#0D1117)에 묻히지 않도록 먼저 까는 테두리 색.
     _SD_EXIT_HALO = "#C9D1D9"
+
+    # 진입→청산 연결선 색 — 상방 청록 · 하방 주홍.
+    # ⚠ 주홍은 음봉 적색(C["red"])과 구분되도록 주황 쪽으로 당긴 값이다.
+    _SD_LINK_LONG = C["cyan"]
+    _SD_LINK_SHORT = "#FF7A3D"
+
+    @classmethod
+    def _sd_link_color(cls, direction_txt, alpha):
+        """신동 연결선 색의 단일 결정 지점. 방향을 모르면 종전의 보라로 남긴다
+        (롱으로 조용히 폴백하지 않는다 — 계측 4원칙 ④)."""
+        _d = str(direction_txt or "").upper()
+        if _d == "LONG":
+            col = QColor(cls._SD_LINK_LONG)
+        elif _d == "SHORT":
+            col = QColor(cls._SD_LINK_SHORT)
+        else:
+            col = QColor(C["purple"])
+        col.setAlpha(int(alpha))
+        return col
 
     @staticmethod
     def _sd_style(is_entry, direction_txt, leg=None):
