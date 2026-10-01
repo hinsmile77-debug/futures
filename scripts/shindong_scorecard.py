@@ -36,7 +36,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from config.settings import PREMARKET_LEVELS_DB, RAW_DATA_DB, SHINDONG_DB  # noqa: E402
+from config.settings import (PREMARKET_LEVELS_DB, RAW_DATA_DB, SHINDONG_DB,  # noqa: E402
+                             WEEKLY_OPTION_FLOW_DB)
+FLOW_DB = WEEKLY_OPTION_FLOW_DB if os.path.isabs(WEEKLY_OPTION_FLOW_DB) else os.path.join(ROOT, WEEKLY_OPTION_FLOW_DB)
 from strategy.shindong import spec  # noqa: E402
 from strategy.shindong.engine import leg_net  # noqa: E402
 
@@ -195,7 +197,9 @@ def _r1_hits(days, raw_db):
     return out
 
 
-def build(db=SHINDONG_DB, since=spec.SCORING_START, raw_db=RAW_DATA_DB, levels_db=PREMARKET_LEVELS_DB):
+def build(db=SHINDONG_DB, since=spec.SCORING_START, raw_db=RAW_DATA_DB, levels_db=PREMARKET_LEVELS_DB,
+          flow_db=None):
+    flow_db = FLOW_DB if flow_db is None else flow_db
     lines = []
     w = lines.append
     w("# 신동 채점표 (%s 기준)" % _dt.date.today().isoformat())
@@ -251,17 +255,8 @@ def build(db=SHINDONG_DB, since=spec.SCORING_START, raw_db=RAW_DATA_DB, levels_d
     w("")
     w("## 2. 일별 (MAIN v2)")
     w("")
-    w("| 날짜 | 상품 | 장전 콜−풋 | 방향 | R2(V1) | 거래 | 순손익(원) |")
-    w("|---|---|---|---|---|---|---|")
-    for d in [x for x in days if x["variant"] == "MAIN"]:
-        xs = [t for t in live if t["variant"] == "MAIN" and t["trade_date"] == d["trade_date"]]
-        w("| %s | %s | %s | %s | %s | %d | %s |" % (
-            d["trade_date"], d.get("product") or "-",
-            ("%+.0f" % d["pm_sp"]) if d.get("pm_sp") is not None else "미수집",
-            {-1: "하방", 0: "보류", 1: "상방", None: "-"}.get(d.get("bias"), "?"),
-            (d.get("r2_status") or "-") + ((" " + str(d["r2_ts"])) if d.get("r2_ts") else ""),
-            len([t for t in xs if t["status"] == "CLOSED"]),
-            _fmt(sum(_net(t) for t in xs if t["status"] == "CLOSED"))))
+    ctxs = {}                                      # [605차] 날짜 → (DayFrame, 맥점) — 일별 계측·재난 손절 반사실이 같이 쓴다
+    w("\n".join(_daily_section(live, days, raw_db, flow_db, levels_db, ctxs)))
     w("")
     sec = 3
     w("## %d. v2 vs V1 되돌림 판정 (사전등록 V2 §4)" % sec)
@@ -310,6 +305,11 @@ def build(db=SHINDONG_DB, since=spec.SCORING_START, raw_db=RAW_DATA_DB, levels_d
     w("\n".join(_flow_pair_section(live, days)))
     w("")
     sec += 1
+    w("## %d. 재난 손절 발동일 — 실제 vs 반사실 (MAIN, 표시 — 판정 아님)" % sec)
+    w("")
+    w("\n".join(_cat_stop_section(live, days, raw_db, flow_db, levels_db, ctxs)))
+    w("")
+    sec += 1
     w("## %d. 보이는 대로 손익 — 철회된 라이브 신호 포함 (표시 — 판정 아님)" % sec)
     w("")
     w("\n".join(_as_seen_section(live, retr, raw_db)))
@@ -318,6 +318,108 @@ def build(db=SHINDONG_DB, since=spec.SCORING_START, raw_db=RAW_DATA_DB, levels_d
 
 def _net(t):
     return float(t.get("net_krw") or 0)
+
+
+def _day_ctx(day, raw_db, flow_db, levels_db, cache):
+    """[605차] 그날의 (DayFrame, 맥점) — 하루치만 읽는다. 원천이 없으면 None(미측정)."""
+    if day in cache:
+        return cache[day]
+    out = None
+    try:
+        from strategy.shindong import engine as _E, runner as _RN
+        from strategy.shindong.calendar import select_flow_product
+        if raw_db and os.path.exists(raw_db) and levels_db and os.path.exists(levels_db):
+            prod = select_flow_product(_dt.date.fromisoformat(day))[0]
+            c, f, lv = _RN.load_inputs(day, prod, raw_db, flow_db or "", levels_db)
+            if c and "0850" in lv:
+                out = (_E.DayFrame(c, f), _E.prepare_levels(lv))
+    except Exception:                               # 원천 스키마가 다르면 미측정으로 둔다(채점표가 죽지 않게)
+        out = None
+    cache[day] = out
+    return out
+
+
+def _daily_section(live, days, raw_db, flow_db, levels_db, ctxs):
+    """[605차] 일별 표 + 계측 4열(판정 아님): 만기일 · 당일 콜−풋 진폭 · R1 적중 · 첫 진입 시각(10:00 전/후)."""
+    from strategy.shindong.calendar import select_flow_product
+    hits = {h[0]: h[4] for h in _r1_hits(days, raw_db)}
+    out = ["| 날짜 | 상품 | 만기일 | 장전 콜−풋 | 방향 | R1 적중 | 콜−풋 진폭 | R2(V1) | 첫 진입 | 거래 | 순손익(원) |",
+           "|---|---|---|---|---|---|---|---|---|---|---|"]
+    early = {"전": [], "후": [], "없음": []}
+    for d in [x for x in days if x["variant"] == "MAIN"]:
+        day = d["trade_date"]
+        xs = [t for t in live if t["variant"] == "MAIN" and t["trade_date"] == day]
+        closed = [t for t in xs if t["status"] == "CLOSED"]
+        net = sum(_net(t) for t in closed)
+        try:
+            exp = select_flow_product(_dt.date.fromisoformat(day))[1]
+            is_exp = "만기" if exp.isoformat() == day else "-"
+        except Exception:
+            is_exp = "미측정"
+        ctx = _day_ctx(day, raw_db, flow_db, levels_db, ctxs)
+        amp = "미측정"
+        if ctx is not None:
+            sp = [v for k, v in ctx[0].sp.items() if "09:00" <= k <= spec.TIME_EXIT]
+            if sp:
+                amp = "%.0f" % (max(sp) - min(sp))
+        first = min((str(t["entry_ts"])[11:16] for t in xs), default=None)
+        if first is None:
+            fe = "-"
+            early["없음"].append(net)
+        else:
+            lab = "전" if first < "10:00" else "후"
+            fe = "%s (10:00 %s)" % (first, lab)
+            early[lab].append(net)
+        out.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %d | %s |" % (
+            day, d.get("product") or "-", is_exp,
+            ("%+.0f" % d["pm_sp"]) if d.get("pm_sp") is not None else "미수집",
+            {-1: "하방", 0: "보류", 1: "상방", None: "-"}.get(d.get("bias"), "?"),
+            {True: "적중", False: "불적중", None: "-"}[hits.get(day)], amp,
+            (d.get("r2_status") or "-") + ((" " + str(d["r2_ts"])) if d.get("r2_ts") else ""),
+            fe, len(closed), _fmt(net)))
+    out.append("")
+    out.append("- 첫 진입 시각별 MAIN 손익: 10:00 이전 %d일 %s원 · 이후 %d일 %s원 · 진입 없음 %d일. "
+               "콜−풋 진폭 = 그날 09:00~15:05 개인 콜−풋의 고저 폭(백만원) — 문턱 %d 이 진폭에 비해 작은 날을 가려 보려는 계측이다(판정 아님)."
+               % (len(early["전"]), _fmt(sum(early["전"])), len(early["후"]), _fmt(sum(early["후"])), len(early["없음"]), spec.FLOWC_K))
+    return out
+
+
+def _cat_stop_section(live, days, raw_db, flow_db, levels_db, ctxs):
+    """[605차] 재난 손절이 발동한 날 — 실제 손익과 반사실 둘(손절이 없었다면 · 같은 방향만 중단했다면).
+    반사실 ②가 「동방향만 중단」 변형의 증거를 섀도 슬롯 없이 쌓는다. 원천이 없으면 미측정(0 으로 메우지 않는다)."""
+    from strategy.shindong import engine as _E, families as _F
+    mdays = sorted({d["trade_date"] for d in days if d["variant"] == "MAIN"})
+    hit = {}
+    for t in live:
+        if t["variant"] == "MAIN" and t.get("rule") == "FLOW" and (t.get("leg1_reason") or "") == "SL":
+            hit.setdefault(t["trade_date"], str(t.get("leg1_exit_ts") or "")[11:16])
+    if not hit:
+        return ["- 발동 없음 — 0 / %d 거래일" % len(mdays)]
+    out = ["| 날짜 | 발동 시각 | 실제(v2.1) | 손절이 없었다면 | 같은 방향만 중단했다면 |", "|---|---|---|---|---|"]
+    tot = {"act": 0.0, "nostop": [], "same": []}
+    for day in sorted(hit):
+        act = sum(_net(t) for t in live if t["variant"] == "MAIN" and t["trade_date"] == day and t["status"] == "CLOSED")
+        tot["act"] += act
+        ctx = _day_ctx(day, raw_db, flow_db, levels_db, ctxs)
+        cells = []
+        for key, kw in (("nostop", dict(cat_atr=None, halt_mode=None)),
+                        ("same", dict(cat_atr=spec.FLOW_CAT_STOP_ATR, halt_mode="same"))):
+            trs = _F.flowc_counterfactual(ctx[0], ctx[1], **kw) if ctx is not None else None
+            if trs is None:
+                cells.append("미측정")
+            else:
+                v = sum(_E.trade_net(t) for t in trs if t["status"] == "CLOSED")
+                tot[key].append(v)
+                cells.append("%s (%d거래)" % (_fmt(v), len(trs)))
+        out.append("| %s | %s | %s | %s | %s |" % (day, hit[day] or "-", _fmt(act), cells[0], cells[1]))
+    out.append("")
+    out.append("- 발동 **%d / %d 거래일** · 실제 합 %s원 · 손절이 없었다면 %s · 같은 방향만 중단했다면 %s" % (
+        len(hit), len(mdays), _fmt(tot["act"]),
+        (_fmt(sum(tot["nostop"])) + "원") if len(tot["nostop"]) == len(hit) else "일부 미측정",
+        (_fmt(sum(tot["same"])) + "원") if len(tot["same"]) == len(hit) else "일부 미측정"))
+    out.append("- 반사실은 그날 봉·흐름·맥점으로 다시 계산한 값이다(장후 원천 기준 — 라이브 철회와 무관). "
+               "재난 손절 폭(0.6×ATR14)과 중단 방식의 재검토 근거로만 쓴다 — 20거래일 전 규격 변경 금지.")
+    return out
 
 
 def _is_v1(t):
@@ -552,9 +654,10 @@ def main(argv=None) -> int:
     ap.add_argument("--db", default=SHINDONG_DB)
     ap.add_argument("--raw-db", dest="raw_db", default=RAW_DATA_DB)
     ap.add_argument("--levels-db", dest="levels_db", default=PREMARKET_LEVELS_DB)
+    ap.add_argument("--flow-db", dest="flow_db", default=None)
     ap.add_argument("--out")
     a = ap.parse_args(argv)
-    txt = build(a.db, a.since, a.raw_db, a.levels_db)
+    txt = build(a.db, a.since, a.raw_db, a.levels_db, a.flow_db)
     if a.out:
         with open(a.out, "w", encoding="utf-8") as f:
             f.write(txt + "\n")

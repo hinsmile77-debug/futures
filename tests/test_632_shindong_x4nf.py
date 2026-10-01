@@ -153,7 +153,7 @@ def test_scorecard_excludes_build_day_and_waits(tmp_path):
 def test_tr44_preregistration():
     assert "SHADOW_TR44" in spec.RETIRED_SHADOWS and "SHADOW_TR44" not in spec.VARIANTS   # [604차] 종료
     assert (spec.TR44_ACT, spec.TR44_DIST) == (4.0, 4.0)                                  # 엔진 플래그 값은 사료로 유지
-    assert all(v == spec.SCORING_START for v in spec.LATE_SHADOW_START.values())         # [604차] v2 섀도는 모두 10/01
+    assert all(v >= spec.SCORING_START for v in spec.LATE_SHADOW_START.values())         # [604차] v2 섀도는 10/01 이후([605차] FLOWR60 은 10/02)
 
 
 def _frame(bars):

@@ -43,7 +43,8 @@ def test_spec_is_preregistered_values():
         (1.0, 1.5, 1.5, 0.5)
     assert (spec.T1_MIN_DIST, spec.TP_BUF, spec.OR_STOP_BUF) == (2.0, 0.5, 1.0)
     assert (spec.R3_START, spec.NEW_ENTRY_END, spec.TIME_EXIT) == ("09:30", "14:30", "15:05")
-    assert spec.VARIANTS == ("MAIN", "SHADOW_V1", "SHADOW_V1X4", "SHADOW_FLOWF", "SHADOW_BRKC")   # [604차] v2
+    assert spec.VARIANTS == ("MAIN", "SHADOW_V1", "SHADOW_V1X4", "SHADOW_FLOWF", "SHADOW_BRKC",
+                             "SHADOW_FLOWR60")   # [604차] v2 · [605차] 5번째 섀도
     assert (spec.V1_SCORING_START, spec.R3_KILL_AFTER_DAYS, spec.R3_KILL_NET_MAX,
             spec.R3_KILL_WINRATE_MAX) == ("2026-09-28", 10, 0, 0.35)
 

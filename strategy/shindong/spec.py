@@ -142,6 +142,12 @@ FLOW_CAT_STOP_FALLBACK_PT = 20.0
 FLOW_CAT_STOP_HALT_DAY = True
 # FLOWF — 같은 규칙, 원천만 **외국인 선물 순매수 계약수**(raw_investor_futures) · 순방향.
 FLOWF_K = 800                  # 구조로 정한 값: 겹침 5일 진폭비 ≈ 2.5 × 300 → 둥근 값. 결과 보고 바꾸지 않는다
+# FLOWR60 — [605차 · 2026-10-01 사전등록] 같은 원천·같은 청산, 방향 판단만 **최근 60분 변화**(누적 아님).
+#   지금 값 − 60분 전 값 ≥ +K → 매도 / ≤ −K → 매수. 60분 전이 09:00 이전이면 신호 없음(첫 신호 10:00).
+#   값의 근거(7일 · 표본 안): 창 45·90·120분 사이의 유일한 평탄 구간, K 100~400 무차별(+613~632만 · 최악일 −35~−43만).
+#   결과를 보고 바꾸지 않는다. 근거: `docs/신동거래_V2/신동_방향판단_3방법_반사실_MW0602-20261001.md`
+FLOWR_WIN_MIN = 60
+FLOWR_K = 150
 # BRKC — R1 방향일: 구조맥점 돌파 추종 / R1 보류일: FLOWC
 BRK_STOP_BUF = 2.0             # 손절 = 깬 맥점 ∓ 2pt
 BRK_TRAIL = (6.0, 3.0)
@@ -163,7 +169,10 @@ SHADOW_META = (
                       "origin": "604차", "why": "같은 규칙·다른 원천 — 76일 walk-forward 통과 후보"}),
     ("SHADOW_BRKC", {"kind": "family", "family": "brkc", "label": "BRKC(방향일 맥점돌파·보류일 FLOWC)",
                      "start": SCORING_START, "origin": "604차", "why": "v2 에 R1 방향 돌파를 얹은 안"}),
-    # ("SHADOW_ADAPT", ...)  — C 단계(v2 안착 뒤). 상시 섀도 5개 상한.
+    # [605차] 5번째 슬롯 — 방향 판단 구조(누적 vs 최근 60분 변화)의 전진 대조. 채점은 등록 다음 거래일부터.
+    ("SHADOW_FLOWR60", {"kind": "family", "family": "flowr60", "label": "FLOWR60(콜−풋 최근60분 변화)",
+                        "start": "2026-10-02", "origin": "605차", "why": "누적 대신 최근 60분 변화 — 문턱 K 에 둔감"}),
+    # SHADOW_ADAPT(C 단계)는 20거래일 판정에서 진 섀도 자리에 넣는다. 상시 섀도 5개 상한 — 지금 5개다.
 )
 SHADOW_META_D = dict(SHADOW_META)
 VARIANTS = ("MAIN",) + tuple(k for k, _ in SHADOW_META)

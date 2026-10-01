@@ -53,8 +53,11 @@ def test_v2_spec_is_preregistered():
     assert spec.FLOWF_K == 800
     assert (spec.BRK_STOP_BUF, spec.BRK_TRAIL, spec.BRK_TP, spec.BRK_MAX_TRADES) == (2.0, (6.0, 3.0), 8.0, 5)
     assert spec.JUDGE_AFTER_DAYS == 20
-    assert spec.VARIANTS == ("MAIN", "SHADOW_V1", "SHADOW_V1X4", "SHADOW_FLOWF", "SHADOW_BRKC")
-    assert all(v == spec.SCORING_START for v in spec.LATE_SHADOW_START.values())
+    assert spec.VARIANTS == ("MAIN", "SHADOW_V1", "SHADOW_V1X4", "SHADOW_FLOWF", "SHADOW_BRKC", "SHADOW_FLOWR60")
+    # 604차 섀도 4개는 v2 와 같은 날, [605차] FLOWR60 은 등록 다음 거래일부터
+    assert spec.LATE_SHADOW_START == {"SHADOW_V1": "2026-10-01", "SHADOW_V1X4": "2026-10-01", "SHADOW_FLOWF": "2026-10-01",
+                                      "SHADOW_BRKC": "2026-10-01", "SHADOW_FLOWR60": "2026-10-02"}
+    assert (spec.FLOWR_WIN_MIN, spec.FLOWR_K) == (60, 150)
     assert set(spec.RETIRED_SHADOWS) == {"SHADOW_E2F2", "SHADOW_X4NF", "SHADOW_TR44", "SHADOW_X4NFA"}
     assert not (set(spec.RETIRED_SHADOWS) & set(spec.VARIANTS))
     assert len(spec.VARIANTS) - 1 <= 5                       # 상시 섀도 5개 상한
@@ -320,3 +323,68 @@ def test_catastrophe_stop_not_hit_in_normal_trade():
     d = engine.DayFrame(_flat(path={"09:20": (1100.0, 1087.0, 1090.0)}), flow)   # 익절 경로 — 손절 1118 은 무관
     t = families.run_family_day(d, L, "flowc")["trades"][0]
     assert (t["stop_init"], t["legs"][0]["reason"]) == (1118.0, "TP1")
+
+
+# ── [605차] SHADOW_FLOWR60 · 채점표 계측 ─────────────────────────────────────
+def test_flowr60_uses_last_60min_change_and_starts_at_1000():
+    # 09:05 에 +400 으로 뛴 뒤 그대로 — 누적(FLOWC)은 09:05 매도, 최근 60분 변화는 10:00~10:04 에만 +400 이 보인다
+    flow = _flow(lambda k: 400.0 if k >= "09:05" else 0.0)
+    d = engine.DayFrame(_flat(), flow)
+    rc = families.run_family_day(d, _levels(), "flowc")
+    rr = families.run_family_day(d, _levels(), "flowr60")
+    assert rc["trades"][0]["entry_ts"] == "09:05"
+    assert rr["trades"][0]["entry_ts"] == "10:00" and rr["trades"][0]["side"] == -1   # 09:00(0) → 10:00(400)
+    # 60분 전에 이미 올라 있던 흐름은 잊는다 — 10:05 이후엔 변화 0 → 재진입 신호 없음
+    flow2 = _flow(lambda k: 400.0 if k >= "09:00" else 0.0)                     # 09:00 부터 이미 400
+    d2 = engine.DayFrame(_flat(), flow2)
+    assert families.run_family_day(d2, _levels(), "flowr60")["trades"] == []
+    # 최근 60분에 −150 이하면 매수
+    flow3 = _flow(lambda k: -200.0 if k >= "11:00" else 0.0)
+    d3 = engine.DayFrame(_flat(), flow3)
+    t3 = families.run_family_day(d3, _levels(), "flowr60")["trades"][0]
+    assert (t3["entry_ts"], t3["side"], t3["rule"]) == ("11:00", 1, "FLOW")
+
+
+def test_halt_mode_same_blocks_only_the_stopped_direction():
+    L = _levels(); L["0850"]["atr14"] = 30.0                                   # 재난 손절 18pt
+    # 09:05 매도 1100 → 09:30 손절 1118. 그 뒤 흐름이 −300 으로 뒤집혀(10:00~) 매수 신호
+    flow = _flow(lambda k: 300.0 if "09:05" <= k < "10:00" else (-300.0 if k >= "10:00" else 0.0))
+    d = engine.DayFrame(_flat(path={"09:30": (1118.5, 1100.0, 1110.0)}), flow)
+    allm = families.flowc_counterfactual(d, L, cat_atr=spec.FLOW_CAT_STOP_ATR, halt_mode="all")
+    same = families.flowc_counterfactual(d, L, cat_atr=spec.FLOW_CAT_STOP_ATR, halt_mode="same")
+    nost = families.flowc_counterfactual(d, L, cat_atr=None, halt_mode=None)
+    assert [(t["entry_ts"], t["side"]) for t in allm] == [("09:05", -1)]                    # v2.1: 전면 중단
+    assert [(t["entry_ts"], t["side"]) for t in same] == [("09:05", -1), ("10:00", 1)]      # 반대 방향은 허용
+    assert nost[0]["stop_init"] is None and nost[0]["legs"][0]["reason"] == "TIME"           # 손절 없음 → 15:05
+    assert families.flowc_counterfactual(engine.DayFrame(_flat(), {}), L) is None           # 흐름 없음 → 미측정
+
+
+def test_scorecard_daily_instrumentation_and_cat_stop_section(tmp_path):
+    raw, fl, lv = _write_dbs(tmp_path)
+    # 재난 손절이 나도록 봉을 덮어쓴다: 09:05 매도 1100 → 10:30 고가 1120(손절 1118) · 흐름은 11:00 에 −300 으로 반전
+    con = sqlite3.connect(raw)
+    con.execute("DELETE FROM raw_candles")
+    for k, (o, h, l, c) in _flat(path={"10:30": (1120.0, 1100.0, 1110.0)}).items():
+        con.execute("INSERT INTO raw_candles VALUES (?,?,?,?,?)", ("%s %s:00" % (DAY, k), o, h, l, c))
+    con.commit(); con.close()
+    con = sqlite3.connect(fl)
+    con.execute("DELETE FROM option_investor_flow")
+    for k, (c, p) in _flow(lambda k: 300.0 if "09:05" <= k < "11:00" else (-300.0 if k >= "11:00" else 0.0), pre=200.0).items():
+        con.execute("INSERT INTO option_investor_flow VALUES (?,?,?,?,?)", (DAY, k, "wk_thu_call", "individual", c))
+        con.execute("INSERT INTO option_investor_flow VALUES (?,?,?,?,?)", (DAY, k, "wk_thu_put", "individual", p))
+    con.commit(); con.close()
+    sd = str(tmp_path / "sd.db")
+    runner.run_and_store(DAY, raw, fl, lv, sd, live=False)
+    sc = _scorecard()
+    txt = sc.build(sd, spec.SCORING_START, raw, lv, fl)
+    # 일별 계측 4열
+    assert "| 날짜 | 상품 | 만기일 | 장전 콜−풋 | 방향 | R1 적중 | 콜−풋 진폭 | R2(V1) | 첫 진입 | 거래 | 순손익(원) |" in txt
+    assert "| 2026-10-01 | wk_thu | 만기 |" in txt and "| 600 |" in txt          # 진폭 +300 ~ −300
+    assert "09:05 (10:00 전)" in txt and "첫 진입 시각별 MAIN 손익: 10:00 이전 1일" in txt
+    # 재난 손절 발동일 — 실제 vs 반사실
+    assert "재난 손절 발동일 — 실제 vs 반사실" in txt and "발동 **1 / 1 거래일**" in txt
+    row = [x for x in txt.splitlines() if x.startswith("| 2026-10-01 | 10:30 |")][0]
+    assert "(1거래)" in row and "(2거래)" in row            # 손절 없었다면 1거래 · 같은 방향만 중단이면 반대 방향 재진입 1건
+    # 원천이 없으면 미측정(0 으로 메우지 않는다)
+    txt2 = sc.build(sd, spec.SCORING_START, str(tmp_path / "none.db"), lv, fl)
+    assert "미측정" in txt2

@@ -60,6 +60,29 @@ def _flow_signal(d: "E.DayFrame", series: Dict[str, float], k_thr: float, sign: 
     return sig, base_k
 
 
+def _minus_min(hhmm: str, n: int) -> str:
+    return E._plus_min(hhmm, -n)
+
+
+def _roll_signal(series: Dict[str, float], win_min: int, k_thr: float, sign: int) -> Callable[[str], int]:
+    """[605차 SHADOW_FLOWR60] **최근 win_min 분 변화**(지금 값 − win_min 분 전 값)로 방향.
+    win_min 분 전 분이 FLOW_BASE(09:00) 이전이거나 그 분 값이 없으면 신호 없음 — 그래서 60분이면 첫 신호는 10:00.
+    누적(09:00 대비)과 달리 흐름이 돌아서면 win_min 분 뒤에 잊는다."""
+    def sig(k: str) -> int:
+        v = series.get(k)
+        if v is None:
+            return 0
+        rk = _minus_min(k, win_min)
+        if rk < S.FLOW_BASE:
+            return 0
+        r = series.get(rk)
+        if r is None:
+            return 0
+        dv = v - r
+        return sign * (1 if dv >= k_thr else (-1 if dv <= -k_thr else 0))
+    return sig
+
+
 def _brk_signal(d: "E.DayFrame", L, bias: int) -> Tuple[Callable[[str], int], Dict[str, Any]]:
     """종가가 구조맥점을 R1 방향으로 새로 넘으면 그 방향. st["lvl"] 에 깬 맥점을 남긴다."""
     st: Dict[str, Any] = {"prev": None, "lvl": None}
@@ -123,13 +146,17 @@ def _run_position(d: "E.DayFrame", side: int, t0: str, stop: Optional[float],
 
 def _run_signal(d: "E.DayFrame", sig: Callable[[str], int], rule: str, stop_fn, trail, tp, max_trades: int,
                 start: str = "09:00", level_of=None, halt_on_sl: bool = False,
-                notes: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+                notes: Optional[List[str]] = None, halt_mode: Optional[str] = None) -> List[Dict[str, Any]]:
     """stop_fn(side, entry_px) -> 손절가 또는 None.
+    halt_mode: "all"(손절 뒤 당일 전면 중단 — v2.1 규격) · "same"(손절 난 방향만 중단 — [605차] 반사실 계측용) · None.
+    halt_on_sl=True 는 halt_mode="all" 과 같다(호환).
     halt_on_sl=True (v2.1 재난 손절): 손절(SL)이 한 번 발동하면 **그날 신규 진입을 멈춘다** —
     신호가 살아 있어 곧바로 같은 방향으로 재진입하는 것을 끊는다(9/29 실측: 손절 8·12pt 가 재진입으로 손실을 키웠다)."""
     trades: List[Dict[str, Any]] = []
     busy = None
     halted = False
+    blocked = 0                       # halt_mode="same": 손절 난 방향만 그날 막는다
+    mode = halt_mode or ("all" if halt_on_sl else None)
     for k in d.idx:
         if k < start or k not in d.c:
             continue
@@ -140,7 +167,7 @@ def _run_signal(d: "E.DayFrame", sig: Callable[[str], int], rule: str, stop_fn, 
             sig(k)
             continue
         side = sig(k)
-        if not side:
+        if not side or side == blocked:
             continue
         e = d.c[k]
         stop = stop_fn(side, e) if stop_fn else None
@@ -148,10 +175,15 @@ def _run_signal(d: "E.DayFrame", sig: Callable[[str], int], rule: str, stop_fn, 
         tr.update(rule=rule, touch_level=(level_of() if level_of else None), touch_ts=None)
         trades.append(tr)
         busy = tr["exit_ts"] or "99:99"
-        if halt_on_sl and tr["status"] == "CLOSED" and tr["legs"][0].get("reason") == "SL":
-            halted = True
-            if notes is not None:
-                notes.append("재난 손절 발동(%s) — 당일 신규 진입 중단" % tr["exit_ts"])
+        if mode in ("all", "same") and tr["status"] == "CLOSED" and tr["legs"][0].get("reason") == "SL":
+            if mode == "all":
+                halted = True
+                if notes is not None:
+                    notes.append("재난 손절 발동(%s) — 당일 신규 진입 중단" % tr["exit_ts"])
+            else:
+                blocked = side
+                if notes is not None:
+                    notes.append("재난 손절 발동(%s) — 같은 방향만 당일 중단" % tr["exit_ts"])
     return trades
 
 
@@ -197,6 +229,13 @@ def run_family_day(d: "E.DayFrame", L, family: str,
 
     if family == "flowc":
         trades = flowc()
+    elif family == "flowr60":
+        if not d.sp:
+            dec["notes"].append("FLOWR60 원천 없음 — 거래 없음(미측정)")
+        else:
+            trades = _run_signal(d, _roll_signal(d.sp, S.FLOWR_WIN_MIN, S.FLOWR_K, -1), RULE_FLOW, cat_stop,
+                                 S.FLOW_TRAIL, S.FLOW_TP, S.FLOW_MAX_TRADES,
+                                 halt_on_sl=S.FLOW_CAT_STOP_HALT_DAY, notes=dec["notes"])
     elif family == "flowf":
         sig, why = _flow_signal(d, d.fx, S.FLOWF_K, +1)
         if sig is None:
@@ -216,3 +255,22 @@ def run_family_day(d: "E.DayFrame", L, family: str,
     else:
         raise ValueError("unknown family %r" % family)
     return {"decision": dec, "trades": trades}
+
+
+def flowc_counterfactual(d: "E.DayFrame", L, cat_atr: Optional[float] = None,
+                         halt_mode: Optional[str] = "all") -> Optional[List[Dict[str, Any]]]:
+    """[605차] MAIN(FLOWC)의 **반사실** 재계산 — 채점표 「재난 손절 발동일」 계측 전용(기록·판정 경로 아님).
+    cat_atr=None → 재난 손절 없음(15:05 까지) · halt_mode "all"/"same"/None.
+    흐름·맥점이 없으면 None(미측정 ≠ 0)."""
+    if L is None or "0850" not in L:
+        return None
+    sig, _why = _flow_signal(d, d.sp, S.FLOWC_K, -1)
+    if sig is None:
+        return None
+    if cat_atr is None:
+        stop_fn = None
+    else:
+        atr = L["0850"].get("atr14")
+        cat = cat_atr * float(atr) if isinstance(atr, (int, float)) and atr > 0 else S.FLOW_CAT_STOP_FALLBACK_PT
+        stop_fn = lambda side, e: e - side * cat
+    return _run_signal(d, sig, RULE_FLOW, stop_fn, S.FLOW_TRAIL, S.FLOW_TP, S.FLOW_MAX_TRADES, halt_mode=halt_mode)
