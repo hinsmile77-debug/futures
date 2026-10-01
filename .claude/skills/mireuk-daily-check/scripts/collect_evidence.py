@@ -525,8 +525,17 @@ def run_git(root, args, timeout=25):
       (옵션을 달고도). 플래그와 환경변수는 git 안에서 같은 스위치지만, 플래그는
       **최상위 git 에만** 걸리고 환경변수는 git 이 띄우는 **자식 git**(외부 diff·
       필터·서브모듈)까지 상속된다. 원인이 확정된 것은 아니다 — 이중 방어다.
+
+    [MW0601 648차 후속 / F-3] 호출마다 `_GIT_CALL_TRACE` 에 한 줄을 남긴다 —
+      명령 · 결과(ok/fail/timeout/error) · 경과초 · 호출 **전후** `.git/index.lock`
+      존재 여부. 2026-10-01 장중은 `git diff --numstat` 타임아웃 뒤 락이 남았고 장후는
+      같은 타임아웃인데 안 남았다. 「어느 호출 구간에 락이 생겼는가」를 다음 재현에서
+      바로 읽기 위한 계측이다. 반환값·동작은 무변경이다.
     """
     p = None
+    t0 = time.time()
+    rec = {"cmd": "git " + " ".join(args), "outcome": None, "elapsed_s": None,
+           "lock_before": _lock_exists(root), "lock_after": None}
     try:
         env = dict(os.environ)
         env["GIT_OPTIONAL_LOCKS"] = "0"
@@ -534,8 +543,10 @@ def run_git(root, args, timeout=25):
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
         out, err = p.communicate(timeout=timeout)
         dec = lambda b: b.decode("utf-8", "replace").strip()
+        rec["outcome"] = "ok" if p.returncode == 0 else "fail"
         return dec(out) if p.returncode == 0 else "(git 실패 rc=%s) %s" % (p.returncode, dec(err)[:300])
     except subprocess.TimeoutExpired:
+        rec["outcome"] = "timeout"
         try:
             p.kill()
             p.communicate(timeout=5)
@@ -543,12 +554,66 @@ def run_git(root, args, timeout=25):
             pass
         return "(git 타임아웃 %ss — 자식 종료함) git %s" % (timeout, " ".join(args))
     except Exception as e:
+        rec["outcome"] = "error"
         if p is not None and p.poll() is None:
             try:
                 p.kill()
             except Exception:
                 pass
         return "(git 실행 불가) %s" % e
+    finally:
+        rec["elapsed_s"] = round(time.time() - t0, 2)
+        rec["lock_after"] = _lock_exists(root)
+        _GIT_CALL_TRACE.append(rec)
+
+
+#: [MW0601 648차 후속 / F-3] 이 프로세스의 `run_git` 호출 기록(호출 순서대로).
+#: 각 원소: cmd · outcome(ok/fail/timeout/error) · elapsed_s · lock_before · lock_after.
+#: lock_* 는 None = 미측정(경로 확인 실패) — False 로 위장하지 않는다(계측 4원칙 ②).
+_GIT_CALL_TRACE = []
+
+
+def _lock_exists(root):
+    try:
+        return os.path.exists(os.path.join(root, ".git", "index.lock"))
+    except Exception:
+        return None
+
+
+def git_call_trace_lines(trace=None, limit=8):
+    """[MW0601 648차 후속 / F-3] `_GIT_CALL_TRACE` 를 §2 용 줄 목록으로 만든다.
+
+    늘 요약 한 줄(호출 수·타임아웃·실패·락 전이)을 내고, **주목할 호출**
+    (타임아웃·실패·오류, 또는 호출 전 없던 락이 호출 뒤 생긴 것)만 따로 나열한다.
+    ⚠ 「락 생성 구간」은 **동시 발생**이지 인과가 아니다 — 같은 시간에 다른 git
+      프로세스가 락을 잡았을 수 있다. 그래서 문구를 「이 호출 구간에 생겼다」로 쓴다.
+    """
+    tr = _GIT_CALL_TRACE if trace is None else trace
+    if not tr:
+        return ["  - git 호출 기록: 0회 (**미측정** — run_git 이 불리지 않았다)"]
+    n_to = sum(1 for r in tr if r["outcome"] == "timeout")
+    n_fail = sum(1 for r in tr if r["outcome"] in ("fail", "error"))
+    born = [r for r in tr if r["lock_before"] is False and r["lock_after"] is True]
+    unmeasured = sum(1 for r in tr if r["lock_before"] is None or r["lock_after"] is None)
+    slowest = max(tr, key=lambda r: r["elapsed_s"] or 0)
+    L = ["  - git 호출 기록: %d회 · 타임아웃 %d · 실패 %d · 락 생성 구간 %d%s · 최장 %.1f초(`%s`)"
+         % (len(tr), n_to, n_fail, len(born),
+            (" · 락 미측정 %d" % unmeasured) if unmeasured else "",
+            slowest["elapsed_s"] or 0, truncate(slowest["cmd"], 60))]
+    notable = [r for r in tr if r["outcome"] != "ok" or r in born]
+    for r in notable[:limit]:
+        L.append("    - `%s` → %s · %.1f초 · 락 %s→%s%s"
+                 % (truncate(r["cmd"], 70), r["outcome"], r["elapsed_s"] or 0,
+                    _lk_txt(r["lock_before"]), _lk_txt(r["lock_after"]),
+                    " · 🔴 **이 호출 구간에 락이 생겼다**(동시 발생 — 인과 미확정)"
+                    if r in born else ""))
+    if len(notable) > limit:
+        L.append("    - … 외 %d건" % (len(notable) - limit))
+    return L
+
+
+def _lk_txt(v):
+    return "미측정" if v is None else ("있음" if v else "없음")
 
 
 def git_index_lock(root):
@@ -2450,6 +2515,9 @@ def build(root, day, phase, cfg, discover_only=False):
         A("  - 락 자가점검: 시작 시점에 있던 락이 지금은 없다 (누군가 회수했다)")
     else:
         A("  - 락 자가점검: 이 수집 실행은 락을 만들지 않았다")
+    # [MW0601 648차 후속 / F-3] 위 판정의 근거를 호출 단위로 펼친다 — 타임아웃과
+    # 락 생성이 같은 호출 구간에서 일어났는지를 다음 재현에서 바로 읽기 위해서다.
+    L.extend(git_call_trace_lines())
     if dirty:
         A("```")
         L.extend(dirty[:40])
