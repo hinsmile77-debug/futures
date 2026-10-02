@@ -24196,3 +24196,12 @@ SizerMatch로 설명됨(기존 관측 연속). P0 없음 · P1 신규 0건 · P2
 - [ ] (2026-12-29) 모의계좌 만료 재발 예정 — 재신청 → secrets → PlusDisconnect → LAUNCH_API → start_mireuk, 그리고 `KNOWN_ACCOUNT_SWITCHES`·마커 동반
 - [ ] (검토) 체인 진단 D3가 기동 직후 `SKIP_NON_TRADING` 1건(같은 날 이후 OK)을 적신호로 세는 과민성 — 별건
 - 참고: 장전 기록의 G-596-1(exit 4 후 1회 자동 재시도)은 만료가 원인일 때 효과가 없다(재신청 전엔 재시도해도 같은 계좌). 채택 여부는 원래대로 주간회의.
+
+## 2026-10-02 (MW0601 654차 — 호가 흐름 분해 섀도 적재)
+
+- [x] **654-0 완료** 주문 취소율 조사 방안 B1–B5 구현 — `collection/cybos/book_flow.py`(신규) · `realtime_data.py` 확장 헤더 14개 · `book_flow_bars` 테이블 · `scripts/book_flow_recon.py` · `tests/test_654_book_flow.py`. 상세 `docs/미륵이고도화3/호가깊이/주문취소율_수집가능성_조사_MW0601-20261002.md` §7.
+- [ ] **654-1 (다음 거래일 장후, P1)** `python scripts/book_flow_recon.py` — 적재율 ≈100% · 항등식 위반 0 · 체결 커버리지 ≤1.05 · 건수 가용률. SYSTEM 로그에 `[BOOKFLOW][EXT-FAIL]`/`[CNT-INVALID]` 경고 여부. HOGA 로그 `[BOOKFLOW]` 줄의 `unmatched`·`dropped`·`broken` 크기.
+- [ ] **654-2 (다음 거래일 장후, P1)** 부하 — `[PipePerf]` 분포를 654차 이전 5거래일과 비교. 악화 시 `_book_flow_step` 비활성 스위치부터 넣을 것(현재 없음).
+- [ ] **654-3 (섀도 10거래일 후)** 「두꺼운 매도벽(`book_ask_max` 상위) 감소분의 `ask_exec_qty` vs `ask_cancel_qty_lb` 비중 + 이후 가격 경로」 — 표본 보기 전 판정 기준 사전등록.
+- [ ] **654-4 (보류)** B6 일반선물 `A016C` 호가 추가 구독 — 654-2 부하 확인 후 판단. 미니는 단당 1–2계약이라 건수 정보가 얇다.
+- [ ] **654-5 (별건, P2)** `test_457::test_db_fallback_columns_have_measured_flag` 실패 — `dashboard/main_dashboard.py → peter_paste` INSERT의 `or ''`/`or 0.0` 폴백(632차 커밋분). 플래그 추가 또는 근거와 함께 `_DB_FALLBACK_PINNED` 등록.

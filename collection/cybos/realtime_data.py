@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Callable, Deque, Dict, List, Optional
 
 from collection.cybos.api_connector import CybosAPI, _safe_float, _safe_int, _safe_str
+from collection.cybos.book_flow import BookFlowEstimator, BookSnapshot, SIDES
 from utils.market_state import PRICE_LIMIT_STAGES   # [404차 후속8] 가격제한 3단계
 
 logger = logging.getLogger(__name__)
@@ -121,6 +122,16 @@ class CybosRealtimeData:
         # 그래서 **양변이 모두 유효한 스냅샷만** 세고, 그 스냅샷의 값만 싣는다.
         # 한쪽만 온 스냅샷은 세지 않고 카운터로 남긴다(계측 4원칙 ③ 탈락 가시화).
         self._book_oneside_count = 0
+        # ── [MW0601 654차] 호가 흐름 분해 — 체결 / 취소 하한 / 신규 하한 (소비 0, 적재 전용) ──
+        # `FutureJpBid` 헤더 12·29(전체 총잔량)·13–17·30–34(5단 건수)·18·35(총건수)는 원천이
+        # 주는데 552차까지 읽지 않았다. 잔량·건수 변화에서 그 사이 체결을 빼 「취소 하한」을
+        # 만든다 — **직접 관측이 아니라 추론**이다(`collection/cybos/book_flow.py` docstring).
+        # 근거: docs/미륵이고도화3/호가깊이/주문취소율_수집가능성_조사_MW0601-20261002.md
+        self._book_flow = BookFlowEstimator()
+        self._bf_ext_fail_warned = False     # 확장 헤더 읽기 실패 경고 1회
+        self._bf_cnt_invalid_warned = False  # 건수 무효(0·잔량 초과) 경고 1회
+        self._bf_cnt_invalid_count = 0       # 세션 누계 — 건수 무효 스냅샷 수
+        self._bf_orphan_pairs = 0            # 봉이 없어 귀속 못 한 쌍 수 (세션 누계)
         # ── [MW0601 452차 / QDQ Phase 0] 앵커 계측 상태 (소비 0, 적재 전용) ──────
         # 서버가 주는 정답지 `22_누적체결매도`/`23_누적체결매수`의 봉내 증분을 뽑는다.
         # 공식 캡처본에서 `13_누적거래량(1,525) = 22(342) + 23(1,183)` 항등식이 정확히
@@ -401,6 +412,14 @@ class CybosRealtimeData:
                 sys_log.warning(
                     "[CybosRT-AUCTION] 헤더 28(체결유형코드) 읽기 실패 — 이 세션은 "
                     "auction_code=NULL 로 남는다 (원천/인덱스 재확인)", exc_info=True)
+        # [MW0601 654차] 호가 흐름 분해용 체결 적립 — 다음 호가 스냅샷이 소비한다.
+        # 상태 저장만 한다(절대원칙 §4). 실패해도 틱 처리는 계속된다.
+        if volume > 0:
+            try:
+                self._book_flow.on_trade(price, volume, shadow_side)
+            except Exception:
+                sys_log.debug("[BOOKFLOW] 체결 적립 실패 — 이번 틱만 건너뜀", exc_info=True)
+
         if oi > 0:
             self._last_oi = oi
 
@@ -639,6 +658,13 @@ class CybosRealtimeData:
                     self._current_bar.get("book_snaps") or 0) + 1
             self._current_bar["hoga_levels"] = dict(self._last_hoga_snapshot)
 
+        # [MW0601 654차] 호가 흐름 분해 — 감시 코드가 수집을 죽이면 안 되므로 통째로 방어.
+        try:
+            self._book_flow_step(obj, ask_prices, ask_qtys, bid_prices, bid_qtys,
+                                 _ask_tot, _bid_tot)
+        except Exception:
+            sys_log.debug("[BOOKFLOW] 처리 실패 — 이번 스냅샷만 건너뜀", exc_info=True)
+
         if self._on_hoga is not None:
             try:
                 self._on_hoga(
@@ -655,6 +681,87 @@ class CybosRealtimeData:
                     self._last_bid_qty,
                     self._last_ask_qty,
                 )
+
+    def _book_flow_step(self, obj, ask_prices, ask_qtys, bid_prices, bid_qtys,
+                        ask_tot5, bid_tot5):
+        # type: (object, list, list, list, list, int, int) -> None
+        """[MW0601 654차] 확장 헤더 14개를 읽어 봉에 흐름·깊이를 누적한다.
+
+        헤더(cybosplus.github.io `FutureJpBid`): 12 매도총호가잔량 · 13–17 매도 1–5 건수 ·
+        18 매도 총건수 · 29 매수총호가잔량 · 30–34 매수 1–5 건수 · 35 매수 총건수.
+
+        🔴 **못 읽은 값은 0 이 아니라 미계측이다**(계측 4원칙 ②). 읽기 실패 → 건수 None
+        → 그 스냅샷은 잔량만으로 분해되고 건수 열은 세지 않는다. 건수가 원천에서 0 으로
+        비어 오면(`counts_valid` 실패) 역시 버리고 1회 경고 + 누계를 남긴다.
+        """
+        ask_cnts = bid_cnts = None
+        ask_full = bid_full = ask_cnt_tot = bid_cnt_tot = None
+        try:
+            ask_full = _safe_int(obj.GetHeaderValue(12))
+            ask_cnts = [_safe_int(obj.GetHeaderValue(i)) for i in (13, 14, 15, 16, 17)]
+            ask_cnt_tot = _safe_int(obj.GetHeaderValue(18))
+            bid_full = _safe_int(obj.GetHeaderValue(29))
+            bid_cnts = [_safe_int(obj.GetHeaderValue(i)) for i in (30, 31, 32, 33, 34)]
+            bid_cnt_tot = _safe_int(obj.GetHeaderValue(35))
+        except Exception:
+            ask_cnts = bid_cnts = None
+            ask_full = bid_full = ask_cnt_tot = bid_cnt_tot = None
+            if not self._bf_ext_fail_warned:
+                self._bf_ext_fail_warned = True
+                sys_log.warning(
+                    "[BOOKFLOW][EXT-FAIL] code=%s FutureJpBid 확장 헤더(12·13–18·29–35) 읽기 "
+                    "실패 — 이 세션의 건수·전체총잔량 열은 NULL 로 남는다(잔량 기반 분해는 "
+                    "계속). 원천/인덱스 재확인", self._rt_code, exc_info=True)
+
+        snap = BookSnapshot(ask_prices, ask_qtys, bid_prices, bid_qtys, ask_cnts, bid_cnts)
+        if snap.valid and ask_cnts is not None and not snap.has_cnt:
+            self._bf_cnt_invalid_count += 1
+            if not self._bf_cnt_invalid_warned:
+                self._bf_cnt_invalid_warned = True
+                sys_log.warning(
+                    "[BOOKFLOW][CNT-INVALID] code=%s 5단 건수가 잔량과 모순(0 또는 잔량 초과) "
+                    "— 건수 기반 취소 하한에서 제외. ask q=%s n=%s / bid q=%s n=%s. "
+                    "세션 누계는 [BOOKFLOW] 봉 줄의 cnt_invalid=N 으로 남는다.",
+                    self._rt_code, ask_qtys, ask_cnts, bid_qtys, bid_cnts)
+        inc = self._book_flow.on_snapshot(snap)
+
+        bar = self._current_bar
+        if bar is None:
+            if inc is not None:
+                self._bf_orphan_pairs += 1
+            return
+
+        # 전체 총잔량(5단 밖 포함) — 5단 합 이상이어야 정의상 맞다. 아니면 버린다.
+        if (snap.valid and ask_full is not None and bid_full is not None
+                and ask_full >= ask_tot5 > 0 and bid_full >= bid_tot5 > 0):
+            bar["bf_full_snaps"] = (bar.get("bf_full_snaps") or 0) + 1
+            bar["_bf_ask_full_sum"] = (bar.get("_bf_ask_full_sum") or 0) + ask_full
+            bar["_bf_bid_full_sum"] = (bar.get("_bf_bid_full_sum") or 0) + bid_full
+        # 건수 — 5단 건수가 유효하고 총건수 ≥ 5단 건수합일 때만.
+        if snap.has_cnt and ask_cnt_tot is not None and bid_cnt_tot is not None:
+            _a5 = sum(c for q, c in zip(ask_qtys, ask_cnts) if q > 0)
+            _b5 = sum(c for q, c in zip(bid_qtys, bid_cnts) if q > 0)
+            if ask_cnt_tot >= _a5 and bid_cnt_tot >= _b5:
+                bar["bf_cnt_snaps"] = (bar.get("bf_cnt_snaps") or 0) + 1
+                bar["_bf_ask_cnt5_sum"] = (bar.get("_bf_ask_cnt5_sum") or 0) + _a5
+                bar["_bf_bid_cnt5_sum"] = (bar.get("_bf_bid_cnt5_sum") or 0) + _b5
+                bar["_bf_ask_cnt_tot_sum"] = (bar.get("_bf_ask_cnt_tot_sum") or 0) + ask_cnt_tot
+                bar["_bf_bid_cnt_tot_sum"] = (bar.get("_bf_bid_cnt_tot_sum") or 0) + bid_cnt_tot
+
+        if inc is None:
+            return
+        bar["bf_pairs"] = (bar.get("bf_pairs") or 0) + 1
+        for _k in ("trade_qty", "exec_unmatched_qty"):
+            bar["bf_" + _k] = (bar.get("bf_" + _k) or 0) + inc[_k]
+        for _s in SIDES:
+            for _k in ("cancel_qty_lb", "add_qty_lb", "exec_qty"):
+                _key = "bf_%s_%s" % (_s, _k)
+                bar[_key] = (bar.get(_key) or 0) + inc["%s_%s" % (_s, _k)]
+        if inc["cnt_ok"]:
+            bar["bf_cnt_pairs"] = (bar.get("bf_cnt_pairs") or 0) + 1
+            for _s in SIDES:
+                _key = "bf_%s_cancel_cnt_lb" % _s
+                bar[_key] = (bar.get(_key) or 0) + inc["%s_cancel_cnt_lb" % _s]
 
     def _update_bar(
         self,
@@ -734,6 +841,12 @@ class CybosRealtimeData:
                 "book_snaps": 0,
                 "_book_bid_sum": 0,
                 "_book_ask_sum": 0,
+                # [MW0601 654차] 호가 흐름 분해. 계수기(`*_pairs`·`*_snaps`)는 0 시작,
+                # 값열은 키 부재 = 미계측(NULL). 쌍이 하나도 없던 봉은 값열이 전부 NULL.
+                "bf_pairs": 0,
+                "bf_cnt_pairs": 0,
+                "bf_full_snaps": 0,
+                "bf_cnt_snaps": 0,
             }
             self._current_min = bar_min
         else:
@@ -814,6 +927,7 @@ class CybosRealtimeData:
             closed["volume"],
         )
         self._log_anchor_diagnostics(closed)
+        self._log_book_flow(closed)
         if self._on_candle_closed is not None:
             try:
                 self._on_candle_closed(closed)
@@ -855,6 +969,29 @@ class CybosRealtimeData:
             )
         except Exception:
             sys_log.debug("[CVD-ANCHOR] 진단 로그 실패", exc_info=True)
+
+    def _log_book_flow(self, closed: Dict) -> None:
+        """[MW0601 654차] 봉 마감 시 호가 흐름 1줄 (HOGA 로그 — SYSTEM 로그를 늘리지 않는다)."""
+        try:
+            hoga_log.info(
+                "[BOOKFLOW] ts=%s pairs=%d cnt_pairs=%d trade=%s unmatched=%s | "
+                "ask exec=%s cancel_lb=%s add_lb=%s cnt_cancel_lb=%s | "
+                "bid exec=%s cancel_lb=%s add_lb=%s cnt_cancel_lb=%s | "
+                "full_snaps=%d cnt_snaps=%d | session dropped=%d broken=%d orphan=%d "
+                "cnt_invalid=%d",
+                closed["ts"].strftime("%H:%M"),
+                closed.get("bf_pairs") or 0, closed.get("bf_cnt_pairs") or 0,
+                closed.get("bf_trade_qty"), closed.get("bf_exec_unmatched_qty"),
+                closed.get("bf_ask_exec_qty"), closed.get("bf_ask_cancel_qty_lb"),
+                closed.get("bf_ask_add_qty_lb"), closed.get("bf_ask_cancel_cnt_lb"),
+                closed.get("bf_bid_exec_qty"), closed.get("bf_bid_cancel_qty_lb"),
+                closed.get("bf_bid_add_qty_lb"), closed.get("bf_bid_cancel_cnt_lb"),
+                closed.get("bf_full_snaps") or 0, closed.get("bf_cnt_snaps") or 0,
+                self._book_flow.dropped_trade_qty, self._book_flow.broken_chains,
+                self._bf_orphan_pairs, self._bf_cnt_invalid_count,
+            )
+        except Exception:
+            sys_log.debug("[BOOKFLOW] 진단 로그 실패", exc_info=True)
 
     @staticmethod
     def _parse_tick_time(raw_time: str) -> datetime:

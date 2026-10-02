@@ -338,6 +338,10 @@ DYNAMIC_FEATURES_POOL = [
                      # (InputCheck 에러, 파라미터 무관 항상 발생) — 현재 계좌등급으로 조회 자체가
                      # 불가해 대안도 구현 불가로 최종 확정. 완전 사장 처리 —
                      # docs/미륵이고도화2/cancel_ratio_Cybos_데이터가용성_재조사_2026-07-14.md 참조.
+                     # [MW0601 654차 2026-10-02] MBP 스냅샷 쌍 − 체결로 **취소 하한**을 추론하는
+                     # 섀도 적재(`book_flow_bars`, collection/cybos/book_flow.py)를 시작했다.
+                     # 이 결정의 번복이 **아니다** — 취소 이벤트 원천은 여전히 없고, 그것은
+                     # 직접 관측이 아닌 하한이며 피처 풀에 넣지 않는다(소비 0).
     "round_number_distance",  # 325차: features/technical/round_number.py에 신규 함수
                               # nearest_round_distance_symmetric() 작성 + 배선 완료
                               # (feature_builder.py — 기존 nearest_round_distance()는 direction

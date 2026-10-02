@@ -11,6 +11,12 @@ OFI·LOBID (정적 스냅샷) + Cancel Ratio (동적 취소 흐름) 보완 관�
 취소가 매도호가에서 집중 → 실제 매도 의향 없음 → 상승 가능성↑
 
 기대 효과: 스푸핑 회피 +3%
+
+🔴 [MW0601 654차] **죽은 코드다 — 호출처 0곳.** `on_cancel()` 을 부르는 곳이 없다.
+주문 단위 취소 이벤트(MBO)는 Cybos 가 주지 않으므로 이 클래스가 기대하는 입력은 영원히
+오지 않는다(`cancel_ratio` 구현불가 확정 2026-07-14). MBP 기반 **취소 하한** 추론은
+`collection/cybos/book_flow.py` → `book_flow_bars`(654차 섀도)가 대신한다.
+삭제 여부는 섀도 판정 후 결정 — 지금은 남긴다.
 """
 import numpy as np
 from collections import deque
