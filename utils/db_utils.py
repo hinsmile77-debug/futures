@@ -1982,6 +1982,51 @@ def init_raw_data_db():
                 "ON session_bars(session, ts)")
     except Exception:
         pass
+    # ── [MW0601 654차] 호가 흐름 분해 — 체결 / 취소 하한 / 신규 하한 (소비 0, 섀도 적재) ──
+    #
+    # 🔴 **취소의 직접 관측이 아니다 — 추론된 하한이다.** Cybos 는 주문 단위(MBO)를 주지
+    #    않는다. 같은 가격대 두 스냅샷의 잔량 변화에서 그 사이 체결을 뺀 값이다
+    #    (`collection/cybos/book_flow.py`). `cancel_ratio` 「구현불가 확정」(2026-07-14)을
+    #    번복하지 않는다 — 그것은 시장 전체 취소 **이벤트** 원천이 없다는 결정이다.
+    #
+    # 왜 별도 테이블인가: `raw_candles` 는 소비처 46파일·INSERT 구조 가드(test_552)가
+    #   걸린 원천이고, 이 열들은 섀도 검증 대상이다. 533차와 같은 원칙 — 원천은 원천끼리.
+    #   `session_bars` 와 같은 봉(08:45–15:45)·같은 트랜잭션으로 쓴다.
+    #
+    # 규약(계측 4원칙):
+    #   ① 이름에 의미를 박는다 — `_lb` = 하한(lower bound). 「취소량」이 아니다.
+    #   ② `pairs=0` 이면 흐름 값열 전부 NULL. `cnt_pairs=0` 이면 `*_cnt_lb` NULL.
+    #      `full_snaps=0` 이면 `*_full_avg` NULL. `cnt_snaps=0` 이면 건수 평균 NULL.
+    #   ③ 귀속 못 한 체결은 `exec_unmatched_qty` 로 남긴다.
+    #   ⑤ 항등식: `ask_exec_qty + bid_exec_qty + exec_unmatched_qty == trade_qty`.
+    #      `trade_qty` ≤ 봉 `volume` (쌍이 없던 구간의 체결은 빠진다 — 봉 경계 근사).
+    #   재검증: `python scripts/book_flow_recon.py` (장후 전용).
+    execute(RAW_DATA_DB, """
+        CREATE TABLE IF NOT EXISTS book_flow_bars (
+            ts                  TEXT PRIMARY KEY,
+            pairs               INTEGER NOT NULL,  -- 분해에 쓴 연속 스냅샷 쌍 수 (0=미계측)
+            cnt_pairs           INTEGER NOT NULL,  -- 그중 양 스냅샷 건수가 유효했던 쌍 수
+            trade_qty           INTEGER,           -- 쌍 사이에 귀속된 체결 총량 (계약)
+            exec_unmatched_qty  INTEGER,           -- 관측 불가 가격대 체결 (계약)
+            ask_exec_qty        INTEGER,           -- 매도 대기물량이 체결로 줄어든 양
+            ask_cancel_qty_lb   INTEGER,           -- 매도 잔량 취소 **하한** (계약)
+            ask_add_qty_lb      INTEGER,           -- 매도 잔량 신규 **하한** (계약)
+            ask_cancel_cnt_lb   INTEGER,           -- 매도 취소 건수 **하한**
+            bid_exec_qty        INTEGER,
+            bid_cancel_qty_lb   INTEGER,
+            bid_add_qty_lb      INTEGER,
+            bid_cancel_cnt_lb   INTEGER,
+            full_snaps          INTEGER NOT NULL,  -- 전체 총잔량(헤더 12/29) 유효 스냅샷 수
+            ask_full_avg        REAL,              -- 매도 **전체** 총잔량 평균 (5단 밖 포함)
+            bid_full_avg        REAL,
+            cnt_snaps           INTEGER NOT NULL,  -- 건수 유효 스냅샷 수
+            ask_cnt5_avg        REAL,              -- 매도 5단 건수합 평균 (평균 주문크기 = book_ask_avg/이것)
+            bid_cnt5_avg        REAL,
+            ask_cnt_tot_avg     REAL,              -- 매도 총건수(헤더 18) 평균
+            bid_cnt_tot_avg     REAL,
+            created_at          TEXT DEFAULT (datetime('now', 'localtime'))
+        )
+    """)
     # [303차] 거래소 CB(단일가/서킷브레이커) 감지 이력 — EOD 리포트 halt 요약용
     execute(RAW_DATA_DB, """
         CREATE TABLE IF NOT EXISTS exchange_cb_halts (
@@ -2395,6 +2440,63 @@ def save_session_bar(candle: dict, session: str, source: str = "rt") -> None:
                     source,
                 ),
             )
+            # [MW0601 654차] 같은 봉의 호가 흐름 — 실시간 봉만 키를 들고 온다.
+            _bf = book_flow_row(candle)
+            if _bf is not None:
+                conn.execute(
+                    "INSERT OR REPLACE INTO book_flow_bars (%s) VALUES (%s)"
+                    % (", ".join(BOOK_FLOW_COLS), ", ".join("?" * len(BOOK_FLOW_COLS))),
+                    (candle_ts_str(candle),) + _bf,
+                )
+
+
+BOOK_FLOW_COLS = (
+    "ts", "pairs", "cnt_pairs", "trade_qty", "exec_unmatched_qty",
+    "ask_exec_qty", "ask_cancel_qty_lb", "ask_add_qty_lb", "ask_cancel_cnt_lb",
+    "bid_exec_qty", "bid_cancel_qty_lb", "bid_add_qty_lb", "bid_cancel_cnt_lb",
+    "full_snaps", "ask_full_avg", "bid_full_avg",
+    "cnt_snaps", "ask_cnt5_avg", "bid_cnt5_avg", "ask_cnt_tot_avg", "bid_cnt_tot_avg",
+)
+
+
+def book_flow_row(candle: dict):
+    """[MW0601 654차] 봉 dict → `book_flow_bars` 행(ts 제외). 흐름 키가 없는 봉은 None.
+
+    키 부재(차트 보충·복구봉·654차 이전 코드)는 **행을 쓰지 않는다** — 행이 없는 것과
+    「쌍 0」은 다르다. 계수기가 0 이면 해당 값열은 NULL 이다(0 으로 채우지 않는다).
+    """
+    if "bf_pairs" not in candle:
+        return None
+
+    def _i(v):
+        return None if v is None else int(v)
+
+    def _avg(key, n):
+        s = candle.get(key)
+        return None if (not n or s is None) else float(s) / n
+
+    _p = int(candle.get("bf_pairs") or 0)
+    _cp = int(candle.get("bf_cnt_pairs") or 0)
+    _fs = int(candle.get("bf_full_snaps") or 0)
+    _cs = int(candle.get("bf_cnt_snaps") or 0)
+
+    def _flow(key):
+        return _i(candle.get(key)) if _p else None
+
+    def _cnt(key):
+        return _i(candle.get(key)) if _cp else None
+
+    return (
+        _p, _cp,
+        _flow("bf_trade_qty"), _flow("bf_exec_unmatched_qty"),
+        _flow("bf_ask_exec_qty"), _flow("bf_ask_cancel_qty_lb"),
+        _flow("bf_ask_add_qty_lb"), _cnt("bf_ask_cancel_cnt_lb"),
+        _flow("bf_bid_exec_qty"), _flow("bf_bid_cancel_qty_lb"),
+        _flow("bf_bid_add_qty_lb"), _cnt("bf_bid_cancel_cnt_lb"),
+        _fs, _avg("_bf_ask_full_sum", _fs), _avg("_bf_bid_full_sum", _fs),
+        _cs, _avg("_bf_ask_cnt5_sum", _cs), _avg("_bf_bid_cnt5_sum", _cs),
+        _avg("_bf_ask_cnt_tot_sum", _cs), _avg("_bf_bid_cnt_tot_sum", _cs),
+    )
 
 
 def save_horizon_features(ts: str, horizon: str, features: dict, regime: str = "NEUTRAL") -> None:

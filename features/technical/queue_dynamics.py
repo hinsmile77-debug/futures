@@ -5,7 +5,16 @@ import numpy as np
 
 
 class QueueDynamicsCalculator:
-    """Estimate queue depletion, refill, and imbalance drift from top-of-book updates."""
+    """Estimate queue depletion, refill, and imbalance drift from top-of-book updates.
+
+    🔴 [MW0601 654차] **`cancel_*` 키는 취소를 재지 않는다 — 이름이 오도한다.**
+    `cancel_add_ratio`·`cancel_churn_ratio`(그리고 이를 쓰는 `toxicity_cancel_stress`)는
+    **1호가 잔량의 순감소 vs 순증가**일 뿐이다. 체결로 줄어든 잔량, 최우선 가격이 바뀌어
+    생긴 증감이 전부 「취소」로 섞인다. 이름은 바꾸지 않는다 — 학습 피처라 rename 은
+    train/serve skew 를 부른다(317차 원칙). 체결을 뺀 **취소 하한**이 필요하면
+    `book_flow_bars.*_cancel_qty_lb`(654차 섀도, `collection/cybos/book_flow.py`)를 볼 것.
+    근거: docs/미륵이고도화3/호가깊이/주문취소율_수집가능성_조사_MW0601-20261002.md §0-3·§6
+    """
 
     def __init__(self, window: int = 20, minute_window: int = 5):
         self.window = window

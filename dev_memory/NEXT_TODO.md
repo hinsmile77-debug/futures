@@ -22431,3 +22431,12 @@ docs/정기점검/매일점검/evidence_MW0601-20260826_post.md
 - [x] **F-1 (652차) 완료** 증거수집기 §2 「락 자가점검」↔「git 호출 기록」 상충 수정 — `git_change_profile()`을 인덱스락 조회 앞으로 이동 + `lock_selfcheck_line()`이 `_GIT_CALL_TRACE`를 함께 봄. 테스트 `tests/test_653_lock_selfcheck_consistency.py`.
 - [x] **G-1 (652차) 완료** SKILL.md §0 병행 세션 확인 예시에 `+0900` 시간대 명시.
 - [ ] **O-u2 보강** 다음 재현 시 §2 자가점검 줄이 호출 기록과 같은 구간을 가리키는지 실측 확인(653차 수정의 라이브 검증). F-3(타임아웃→락 생성 원인)은 미해결 — 관찰 계속.
+
+## 2026-10-02 (MW0601 654차 — 호가 흐름 분해 섀도 적재)
+
+- [x] **654-0 완료** 주문 취소율 조사 방안 B1–B5 구현 — `collection/cybos/book_flow.py`(신규) · `realtime_data.py` 확장 헤더 14개 · `book_flow_bars` 테이블 · `scripts/book_flow_recon.py` · `tests/test_654_book_flow.py`. 상세 `docs/미륵이고도화3/호가깊이/주문취소율_수집가능성_조사_MW0601-20261002.md` §7.
+- [ ] **654-1 (다음 거래일 장후, P1)** `python scripts/book_flow_recon.py` — 적재율 ≈100% · 항등식 위반 0 · 체결 커버리지 ≤1.05 · 건수 가용률. SYSTEM 로그에 `[BOOKFLOW][EXT-FAIL]`/`[CNT-INVALID]` 경고 여부. HOGA 로그 `[BOOKFLOW]` 줄의 `unmatched`·`dropped`·`broken` 크기.
+- [ ] **654-2 (다음 거래일 장후, P1)** 부하 — `[PipePerf]` 분포를 654차 이전 5거래일과 비교. 악화 시 `_book_flow_step` 비활성 스위치부터 넣을 것(현재 없음).
+- [ ] **654-3 (섀도 10거래일 후)** 「두꺼운 매도벽(`book_ask_max` 상위) 감소분의 `ask_exec_qty` vs `ask_cancel_qty_lb` 비중 + 이후 가격 경로」 — 표본 보기 전 판정 기준 사전등록.
+- [ ] **654-4 (보류)** B6 일반선물 `A016C` 호가 추가 구독 — 654-2 부하 확인 후 판단. 미니는 단당 1–2계약이라 건수 정보가 얇다.
+- [ ] **654-5 (별건, P2)** `test_457::test_db_fallback_columns_have_measured_flag` 실패 — `dashboard/main_dashboard.py → peter_paste` INSERT의 `or ''`/`or 0.0` 폴백(632차 커밋분). 플래그 추가 또는 근거와 함께 `_DB_FALLBACK_PINNED` 등록.

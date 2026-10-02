@@ -47223,3 +47223,22 @@ Windows `git status` 수정 개수 배포 전과 동일, 스테이징된 내용 
 **How to apply**: §2 락 판정을 바꿀 때는 `lock_selfcheck_line()` 하나만 고친다. 다음 재현 시 §2의 자가점검 줄과 호출 기록 줄이 같은 구간을 가리키는지로 실측 확인(O-u2). F-3(타임아웃→락 생성의 **원인**)은 이번 수정 범위 밖 — 계속 관찰.
 
 **검증**: `tests/test_653_lock_selfcheck_consistency.py` 9건 신설(10/2 실측 지문 · 생겼다 사라짐 · 낡은 lk 주입 시에도 상충 불가 · 미측정 · build() 호출 순서 고정 · SKILL.md +0900). `conda run -n py37_32 python -m pytest` — 수집기 참조 테스트 17파일 **204 passed**.
+
+## 2026-10-02 (MW0601 654차 — 주문 취소율 수집: 호가 흐름 분해 섀도 적재 B1–B5)
+
+**계기**: `docs/미륵이고도화3/호가깊이/주문취소율_수집가능성_조사_MW0601-20261002.md`(같은 날 장후 조사) — 두꺼운 매도벽이 체결로 소화됐는지 취소로 사라졌는지 구분할 수단이 없었다. Cybos는 MBO를 주지 않지만 `FutureJpBid` 헤더 12/29(전체 총잔량)·13–17/30–34(5단 건수)·18/35(총건수)를 주는데 미륵이가 읽지 않고 있었다(헤더 번호는 cybosplus.github.io 명세로 재확인).
+
+**결정**:
+1. 조사 문서 방안 B 중 **B1–B5 구현, B6(일반선물 A016C 호가 추가 구독) 보류** — B1 부하(호가 이벤트당 COM 읽기 +14, 하루 약 21만 이벤트)를 장중 실측하기 전에 구독을 늘리지 않는다.
+2. 추론 로직은 순수 모듈 `collection/cybos/book_flow.py`(`BookFlowEstimator`·`BookSnapshot`). 체결은 `_handle_tick`이 적립하고 다음 호가 스냅샷이 소비 — 콜백 안에서 상태 저장만(절대원칙 §4).
+3. **두 스냅샷 모두에서 관측 가능한 가격만 분해** — 매도측 `p ≤ 마지막 유효 단`, 매수측 `p ≥ 마지막 유효 단`. 창 밖으로 밀려난 잔량을 취소로 세지 않으면서, 벽이 비고 호가가 이동한 경우는 「최우선보다 안쪽 = 0」으로 정확히 잡는다.
+4. 적재는 **`raw_candles`가 아니라 신규 테이블 `book_flow_bars`** — `save_session_bar`와 같은 트랜잭션. `raw_candles`는 소비처 46파일·test_552 INSERT 구조 가드가 걸린 원천이라 섀도 열을 섞지 않는다(533차 원칙).
+5. 이름에 `_lb`(하한) 명시(①) · 계수기 0이면 값열 NULL, 건수가 0/잔량 초과로 오면 미계측(②) · 귀속 못 한 체결은 `exec_unmatched_qty`(③) · 항등식 `ask_exec+bid_exec+unmatched == trade_qty` + 일 커버리지 ≤1.05 사전등록(⑤).
+6. §6 정리: `cancel_add_ratio`·`cancel_churn_ratio`는 「1호가 순감소/순증가, 취소 아님」을 docstring에 명시(rename 안 함 — 317차 skew 원칙). `CancelRatioCalculator`는 호출처 0 명시, 삭제는 섀도 판정 후.
+7. **`cancel_ratio` 「구현불가 확정」(2026-07-14) 번복 아님** — 그것은 취소 *이벤트* 원천 부재 결정이고 이번 것은 MBP 추론 하한이며 피처 풀에 넣지 않는다. `config/constants.py` 해당 주석에 명기.
+
+**Why**: 「조용히 그럴듯한 값」 계열 방지 — 이름에 「cancel」이 붙은 기존 피처가 취소를 재지 않는다는 사실이 판단을 오도해 왔다. 원천은 이미 오고 있었고(아무도 안 본 데이터 — 계측 4원칙 ⑤ 사례와 같은 계열) 비용은 COM 읽기뿐이다.
+
+**How to apply**: 소비 0 — 진입·사이징·모델 경로가 읽으면 `test_654::test_book_flow_not_consumed_by_entry_path`가 깬다. 첫 거래일 장후 `python scripts/book_flow_recon.py`로 적재율·항등식·커버리지·건수 가용률 확인, `[PipePerf]` 부하 비교. 섀도 10거래일 후 「매도벽 감소분의 체결 vs 취소 비중」 질문 — 임계는 그때 표본을 보기 전에 사전등록.
+
+**검증**: `tests/test_654_book_flow.py` 17건 신설. py37_32 회귀(552·552b·533·452×2·566·537·457) **92 passed / 1 failed** — 실패는 `test_457` `dashboard/main_dashboard.py → peter_paste`(632차 커밋분, 654차 무관, 별건).
