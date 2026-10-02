@@ -616,6 +616,49 @@ def _lk_txt(v):
     return "미측정" if v is None else ("있음" if v else "없음")
 
 
+def lock_selfcheck_line(lock_at_start, lock_now, trace=None):
+    """[MW0601 653차 / 652 F-1] §2 「락 자가점검」 한 줄.
+
+    2026-10-02 하루 세 번(장전·장중·장후) 같은 §2 안에서 이 줄은 「이 수집 실행은
+    락을 만들지 않았다」, 바로 아래 호출 기록은 「이 호출 구간에 락이 생겼다」로
+    갈렸다. 원인은 `lk` 조회가 `git diff` 보다 **먼저** 일어나 그 뒤에 생긴 락을 못
+    본 것이다(호출 순서는 `build()` 에서 고쳤다). 여기서는 판정이 호출 기록
+    (`_GIT_CALL_TRACE`)과 **같은 원천을 함께** 보게 해, 순서가 다시 어긋나도 두 줄이
+    서로 다른 결론을 내지 못하게 한다.
+
+    ⚠ 「`run_git` 호출 구간에 생겼다」는 **동시 발생**이지 인과가 아니다
+      (`git_call_trace_lines` 와 같은 문구 원칙).
+    ⚠ lock_at_start=None 은 미측정이다 — 「없었다」로 위장하지 않는다(계측 4원칙 ②).
+    """
+    tr = _GIT_CALL_TRACE if trace is None else trace
+    born = [r for r in tr if r.get("lock_before") is False and r.get("lock_after") is True]
+    if lock_at_start is None:
+        return "  - ⚠ 락 자가점검 **미측정** — 수집 시작 시점 스냅샷이 없다"
+    if lock_at_start:
+        if lock_now:
+            return "  - 락 자가점검: 시작 시점부터 있던 락이다 (이 수집 실행이 만든 것이 아니다)"
+        return "  - 락 자가점검: 시작 시점에 있던 락이 지금은 없다 (누군가 회수했다)"
+    if born:
+        _b = born[0]
+        _where = ("`run_git` 호출 구간(`%s` → %s)에 생겼다(동시 발생 — 인과 미확정)%s"
+                  % (truncate(_b["cmd"], 60), _b.get("outcome"),
+                     (" · 외 %d개 구간" % (len(born) - 1)) if len(born) > 1 else ""))
+        if lock_now:
+            return ("  - 🔴 **이 수집 실행 중 `.git/index.lock` 이 생겨 지금도 남아 있다** "
+                    "(시작 시점에는 없었다) — " + _where +
+                    ". `scripts/git_lock_guard.py --check` 로 판정 후 회수할 것")
+        return ("  - ⚠ 락 자가점검: 수집 중 락이 생겼다가 지금은 없다 — " + _where +
+                ". 「만들지 않았다」가 아니다")
+    if lock_now:
+        return ("  - 🔴 **이 수집 실행이 `.git/index.lock` 을 남겼다** "
+                "(시작 시점에는 없었다). `run_git()` 호출 구간에서는 생기지 않았으므로 "
+                "범인 후보는 이 세션이 **임시로 실행한 다른 git 명령**이다 — "
+                "SKILL.md 「git 호출 규약」 확인 후 `scripts/git_lock_guard.py --check` 로 회수할 것")
+    if lock_now is None:
+        return "  - ⚠ 락 자가점검: 현재 락 상태 **미측정** — 판정 불가"
+    return "  - 락 자가점검: 이 수집 실행은 락을 만들지 않았다"
+
+
 def git_index_lock(root):
     """[MW0601 483차 후속2·후속3 / P0-1·P2-1] `.git/index.lock` 스테일 판정.
 
@@ -2457,6 +2500,13 @@ def build(root, day, phase, cfg, discover_only=False):
     branch = run_git(root, ["rev-parse", "--abbrev-ref", "HEAD"])
     status = run_git(root, ["status", "--porcelain"])
     dirty = [l for l in status.splitlines() if l.strip()]
+    # [MW0601 490차 / F-D] 원시 건수 옆에 **실질**을 병기한다 — 숫자를 고치는 게
+    # 아니라 읽는 법을 붙이는 것이다. 절단 시 잔여 개수를 명시한다(계측 4원칙 ③).
+    # [MW0601 653차 / 652 F-1] 이 호출을 인덱스락 조회(`lk`) **앞으로** 옮겼다.
+    #   종전에는 `lk` 를 먼저 잡고 그 뒤에 `git diff` 를 돌려, diff 타임아웃 구간에
+    #   생긴 락을 `lk` 가 못 봤다 — 그래서 같은 §2 안에서 자가점검은 「만들지 않았다」,
+    #   호출 기록은 「이 호출 구간에 락이 생겼다」로 갈렸다(2026-10-02 장전·장중·장후 3회).
+    _chg = git_change_profile(root)
     # [MW0601 483차 후속2 / P0-1] 인덱스락 상태를 같은 줄에 병기한다.
     # 3상태다 — None(미측정) / False(없음) / True(있음). 미측정을 "없음"으로 적으면
     # 계측 4원칙 ②(미측정 ≠ 0) 위반이고, 하필 이 지표는 **무증상 결함의 유일한 창구**다.
@@ -2471,9 +2521,6 @@ def build(root, day, phase, cfg, discover_only=False):
         lock_txt = (" · 🔴 **인덱스락 잔존** %s바이트 · %.1f시간 · %s%s"
                     % (lk["size"], _age_h, _proc,
                        " → **커밋 불가 상태**" if lk["stale"] else " (판정 보류 — 3중 조건 미충족)"))
-    # [MW0601 490차 / F-D] 원시 건수 옆에 **실질**을 병기한다 — 숫자를 고치는 게
-    # 아니라 읽는 법을 붙이는 것이다. 절단 시 잔여 개수를 명시한다(계측 4원칙 ③).
-    _chg = git_change_profile(root)
     if not _chg["measured"]:
         real_txt = " · 실질 변경 **미측정**(git diff 실패)"
         if _chg.get("fail_reason"):
@@ -2504,17 +2551,9 @@ def build(root, day, phase, cfg, discover_only=False):
     # [MW0601 490차 / F-F ②] 이 수집 실행이 락을 만들었는가 — 시작 시점과 비교한다.
     # 종전 §2 는 **시작 시점 기준**으로만 적어, 같은 세션 후반에 생긴 락을 구조적으로
     # 못 봤다(2026-08-24: 08:59 「없음」 → 09:13 생성 → 3시간 21분 커밋 불가).
-    if _LOCK_AT_START is None:
-        A("  - ⚠ 락 자가점검 **미측정** — 수집 시작 시점 스냅샷이 없다")
-    elif (not _LOCK_AT_START) and lk.get("present"):
-        A("  - 🔴 **이 수집 실행이 `.git/index.lock` 을 남겼다** "
-          "(시작 시점에는 없었다). `run_git()` 은 `--no-optional-locks` 를 쓰므로 "
-          "범인은 이 세션이 **임시로 실행한 다른 git 명령**이다 — "
-          "SKILL.md 「git 호출 규약」 확인 후 `scripts/git_lock_guard.py --check` 로 회수할 것")
-    elif _LOCK_AT_START and not lk.get("present"):
-        A("  - 락 자가점검: 시작 시점에 있던 락이 지금은 없다 (누군가 회수했다)")
-    else:
-        A("  - 락 자가점검: 이 수집 실행은 락을 만들지 않았다")
+    # [MW0601 653차 / 652 F-1] 판정은 `lock_selfcheck_line()` 하나로 — 호출 기록과
+    # 같은 원천(_GIT_CALL_TRACE)을 함께 봐서 두 줄이 서로 다른 말을 하지 않게 한다.
+    A(lock_selfcheck_line(_LOCK_AT_START, lk.get("present")))
     # [MW0601 648차 후속 / F-3] 위 판정의 근거를 호출 단위로 펼친다 — 타임아웃과
     # 락 생성이 같은 호출 구간에서 일어났는지를 다음 재현에서 바로 읽기 위해서다.
     L.extend(git_call_trace_lines())
@@ -3206,7 +3245,7 @@ def build(root, day, phase, cfg, discover_only=False):
     # [MW0601 490차 / F-F ②] 이 수집 실행이 락을 만들었다면 반드시 올린다.
     if (_LOCK_AT_START is False) and lk.get("present"):
         flags.append("🔴 **이 수집 실행이 `.git/index.lock` 을 남겼다** — 시작 시점에는 "
-                     "없었다. 점검 세션의 임시 git 호출이 원인이며, 방치하면 그날 "
+                     "없었다(생긴 구간은 §2 「git 호출 기록」 참조 — 653차). 방치하면 그날 "
                      "dev_memory·리포트가 커밋되지 않은 채로 끝난다")
     for rel in ("dev_memory/DECISION_LOG.md", "dev_memory/NEXT_TODO.md"):
         p = os.path.join(root, rel)
