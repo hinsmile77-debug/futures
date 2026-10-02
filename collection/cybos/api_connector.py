@@ -395,8 +395,20 @@ def _read_opt_idx(obj, idx: Optional[int]) -> float:
         return 0.0
     try:
         return _safe_float(obj.GetHeaderValue(int(idx)))
-    except Exception:
+    except Exception as exc:
+        # [MW0602 607차 후속 / F-607-1] 예외를 삼키고 0.0을 내면 소비처는 "상한가 정보
+        #   없음"으로 fail-open 해 아무 흔적도 남지 않는다(계측 4원칙 ④). 인덱스별 1회만
+        #   SYSTEM 레이어로 남긴다 — 이 모듈의 `logger` 는 파일에 도달하지 않는다(위 `_obs` 주석).
+        #   반환값은 종전 그대로 0.0이다(로그만).
+        if idx not in _OPT_IDX_FAIL_WARNED:
+            _OPT_IDX_FAIL_WARNED.add(idx)
+            _system_warning(
+                "[DailyLimit] FutureMst 헤더 인덱스 %s 읽기 실패 → 0.0 폴백: %r" % (idx, exc))
         return 0.0
+
+
+# `_read_opt_idx` 실패 경고를 이미 낸 인덱스 (프로세스 수명 동안 인덱스별 1회).
+_OPT_IDX_FAIL_WARNED = set()
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -1371,7 +1383,29 @@ class CybosAPI:
                 ret, status, msg, code,
             )
             return {}
-        return data or {}
+        data = data or {}
+        if data:
+            # [MW0602 607차 후속 / F-607-1] 가격제한 원값 무조건 상태 샘플.
+            #   소비처 `realtime_data._prime_from_snapshot()` 의 `[DailyLimit]` 로그는
+            #   `collection.cybos.realtime_data` 로거로 나가 **파일에 도달하지 않는다**
+            #   (utils/logger.py 레이어 목록 밖 · root 핸들러 없음 → INFO 소실, WARNING 은
+            #   stderr 로만). 그래서 09-02~10-02 로그 22거래일 "0건"은 값이 0이라는 증거가
+            #   아니었다. 여기서 원값을 SYSTEM 에 남겨 0 여부를 파일로 판정할 수 있게 한다.
+            #   0 이어도 남긴다(미측정 ≠ 0 구분). 반환값 무변경 — 로그만.
+            _system_info_throttled(
+                "[DailyLimit-RAW] code=%s upper=%.2f lower=%.2f base=%.2f price=%.2f "
+                "idx(upper,lower,base)=(%s,%s,%s)" % (
+                    code,
+                    _safe_float(data.get("upper_limit")),
+                    _safe_float(data.get("lower_limit")),
+                    _safe_float(data.get("base_price")),
+                    _safe_float(data.get("price")),
+                    _UPPER_IDX, _LOWER_IDX, _BASE_IDX,
+                ),
+                key="futures_snapshot_daily_limit_raw",
+                min_interval_sec=3600.0,
+            )
+        return data
 
     def probe_investor_ticker(self, extra_codes: Optional[List[str]] = None) -> None:
         probe_log.info("[CybosInvestorProbe] not implemented; extra_codes=%s", extra_codes or [])
