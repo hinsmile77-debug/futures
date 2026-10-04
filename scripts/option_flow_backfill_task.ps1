@@ -23,11 +23,27 @@
                · Cybos 가 비승격으로 도는 PC 라면 `-RunLevel Limited` 를 쓴다.
               ⚠ Highest 로 등록하려면 **설치 스크립트 자체가 관리자**여야 한다.
 
-    시각      기본 **16:05**. 앞의 두 가지를 피한 값이다 -
+    시각      기본 **16:20** (MW0601 2026-10-04 변경, 종전 16:05).
               ① 라이브 프로세스 종료(실측 15:47) 이후여야 그날 마지막 봉까지 잡힌다.
               ② `Mireuk_RegularCollect_1552`(15:52)와 겹치지 않아야 한다.
                  7222 는 시세 한도(15초당 60건)를 **공유**하므로 동시 실행은
                  서로의 요청을 굶긴다.
+              ③ [2026-10-04] 7222 의 마지막 행은 장 마감 뒤에 찍힌다 — HTS [7222]
+                 실측 2026-10-02: 15:45(종가 단일가) · **16:07**(장후 정정)이
+                 최종 누적값이다. 16:05 는 그 직전이라 최종값을 놓친다.
+              ⚠ 작업 이름은 `..._1605` 그대로 둔다 — 이름을 바꾸면 이미 등록한 PC 에
+                옛 작업이 남아 둘이 같이 돈다.
+
+    🔴 [MW0601 2026-10-04] 실행주체 기본값을 **machine.cfg 의 BROKER 로 정한다.**
+        이 작업은 2026-09-21 MW0601 에 Highest 로 등록돼 **8거래일 전부 실패**했다
+        (LastTaskResult=2, option_flow.db 의 15:35 이후 행 0건). MW0601 의 Cybos 는
+        비승격(start_mireuk.bat 의 UAC 승격은 CREON 전용)인데 작업만 승격이라 COM 이
+        미접속 DibServer 를 새로 띄웠다. 아래 주석이 이미 「비승격 PC 는 Limited」라고
+        적고 있었지만 기본값이 Highest 라 그대로 등록됐다 — 기본값이 틀리면 주석은
+        지켜지지 않는다.
+            BROKER=cybos → Limited   ·   BROKER=creon → Highest
+        machine.cfg 가 없거나 BROKER 를 못 읽으면 **등록하지 않고 멈춘다**
+        (추측으로 등록하면 같은 사고가 난다). -RunLevel 을 주면 그 값이 이긴다.
 
     사용
         등록   TASK_OPTION_BACKFILL_INSTALL.bat
@@ -42,11 +58,13 @@
 #>
 param(
     [switch]$Uninstall,
-    [string]$Time       = '16:05',
+    [string]$Time       = '16:20',
     [string]$PythonPath = '',
-    [string]$From       = '09:00',
-    [ValidateSet('Highest','Limited')]
-    [string]$RunLevel   = 'Highest'
+    # 08:46 — Cybos 7222 의 첫 행이다(08:45 는 원천에 없다, settings.py WEEKLY_OPTION_FLOW_START_AFTER 주석)
+    [string]$From       = '08:46',
+    # 비우면 machine.cfg 의 BROKER 로 정한다(위 「실행주체 기본값」)
+    [ValidateSet('','Highest','Limited')]
+    [string]$RunLevel   = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -77,6 +95,33 @@ if ($Uninstall) {
 }
 
 Write-Head 'option_flow 백필 예약작업 등록'
+
+# -------------------------------------------------------------- 0b) 실행주체
+# BROKER 에서 정한다 — Cybos 와 같은 무결성 수준이어야 COM 이 붙는다.
+$Broker = ''
+$cfg = Join-Path $Root 'machine.cfg'
+if (Test-Path -LiteralPath $cfg) {
+    foreach ($ln in (Get-Content -LiteralPath $cfg -Encoding UTF8)) {
+        if ($ln -match '^\s*BROKER\s*=\s*([A-Za-z]+)\s*$') { $Broker = $Matches[1].ToLower() }
+    }
+}
+if (-not $RunLevel) {
+    if ($Broker -eq 'cybos')     { $RunLevel = 'Limited' }
+    elseif ($Broker -eq 'creon') { $RunLevel = 'Highest' }
+    else {
+        Write-Host ("[FAIL] machine.cfg 의 BROKER 를 읽지 못했다 (cfg={0}, BROKER='{1}')." -f $cfg, $Broker) -ForegroundColor Red
+        Write-Host '       추측으로 등록하지 않는다 - 권한 수준이 Cybos 와 다르면 매일 조용히 실패한다.'
+        Write-Host '       직접 지정:  TASK_OPTION_BACKFILL_INSTALL.bat -RunLevel Limited   (Cybos 비승격)'
+        Write-Host '                   TASK_OPTION_BACKFILL_INSTALL.bat -RunLevel Highest   (Cybos 승격)'
+        exit 1
+    }
+    Write-Host ("[0/4] broker : {0} -> RunLevel {1}" -f $Broker, $RunLevel)
+} else {
+    Write-Host ("[0/4] broker : {0} -> RunLevel {1} (명시 지정)" -f $(if ($Broker) { $Broker } else { '?' }), $RunLevel)
+    if (($Broker -eq 'cybos' -and $RunLevel -eq 'Highest') -or ($Broker -eq 'creon' -and $RunLevel -eq 'Limited')) {
+        Write-Host ("[WARN] BROKER={0} 에 RunLevel {1} 은 보통 맞지 않는다 - Cybos 와 권한 수준이 다르면 미접속으로 실패한다." -f $Broker, $RunLevel) -ForegroundColor Yellow
+    }
+}
 
 # -------------------------------------------------------------- 1) python
 $cands = New-Object System.Collections.Generic.List[string]
@@ -162,6 +207,9 @@ Write-Host ("        runlevel  = {0}" -f $t.Principal.RunLevel)
 Write-Host ("        next run  = {0}" -f $i.NextRunTime)
 Write-Host ("        action    = {0} {1}" -f $t.Actions[0].Execute, $t.Actions[0].Arguments)
 Write-Host ''
-Write-Host '[OK] 등록 완료. 즉시 시험하려면:' -ForegroundColor Green
+Write-Host '[OK] 등록 완료. 즉시 시험하려면 (Cybos 로그인 상태에서):' -ForegroundColor Green
 Write-Host ("       schtasks /Run /TN `"{0}`"" -f $FullName)
-Write-Host '     결과 확인: option_flow.db 의 봉 범위가 09:00 부터인지 볼 것.'
+Write-Host '     결과 확인:'
+Write-Host '       LastTaskResult  0 = 정상 · 2 = Cybos 미접속(권한 수준 확인) · 3 = 마감 구간 미확보'
+Write-Host '       로그            logs\<YYYYMMDD>_OPTION_BACKFILL.log'
+Write-Host '       신선도          python scripts\option_flow_freshness.py   (0=정상 1=결손 2=미측정)'

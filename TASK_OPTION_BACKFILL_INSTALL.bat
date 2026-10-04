@@ -13,14 +13,20 @@ REM  [!] KEEP THIS FILE PURE ASCII - see P7_SHADOW_EOD.bat for why
 REM      (cmd tracks position by BYTE OFFSET; 603cha: a .bat must NOT
 REM       carry a BOM either). Korean prose belongs in the .ps1.
 REM
-REM  [!] Cybos Plus runs elevated, so UIPI blocks non-elevated COM clients.
-REM      Registering with RunLevel Highest requires THIS installer to run
-REM      as administrator. On a PC where Cybos is NOT elevated, pass
-REM      -RunLevel Limited instead.
+REM  [!] The task must run at the SAME integrity level as Cybos Plus.
+REM      If they differ, COM spawns a fresh, logged-out DibServer and every
+REM      request fails (exit 2). RunLevel now defaults from machine.cfg:
+REM        BROKER=cybos (MW0601, Cybos not elevated) -> Limited
+REM        BROKER=creon (MW0602, coStarter elevated) -> Highest (run as admin)
+REM      MW0601 2026-10-04: registered as Highest by the old default, this
+REM      task failed on all 8 trading days since 2026-09-21 - unnoticed.
+REM
+REM  [!] Default time is 16:20: 7222 writes its final rows after the close
+REM      (HTS 2026-10-02: 15:45 and 16:07). 16:05 missed the 16:07 row.
 REM
 REM  install    TASK_OPTION_BACKFILL_INSTALL.bat
 REM  remove     TASK_OPTION_BACKFILL_INSTALL.bat -Uninstall
-REM  time       TASK_OPTION_BACKFILL_INSTALL.bat -Time "16:20"
+REM  time       TASK_OPTION_BACKFILL_INSTALL.bat -Time "16:30"
 REM  python     TASK_OPTION_BACKFILL_INSTALL.bat -PythonPath "C:\...\py37_32\python.exe"
 REM  runlevel   TASK_OPTION_BACKFILL_INSTALL.bat -RunLevel Limited
 REM
