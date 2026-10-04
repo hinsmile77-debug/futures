@@ -336,3 +336,18 @@ def test_page_has_snapshot_delta_layer():
     s = _src("ladder.html")
     assert "['dF','외인 증감']" in s and "['dI','개인 증감']" in s
     assert "function snapDelta(" in s and "snapGrid" in s
+
+
+# ── I. 당일 층 — 전일 보유 그림자 ────────────────────────────────────────
+def test_hold_is_prev_trading_day_only_when_adjacent():
+    pytest.importorskip("utils.time_utils")
+    assert L._is_prev_trading_day("2026-10-01", "2026-10-02") is True
+    assert L._is_prev_trading_day("2026-10-02", "2026-10-06") is True     # 주말·10/5(개천절 대체공휴일) 사이에 거래일 없음
+    assert L._is_prev_trading_day("2026-09-30", "2026-10-02") is False    # 10/1 거래일을 건너뜀 → 합은 현재 보유가 아니다
+    assert L._is_prev_trading_day("2026-10-02", "2026-10-02") is False
+
+
+def test_page_draws_hold_shadow_on_daily_layer():
+    s = _src("ladder.html")
+    assert "shadow = { date: D.hold_date, sum: D.hold_is_prev === true }" in s   # 직전 거래일일 때만 합 눈금
+    assert "D.hold_unit === D.flow_unit" in s                                     # 단위가 다르면 그림자 생략
