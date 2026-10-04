@@ -439,6 +439,21 @@ def main():
     except Exception as _rf_e:
         log.warning("[RegularFresh] 검사 실패 — 미측정이다(「결손 없음」이 아니다): %s", _rf_e)
 
+    # ── [MW0601 2026-10-04] 옵션 투자자 흐름(7222) 마감 구간 신선도 ─────────
+    # 장후 재수집(`Mireuk_OptionFlowBackfill_1605`, py37_32+Cybos COM)이 2026-09-21
+    # 등록 이래 **8거래일 전부 실패**했는데 아무도 몰랐다 — 위 [RegularFresh] 와
+    # 똑같은 사고 유형이라 같은 자리에 같은 방식으로 둔다. 재수집은 16:20 이고
+    # 이 체인은 15:50 이므로 **오늘은 검사에서 빠진다**(어제까지를 본다).
+    try:
+        from scripts.option_flow_freshness import check as _of_fresh_check
+        _of = _of_fresh_check()
+        if _of["status"] == "ok":
+            log.info("%s", _of["line"])
+        else:
+            log.warning("%s", _of["line"])
+    except Exception as _of_e:
+        log.warning("[OptionFlowFresh] 검사 실패 — 미측정이다(「결손 없음」이 아니다): %s", _of_e)
+
     t_start = time.perf_counter()
 
     try:

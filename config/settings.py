@@ -7604,6 +7604,16 @@ OPTION_BOOK_BUDGET_SEC = 150.0
 
 WEEKLY_OPTION_FLOW_ENABLED = True
 WEEKLY_OPTION_FLOW_DB = "data/db/option_flow.db"
+# 🔴 [MW0601 655차 / 2026-10-04] **라이브 수집은 15:34 에서 끝난다 — 그날의 최종값이 아니다.**
+#   수급 타이머가 `is_market_open()`(15:35)에서 막히고 15:40 `daily_close` 가 타이머를
+#   멈추며 15:47 에 프로세스가 자동 종료된다. 그래서 15:34 행은 덜 찬 채 굳고
+#   15:35 – 16:07 행(종가 단일가·장후 정정)이 없다. HTS [7222] 실측 2026-10-02
+#   (월)위클리 콜 개인: 최종 −96(16:07) vs DB −226(15:34).
+#   마감 구간은 **장후 예약작업**(`\Mireuk\Mireuk_OptionFlowBackfill_1605`, 16:20,
+#   `scripts/backfill_option_flow.py`)이 메우고, 결과는 EOD 체인 `[OptionFlowFresh]`
+#   가 다음 날 확인한다. ⚠ 7222 는 당일만 주므로 **놓친 날은 복구할 수 없다**
+#   — 2026-09-21 – 10-02 8거래일은 마감 구간이 영구 결손이다.
+#   ⇒ 「당일 최종 누적」이 필요한 분석은 그 기간에 15:34 값을 쓰고 있음을 명시할 것.
 # 매분 수집하지 않고 N초 스로틀. _fetch_investor_data(수급 타이머)에 얹혀 돈다.
 WEEKLY_OPTION_FLOW_MIN_INTERVAL_SEC = 55.0
 # 이 시각 이후부터 수집한다.

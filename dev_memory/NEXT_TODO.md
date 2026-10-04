@@ -22440,3 +22440,11 @@ docs/정기점검/매일점검/evidence_MW0601-20260826_post.md
 - [ ] **654-3 (섀도 10거래일 후)** 「두꺼운 매도벽(`book_ask_max` 상위) 감소분의 `ask_exec_qty` vs `ask_cancel_qty_lb` 비중 + 이후 가격 경로」 — 표본 보기 전 판정 기준 사전등록.
 - [ ] **654-4 (보류)** B6 일반선물 `A016C` 호가 추가 구독 — 654-2 부하 확인 후 판단. 미니는 단당 1–2계약이라 건수 정보가 얇다.
 - [ ] **654-5 (별건, P2)** `test_457::test_db_fallback_columns_have_measured_flag` 실패 — `dashboard/main_dashboard.py → peter_paste` INSERT의 `or ''`/`or 0.0` 폴백(632차 커밋분). 플래그 추가 또는 근거와 함께 `_DB_FALLBACK_PINNED` 등록.
+
+## 2026-10-04 (MW0601 655차 — 옵션 흐름 장 마감 재수집 보강)
+
+- [x] **655-0 완료** 7222 장후 재수집 8거래일 실패 원인(예약작업 RunLevel Highest × Cybos 비승격) 수정 · 재등록(Limited · 16:20) · 백필 로그/진단/마감판정/날짜거부/휴장일 · `[OptionFlowFresh]` EOD 배선 · `tests/test_655_*` 18건.
+- [ ] **655-1 (10/6 화 장후, P1)** 첫 실거래일 확인 — `(Get-ScheduledTaskInfo -TaskName Mireuk_OptionFlowBackfill_1605 -TaskPath '\Mireuk\').LastTaskResult` = 0 · `logs\20261006_OPTION_BACKFILL.log` 의 「마감 구간 확보 — 옵션 최신봉 16:0x」 · DB `max(bar_time)` ≥ 15:45 · 15:34 행이 HTS 와 일치하는지 HTS [7222] 1개 상품으로 대조.
+- [ ] **655-2 (10/7 수 EOD)** `[OptionFlowFresh]` 가 10/6 을 「확보」로 판정하는지 EOD 로그 확인(9/21–10/2 8일은 영구 결손으로 계속 뜬다 — `DEFAULT_DAYS=10` 창을 벗어나면 사라진다).
+- [ ] **655-3 (10/8 목 만기일)** 만기일 7222 마지막 행 시각 실측 → `CLOSE_OK_EXPIRY`(현재 15:20 보수값) 확정. 근월물 만기 후에도 먼스리(E/F)·위클리 상품이 15:45 까지 찍히면 만기일 기준을 15:40 으로 올릴 것.
+- [ ] **655-4 (MW0602, 선택)** 이 커밋 체리픽 시 그 PC 는 BROKER=creon → Highest 유지. 재등록은 불필요하나 시각 16:20 을 원하면 관리자 PowerShell 에서 `TASK_OPTION_BACKFILL_INSTALL.bat` 재실행.

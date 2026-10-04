@@ -48,10 +48,99 @@ import datetime      # noqa: E402
 import sqlite3       # noqa: E402
 import time          # noqa: E402
 
-from utils.analysis_db import guard_intraday            # noqa: E402
+from utils.analysis_db import guard_intraday, utf8_console   # noqa: E402
 from collection.cybos.weekly_option_flow import (       # noqa: E402
     WeeklyOptionFlow, PRODUCTS, INVESTORS,
 )
+
+# ── [MW0601 2026-10-04] 장후 재수집이 8거래일 조용히 실패한 사고의 대책 ──────────
+#
+# 예약작업 `Mireuk_OptionFlowBackfill_1605` 는 2026-09-21 등록 이래 **하루도 성공하지
+# 않았다**(LastTaskResult=2, DB 의 15:35 이후 행 0건). 그런데 아무도 몰랐다 —
+# 예약작업은 stdout 을 어디에도 남기지 않기 때문이다. 그래서:
+#   ① 실행마다 `logs/<YYYYMMDD>_OPTION_BACKFILL.log` 에 같은 내용을 남긴다
+#      (인코딩 명시 — 예약작업은 PYTHONUTF8 을 못 세운다, 595차 교훈)
+#   ② 미접속 실패에 **권한 수준 진단**을 붙인다(그날의 실제 원인)
+#   ③ 끝난 뒤 **마감 구간을 확보했는지** 보고, 못 했으면 종료코드 3 으로 드러낸다
+#      — 「적재는 됐다」와 「목적을 달성했다」는 다른 값이다(계측 4원칙 ⑤)
+#
+# 종료코드: 0 정상 · 2 Cybos 미접속/다른 날짜 지정 거부 · 3 적재했으나 마감 구간 미확보
+EXIT_NOT_CONNECTED = 2
+EXIT_NO_CLOSE = 3
+# 마감 기준은 신선도 검사와 **한 곳**에서 정의한다(만기일 조기마감 포함). 두 곳에
+# 따로 두면 한쪽만 고쳐져 「백필은 성공, 검사는 결손」 같은 엇갈림이 생긴다.
+from scripts.option_flow_freshness import CLOSE_OK, _close_ok_for   # noqa: E402
+
+
+class _Tee(object):
+    """stdout 을 콘솔과 로그 파일 양쪽에 쓴다. 파일 쪽 실패가 본 작업을 막지 않는다."""
+
+    def __init__(self, stream, fh):
+        self._s, self._f = stream, fh
+
+    def write(self, data):
+        try:
+            self._s.write(data)
+        except Exception:
+            pass
+        try:
+            self._f.write(data)
+            self._f.flush()
+        except Exception:
+            pass
+
+    def flush(self):
+        for x in (self._s, self._f):
+            try:
+                x.flush()
+            except Exception:
+                pass
+
+
+def _open_run_log():
+    """`logs/<YYYYMMDD>_OPTION_BACKFILL.log` 를 append 로 연다. 실패하면 None."""
+    try:
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        d = os.path.join(root, "logs")
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, "%s_OPTION_BACKFILL.log" % datetime.date.today().strftime("%Y%m%d"))
+        fh = open(path, "a", encoding="utf-8")
+        fh.write("\n===== %s pid=%d argv=%s =====\n"
+                 % (datetime.datetime.now().isoformat(timespec="seconds"), os.getpid(), " ".join(sys.argv[1:])))
+        return fh
+    except Exception:
+        return None
+
+
+def _is_elevated():
+    """이 프로세스가 관리자(승격)로 도는가. 판정 불가면 None(미측정 ≠ False)."""
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return None
+
+
+def _is_holiday(now):
+    """KRX 휴장일(주말·공휴일)이면 True. 판정 불가면 False — 모르면 돌려 본다(실패는 로그에 남는다)."""
+    try:
+        from utils.time_utils import is_trading_day
+        return not is_trading_day(now)
+    except Exception:
+        return False
+
+
+def _latest_option_bar(db, day):
+    """그날 옵션 상품의 최신 봉 'HH:MM'. 없거나 못 읽으면 None."""
+    try:
+        con = sqlite3.connect(db)
+        row = con.execute(
+            "SELECT MAX(bar_time) FROM option_investor_flow WHERE trade_date=? "
+            "AND product != 'kospi_spot'", (day,)).fetchone()
+        con.close()
+        return row[0] if row else None
+    except Exception:
+        return None
 
 # 한 페이지가 덮는 분 — 옵션(1분 간격 x 18행)이 가장 촘촘하다.
 PAGE_SPAN_MIN = 18
@@ -119,10 +208,16 @@ def require_cybos_connection():
     except Exception as exc:
         return "CpCybos COM 을 열지 못했다: %s" % exc
     if not connected:
+        elev = _is_elevated()
         return ("Cybos Plus 에 접속돼 있지 않다 (IsConnect=0).\n"
+                "    - 이 프로세스 승격(관리자) = %s\n"
                 "    - Cybos Plus 가 로그인돼 있는지 확인할 것\n"
-                "    - Cybos 가 승격으로 돌면 이 스크립트도 **관리자 권한**이어야 한다\n"
-                "      (UIPI: 비승격 프로세스는 자기 DibServer 를 새로 띄우고 전량 실패한다)")
+                "    - **Cybos 와 이 프로세스의 권한 수준이 같아야 한다.** 다르면 COM 이\n"
+                "      기존 Cybos 에 붙지 못하고 미접속 DibServer 를 새로 띄워 전량 실패한다.\n"
+                "        · Cybos 승격(CREON·MW0602)  → 예약작업 -RunLevel Highest\n"
+                "        · Cybos 비승격(CYBOS·MW0601) → 예약작업 -RunLevel Limited\n"
+                "      (2026-09-21 – 10-02 MW0601: Highest 로 등록돼 8거래일 전부 이 사유로 실패)"
+                % ({True: "예", False: "아니오", None: "판정 불가"}[elev]))
     return ""
 
 
@@ -151,18 +246,43 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="option_flow 결손 백필")
     ap.add_argument("--from", dest="t_from", default="09:00", help="시작 HH:MM (기본 09:00)")
     ap.add_argument("--to", dest="t_to", default="", help="끝 HH:MM (기본: 현재)")
-    ap.add_argument("--date", default="", help="거래일 YYYY-MM-DD (기본: 오늘)")
+    ap.add_argument("--date", default="",
+                    help="거래일 YYYY-MM-DD (기본: 오늘). ⚠ 오늘만 허용 — 7222 는 당일 데이터만 준다")
     ap.add_argument("--sleep", type=float, default=0.3, help="요청 간 대기(초)")
     ap.add_argument("--dry-run", action="store_true", help="페이지만 계산하고 끝낸다")
     ap.add_argument("--db", default="data/db/option_flow.db")
     args = ap.parse_args()
+
+    # 콘솔 인코딩 가드 + 실행 로그 — 예약작업은 stdout 을 남기지 않는다(파일 위 주석).
+    utf8_console()
+    _log_fh = None if args.dry_run else _open_run_log()
+    if _log_fh is not None:
+        sys.stdout = _Tee(sys.stdout, _log_fh)
+
+    today = datetime.date.today().isoformat()
+    # 🔴 [2026-10-04] 다른 날짜는 거부한다. 7222 에는 **날짜 입력이 없어** 항상 오늘
+    #   데이터를 돌려준다. 그런데 `--date` 는 저장 라벨만 바꾸므로, 10/6 에
+    #   `--date 2026-10-02` 로 돌리면 **10/6 데이터가 10/2 이름으로 덮어써진다**
+    #   — 지난 기록을 조용히 오염시키는 경로였다(실행된 적은 없다).
+    if args.date and args.date != today:
+        print("중단 — --date %s 는 오늘(%s)이 아니다. CpSvrNew7222 는 당일 데이터만 주므로 "
+              "지난 날짜는 복구할 수 없다. 다른 날짜로 저장하면 그날 기록을 오늘 값으로 덮어쓴다."
+              % (args.date, today))
+        return EXIT_NOT_CONNECTED
+
+    # 휴장일은 Cybos 를 부르기 전에 끝낸다. 예약작업은 월–금 매일 돌므로, 막지 않으면
+    # 휴장일마다 「미접속(2)」이 찍혀 **진짜 실패와 섞인다**(2026-10-05 대체공휴일이 첫 사례).
+    # COM 을 부르지 않는 것 자체도 목적이다 — 미로그인 상태에서 부르면 빈 DibServer 가 뜬다.
+    if _is_holiday(datetime.datetime.now()):
+        print("건너뜀 — %s 는 KRX 휴장일이다(7222 에 그날 데이터가 없다)." % today)
+        return 0
 
     if not args.dry_run:
         guard_intraday("backfill_option_flow")
 
     t_from = _parse_hhmm(args.t_from)
     t_to = _parse_hhmm(args.t_to) if args.t_to else datetime.datetime.now().time()
-    day = args.date or datetime.date.today().isoformat()
+    day = today
     pages = build_pages(t_from, t_to)
     n_req = len(pages) * len(PRODUCTS) * len(INVESTORS)
 
@@ -182,7 +302,7 @@ def main() -> int:
     _conn_err = require_cybos_connection()
     if _conn_err:
         print("  중단 — %s" % _conn_err)
-        return 2
+        return EXIT_NOT_CONNECTED
 
     # 사전 상태
     def _span():
@@ -233,7 +353,29 @@ def main() -> int:
         con.close()
     except Exception as exc:                      # noqa: BLE001
         print("  점검 조회 실패: %s" % exc)
-    return 0
+
+    # 목적 달성 확인 — 장 마감 후 실행이면 마감 구간(종가 단일가 15:35–15:45)이
+    # 들어왔어야 한다. 장중 결손 메우기 용도(15:40 이전 실행)면 판정하지 않는다.
+    verdict, line = close_check(args.db, day, t_to.strftime("%H:%M"))
+    if line:
+        print("\n  " + line)
+    return EXIT_NO_CLOSE if verdict is False else 0
+
+
+def close_check(db, day, t_to_hm):
+    """장 마감 후 실행이면 마감 구간을 확보했는지 본다.
+
+    Returns: (verdict, line) — verdict 는 True(확보)·False(미확보)·None(판정 대상 아님:
+    장중 결손 메우기 용도라 마감 전에 끝난 실행). None 을 True 로 뭉개지 않는다.
+    """
+    close_ok = _close_ok_for(day)
+    if t_to_hm < max(close_ok, CLOSE_OK):
+        return None, ""
+    last = _latest_option_bar(db, day)
+    if last is not None and last >= close_ok:
+        return True, "[OptionFlowBackfill] 마감 구간 확보 — 옵션 최신봉 %s (기준 %s)" % (last, close_ok)
+    return False, ("[OptionFlowBackfill] ⚠ 마감 구간 미확보 — 옵션 최신봉 %s (기준 %s 이후)"
+                   % (last or "없음", close_ok))
 
 
 if __name__ == "__main__":
