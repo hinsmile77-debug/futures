@@ -1,0 +1,595 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>맥점 옵션 사다리</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* 레이아웃: 가격축 하나를 공유하는 3단 사다리(맥점 · 1분봉 · 옵션 분포) → 그 아래 OI 히트맵 → 판정표 */
+:root{
+  --bg:#f6f7f8; --panel:#ffffff; --ink:#15181c; --ink-2:#4a5059; --ink-3:#7b828c; --rule:#dfe2e6; --grid:#eceef1;
+  --struct:#b07800; --struct-line:#eda100; --dist:#11875e; --dist-line:#1baf7a;
+  --band-hi:rgba(42,120,214,.07); --band-lo:rgba(227,73,72,.07);
+  --pos:#2a78d6; --neg:#e34948; --mid:#f0efec;
+  --o-back:#3d434c; --o-break:#eb6834; --o-stay:#9aa1aa; --peter:#8a5cd6;
+  --up:#d6453f; --dn:#2a6fd0; --oi:#b9bfc7; --oi-wall:#15181c; --path:#15181c;
+  --chip:#eef0f3; --chip-on:#15181c; --chip-on-ink:#ffffff;
+  --i-for:#4a3aa7; --i-ind:#eb6834; --i-ins:#1baf7a;
+  --sans:"IBM Plex Sans KR",system-ui,-apple-system,"Malgun Gothic",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#141619; --panel:#1b1e22; --ink:#eef0f2; --ink-2:#b4bac2; --ink-3:#848b95; --rule:#2e3339; --grid:#252a30;
+  --struct:#e0a526; --struct-line:#c98500; --dist:#3cc391; --dist-line:#199e70;
+  --band-hi:rgba(57,135,229,.10); --band-lo:rgba(230,103,103,.10);
+  --pos:#3987e5; --neg:#e66767; --mid:#383835;
+  --o-back:#c9ced5; --o-break:#d95926; --o-stay:#6b727c; --peter:#9d6ff0;
+  --up:#e66767; --dn:#5598e7; --oi:#4a5059; --oi-wall:#eef0f2; --path:#eef0f2;
+  --chip:#252a30; --chip-on:#eef0f2; --chip-on-ink:#141619; --i-for:#9085e9; --i-ind:#d95926; --i-ins:#199e70; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#141619; --panel:#1b1e22; --ink:#eef0f2; --ink-2:#b4bac2; --ink-3:#848b95; --rule:#2e3339; --grid:#252a30;
+  --struct:#e0a526; --struct-line:#c98500; --dist:#3cc391; --dist-line:#199e70;
+  --band-hi:rgba(57,135,229,.10); --band-lo:rgba(230,103,103,.10);
+  --pos:#3987e5; --neg:#e66767; --mid:#383835;
+  --o-back:#c9ced5; --o-break:#d95926; --o-stay:#6b727c; --peter:#9d6ff0;
+  --up:#e66767; --dn:#5598e7; --oi:#4a5059; --oi-wall:#eef0f2; --path:#eef0f2;
+  --chip:#252a30; --chip-on:#eef0f2; --chip-on-ink:#141619; --i-for:#9085e9; --i-ind:#d95926; --i-ins:#199e70; color-scheme:dark}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.55}
+.wrap{max-width:1180px;margin:0 auto;padding-inline:16px;padding-block:24px 48px;display:grid;gap:22px}
+header{display:grid;gap:8px}
+.eyebrow{font:500 12px/1 var(--mono);letter-spacing:.08em;color:var(--ink-3);text-transform:uppercase}
+h1{margin:0;font-size:26px;font-weight:700;letter-spacing:-.01em;text-wrap:balance}
+.lede{margin:0;color:var(--ink-2);max-width:72ch}
+.facts{display:flex;flex-wrap:wrap;gap:8px 18px;font:400 12.5px/1.4 var(--mono);color:var(--ink-2)}
+.facts b{color:var(--ink);font-weight:500}
+section{background:var(--panel);border:1px solid var(--rule);border-radius:6px;padding:16px;display:grid;gap:12px;min-width:0}
+section h2{margin:0;font-size:16px;font-weight:600}
+.sub{margin:0;color:var(--ink-3);font-size:12.5px}
+.bar{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center}
+.seg{display:inline-flex;gap:2px;background:var(--chip);border-radius:6px;padding:2px}
+.seg button{font:500 12.5px/1 var(--sans);border:0;background:transparent;color:var(--ink-2);padding:7px 10px;border-radius:4px;cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--chip-on);color:var(--chip-on-ink)}
+.seg button:focus-visible{outline:2px solid var(--pos);outline-offset:1px}
+.seg-label{font-size:12px;color:var(--ink-3)}
+.legend{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12px;color:var(--ink-2)}
+.legend i{display:inline-block;vertical-align:middle;margin-right:6px}
+.sw-line{width:22px;height:0;border-top:2px solid}
+.sw-box{width:12px;height:12px;border-radius:2px}
+.scroll{overflow-x:auto;min-width:0}
+svg text{font-family:var(--sans)}
+svg .num{font-family:var(--mono)}
+#tip{position:fixed;pointer-events:none;background:var(--panel);color:var(--ink);border:1px solid var(--rule);border-radius:4px;padding:8px 10px;font:400 12px/1.45 var(--mono);box-shadow:0 4px 14px rgba(0,0,0,.14);z-index:9;max-width:300px}
+#tip b{font-family:var(--sans);font-weight:600}
+table{border-collapse:collapse;width:100%;font-size:12.5px;font-variant-numeric:tabular-nums}
+th,td{padding:7px 8px;border-bottom:1px solid var(--rule);text-align:right;white-space:nowrap}
+th{font-weight:600;color:var(--ink-2);font-size:11.5px;background:var(--panel);position:sticky;top:0}
+td.l,th.l{text-align:left}
+td.mono{font-family:var(--mono)}
+.k-struct{color:var(--struct);font-weight:600}.k-peter{color:var(--peter);font-weight:600}.k-dist{color:var(--dist);font-weight:600}
+.pill{display:inline-flex;gap:5px;align-items:center;padding:2px 8px;border-radius:999px;font-weight:600;font-size:12px;border:1px solid var(--rule)}
+.pill .dot{width:8px;height:8px;border-radius:50%}
+.pred{font-size:12px;color:var(--ink-2)}
+.ok{font-weight:700}
+.muted{color:var(--ink-3)}
+.notes{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+.notes div{min-width:0}
+.notes h3{margin:0 0 4px;font-size:13px}
+.notes p,.notes li{margin:0;color:var(--ink-2);font-size:12.5px}
+.notes ul{margin:0;padding-left:18px;display:grid;gap:3px}
+.caveat{border-left:3px solid var(--o-break);padding:8px 12px;background:var(--chip);border-radius:0 4px 4px 0;font-size:12.5px;color:var(--ink-2)}
+/* 달력·실시간 */
+.topbar{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center}
+.datebtn{font:600 14px/1 var(--mono);border:1px solid var(--rule);background:var(--panel);color:var(--ink);padding:9px 12px;border-radius:6px;cursor:pointer}
+.datebtn:focus-visible,.cal button:focus-visible,.navbtn:focus-visible{outline:2px solid var(--pos);outline-offset:1px}
+.navbtn{border:1px solid var(--rule);background:var(--panel);color:var(--ink-2);padding:8px 10px;border-radius:6px;cursor:pointer;font:500 13px/1 var(--sans)}
+.navbtn[disabled]{opacity:.35;cursor:default}
+.calwrap{position:relative}
+.cal{position:absolute;z-index:20;top:calc(100% + 6px);left:0;background:var(--panel);border:1px solid var(--rule);border-radius:8px;padding:12px;box-shadow:0 10px 30px rgba(0,0,0,.18);width:300px}
+.cal-h{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;font-weight:600}
+.cal-h button{border:0;background:var(--chip);color:var(--ink);border-radius:4px;padding:5px 9px;cursor:pointer}
+.cal-g{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;font-variant-numeric:tabular-nums}
+.cal-g .dow{font-size:11px;color:var(--ink-3);text-align:center;padding:2px 0}
+.cal-g button{position:relative;border:1px solid transparent;background:transparent;color:var(--ink-3);border-radius:5px;padding:7px 0;font:500 12.5px/1 var(--mono);cursor:pointer}
+.cal-g button[disabled]{cursor:default;opacity:.35}
+.cal-g button.full{background:var(--chip);color:var(--ink)}
+.cal-g button.part{color:var(--ink-2);border-color:var(--rule)}
+.cal-g button.sel{background:var(--chip-on);color:var(--chip-on-ink)}
+.cal-g button.today{border-color:var(--o-break)}
+.cal-g button i{position:absolute;bottom:2px;left:50%;transform:translateX(-50%);width:4px;height:4px;border-radius:50%;background:var(--peter)}
+.cal-legend{display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:8px;font-size:11px;color:var(--ink-3)}
+.livechip{display:inline-flex;align-items:center;gap:7px;font:500 12.5px/1.2 var(--mono);color:var(--ink-2);padding:7px 10px;border-radius:999px;background:var(--chip)}
+.livechip .dot{width:8px;height:8px;border-radius:50%;background:var(--ink-3)}
+.livechip.on .dot{background:var(--o-break);animation:pulse 1.6s ease-in-out infinite}
+.livechip.err{color:var(--neg)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+.warnbox{border-left:3px solid var(--neg);padding:6px 10px;background:var(--chip);font-size:12.5px;color:var(--ink-2)}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">미륵이 · MW0601 · 실시간 · 일별 복기</div>
+    <h1 id="h1">맥점 × 옵션 사다리</h1>
+    <div class="topbar">
+      <button type="button" class="navbtn" id="prevDay" aria-label="이전 거래일">◀</button>
+      <div class="calwrap"><button type="button" class="datebtn" id="dateBtn" aria-haspopup="dialog" aria-expanded="false">날짜 불러오는 중</button>
+        <div class="cal" id="cal" role="dialog" aria-label="날짜 선택" hidden></div></div>
+      <button type="button" class="navbtn" id="nextDay" aria-label="다음 거래일">▶</button>
+      <button type="button" class="navbtn" id="todayBtn">오늘</button>
+      <span class="livechip" id="liveChip"><span class="dot"></span><span id="liveText">대기</span></span>
+    </div>
+    <p class="lede">구조맥점·거리맥점과 행사가별 옵션 분포를 미니선물 가격축 하나에 겹쳐, 각 맥점에서 가격이 되돌았는지 · 뚫었는지 · 머물렀는지를 함께 본다.</p>
+    <div class="facts" id="facts"></div>
+    <div class="warnbox" id="warnbox" hidden></div>
+  </header>
+
+  <section>
+    <div class="bar">
+      <div><span class="seg-label">맥점 단계 </span><span class="seg" id="segStage"></span></div>
+      <div><span class="seg-label">피터맥점 </span><span class="seg" id="segPeter"></span></div>
+      <div><span class="seg-label">옵션층 </span><span class="seg" id="segLayer"></span></div>
+    </div>
+    <div class="legend" id="legend1"></div>
+    <div class="scroll"><svg id="ladder" role="img" aria-label="맥점, 1분봉, 행사가별 옵션 분포를 가격축 하나에 겹친 사다리 차트"></svg></div>
+    <p class="sub" id="ladderNote"></p>
+  </section>
+
+  <section>
+    <h2>행사가 × 시간 미결제약정 증감과 주체 흐름</h2>
+    <p class="sub">위 띠 = 상품 단위 주체별 누적 순매수(1분, 계약). 가운데 = 행사가별 미결제약정 첫 스냅샷 대비 증감(5분, 전체 참여자). 오른쪽 열 = 종합이면 행사가별 하루 OI 증감, 주체를 고르면 그 주체의 행사가별 당일 순매수([9842], 장마감 1회). 굵은 선은 선물가를 지수 단위로 환산한 경로.</p>
+    <div class="bar">
+      <div><span class="seg-label">상품 </span><span class="seg" id="segBook"></span></div>
+      <div><span class="seg-label">구분 </span><span class="seg" id="segCP"></span></div>
+      <div><span class="seg-label">주체 </span><span class="seg" id="segInv"></span></div>
+    </div>
+    <div class="legend" id="legend2"></div>
+    <div class="scroll"><svg id="heat" role="img" aria-label="행사가별 미결제약정 증감 히트맵과 가격 경로"></svg></div>
+  </section>
+
+  <section>
+    <h2>맥점 판정표</h2>
+    <p class="sub">첫 터치 기준. 근처 행사가는 맥점을 지수 단위로 환산한 뒤 가장 가까운 행사가. 「예상」은 앞선 탐색에서 나온 규칙을 그대로 적용한 결과다.</p>
+    <div class="caveat"><b>표본 경고.</b> 예상 규칙의 근거 비율은 9/28–10/2 네 쌍(4거래일) 탐색에서 나왔다(10/2 포함). 이 표의 「일치」는 검증이 아니라 규칙이 어떻게 작동하는지 보여주는 예시다. 판정은 20거래일 이상 새 표본으로 사전등록 채점한 뒤에 한다. 실시간 날짜의 「진행중」은 아직 15봉 판정 창이 끝나지 않은 터치다.</div>
+    <div class="scroll"><table id="tbl"></table></div>
+  </section>
+
+  <section>
+    <h2>정의와 원천</h2>
+    <div class="notes">
+      <div><h3>세 가지 결과</h3><ul>
+        <li><b>되돌림</b>: 첫 터치 뒤, 접근해 온 쪽으로 3pt 되돌아감이 레벨 3pt 관통보다 먼저</li>
+        <li><b>돌파</b>: 3pt 관통이 먼저</li>
+        <li><b>정거장</b>: 15봉 안에 둘 다 없음. 「머문 봉」은 15봉 중 종가가 레벨 ±3pt 안인 수</li>
+        <li>같은 봉에서 둘 다 일어나면 그 봉 종가 쪽으로 판정</li></ul></div>
+      <div><h3>예상 규칙과 근거</h3><ul>
+        <li>거리맥점 → 되돌림 쪽 (되돌림 75%, n=8)</li>
+        <li>구조맥점 단독 → 무정보 (50%, n=14)</li>
+        <li>▲접근 + 근처 외인 <b>콜 보유 순매도 큼</b> → 돌파 쪽 (되돌림 29%, n=7)</li>
+        <li>▼접근 + 근처 외인 <b>풋 보유 순매도 큼</b> → 되돌림 쪽 (되돌림 83%, n=6)</li>
+        <li>「큼」 = 그날 ATM ±27.5pt 행사가 중 |외인 보유| 상위 20%</li>
+        <li>둘 이상이 반대 방향이면 「혼재」</li></ul></div>
+      <div><h3>피터맥점</h3><ul>
+        <li>원천: <code>peter_levels.db</code> 붙여넣기 원문. 대시보드 복기 차트와 같은 파서로 읽었다</li>
+        <li>가격 = 정규선물 기준 → 미니 = 원문 + 보정값(<span id="pOff"></span>pt)</li>
+        <li>지시(진입·손절)와 예고(청산가·손절 변경)를 선으로, 체결·청산을 ▼·✕로 표시</li>
+        <li id="pExcl"></li>
+        <li id="pNote"></li></ul></div>
+      <div><h3>원천</h3><ul>
+        <li>맥점: <code>premarket_levels</code> 08:50 · 09:30</li>
+        <li>1분봉: <span id="srcCandle"></span></li>
+        <li>행사가별 OI·벽: <code>option_book_strike/snap</code> (5분)</li>
+        <li>투자자: HTS [9842] 내보내기 — 보유 <span id="srcHold"></span> · 당일 <span id="srcFlow"></span>. 단위는 파일에서 판정 — 값이 전부 정수면 계약, 소수점이 있으면 금액(십만원 추정 → 억원). _D 가 없는 날은 전 거래일 _P 를 뺀 생성본(P 차분, 10/2 실제 _D 와 전 칸 일치 검증)을 쓴다. 새 파일은 이름 끝에 _P(기간 보유) / _D(당일 순매수)</li>
+        <li>행사가 → 선물가 환산: 베이시스(선물 − KOSPI200) 일중 중앙값</li></ul></div>
+    </div>
+  </section>
+</div>
+<div id="tip" hidden></div>
+
+<script>
+(function(){
+let D = null;
+const NS = 'http://www.w3.org/2000/svg';
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const el = (tag, attrs, parent, text) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (text != null) e.textContent = text; if (parent) parent.appendChild(e); return e; };
+const fmt = (v, d=1) => (v>0?'+':'') + v.toFixed(d);
+const tip = document.getElementById('tip');
+function showTip(ev, html){ tip.innerHTML = html; tip.hidden = false; const w = tip.offsetWidth, h = tip.offsetHeight; let x = ev.clientX + 14, y = ev.clientY + 14; if (x + w > innerWidth - 8) x = ev.clientX - w - 14; if (y + h > innerHeight - 8) y = ev.clientY - h - 14; tip.style.left = x + 'px'; tip.style.top = y + 'px'; }
+function hideTip(){ tip.hidden = true; }
+
+let C = [], N = 0, B = 0, tIdx = {}, big = 0, CUR = null, DATES = {}, TODAY = null;
+const state = { stage: 'all', layer: 'mon', book: 'monthly', cp: 'call', inv: 'all', peter: 'on' };
+try { const s = JSON.parse(localStorage.getItem('maekjeom_ladder') || '{}'); Object.assign(state, s); } catch(e) {}
+const save = () => { try { localStorage.setItem('maekjeom_ladder', JSON.stringify(state)); } catch(e) {} };
+
+// facts
+const hm = s => s ? String(s).slice(11, 16) || s : '—';
+const uName = u => u === 'contract' ? '계약' : u ? '억원' : '—';
+const uShort = u => u === 'contract' ? '계약' : '억';
+function renderFacts(){
+  const f = document.getElementById('facts');
+  if (!N) { f.innerHTML = '<span>이 날 1분봉이 아직 없다</span>'; return; }
+  const last = C[N-1]; const wb = b => (b && b.wall_close) ? `${b.wall_open ? b.wall_open.join('/') + ' → ' : ''}${b.wall_close.join('/')}` : '—';
+  f.innerHTML = `<span>시가 <b>${C[0][1].toFixed(2)}</b></span><span>고 <b>${D.actual.high.toFixed(2)}</b></span><span>저 <b>${D.actual.low.toFixed(2)}</b></span><span>${last[0]} <b>${last[4].toFixed(2)}</b></span>` +
+    `<span>베이시스(중앙) <b>${D.basis_measured ? fmt(B,2) + 'pt' : '미측정'}</b></span><span>먼스리 콜벽/풋벽 <b>${wb(D.books.monthly)}</b></span><span>월위클리 콜벽/풋벽 <b>${wb(D.books.weekly_mon)}</b></span>` +
+    `<span>7222 최신 <b>${D.flow_last || '—'}</b></span><span>행사가 OI <b>${D.books.monthly && D.books.monthly.src ? D.books.monthly.src : '없음'}</b></span>`;
+  const w = document.getElementById('warnbox'); w.hidden = !(D.warnings && D.warnings.length); w.textContent = (D.warnings || []).join(' · ');
+  document.getElementById('srcCandle').textContent = D.candle_src || '—';
+  document.getElementById('srcHold').textContent = D.hold_src || '없음';
+  document.getElementById('srcFlow').textContent = D.flow_src || '없음';
+}
+
+// segmented controls
+function seg(id, key, opts, onChange){
+  const host = document.getElementById(id); host.innerHTML = '';
+  opts.forEach(([v, label]) => { const b = document.createElement('button'); b.type = 'button'; b.id = id + '-' + v; b.textContent = label; b.setAttribute('aria-pressed', String(state[key] === v));
+    b.onclick = () => { state[key] = v; save(); host.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', String(x === b))); onChange(); }; host.appendChild(b); });
+}
+seg('segStage', 'stage', [['all','둘 다'],['0850','08:50'],['0930','09:30']], drawLadder);
+seg('segPeter', 'peter', [['on','켬'],['off','끔']], () => { drawLadder(); drawTable(); });
+seg('segLayer', 'layer', [['mon','먼스리 OI'],['wkm','월위클리 OI'],['hold','전일 외인 보유'],['flowF','당일 외인'],['flowI','당일 개인']], drawLadder);
+function makeBookSeg(){
+  const lab = (k, name) => { const e = D && D.books[k] && D.books[k].expiry; return e ? `${name} ${+e.slice(5,7)}/${+e.slice(8,10)}` : name; };
+  seg('segBook', 'book', [['monthly', lab('monthly','먼스리')], ['weekly_mon', lab('weekly_mon','월위클리')], ['weekly_thu', lab('weekly_thu','목위클리')]], drawHeat);
+}
+makeBookSeg();
+seg('segCP', 'cp', [['call','콜'],['put','풋']], drawHeat);
+seg('segInv', 'inv', [['all','종합'],['foreign','외인'],['individual','개인'],['institution','기관']], drawHeat);
+
+// ── 예상 규칙 ─────────────────────────────────────────────
+const nearK = p => Math.round((p - B) / 2.5) * 2.5;
+const kkey = k => k.toFixed(1);
+function computeBig(){
+  if (!N) return Infinity;
+  const mid = C.map(c => c[4]).sort((a,b)=>a-b)[Math.floor(N/2)] - B; const xs = [];
+  for (const k in D.hold) { const kk = +k; if (Math.abs(kk - mid) <= 27.5) { xs.push(Math.abs(D.hold[k].c_for)); xs.push(Math.abs(D.hold[k].p_for)); } }
+  xs.sort((a,b)=>a-b); return xs.length ? xs[Math.floor(xs.length * 0.8)] : Infinity;
+}
+function predict(L){
+  if (!L.touch) return null;
+  if (L.kind === '피터') return { call: '규칙 없음', why: '피터맥점 근거 표본 없음' };
+  const h = D.hold[kkey(nearK(L.price))] || {}; const votes = []; const why = [];
+  if (L.kind === '거리') { votes.push('되돌림'); why.push('거리맥점 75% n8'); } else why.push('구조 단독 무정보');
+  if (L.approach === '▲' && h.c_for <= -big) { votes.push('돌파'); why.push('외인 콜매도 큼 29% n7'); }
+  if (L.approach === '▼' && h.p_for <= -big) { votes.push('되돌림'); why.push('외인 풋매도 큼 83% n6'); }
+  const u = [...new Set(votes)];
+  return { call: u.length === 0 ? '무정보' : u.length > 1 ? '혼재' : u[0] + ' 쪽', why: why.join(' · ') };
+}
+const OC = { '되돌림': '--o-back', '돌파': '--o-break', '정거장': '--o-stay', '진행중': '--ink-3' };
+
+// ── 사다리 ────────────────────────────────────────────────
+function drawLadder(){
+  const svg = document.getElementById('ladder'); svg.innerHTML = '';
+  const W = 1120, H = 600, mT = 18, mB = 34, labW = 210, plotX = labW, plotW = 600, gap = 18, profX = plotX + plotW + gap, profW = W - profX - 8;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.style.width = '100%'; svg.style.minWidth = '900px'; svg.style.height = 'auto';
+  const levels = D.levels.filter(L => L.kind === '피터' ? state.peter === 'on' : (state.stage === 'all' || L.stage === state.stage));
+  // y 범위 — 그날 가격 ±여유, 가격에서 12pt 안의 맥점은 포함
+  let lo = N ? Math.min(...C.map(c => c[3])) : null, hi = N ? Math.max(...C.map(c => c[2])) : null;
+  if (lo === null) { const ps = levels.map(L => L.price); if (!ps.length) { el('text', { x: W/2, y: H/2, 'text-anchor': 'middle', 'font-size': 14, fill: css('--ink-2') }, svg, '이 날 1분봉·맥점이 아직 없다'); return; } lo = Math.min(...ps); hi = Math.max(...ps); }
+  levels.forEach(L => { if (L.price >= lo - 12 && L.price <= hi + 12) { lo = Math.min(lo, L.price); hi = Math.max(hi, L.price); } });
+  const yMin = Math.floor((lo - 3) / 2) * 2, yMax = Math.ceil((hi + 3) / 2) * 2;
+  const y = p => mT + (yMax - p) / (yMax - yMin) * (H - mT - mB);
+  const tm = t => +t.slice(0, 2) * 60 + +t.slice(3, 5); const X0 = tm('08:45'), X1 = tm('15:46'), slot = plotW / (X1 - X0);
+  const xT = t => plotX + (tm(t) - X0 + 0.5) * slot;
+  const x = i => xT(C[i][0]);
+  // grid
+  const gstep = (yMax - yMin) > 60 ? 10 : (yMax - yMin) > 30 ? 4 : 2;
+  for (let p = yMin; p <= yMax; p += 2) { const major = p % 10 === 0;
+    el('line', { x1: plotX, x2: profX + profW, y1: y(p), y2: y(p), stroke: css(major ? '--rule' : '--grid'), 'stroke-width': 1 }, svg);
+    if (p % gstep === 0) el('text', { x: plotX - 6, y: y(p) + 4, 'text-anchor': 'end', 'font-size': 11, fill: css('--ink-3'), class: 'num' }, svg, p); }
+  ['09:00','10:00','11:00','12:00','13:00','14:00','15:00','15:10'].forEach(t => {
+    el('line', { x1: xT(t), x2: xT(t), y1: mT, y2: H - mB, stroke: css(t === '15:10' ? '--neg' : '--grid'), 'stroke-dasharray': t === '15:10' ? '3 3' : '' }, svg);
+    if (t !== '15:10') el('text', { x: xT(t), y: H - mB + 16, 'text-anchor': 'middle', 'font-size': 11, fill: css('--ink-3'), class: 'num' }, svg, t); });
+  if (D.live && N) { const xn = x(N - 1); el('line', { x1: xn, x2: xn, y1: mT, y2: H - mB, stroke: css('--o-break'), 'stroke-width': 1, opacity: .6 }, svg);
+    el('text', { x: xn + 4, y: mT + 10, 'font-size': 10.5, fill: css('--o-break'), class: 'num' }, svg, '지금 ' + C[N-1][0]); }
+  // bands
+  D.bands.filter(b => state.stage === 'all' ? b.stage === '0850' : b.stage === state.stage).forEach(b => {
+    const st = b.stage === '0850' ? '08:51' : '09:31';
+    el('rect', { x: xT(st), width: plotX + plotW - xT(st), y: y(b.hi), height: y(b.lo) - y(b.hi), fill: css(b.name.startsWith('high') ? '--band-hi' : '--band-lo') }, svg);
+  });
+  // candles
+  const cg = el('g', {}, svg); const bw = Math.max(1, slot * 0.7);
+  C.forEach((c, i) => { const up = c[4] >= c[1]; const col = css(up ? '--up' : '--dn');
+    el('line', { x1: x(i), x2: x(i), y1: y(c[2]), y2: y(c[3]), stroke: col, 'stroke-width': 1 }, cg);
+    el('rect', { x: x(i) - bw/2, width: bw, y: y(Math.max(c[1], c[4])), height: Math.max(0.8, Math.abs(y(c[1]) - y(c[4]))), fill: col }, cg); });
+  // crosshair layer
+  const hv = el('line', { y1: mT, y2: H - mB, stroke: css('--ink-3'), 'stroke-dasharray': '2 3', visibility: 'hidden' }, svg);
+  el('rect', { x: plotX, y: mT, width: plotW, height: H - mT - mB, fill: 'transparent' }, svg).addEventListener('mousemove', ev => {
+    if (!N) return; const r = svg.getBoundingClientRect(); const sx = (ev.clientX - r.left) * W / r.width; const tq = X0 + Math.floor((sx - plotX) / slot);
+    let i = 0; for (let k = 0; k < N; k++) if (tm(C[k][0]) <= tq) i = k;
+    hv.setAttribute('x1', x(i)); hv.setAttribute('x2', x(i)); hv.setAttribute('visibility', 'visible'); const c = C[i];
+    showTip(ev, `<b>${c[0]}</b><br>시 ${c[1].toFixed(2)} · 고 ${c[2].toFixed(2)}<br>저 ${c[3].toFixed(2)} · 종 ${c[4].toFixed(2)}<br><span class="muted">지수 환산 ${(c[4]-B).toFixed(2)}</span>`);
+  });
+  svg.lastChild.addEventListener('mouseleave', () => { hv.setAttribute('visibility', 'hidden'); hideTip(); });
+  // levels + labels (label column, de-overlap)
+  const lab = levels.map(L => ({ L, yy: y(L.price) })).sort((a, b) => a.yy - b.yy);
+  for (let k = 1; k < lab.length; k++) if (lab[k].yy - lab[k-1].yy < 14) lab[k].yy = lab[k-1].yy + 14;
+  lab.forEach(({ L, yy }) => {
+    const isS = L.kind === '구조', isP = L.kind === '피터'; const col = css(isP ? '--peter' : isS ? '--struct-line' : '--dist-line'); const ink = css(isP ? '--peter' : isS ? '--struct' : '--dist');
+    const xs0 = xT(L.start); const yl = y(L.price);
+    const ln = el('line', { x1: xs0, x2: profX + profW, y1: yl, y2: yl, stroke: col, 'stroke-width': L.merge ? 2.5 : 1.5, 'stroke-dasharray': isP ? '2 3' : isS ? '' : '5 4', opacity: isP && !L.parsed ? .5 : (L.stage === '0930' && state.stage === 'all' ? .75 : 1) }, svg);
+    el('line', { x1: plotX - 2, x2: xs0, y1: yl, y2: yl, stroke: col, 'stroke-width': 1, 'stroke-dasharray': '1 3' }, svg);
+    el('path', { d: `M${labW - 30} ${yy} L${plotX - 32} ${yl}`, stroke: css('--rule'), fill: 'none' }, svg);
+    const t = el('text', { x: 6, y: yy + 4, 'font-size': 11.5, fill: ink, 'font-weight': L.merge ? 700 : 500 }, svg);
+    t.textContent = isP ? `피터 ${L.raw_px}→${L.price.toFixed(1)} ${L.pkind}${L.parsed ? '' : ' (미분류)'}` : `${L.merge ? '★ ' : ''}${L.price.toFixed(L.kind === '거리' ? 1 : 0)} ${L.kind === '거리' ? L.label : L.label.split(' · ')[0].replace(/\(.*\)/, '')}`;
+    el('text', { x: labW - 34, y: yy + 4, 'font-size': 10, 'text-anchor': 'end', fill: css('--ink-3'), class: 'num' }, svg, isP ? L.hm : L.stage === '0850' ? '08:50' : '09:30');
+    const hit = el('rect', { x: xs0, y: yl - 5, width: Math.max(0, profX - xs0), height: 10, fill: 'transparent' }, svg);
+    hit.addEventListener('mousemove', ev => showTip(ev, `<b>${L.kind}맥점 ${L.price}</b> · ${isP ? L.hm : L.stage === '0850' ? '08:50' : '09:30'}<br>${isP ? '원문: ' + L.src + (L.near && L.near.length ? '<br>1.5pt 안: ' + [...new Set(L.near)].join(', ') : '') + (L.parsed ? '' : '<br>대시보드 파서 미인식 줄') : L.label}${L.merge ? '<br>★ 구조·거리 합류(1.5pt 안)' : ''}<br>${L.touch ? `첫 터치 ${L.touch} ${L.approach} → <b>${L.outcome}</b>${L.resolve ? ' ' + L.resolve : ''}` : '터치 없음'}`));
+    hit.addEventListener('mouseleave', hideTip);
+    // touch marker
+    if (L.touch) { const xi = xT(L.touch); const oc = css(OC[L.outcome] || '--ink-3');
+      const g = el('g', {}, svg);
+      if (L.outcome === '돌파') el('path', { d: `M${xi} ${yl-8} L${xi+7} ${yl+5} L${xi-7} ${yl+5} Z`, fill: oc, stroke: css('--panel'), 'stroke-width': 2, transform: L.approach === '▼' ? `rotate(180 ${xi} ${yl})` : '' }, g);
+      else if (L.outcome === '되돌림') el('circle', { cx: xi, cy: yl, r: 6.5, fill: oc, stroke: css('--panel'), 'stroke-width': 2 }, g);
+      else el('rect', { x: xi - 6, y: yl - 6, width: 12, height: 12, fill: oc, stroke: css('--panel'), 'stroke-width': 2 }, g);
+      el('text', { x: xi + 10, y: yl + (L.approach === '▲' ? 15 : -8), 'font-size': 11, 'font-weight': 600, fill: css('--ink') }, g, L.outcome);
+    }
+  });
+  // 피터 거래(체결 → 청산)
+  if (state.peter === 'on') (D.peter.trades || []).forEach(tr => {
+    if (!tr.entry_hm || tr.entry_price == null) return; const pc = css('--peter'); const open = !tr.exit_hm || tr.exit_price == null;
+    const ex = open ? (N ? C[N-1] : null) : null; if (open && !ex) return;
+    const x0 = xT(tr.entry_hm), y0 = y(tr.entry_price), x1 = open ? xT(ex[0]) : xT(tr.exit_hm > '15:45' ? '15:45' : tr.exit_hm), y1 = y(open ? ex[4] : tr.exit_price); const sgn = tr.direction === 'SHORT' ? 1 : -1;
+    const pnl = sgn * (tr.entry_price - (open ? ex[4] : tr.exit_price));
+    el('line', { x1: x0, y1: y0, x2: x1, y2: y1, stroke: pc, 'stroke-width': 1.2, 'stroke-dasharray': '1 3' }, svg);
+    el('path', { d: sgn > 0 ? `M${x0-7} ${y0-6} L${x0+7} ${y0-6} L${x0} ${y0+6} Z` : `M${x0-7} ${y0+6} L${x0+7} ${y0+6} L${x0} ${y0-6} Z`, fill: pc, stroke: css('--panel'), 'stroke-width': 1.5 }, svg);
+    el('path', { d: `M${x1-5} ${y1-5} L${x1+5} ${y1+5} M${x1+5} ${y1-5} L${x1-5} ${y1+5}`, stroke: pc, 'stroke-width': 2.4 }, svg);
+    const hb = el('rect', { x: Math.min(x0, x1) - 8, y: Math.min(y0, y1) - 8, width: Math.abs(x1 - x0) + 16, height: Math.abs(y1 - y0) + 16, fill: 'transparent' }, svg);
+    hb.addEventListener('mousemove', ev => showTip(ev, `<b>피터 ${tr.direction === 'SHORT' ? '매도' : '매수'}</b> ${tr.entry_hm} ${tr.entry_price.toFixed(2)}<br>→ ${open ? '보유 중 (' + ex[0] + ' 평가)' : tr.exit_hm + ' ' + tr.exit_price.toFixed(2) + ' ' + tr.why}<br>${fmt(pnl, 2)}pt (미니 환산)`));
+    hb.addEventListener('mouseleave', hideTip);
+  });
+  // profile
+  el('line', { x1: profX + profW/2, x2: profX + profW/2, y1: mT, y2: H - mB, stroke: css('--rule') }, svg);
+  const half = profW / 2 - 4; let rows = [], unit = '', title = '';
+  const strikes = D.books.monthly.strikes;
+  if (state.layer === 'mon' || state.layer === 'wkm') {
+    const bk = D.books[state.layer === 'mon' ? 'monthly' : 'weekly_mon'] || { strikes: [], times: [] }; const BT = bk.times || []; const last = BT.length - 1;
+    rows = bk.absent ? [] : bk.strikes.map((k, i) => ({ k, L: bk.put[i][last], R: bk.call[i][last], L0: bk.put[i][0], R0: bk.call[i][0] }));
+    unit = '계약'; title = (state.layer === 'mon' ? '먼스리' : '월위클리') + ' 미결제약정 ' + (BT[last] || '') + (bk.absent ? ' — 없음' : '');
+    var walls = bk.wall_close;
+  } else {
+    const src = state.layer === 'hold' ? D.hold : D.flow; const who = state.layer === 'flowI' ? 'ind' : 'for';
+    rows = Object.keys(src).map(k => ({ k: +k, L: src[k]['p_' + who], R: src[k]['c_' + who] }));
+    const srcName = state.layer === 'hold' ? D.hold_src : D.flow_src;
+    unit = uName(state.layer === 'hold' ? D.hold_unit : D.flow_unit); title = (state.layer === 'hold' ? '외인 기간 보유' : (state.layer === 'flowF' ? '외인' : '개인') + ' 당일 순매수') + (srcName ? '' : ' — 파일 없음');
+  }
+  const signed = !(state.layer === 'mon' || state.layer === 'wkm');
+  const vis = rows.filter(r => { const yc = y(r.k + B); return yc >= mT && yc <= H - mB; });
+  const vmax = Math.max(1e-9, ...vis.map(r => Math.max(Math.abs(r.L), Math.abs(r.R), r.L0 || 0, r.R0 || 0)));
+  const bh = Math.max(3, (y(0) - y(2.5)) * 0.72);
+  el('text', { x: profX + profW/2, y: mT - 4, 'text-anchor': 'middle', 'font-size': 11.5, 'font-weight': 600, fill: css('--ink-2') }, svg, title);
+  el('text', { x: profX + 2, y: H - mB + 16, 'font-size': 11, fill: css('--ink-3') }, svg, '◀ 풋');
+  el('text', { x: profX + profW - 2, y: H - mB + 16, 'font-size': 11, 'text-anchor': 'end', fill: css('--ink-3') }, svg, '콜 ▶');
+  rows.forEach(r => {
+    const yc = y(r.k + B); if (yc < mT || yc > H - mB) return;
+    [['L', -1], ['R', 1]].forEach(([s, dir]) => {
+      const v = r[s]; const len = Math.abs(v) / vmax * half; const isWall = !signed && walls && ((s === 'R' && r.k === walls[0]) || (s === 'L' && r.k === walls[1]));
+      const fill = signed ? css(v >= 0 ? '--pos' : '--neg') : css(isWall ? '--oi-wall' : '--oi');
+      const x0 = profX + profW/2 + dir * 2; const rx = dir > 0 ? x0 : x0 - len;
+      el('rect', { x: rx, y: yc - bh/2, width: Math.max(0, len), height: bh, rx: 1.5, fill }, svg);
+      if (!signed && r[s + '0'] != null) { const l0 = r[s + '0'] / vmax * half; el('line', { x1: x0 + dir * l0, x2: x0 + dir * l0, y1: yc - bh/2 - 1, y2: yc + bh/2 + 1, stroke: css('--ink'), 'stroke-width': 1.2 }, svg); }
+      if (isWall) el('text', { x: x0 + dir * (len + 4), y: yc + 4, 'font-size': 10.5, 'font-weight': 700, 'text-anchor': dir > 0 ? 'start' : 'end', fill: css('--ink') }, svg, s === 'R' ? '◆콜벽' : '◆풋벽');
+    });
+    if (r.k % 10 === 0) el('text', { x: profX + profW/2, y: yc - bh/2 - 2, 'text-anchor': 'middle', 'font-size': 9.5, fill: css('--ink-3'), class: 'num' }, svg, r.k);
+    const hit = el('rect', { x: profX, y: yc - 4, width: profW, height: 8, fill: 'transparent' }, svg);
+    hit.addEventListener('mousemove', ev => showTip(ev, `<b>행사가 ${r.k}</b> → 선물 ${(r.k + B).toFixed(2)}<br>콜 ${signed ? fmt(r.R, unit === '계약' ? 0 : 2) : r.R.toLocaleString()}${!signed ? ` <span class="muted">(첫 스냅샷 ${r.R0.toLocaleString()})</span>` : ''}<br>풋 ${signed ? fmt(r.L, unit === '계약' ? 0 : 2) : r.L.toLocaleString()}${!signed ? ` <span class="muted">(첫 스냅샷 ${r.L0.toLocaleString()})</span>` : ''}<br><span class="muted">${unit}</span>`));
+    hit.addEventListener('mouseleave', hideTip);
+  });
+  // legend
+  const lg = document.getElementById('legend1');
+  lg.innerHTML = `<span><i class="sw-line" style="border-color:var(--struct-line)"></i>구조맥점</span><span><i class="sw-line" style="border-color:var(--dist-line);border-top-style:dashed"></i>거리맥점</span><span>★ 합류(굵은 선)</span>` +
+    `<span><i class="sw-box" style="background:var(--band-hi);border:1px solid var(--rule)"></i>고 50·80% 밴드</span><span><i class="sw-box" style="background:var(--band-lo);border:1px solid var(--rule)"></i>저 밴드</span>` +
+    `<span><i class="sw-line" style="border-color:var(--peter);border-top-style:dotted"></i>피터맥점</span><span style="color:var(--peter)">▼ 피터 체결 · ✕ 청산</span>` +
+    `<span><i class="sw-box" style="background:var(--o-back);border-radius:50%"></i>되돌림</span><span><i class="sw-box" style="background:var(--o-break);clip-path:polygon(50% 0,100% 100%,0 100%)"></i>돌파</span><span><i class="sw-box" style="background:var(--o-stay)"></i>정거장</span>` +
+    (signed ? `<span><i class="sw-box" style="background:var(--pos)"></i>순매수(+)</span><span><i class="sw-box" style="background:var(--neg)"></i>순매도(−)</span>` : `<span><i class="sw-box" style="background:var(--oi)"></i>OI 최신</span><span><i class="sw-line" style="width:2px;height:12px;border:0;background:var(--ink)"></i>첫 스냅샷 위치</span>`);
+  document.getElementById('ladderNote').textContent = `행사가는 베이시스 ${fmt(B,2)}pt를 더해 선물가 위치에 그렸다. 08:50 맥점은 08:51부터, 09:30 맥점은 09:31부터, 피터맥점은 트윗 다음 분부터 판정한다. ${D.peter.available ? '피터 가격은 정규선물 기준이라 보정값 ' + D.peter.offset + 'pt를 더해 미니로 옮겼다.' : '이 날 피터 원문 없음.'} 밴드는 ${state.stage === '0930' ? '09:30' : '08:50'} 기준.`;
+}
+
+// ── 히트맵 ────────────────────────────────────────────────
+function mix(a, b, t){ const p = s => { const m = s.match(/\w\w/g).map(h => parseInt(h, 16)); return m; }; const A = p(a.replace('#','')), Bc = p(b.replace('#','')); return `rgb(${A.map((v,i) => Math.round(v + (Bc[i] - v) * t)).join(',')})`; }
+function drawHeat(){
+  const svg = document.getElementById('heat'); svg.innerHTML = '';
+  const bk = D.books[state.book]; const T = bk.times || []; const K = bk.strikes;
+  const INV = { foreign: ['외인', '--i-for', 'for'], individual: ['개인', '--i-ind', 'ind'], institution: ['기관', '--i-ins', 'ins'] };
+  const W = 1120, mL = 64, mR = 168, mT = 10, stripH = 120, gapS = 26, heatH = 380, mB = 30;
+  const H = mT + stripH + gapS + heatH + mB; const pw = W - mL - mR;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.style.width = '100%'; svg.style.minWidth = '900px'; svg.style.height = 'auto';
+  const tm = t => +t.slice(0, 2) * 60 + +t.slice(3, 5); const T0 = tm('08:45'), T1 = tm('16:10');
+  const xT = t => mL + (tm(t) - T0) / (T1 - T0) * pw; const step = 5 / (T1 - T0) * pw;
+  const hy0 = mT + stripH + gapS;  // 히트맵 위 끝
+  // 시간 격자 + 축
+  ['09:00','10:00','11:00','12:00','13:00','14:00','15:00'].forEach(t => {
+    el('line', { x1: xT(t), x2: xT(t), y1: mT, y2: hy0 + heatH, stroke: css('--grid') }, svg);
+    el('text', { x: xT(t), y: H - mB + 16, 'text-anchor': 'middle', 'font-size': 11, fill: css('--ink-3'), class: 'num' }, svg, t); });
+  const prodKey = { monthly: 'mon', weekly_mon: 'wk_mon', weekly_thu: 'wk_thu' }[state.book] + '_' + state.cp;
+  const empty = (y0, h, msg) => { el('rect', { x: mL, y: y0, width: pw, height: h, fill: css('--chip'), rx: 4 }, svg);
+    el('text', { x: mL + pw / 2, y: y0 + h / 2 + 4, 'text-anchor': 'middle', 'font-size': 12.5, fill: css('--ink-2') }, svg, msg); };
+
+  // ── 위 띠: 상품 단위 주체별 누적 순매수 ──
+  el('text', { x: mL, y: mT + 2, 'font-size': 11.5, 'font-weight': 600, fill: css('--ink-2'), 'dominant-baseline': 'hanging' }, svg,
+    `${{ monthly: '먼스리', weekly_mon: '월위클리', weekly_thu: '목위클리' }[state.book]} ${state.cp === 'call' ? '콜' : '풋'} — 주체별 누적 순매수 (계약, 상품 합계)`);
+  const fl = D.flow1m[prodKey] || {}; const have = Object.keys(INV).filter(i => fl[i]);
+  const sy0 = mT + 18, sh = stripH - 18;
+  if (!have.length) empty(sy0, sh, '이 날 이 상품의 주체 흐름이 없다 — 상장 없음');
+  else {
+    const vals = have.flatMap(i => fl[i].filter(v => v !== null)); const lo = Math.min(0, ...vals), hi = Math.max(0, ...vals); const pad = (hi - lo) * 0.08 || 1;
+    const ys = v => sy0 + (hi + pad - v) / (hi - lo + 2 * pad) * sh;
+    el('line', { x1: mL, x2: mL + pw, y1: ys(0), y2: ys(0), stroke: css('--rule') }, svg);
+    el('text', { x: mL - 6, y: ys(0) + 4, 'text-anchor': 'end', 'font-size': 10.5, fill: css('--ink-3'), class: 'num' }, svg, '0');
+    [hi, lo].forEach(v => { if (Math.abs(v) > 0) el('text', { x: mL - 6, y: ys(v) + 4, 'text-anchor': 'end', 'font-size': 10.5, fill: css('--ink-3'), class: 'num' }, svg, fmt(v, 0)); });
+    const order = state.inv === 'all' ? have : [...have.filter(i => i !== state.inv), ...have.filter(i => i === state.inv)];
+    const ends = [];
+    order.forEach(i => { const on = state.inv === 'all' || state.inv === i; const pts = [];
+      D.mins.forEach((t, j) => { const v = fl[i][j]; if (v !== null) pts.push(`${xT(t)},${ys(v)}`); });
+      el('polyline', { points: pts.join(' '), fill: 'none', stroke: on ? css(INV[i][1]) : css('--rule'), 'stroke-width': on ? 2 : 1.5, 'stroke-linejoin': 'round' }, svg);
+      const last = fl[i].filter(v => v !== null).slice(-1)[0]; if (on) ends.push({ i, v: last, yy: ys(last) }); });
+    ends.sort((a, b) => a.yy - b.yy); for (let k = 1; k < ends.length; k++) if (ends[k].yy - ends[k-1].yy < 13) ends[k].yy = ends[k-1].yy + 13;
+    ends.forEach(e => { const g = el('text', { x: mL + pw + 6, y: e.yy + 4, 'font-size': 11, fill: css('--ink') }, svg);
+      el('tspan', { fill: css(INV[e.i][1]), 'font-weight': 700 }, g, '● '); el('tspan', {}, g, `${INV[e.i][0]} ${fmt(e.v, 0)}`); });
+    const hv = el('line', { y1: sy0, y2: sy0 + sh, stroke: css('--ink-3'), 'stroke-dasharray': '2 3', visibility: 'hidden' }, svg);
+    const hit = el('rect', { x: mL, y: sy0, width: pw, height: sh, fill: 'transparent' }, svg);
+    hit.addEventListener('mousemove', ev => { const r = svg.getBoundingClientRect(); const sx = (ev.clientX - r.left) * W / r.width;
+      const j = Math.max(0, Math.min(D.mins.length - 1, Math.round((sx - mL) / pw * (T1 - T0)))); const t = D.mins[j];
+      hv.setAttribute('x1', xT(t)); hv.setAttribute('x2', xT(t)); hv.setAttribute('visibility', 'visible');
+      showTip(ev, `<b>${t}</b><br>` + have.map(i => `${INV[i][0]} ${fl[i][j] === null ? '—' : fmt(fl[i][j], 0)}`).join('<br>')); });
+    hit.addEventListener('mouseleave', () => { hv.setAttribute('visibility', 'hidden'); hideTip(); });
+  }
+
+  // ── 가운데: 행사가 × 시간 OI 증감 ──
+  el('text', { x: mL, y: hy0 - 8, 'font-size': 11.5, 'font-weight': 600, fill: css('--ink-2') }, svg,
+    `행사가별 미결제약정 첫 스냅샷 대비 증감 (계약 · 전체 참여자${state.inv === 'all' ? '' : ' — 주체별 행사가 시계열은 원천 없음'})`);
+  if (bk.absent) { empty(hy0, heatH, bk.absent_reason); document.getElementById('legend2').innerHTML = ''; return; }
+  const M = bk[state.cp]; const ch = heatH / K.length;
+  const deltas = M.map(r => r.map(v => v - r[0])); const vmax = Math.max(...deltas.flat().map(Math.abs)) || 1;
+  const pos = css('--pos'), neg = css('--neg'), mid = css('--mid');
+  const yK = k => hy0 + (K[K.length - 1] - k) / 2.5 * ch;
+  deltas.forEach((row, ki) => { const k = K[ki]; const yy = yK(k);
+    row.forEach((v, ti) => { const t = Math.sqrt(Math.abs(v) / vmax);
+      const r = el('rect', { x: xT(T[ti]), y: yy, width: step + 0.3, height: ch - 1, fill: mix(mid, v >= 0 ? pos : neg, t) }, svg);
+      r.addEventListener('mousemove', ev => showTip(ev, `<b>${k}</b> ${state.cp === 'call' ? '콜' : '풋'} · ${T[ti]}<br>OI ${M[ki][ti].toLocaleString()}<br>첫 스냅샷 대비 ${fmt(v, 0)}`));
+      r.addEventListener('mouseleave', hideTip); });
+    if (k % 5 === 0) el('text', { x: mL - 6, y: yy + ch/2 + 4, 'text-anchor': 'end', 'font-size': 11, fill: css('--ink-3'), class: 'num' }, svg, k); });
+  const pts = []; T.forEach(t => { const i = tIdx[t]; if (i == null) return; const yy = yK(C[i][4] - B) + ch/2; if (yy >= hy0 && yy <= hy0 + heatH) pts.push(`${xT(t) + step/2},${yy}`); });
+  el('polyline', { points: pts.join(' '), fill: 'none', stroke: css('--panel'), 'stroke-width': 4.5, 'stroke-linejoin': 'round' }, svg);
+  el('polyline', { points: pts.join(' '), fill: 'none', stroke: css('--path'), 'stroke-width': 2, 'stroke-linejoin': 'round' }, svg);
+
+  // ── 오른쪽 열 ──
+  const cx = mL + pw + 8, cw = mR - 14, c0 = cx + cw / 2;
+  el('line', { x1: c0, x2: c0, y1: hy0, y2: hy0 + heatH, stroke: css('--rule') }, svg);
+  let colVals, colUnit, colTitle, colColor = null;
+  if (state.inv === 'all') {
+    colVals = K.map((k, ki) => [k, deltas[ki][deltas[ki].length - 1]]); colUnit = '계약'; colTitle = '하루 OI 증감';
+  } else if (state.book === 'monthly') {
+    const key = (state.cp === 'call' ? 'c_' : 'p_') + INV[state.inv][2];
+    colVals = K.map(k => [k, (D.flow[k.toFixed(1)] || {})[key]]).filter(r => r[1] != null); colUnit = uName(D.flow_unit); colTitle = INV[state.inv][0] + ' 당일 순매수'; colColor = css(INV[state.inv][1]);
+  } else colVals = null;
+  el('text', { x: c0, y: hy0 - 8, 'text-anchor': 'middle', 'font-size': 11, 'font-weight': 600, fill: css('--ink-2') }, svg, colTitle || '행사가별 주체 원천 없음');
+  if (colVals) {
+    const cm = Math.max(...colVals.map(r => Math.abs(r[1]))) || 1;
+    colVals.forEach(([k, v]) => { const yy = yK(k) + ch/2; const len = Math.abs(v) / cm * (cw / 2 - 2);
+      const f = colColor || css(v >= 0 ? '--pos' : '--neg');
+      const r = el('rect', { x: v >= 0 ? c0 : c0 - len, y: yy - ch * 0.35, width: len, height: ch * 0.7, rx: 1.5, fill: f, opacity: colColor && v < 0 ? 0.55 : 1 }, svg);
+      r.addEventListener('mousemove', ev => showTip(ev, `<b>${k}</b> ${state.cp === 'call' ? '콜' : '풋'}<br>${colTitle} ${fmt(v, colUnit === '계약' ? 0 : 2)} ${colUnit}`));
+      r.addEventListener('mouseleave', hideTip); });
+    el('text', { x: cx, y: hy0 + heatH + 14, 'font-size': 10, fill: css('--ink-3') }, svg, '− 매도');
+    el('text', { x: cx + cw, y: hy0 + heatH + 14, 'font-size': 10, 'text-anchor': 'end', fill: css('--ink-3') }, svg, '매수 +');
+  } else {
+    el('text', { x: c0, y: hy0 + heatH / 2, 'text-anchor': 'middle', 'font-size': 11, fill: css('--ink-3') }, svg, '[9842]는 먼스리');
+    el('text', { x: c0, y: hy0 + heatH / 2 + 15, 'text-anchor': 'middle', 'font-size': 11, fill: css('--ink-3') }, svg, '10월물만 있다');
+  }
+  const w = state.cp === 'call' ? bk.wall_close[0] : bk.wall_close[1];
+  el('text', { x: mL + 4, y: yK(w) + ch/2 + 4, 'font-size': 10.5, 'font-weight': 700, fill: css('--ink') }, svg, '◆벽 ' + w);
+  document.getElementById('legend2').innerHTML =
+    `<span><i class="sw-line" style="border-color:var(--i-for)"></i>외인</span><span><i class="sw-line" style="border-color:var(--i-ind)"></i>개인</span><span><i class="sw-line" style="border-color:var(--i-ins)"></i>기관</span>` +
+    `<span><i class="sw-box" style="background:var(--pos)"></i>OI 증가</span><span><i class="sw-box" style="background:var(--neg)"></i>OI 감소</span><span><i class="sw-line" style="border-color:var(--path)"></i>선물 경로(지수 환산)</span>` +
+    `<span class="muted">색 농도 = √(|증감| ÷ 최대 ${vmax.toLocaleString()}계약)${state.inv === 'institution' ? ' · 오른쪽 기관 = 금투+투신' : ''}${colColor ? ' · 오른쪽 옅은 막대 = 순매도' : ''}</span>`;
+}
+
+// ── 판정표 ────────────────────────────────────────────────
+function drawTable(){
+  const tb = document.getElementById('tbl'); const lastOf = b => ((b && b.times) || []).length - 1;
+  const rows = D.levels.filter(L => L.kind !== '피터' || state.peter === 'on').sort((a, b) => b.price - a.price || a.stage.localeCompare(b.stage));
+  let h = `<thead><tr><th class="l">맥점</th><th>가격</th><th class="l">단계</th><th>근처 행사가</th><th>먼스리 OI 콜/풋</th><th>월W OI 콜/풋</th><th>외인 보유 콜/풋(${uShort(D.hold_unit)})</th><th>첫 터치</th><th class="l">결과</th><th>머문 봉</th><th class="l">예상 (규칙)</th><th>일치</th></tr></thead><tbody>`;
+  rows.forEach(L => { const k = nearK(L.price); const ki = D.books.monthly.strikes.indexOf(k); const kw = D.books.weekly_mon.strikes.indexOf(k);
+    const hd = D.hold[kkey(k)]; const pr = predict(L);
+    const fb = v => { const s = fmt(v, D.hold_unit === 'contract' ? 0 : 1); return Math.abs(v) >= big ? `<b>${s}</b>` : s; };
+    const pill = L.outcome ? `<span class="pill"><span class="dot" style="background:var(${OC[L.outcome]})"></span>${L.outcome}</span>` : '<span class="muted">터치 없음</span>';
+    let ok = '';
+    if (pr && L.outcome) { const p = pr.call.replace(' 쪽', ''); ok = (p === '무정보' || p === '혼재') ? '<span class="muted">—</span>' : (p === L.outcome ? '<span class="ok">✓</span>' : '<span class="ok">✗</span>'); }
+    h += `<tr><td class="l ${L.kind === '구조' ? 'k-struct' : L.kind === '피터' ? 'k-peter' : 'k-dist'}">${L.merge ? '★ ' : ''}${L.kind} · ${L.label.length > 26 ? L.label.slice(0, 26) + '…' : L.label}${L.kind === '피터' && L.near && L.near.length ? ' <span class="muted">≈ ' + [...new Set(L.near)].join(', ') + '</span>' : ''}</td><td class="mono">${L.price.toFixed(2)}</td><td class="l mono">${L.kind === '피터' ? L.hm : L.stage === '0850' ? '08:50' : '09:30'}</td>` +
+      `<td class="mono">${k.toFixed(1)}</td><td class="mono">${ki >= 0 ? D.books.monthly.call[ki][lastOf(D.books.monthly)].toLocaleString() + ' / ' + D.books.monthly.put[ki][lastOf(D.books.monthly)].toLocaleString() : '—'}</td>` +
+      `<td class="mono">${kw >= 0 ? D.books.weekly_mon.call[kw][lastOf(D.books.weekly_mon)].toLocaleString() + ' / ' + D.books.weekly_mon.put[kw][lastOf(D.books.weekly_mon)].toLocaleString() : '—'}</td>` +
+      `<td class="mono">${hd ? fb(hd.c_for) + ' / ' + fb(hd.p_for) : '—'}</td><td class="mono">${L.touch ? L.touch + ' ' + L.approach : '—'}</td><td class="l">${pill}${L.resolve && L.outcome !== '정거장' ? ' <span class="muted mono">' + L.resolve + '</span>' : ''}</td>` +
+      `<td class="mono">${L.stay != null ? L.stay + '/16' : '—'}</td><td class="l pred">${pr ? `<b>${pr.call}</b> <span class="muted">${pr.why}</span>` : '<span class="muted">—</span>'}</td><td>${ok}</td></tr>`; });
+  tb.innerHTML = h + `</tbody>`;
+  tb.insertAdjacentHTML('afterend', '');
+  const cap = document.createElement('p'); cap.className = 'sub'; cap.innerHTML = isFinite(big) ? `굵은 외인 보유 = 「큼」(|값| ≥ ${big.toFixed(D.hold_unit === 'contract' ? 0 : 1)}${uShort(D.hold_unit)}, ATM ±27.5pt 행사가 상위 20%). 외인 보유는 기간 누적이며 금액 기준(평균가 × 계약인지 현재가 × 계약인지)은 미확인.` : '이 날 이전의 기간 보유 파일(_P)이 없어 외인 보유 규칙을 적용하지 않았다.';
+  cap.id = 'tblCap'; const old = document.getElementById('tblCap'); if (old) old.remove(); tb.parentNode.after(cap);
+}
+
+
+function renderPeterNotes(){
+  document.getElementById('pOff').textContent = D.peter.available ? D.peter.offset : '—';
+  document.getElementById('pExcl').textContent = D.peter.excluded.length ? '제외: ' + D.peter.excluded.map(e => e.hm + ' ' + e.raw.slice(0, 24) + '… (' + e.why + ')').join(' / ') : '제외한 줄 없음';
+  const un = D.levels.filter(L => L.kind === '피터' && !L.parsed);
+  document.getElementById('pNote').textContent = (un.length ? '대시보드 파서가 못 읽은 손절 변경 ' + un.map(L => L.hm + ' ' + L.raw_px).join(', ') + '은 「미분류」 옅은 선으로 따로 그렸다. ' : '') +
+    D.peter.notes.map(n => n.hm + ' 「' + n.raw + '」').join(' ');
+}
+function setData(d){
+  D = d; C = D.candles || []; N = C.length; B = D.basis || 0; tIdx = {}; C.forEach((c, i) => tIdx[c[0]] = i); big = computeBig();
+  document.getElementById('h1').textContent = D.date + ' 맥점 × 옵션 사다리';
+  document.title = D.date + ' 맥점 옵션 사다리';
+  makeBookSeg(); renderFacts(); renderPeterNotes(); drawLadder(); drawHeat(); drawTable();
+}
+
+// ── 날짜 · 달력 · 실시간 ──────────────────────────────────
+const $ = id => document.getElementById(id);
+let calMonth = null, pollTimer = null, tickTimer = null, lastOk = null, nextAt = null;
+const avail = d => { const a = DATES[d] || {}; return a.candles || a.levels ? (a.candles && a.levels ? 'full' : 'part') : (a.today ? 'part' : ''); };
+const selectable = () => Object.keys(DATES).filter(d => avail(d)).sort();
+async function getJSON(url){ const r = await fetch(url, { cache: 'no-store' }); const j = await r.json(); if (!r.ok) throw new Error(j.error || r.status); return j; }
+function setChip(kind, text){ const c = $('liveChip'); c.className = 'livechip' + (kind ? ' ' + kind : ''); $('liveText').textContent = text; }
+function updChip(){
+  if (!D) return;
+  if (!D.live) { setChip('', '복기 · 생성 ' + hm(D.generated_at)); return; }
+  const s = nextAt ? Math.max(0, Math.round((nextAt - Date.now()) / 1000)) : null;
+  setChip('on', `실시간 · 최신봉 ${N ? C[N-1][0] : '—'} · 갱신 ${hm(D.generated_at)}${s != null ? ' · 다음 ' + s + '초' : ''}`);
+}
+function schedule(){
+  clearTimeout(pollTimer); nextAt = null;
+  if (!D || !D.live) return;
+  // 미륵이 봉 마감(:00)·7222 수집(:08) 뒤인 :15 초에 맞춘다
+  const now = new Date(); let wait = (75 - now.getSeconds()) % 60; if (wait < 5) wait += 60;
+  nextAt = Date.now() + wait * 1000; pollTimer = setTimeout(() => load(CUR, true), wait * 1000);
+}
+async function load(day, quiet){
+  CUR = day; try { history.replaceState(null, '', '?date=' + day); } catch(e) {}
+  $('dateBtn').textContent = day; if (!quiet) setChip('', '불러오는 중…');
+  try { const d = await getJSON('/api/day?date=' + day); if (d.date !== CUR) return; lastOk = new Date(); setData(d); }
+  catch(e) { setChip('err', '갱신 실패 — ' + e.message + (lastOk ? ' · 마지막 성공 ' + lastOk.toTimeString().slice(0, 8) : '')); }
+  navState(); schedule(); updChip();
+}
+function navState(){ const s = selectable(), i = s.indexOf(CUR); $('prevDay').disabled = i <= 0; $('nextDay').disabled = i < 0 || i >= s.length - 1; }
+function step(dir){ const s = selectable(), i = s.indexOf(CUR); const j = i + dir; if (j >= 0 && j < s.length) load(s[j]); }
+function drawCal(){
+  const cal = $('cal'); const [yy, mm] = calMonth; const first = new Date(yy, mm, 1), days = new Date(yy, mm + 1, 0).getDate();
+  const pad = n => String(n).padStart(2, '0');
+  let h = `<div class="cal-h"><button type="button" id="calPrev" aria-label="이전 달">‹</button><span>${yy}년 ${mm + 1}월</span><button type="button" id="calNext" aria-label="다음 달">›</button></div><div class="cal-g">`;
+  '일월화수목금토'.split('').forEach(w => h += `<div class="dow">${w}</div>`);
+  for (let i = 0; i < first.getDay(); i++) h += '<span></span>';
+  for (let d = 1; d <= days; d++) {
+    const ds = `${yy}-${pad(mm + 1)}-${pad(d)}`; const a = avail(ds); const meta = DATES[ds] || {};
+    const cls = [a, ds === CUR ? 'sel' : '', ds === TODAY ? 'today' : ''].join(' ');
+    const tipT = a ? Object.keys(meta).filter(k => k !== 'today').join(' · ') : '데이터 없음';
+    h += `<button type="button" class="${cls}" data-d="${ds}" ${a ? '' : 'disabled'} title="${ds} — ${tipT}">${d}${meta.hts9842 ? '<i></i>' : ''}</button>`;
+  }
+  h += '</div><div class="cal-legend"><span>진한 칸 = 1분봉+맥점</span><span>테두리 = 일부</span><span>주황 테두리 = 오늘</span><span>점 = 9842 파일</span></div>';
+  cal.innerHTML = h;
+  $('calPrev').onclick = () => { calMonth = mm === 0 ? [yy - 1, 11] : [yy, mm - 1]; drawCal(); };
+  $('calNext').onclick = () => { calMonth = mm === 11 ? [yy + 1, 0] : [yy, mm + 1]; drawCal(); };
+  cal.querySelectorAll('button[data-d]').forEach(b => b.onclick = () => { closeCal(); load(b.dataset.d); });
+}
+function openCal(){ const d = CUR || TODAY; calMonth = [+d.slice(0, 4), +d.slice(5, 7) - 1]; drawCal(); $('cal').hidden = false; $('dateBtn').setAttribute('aria-expanded', 'true'); }
+function closeCal(){ $('cal').hidden = true; $('dateBtn').setAttribute('aria-expanded', 'false'); }
+$('dateBtn').onclick = () => $('cal').hidden ? openCal() : closeCal();
+document.addEventListener('click', e => { if (!$('cal').hidden && !e.target.closest('.calwrap')) closeCal(); });
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeCal();
+  if (e.target.closest('input,textarea') || !$('cal').hidden) return;
+  if (e.key === 'ArrowLeft') step(-1); if (e.key === 'ArrowRight') step(1);
+});
+$('prevDay').onclick = () => step(-1); $('nextDay').onclick = () => step(1); $('todayBtn').onclick = () => load(TODAY);
+tickTimer = setInterval(updChip, 1000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden && D && D.live) load(CUR, true); });
+(async () => {
+  try { const r = await getJSON('/api/dates'); DATES = r.dates; TODAY = r.today; }
+  catch(e) { setChip('err', '날짜 목록 실패 — 서버가 켜져 있는지 확인 (' + e.message + ')'); return; }
+  const q = new URLSearchParams(location.search).get('date'); const s = selectable();
+  const start = (q && DATES[q]) ? q : ((DATES[TODAY] && (DATES[TODAY].candles || DATES[TODAY].levels || DATES[TODAY].flow)) ? TODAY : s[s.length - 1]);
+  load(start || TODAY);
+})();
+const mq = matchMedia('(prefers-color-scheme: dark)'); const redraw = () => { if (D) { drawLadder(); drawHeat(); } };
+mq.addEventListener && mq.addEventListener('change', redraw);
+new MutationObserver(redraw).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+})();
+</script>
+
+</html>
