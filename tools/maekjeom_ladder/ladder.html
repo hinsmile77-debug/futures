@@ -135,7 +135,7 @@ td.mono{font-family:var(--mono)}
 
   <section>
     <h2>행사가 × 시간 미결제약정 증감과 주체 흐름</h2>
-    <p class="sub">위 띠 = 상품 단위 주체별 누적 순매수(1분, 계약). 가운데 = 행사가별 미결제약정 첫 스냅샷 대비 증감(5분, 전체 참여자). 오른쪽 열 = 종합이면 행사가별 하루 OI 증감, 주체를 고르면 그 주체의 행사가별 당일 순매수([9842], 장마감 1회). 굵은 선은 선물가를 지수 단위로 환산한 경로.</p>
+    <p class="sub">위 띠 = 상품 단위 주체별 누적 순매수(1분, 계약). 가운데 = 행사가별 미결제약정 첫 스냅샷 대비 증감(5분, 전체 참여자). 오른쪽 열 = 종합이면 행사가별 하루 OI 증감, 주체를 고르면 그 주체의 행사가별 당일 순매수([9842]) — 시점 파일(YYMMDD_HHMM_D)이 2개 이상이면 행사가 × 저장 시각 칸으로 펼쳐 직전 시점 대비 증감을 칠한다. 굵은 선은 선물가를 지수 단위로 환산한 경로.</p>
     <div class="bar">
       <div><span class="seg-label">상품 </span><span class="seg" id="segBook"></span></div>
       <div><span class="seg-label">구분 </span><span class="seg" id="segCP"></span></div>
@@ -177,7 +177,7 @@ td.mono{font-family:var(--mono)}
         <li>맥점: <code>premarket_levels</code> 08:50 · 09:30</li>
         <li>1분봉: <span id="srcCandle"></span></li>
         <li>행사가별 OI·벽: <code>option_book_strike/snap</code> (5분)</li>
-        <li>투자자: HTS [9842] 내보내기 — 보유 <span id="srcHold"></span> · 당일 <span id="srcFlow"></span>. 단위는 파일에서 판정 — 값이 전부 정수면 계약, 소수점이 있으면 금액(십만원 추정 → 억원). _D 가 없는 날은 전 거래일 _P 를 뺀 생성본(P 차분, 10/2 실제 _D 와 전 칸 일치 검증)을 쓴다. 새 파일은 이름 끝에 _P(기간 보유) / _D(당일 순매수)</li>
+        <li>투자자: HTS [9842] 내보내기 — 보유 <span id="srcHold"></span> · 당일 <span id="srcFlow"></span>. 단위는 파일에서 판정 — 값이 전부 정수면 계약, 소수점이 있으면 금액(십만원 추정 → 억원). _D 가 없는 날은 전 거래일 _P 를 뺀 생성본(P 차분, 10/2 실제 _D 와 전 칸 일치 검증)을 쓴다. 새 파일은 이름 끝에 _P(기간 보유) / _D(당일 순매수). 장중 시점 파일은 YYMMDD_HHMM_D — 「외인/개인 증감」 버튼과 히트맵 오른쪽 칸(주체 선택 시)이 직전 시점 대비 변화를 그린다</li>
         <li>행사가 → 선물가 환산: 베이시스(선물 − KOSPI200) 일중 중앙값</li></ul></div>
     </div>
   </section>
@@ -198,6 +198,8 @@ function hideTip(){ tip.hidden = true; }
 let C = [], N = 0, B = 0, tIdx = {}, big = 0, CUR = null, DATES = {}, TODAY = null;
 const state = { stage: 'all', layer: 'mon', book: 'monthly', cp: 'call', inv: 'all', peter: 'on' };
 try { const s = JSON.parse(localStorage.getItem('maekjeom_ladder') || '{}'); Object.assign(state, s); } catch(e) {}
+// 주소창 ?layer=dF&inv=foreign 처럼 화면 상태를 지정할 수 있다(저장값보다 우선)
+new URLSearchParams(location.search).forEach((v, k) => { if (k in state) state[k] = v; });
 const save = () => { try { localStorage.setItem('maekjeom_ladder', JSON.stringify(state)); } catch(e) {} };
 
 // facts
@@ -214,7 +216,7 @@ function renderFacts(){
   const w = document.getElementById('warnbox'); w.hidden = !(D.warnings && D.warnings.length); w.textContent = (D.warnings || []).join(' · ');
   document.getElementById('srcCandle').textContent = D.candle_src || '—';
   document.getElementById('srcHold').textContent = D.hold_src || '없음';
-  document.getElementById('srcFlow').textContent = D.flow_src || '없음';
+  const SNf = D.flow_snaps || []; document.getElementById('srcFlow').textContent = (D.flow_src || '없음') + (SNf.length ? ` · 시점 파일 ${SNf.length}개 (${SNf[0].hm}–${SNf[SNf.length-1].hm})` : '');
 }
 
 // segmented controls
@@ -225,7 +227,17 @@ function seg(id, key, opts, onChange){
 }
 seg('segStage', 'stage', [['all','둘 다'],['0850','08:50'],['0930','09:30']], drawLadder);
 seg('segPeter', 'peter', [['on','켬'],['off','끔']], () => { drawLadder(); drawTable(); });
-seg('segLayer', 'layer', [['mon','먼스리 OI'],['wkm','월위클리 OI'],['wkt','목위클리 OI'],['hold','전일 외인 보유'],['flowF','당일 외인'],['flowI','당일 개인']], drawLadder);
+seg('segLayer', 'layer', [['mon','먼스리 OI'],['wkm','월위클리 OI'],['wkt','목위클리 OI'],['hold','전일 외인 보유'],['flowF','당일 외인'],['flowI','당일 개인'],['dF','외인 증감'],['dI','개인 증감']], drawLadder);
+// 9842 시점 파일 — 직전 시점 대비 증감. 시점이 하나뿐이면 개장(0) 대비
+function snapDelta(who){
+  const S = (D.flow_snaps || []); if (!S.length) return null;
+  const cur = S[S.length - 1], prv = S.length > 1 ? S[S.length - 2] : null;
+  if (prv && prv.unit !== cur.unit) return { err: `단위가 다르다 (${prv.hm} ${uName(prv.unit)} / ${cur.hm} ${uName(cur.unit)})`, cur, prv };
+  const rows = Object.keys(cur.rows).map(k => { const a = cur.rows[k], b = prv ? (prv.rows[k] || {}) : {};
+    const d = s => a[s + '_' + who] == null ? null : a[s + '_' + who] - (prv ? (b[s + '_' + who] || 0) : 0);
+    return { k: +k, L: d('p'), R: d('c') }; }).filter(r => r.L != null || r.R != null).map(r => ({ k: r.k, L: r.L || 0, R: r.R || 0 }));
+  return { rows, cur, prv, range: `${prv ? prv.hm : '개장'} → ${cur.hm}` };
+}
 function makeBookSeg(){
   const lab = (k, name) => { const e = D && D.books[k] && D.books[k].expiry; return e ? `${name} ${+e.slice(5,7)}/${+e.slice(8,10)}` : name; };
   seg('segBook', 'book', [['monthly', lab('monthly','먼스리')], ['weekly_mon', lab('weekly_mon','월위클리')], ['weekly_thu', lab('weekly_thu','목위클리')]], drawHeat);
@@ -346,6 +358,10 @@ function drawLadder(){
     rows = bk.absent ? [] : bk.strikes.map((k, i) => ({ k, L: bk.put[i][last], R: bk.call[i][last], L0: bk.put[i][0], R0: bk.call[i][0] }));
     unit = '계약'; title = OI_LAYER[state.layer][1] + ' 미결제약정 ' + (BT[last] || '') + (bk.absent ? ' — 없음' : '');
     var walls = bk.wall_close;
+  } else if (state.layer === 'dF' || state.layer === 'dI') {
+    const nm = state.layer === 'dF' ? '외인' : '개인'; const sd = snapDelta(state.layer === 'dF' ? 'for' : 'ind');
+    rows = sd && !sd.err ? sd.rows : []; unit = sd ? uName(sd.cur.unit) : '';
+    title = `${nm} 순매수 증감 ` + (!sd ? '— 시점 파일 없음' : sd.err ? '— ' + sd.err : sd.range);
   } else {
     const src = state.layer === 'hold' ? D.hold : D.flow; const who = state.layer === 'flowI' ? 'ind' : 'for';
     rows = Object.keys(src).map(k => ({ k: +k, L: src[k]['p_' + who], R: src[k]['c_' + who] }));
@@ -462,6 +478,31 @@ function drawHeat(){
     const key = (state.cp === 'call' ? 'c_' : 'p_') + INV[state.inv][2];
     colVals = K.map(k => [k, (D.flow[k.toFixed(1)] || {})[key]]).filter(r => r[1] != null); colUnit = uName(D.flow_unit); colTitle = INV[state.inv][0] + ' 당일 순매수'; colColor = css(INV[state.inv][1]);
   } else colVals = null;
+  const SN = (D.flow_snaps || []);
+  const snapGrid = state.inv !== 'all' && state.book === 'monthly' && SN.length >= 2 && SN.every(s => s.unit === SN[0].unit);
+  if (snapGrid) {
+    // 행사가 × 저장 시각 — 칸 = 직전 시점 대비 증감(첫 칸은 개장 대비). 빠진 시점은 메우지 않는다
+    const key = (state.cp === 'call' ? 'c_' : 'p_') + INV[state.inv][2]; const u = uName(SN[0].unit); const nd = SN[0].unit === 'contract' ? 0 : 2;
+    const cwid = cw / SN.length; const cells = [];
+    K.forEach(k => { const kk = k.toFixed(1); let prev = 0;
+      SN.forEach((s, si) => { const v = (s.rows[kk] || {})[key]; if (v == null) { cells.push([k, si, null, null]); return; } cells.push([k, si, v - prev, v]); prev = v; }); });
+    const dm = Math.max(1e-9, ...cells.filter(c => c[2] != null).map(c => Math.abs(c[2])));
+    el('rect', { x: cx, y: hy0, width: cw, height: heatH, fill: css('--chip') }, svg);
+    cells.forEach(([k, si, dv, cum]) => { if (dv == null) return; const t = Math.sqrt(Math.abs(dv) / dm);
+      const r = el('rect', { x: cx + si * cwid, y: yK(k), width: Math.max(1, cwid - 1), height: ch - 1, fill: mix(mid, dv >= 0 ? pos : neg, t) }, svg);
+      r.addEventListener('mousemove', ev => showTip(ev, `<b>${k}</b> ${state.cp === 'call' ? '콜' : '풋'} · ${INV[state.inv][0]}<br>${si ? SN[si-1].hm : '개장'} → ${SN[si].hm} ${fmt(dv, nd)} ${u}<br><span class="muted">${SN[si].hm} 누적 ${fmt(cum, nd)}</span>`));
+      r.addEventListener('mouseleave', hideTip); });
+    el('text', { x: c0, y: hy0 - 8, 'text-anchor': 'middle', 'font-size': 11, 'font-weight': 600, fill: css('--ink-2') }, svg, `${INV[state.inv][0]} 증감 · 시점 ${SN.length}개`);
+    el('text', { x: cx, y: hy0 + heatH + 14, 'font-size': 10, fill: css('--ink-3'), class: 'num' }, svg, SN[0].hm);
+    el('text', { x: cx + cw, y: hy0 + heatH + 14, 'font-size': 10, 'text-anchor': 'end', fill: css('--ink-3'), class: 'num' }, svg, SN[SN.length - 1].hm);
+    const w = state.cp === 'call' ? bk.wall_close[0] : bk.wall_close[1];
+    el('text', { x: mL + 4, y: yK(w) + ch/2 + 4, 'font-size': 10.5, 'font-weight': 700, fill: css('--ink') }, svg, '◆벽 ' + w);
+    document.getElementById('legend2').innerHTML =
+      `<span><i class="sw-line" style="border-color:var(--i-for)"></i>외인</span><span><i class="sw-line" style="border-color:var(--i-ind)"></i>개인</span><span><i class="sw-line" style="border-color:var(--i-ins)"></i>기관</span>` +
+      `<span><i class="sw-box" style="background:var(--pos)"></i>OI 증가 / 순매수 증가</span><span><i class="sw-box" style="background:var(--neg)"></i>OI 감소 / 순매도</span><span><i class="sw-line" style="border-color:var(--path)"></i>선물 경로(지수 환산)</span>` +
+      `<span class="muted">오른쪽 칸 = [9842] 시점 파일 직전 대비 증감(${u}, 최대 ${fmt(dm, nd)}) · 회색 = 그 시점에 행사가 없음</span>`;
+    return;
+  }
   el('text', { x: c0, y: hy0 - 8, 'text-anchor': 'middle', 'font-size': 11, 'font-weight': 600, fill: css('--ink-2') }, svg, colTitle || '행사가별 주체 원천 없음');
   if (colVals) {
     const cm = Math.max(...colVals.map(r => Math.abs(r[1]))) || 1;

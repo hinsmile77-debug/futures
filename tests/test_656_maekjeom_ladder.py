@@ -275,3 +275,64 @@ def test_oi_layer_has_all_three_books():
     s = _src("ladder.html")
     assert "['wkt','목위클리 OI']" in s
     assert "wkt: ['weekly_thu', '목위클리']" in s
+
+
+# ── H. 장중 시점 파일 YYMMDD_HHMM_D (30분 모니터) ─────────────────────────
+def _row9(k, v):
+    return [str(v)] * 4 + ["9.1", k, "8.0"] + [str(v)] * 4
+
+
+def test_snapshot_files_are_listed_with_time(tmp_path, monkeypatch):
+    monkeypatch.setattr(L, "DOCS_9842", str(tmp_path))
+    for fn in ("261006_0930_D.xls", "261006_1000.xls", "261006_1030_P.xls", "261006_2575_D.xls", "261006_D.xls"):
+        _xls(tmp_path / fn, _HEAD_NEW, [_row9("1100", 1)])
+    got = {f["fn"]: (f["mode"], f["hm"]) for f in L._list_9842_files()}
+    assert got["261006_0930_D.xls"] == ("D", "09:30")
+    assert got["261006_1000.xls"] == ("D", "10:00")            # _D 를 빠뜨려도 시점 파일은 D
+    assert "261006_1030_P.xls" not in got                      # 시점 _P 는 뜻이 없다
+    assert "261006_2575_D.xls" not in got                      # 없는 시각
+    assert got["261006_D.xls"] == ("D", None)
+
+
+def test_snapshots_feed_flow_and_daily_file_wins(tmp_path, monkeypatch):
+    monkeypatch.setattr(L, "DOCS_9842", str(tmp_path))
+    _xls(tmp_path / "261006_1000_D.xls", _HEAD_NEW, [_row9("1100", 5)])
+    _xls(tmp_path / "261006_0930_D.xls", _HEAD_NEW, [_row9("1100", 2)])
+    (tmp_path / "261006_1030_D.xls").write_bytes(b"")            # HTS 가 아직 쓰는 중
+    h = L.hts9842("2026-10-06")
+    assert [s["hm"] for s in h["flow_snaps"]] == ["09:30", "10:00"]   # 순서는 시각, 깨진 시점은 빠진다
+    assert h["flow_snaps"][1]["rows"]["1100.0"]["c_for"] == 5.0
+    assert len(h["flow_snaps_err"]) == 1 and "1030" in h["flow_snaps_err"][0]
+    assert h["flow"]["1100.0"]["c_for"] == 5.0 and "10:00 시점" in h["flow_src"]   # 마감본이 없으면 최신 시점
+    _xls(tmp_path / "261006_D.xls", _HEAD_NEW, [_row9("1100", 7)])
+    h = L.hts9842("2026-10-06")
+    assert h["flow"]["1100.0"]["c_for"] == 7.0                      # 하루치(마감본)가 있으면 그것
+
+
+def test_snapshot_cache_rereads_on_change(tmp_path, monkeypatch):
+    monkeypatch.setattr(L, "DOCS_9842", str(tmp_path))
+    p = tmp_path / "261006_0930_D.xls"
+    _xls(p, _HEAD_NEW, [_row9("1100", 2)])
+    assert L.hts9842("2026-10-06")["flow"]["1100.0"]["c_for"] == 2.0
+    _xls(p, _HEAD_NEW, [_row9("1100", 3), _row9("1102.5", 1)])      # 같은 이름에 덮어쓰기 — 크기가 바뀐다
+    assert L.hts9842("2026-10-06")["flow"]["1100.0"]["c_for"] == 3.0
+
+
+def test_derive_ignores_snapshot_files(derive_env, monkeypatch):
+    """시점 파일은 장중 누적이라 「진짜 _D」가 아니다 — 자기검증에 쓰면 반드시 어긋난다."""
+    DV, d, row = derive_env
+    _xls(d / "261001_P.xls", _HEAD_NEW, [row("1100", 10)])
+    _xls(d / "261002_P.xls", _HEAD_NEW, [row("1100", 13)])
+    _xls(d / "261002_D.xls", _HEAD_NEW, [row("1100", 3)])
+    _xls(d / "261002_1030_D.xls", _HEAD_NEW, [row("1100", 1)])      # 장중 시점 — 하루치와 다르다
+    _xls(d / "261001_1400_D.xls", _HEAD_NEW, [row("1100", 1)])
+    _xls(d / "260930_P.xls", _HEAD_NEW, [row("1100", 4)])
+    monkeypatch.setattr(sys, "argv", ["derive"])
+    assert DV.main() == 0
+    assert L.read_9842(str(d / "261001_D.xls"))["1100.0"]["c_for"] == 6.0   # 시점 파일이 있어도 하루치는 생성
+
+
+def test_page_has_snapshot_delta_layer():
+    s = _src("ladder.html")
+    assert "['dF','외인 증감']" in s and "['dI','개인 증감']" in s
+    assert "function snapDelta(" in s and "snapGrid" in s
