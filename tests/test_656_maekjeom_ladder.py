@@ -268,3 +268,10 @@ def test_book_source_falls_back_to_messiah_when_partial(tmp_path, monkeypatch):
 
 def test_page_has_no_fixed_baseline_time():
     assert "09:01" not in _src("ladder.html")                 # 메시아 원천은 첫 스냅샷이 08:2x 다
+
+
+def test_oi_layer_has_all_three_books():
+    """옵션층 OI 버튼 — 먼스리·월위클리·목위클리 셋 다(2026-10-04 목위클리 추가)."""
+    s = _src("ladder.html")
+    assert "['wkt','목위클리 OI']" in s
+    assert "wkt: ['weekly_thu', '목위클리']" in s

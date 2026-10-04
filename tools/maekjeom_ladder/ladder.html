@@ -225,7 +225,7 @@ function seg(id, key, opts, onChange){
 }
 seg('segStage', 'stage', [['all','둘 다'],['0850','08:50'],['0930','09:30']], drawLadder);
 seg('segPeter', 'peter', [['on','켬'],['off','끔']], () => { drawLadder(); drawTable(); });
-seg('segLayer', 'layer', [['mon','먼스리 OI'],['wkm','월위클리 OI'],['hold','전일 외인 보유'],['flowF','당일 외인'],['flowI','당일 개인']], drawLadder);
+seg('segLayer', 'layer', [['mon','먼스리 OI'],['wkm','월위클리 OI'],['wkt','목위클리 OI'],['hold','전일 외인 보유'],['flowF','당일 외인'],['flowI','당일 개인']], drawLadder);
 function makeBookSeg(){
   const lab = (k, name) => { const e = D && D.books[k] && D.books[k].expiry; return e ? `${name} ${+e.slice(5,7)}/${+e.slice(8,10)}` : name; };
   seg('segBook', 'book', [['monthly', lab('monthly','먼스리')], ['weekly_mon', lab('weekly_mon','월위클리')], ['weekly_thu', lab('weekly_thu','목위클리')]], drawHeat);
@@ -340,10 +340,11 @@ function drawLadder(){
   el('line', { x1: profX + profW/2, x2: profX + profW/2, y1: mT, y2: H - mB, stroke: css('--rule') }, svg);
   const half = profW / 2 - 4; let rows = [], unit = '', title = '';
   const strikes = D.books.monthly.strikes;
-  if (state.layer === 'mon' || state.layer === 'wkm') {
-    const bk = D.books[state.layer === 'mon' ? 'monthly' : 'weekly_mon'] || { strikes: [], times: [] }; const BT = bk.times || []; const last = BT.length - 1;
+  const OI_LAYER = { mon: ['monthly', '먼스리'], wkm: ['weekly_mon', '월위클리'], wkt: ['weekly_thu', '목위클리'] };
+  if (OI_LAYER[state.layer]) {
+    const bk = D.books[OI_LAYER[state.layer][0]] || { strikes: [], times: [] }; const BT = bk.times || []; const last = BT.length - 1;
     rows = bk.absent ? [] : bk.strikes.map((k, i) => ({ k, L: bk.put[i][last], R: bk.call[i][last], L0: bk.put[i][0], R0: bk.call[i][0] }));
-    unit = '계약'; title = (state.layer === 'mon' ? '먼스리' : '월위클리') + ' 미결제약정 ' + (BT[last] || '') + (bk.absent ? ' — 없음' : '');
+    unit = '계약'; title = OI_LAYER[state.layer][1] + ' 미결제약정 ' + (BT[last] || '') + (bk.absent ? ' — 없음' : '');
     var walls = bk.wall_close;
   } else {
     const src = state.layer === 'hold' ? D.hold : D.flow; const who = state.layer === 'flowI' ? 'ind' : 'for';
@@ -351,7 +352,7 @@ function drawLadder(){
     const srcName = state.layer === 'hold' ? D.hold_src : D.flow_src;
     unit = uName(state.layer === 'hold' ? D.hold_unit : D.flow_unit); title = (state.layer === 'hold' ? '외인 기간 보유' : (state.layer === 'flowF' ? '외인' : '개인') + ' 당일 순매수') + (srcName ? '' : ' — 파일 없음');
   }
-  const signed = !(state.layer === 'mon' || state.layer === 'wkm');
+  const signed = !OI_LAYER[state.layer];
   const vis = rows.filter(r => { const yc = y(r.k + B); return yc >= mT && yc <= H - mB; });
   const vmax = Math.max(1e-9, ...vis.map(r => Math.max(Math.abs(r.L), Math.abs(r.R), r.L0 || 0, r.R0 || 0)));
   const bh = Math.max(3, (y(0) - y(2.5)) * 0.72);
