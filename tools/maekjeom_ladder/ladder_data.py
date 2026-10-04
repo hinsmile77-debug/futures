@@ -418,16 +418,32 @@ _9842_COLS = ["c_inv_trust", "c_fin", "c_for", "c_ind", "c_px", "k", "p_px", "p_
 
 
 def _list_9842_files():
+    """option_hts 폴더의 [9842] 내보내기 목록.
+
+    이름 규칙: YYMMDD[_HHMM][_D|_P].xls(x)
+      YYMMDD_D   — 그날 당일 순매수(마감본 또는 P 차분 생성본)
+      YYMMDD_P   — 기간 보유(누적)
+      YYMMDD_HHMM_D — 장중 HH:MM 에 내보낸 당일 순매수 **시점 파일**(656차 후속, 30분 모니터용)
+    hm 은 시점 파일이면 'HH:MM', 아니면 None.
+    """
     out = []
     if not os.path.isdir(DOCS_9842):
         return out
     for fn in os.listdir(DOCS_9842):
-        m = re.match(r"^(\d{6})(?:_([DP]))?\.(xlsx|xls)$", fn)
+        m = re.match(r"^(\d{6})(?:_(\d{4}))?(?:_([DP]))?\.(xlsx|xls)$", fn)
         if not m:
             continue
-        yymmdd, mode, ext = m.groups()
-        mode = mode or LEGACY_9842_MODE.get(yymmdd)
-        out.append(dict(fn=fn, yymmdd=yymmdd, date="20%s-%s-%s" % (yymmdd[:2], yymmdd[2:4], yymmdd[4:]), mode=mode, ext=ext))
+        yymmdd, hhmm, mode, ext = m.groups()
+        if hhmm and not (hhmm[:2] <= "23" and hhmm[2:] <= "59"):
+            continue
+        if hhmm:                          # 시점 파일은 당일 순매수만 뜻이 있다 — _D 를 빠뜨려도 D, _P 면 버린다
+            if mode == "P":
+                continue
+            mode = "D"
+        else:
+            mode = mode or LEGACY_9842_MODE.get(yymmdd)
+        out.append(dict(fn=fn, yymmdd=yymmdd, date="20%s-%s-%s" % (yymmdd[:2], yymmdd[2:4], yymmdd[4:]),
+                        mode=mode, ext=ext, hm=("%s:%s" % (hhmm[:2], hhmm[2:]) if hhmm else None)))
     return out
 
 
@@ -546,18 +562,55 @@ def read_9842(path):
     return read_9842_meta(path)[0]
 
 
+_9842_cache = {}          # path → ((mtime, size), result) — 시점 파일을 매분 다시 파싱하지 않는다
+_SNAP_KEYS = ("c_for", "p_for", "c_ind", "p_ind", "c_ins", "p_ins")
+
+
+def _read_9842_cached(path):
+    st = os.stat(path)
+    sig = (st.st_mtime, st.st_size)
+    hit = _9842_cache.get(path)
+    if hit and hit[0] == sig:
+        return hit[1]
+    res = read_9842_meta(path)
+    _9842_cache[path] = (sig, res)
+    return res
+
+
 def hts9842(day):
-    """그날의 당일 순매수(D) 파일과, 그날 이전 가장 최근의 기간 보유(P) 파일."""
+    """그날의 당일 순매수(D) 파일과, 그날 이전 가장 최근의 기간 보유(P) 파일.
+
+    당일 순매수 고르는 순서: 시각 없는 YYMMDD_D(마감본·P 차분본) → 없으면 가장 늦은 시점 파일.
+    시점 파일(YYMMDD_HHMM_D)은 flow_snaps 로 따로 돌려준다 — 화면이 직전 시점 대비 증감과
+    행사가 × 시각 칸을 그린다. 읽기 실패한 시점은 빼고 flow_snaps_err 에 남긴다(메우지 않는다).
+    """
     files = _list_9842_files()
-    flow_f = [f for f in files if f["date"] == day and f["mode"] == "D"]
+    day_d = [f for f in files if f["date"] == day and f["mode"] == "D"]
+    daily = [f for f in day_d if f["hm"] is None]
+    snaps = sorted([f for f in day_d if f["hm"]], key=lambda f: f["hm"])
     hold_f = sorted([f for f in files if f["date"] < day and f["mode"] == "P"], key=lambda f: f["date"])
-    res = dict(hold={}, flow={}, hold_src=None, flow_src=None, hold_unit=None, flow_unit=None)
+    res = dict(hold={}, flow={}, hold_src=None, flow_src=None, hold_unit=None, flow_unit=None,
+               flow_snaps=[], flow_snaps_err=[])
     derived = _derived_manifest()
-    for key, f in (("flow", flow_f[-1] if flow_f else None), ("hold", hold_f[-1] if hold_f else None)):
+    snap_ok = []
+    for f in snaps:
+        try:
+            rows, unit, _ = _read_9842_cached(os.path.join(DOCS_9842, f["fn"]))
+        except Exception as e:                       # HTS 가 아직 쓰는 중이거나 깨진 파일
+            res["flow_snaps_err"].append("%s: %s" % (f["fn"], e))
+            continue
+        if not rows:
+            res["flow_snaps_err"].append("%s: 행 없음" % f["fn"])
+            continue
+        snap_ok.append(f)
+        res["flow_snaps"].append(dict(hm=f["hm"], fn=f["fn"], unit=unit,
+                                      rows={k: {x: v[x] for x in _SNAP_KEYS if x in v} for k, v in rows.items()}))
+    flow_pick = daily[-1] if daily else (snap_ok[-1] if snap_ok else None)
+    for key, f in (("flow", flow_pick), ("hold", hold_f[-1] if hold_f else None)):
         if f:
             try:
-                res[key], res[key + "_unit"], note = read_9842_meta(os.path.join(DOCS_9842, f["fn"]))
-                tag = " · P 차분 생성" if f["fn"] in derived else ""
+                res[key], res[key + "_unit"], note = _read_9842_cached(os.path.join(DOCS_9842, f["fn"]))
+                tag = " · P 차분 생성" if f["fn"] in derived else (" · %s 시점" % f["hm"] if f.get("hm") else "")
                 res[key + "_src"] = "%s (%s · %s · %s%s)" % (
                     f["fn"], "기간 보유" if f["mode"] == "P" else "당일 순매수",
                     "계약" if res[key + "_unit"] == "contract" else "억원(추정)", note, tag)
@@ -624,10 +677,12 @@ def build_day(day, now=None):
         mins, f1m, flow_last = [], {}, None
         warn.append("7222 흐름 읽기 실패: %s" % e)
     h = hts9842(day)
+    warn += ["9842 시점 파일 읽기 실패 — %s" % e for e in h["flow_snaps_err"]]
     actual = dict(high=max((c[2] for c in cs), default=None), low=min((c[3] for c in cs), default=None))
     return dict(date=day, live=live, generated_at=now.isoformat(timespec="seconds"),
                 candles=cs, candle_src=csrc, levels=lv, bands=bands, basis=basis if basis is not None else 0.0,
                 basis_measured=basis is not None, times=times, books=bk, mins=mins, flow1m=f1m, flow_last=flow_last,
                 hold=h["hold"], flow=h["flow"], hold_src=h["hold_src"], flow_src=h["flow_src"],
                 hold_unit=h["hold_unit"], flow_unit=h["flow_unit"],
+                flow_snaps=h["flow_snaps"], flow_snaps_err=h["flow_snaps_err"],
                 peter=pt, actual=actual, warnings=warn)

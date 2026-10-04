@@ -107,8 +107,9 @@ def main():
             pass
 
     files = L._list_9842_files()
-    P = {f["date"]: f["fn"] for f in files if f["mode"] == "P"}
-    Dreal = {f["date"]: f["fn"] for f in files if f["mode"] == "D"}
+    P = {f["date"]: f["fn"] for f in files if f["mode"] == "P" and not f.get("hm")}
+    # 시점 파일(YYMMDD_HHMM_D)은 장중 누적이라 하루치가 아니다 — 자기검증 대상도, 「진짜 _D 있음」도 아니다
+    Dreal = {f["date"]: f["fn"] for f in files if f["mode"] == "D" and not f.get("hm")}
     man_path = os.path.join(L.DOCS_9842, "_derived_D.json")
     manifest = L._derived_manifest()
     Dreal = {d: fn for d, fn in Dreal.items() if fn not in manifest}     # 생성본은 「진짜」가 아니다
