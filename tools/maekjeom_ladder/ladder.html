@@ -350,7 +350,7 @@ function drawLadder(){
   });
   // profile
   el('line', { x1: profX + profW/2, x2: profX + profW/2, y1: mT, y2: H - mB, stroke: css('--rule') }, svg);
-  const half = profW / 2 - 4; let rows = [], unit = '', title = '';
+  const half = profW / 2 - 4; let rows = [], unit = '', title = '', shadow = null, shadowWhy = '';
   const strikes = D.books.monthly.strikes;
   const OI_LAYER = { mon: ['monthly', '먼스리'], wkm: ['weekly_mon', '월위클리'], wkt: ['weekly_thu', '목위클리'] };
   if (OI_LAYER[state.layer]) {
@@ -365,12 +365,19 @@ function drawLadder(){
   } else {
     const src = state.layer === 'hold' ? D.hold : D.flow; const who = state.layer === 'flowI' ? 'ind' : 'for';
     rows = Object.keys(src).map(k => ({ k: +k, L: src[k]['p_' + who], R: src[k]['c_' + who] }));
+    // 당일 층 — 전일 보유를 그림자로 깐다. 단위가 같아야 하고, 보유가 직전 거래일이어야 합(= 현재 보유)을 표시한다
+    if (state.layer !== 'hold' && Object.keys(D.hold || {}).length && D.hold_unit === D.flow_unit) {
+      shadow = { date: D.hold_date, sum: D.hold_is_prev === true };
+      rows.forEach(r => { const h = D.hold[kkey(r.k)]; if (h) { r.HL = h['p_' + who]; r.HR = h['c_' + who]; } });
+    } else if (state.layer !== 'hold' && Object.keys(D.hold || {}).length) shadowWhy = `전일 보유 그림자 생략 — 단위 다름(${uName(D.hold_unit)} / ${uName(D.flow_unit)})`;
     const srcName = state.layer === 'hold' ? D.hold_src : D.flow_src;
     unit = uName(state.layer === 'hold' ? D.hold_unit : D.flow_unit); title = (state.layer === 'hold' ? '외인 기간 보유' : (state.layer === 'flowF' ? '외인' : '개인') + ' 당일 순매수') + (srcName ? '' : ' — 파일 없음');
+    if (shadow && D.hold_date) title += ` · 그림자 ${+D.hold_date.slice(5,7)}/${+D.hold_date.slice(8,10)} 보유`;
   }
   const signed = !OI_LAYER[state.layer];
   const vis = rows.filter(r => { const yc = y(r.k + B); return yc >= mT && yc <= H - mB; });
-  const vmax = Math.max(1e-9, ...vis.map(r => Math.max(Math.abs(r.L), Math.abs(r.R), r.L0 || 0, r.R0 || 0)));
+  const vmax = Math.max(1e-9, ...vis.map(r => Math.max(Math.abs(r.L), Math.abs(r.R), r.L0 || 0, r.R0 || 0,
+    Math.abs(r.HL || 0), Math.abs(r.HR || 0), shadow && shadow.sum ? Math.abs((r.HL || 0) + r.L) : 0, shadow && shadow.sum ? Math.abs((r.HR || 0) + r.R) : 0)));
   const bh = Math.max(3, (y(0) - y(2.5)) * 0.72);
   el('text', { x: profX + profW/2, y: mT - 4, 'text-anchor': 'middle', 'font-size': 11.5, 'font-weight': 600, fill: css('--ink-2') }, svg, title);
   el('text', { x: profX + 2, y: H - mB + 16, 'font-size': 11, fill: css('--ink-3') }, svg, '◀ 풋');
@@ -381,13 +388,26 @@ function drawLadder(){
       const v = r[s]; const len = Math.abs(v) / vmax * half; const isWall = !signed && walls && ((s === 'R' && r.k === walls[0]) || (s === 'L' && r.k === walls[1]));
       const fill = signed ? css(v >= 0 ? '--pos' : '--neg') : css(isWall ? '--oi-wall' : '--oi');
       const x0 = profX + profW/2 + dir * 2; const rx = dir > 0 ? x0 : x0 - len;
-      el('rect', { x: rx, y: yc - bh/2, width: Math.max(0, len), height: bh, rx: 1.5, fill }, svg);
+      const hv = shadow ? r['H' + s] : null;
+      if (hv != null) {     // 전일 보유 그림자 — 넓고 옅게, 테두리로 윤곽
+        const hl = Math.abs(hv) / vmax * half; const hc = css(hv >= 0 ? '--pos' : '--neg');
+        el('rect', { x: dir > 0 ? x0 : x0 - hl, y: yc - bh/2 - 1, width: Math.max(0, hl), height: bh + 2, rx: 1.5, fill: hc, 'fill-opacity': 0.16, stroke: hc, 'stroke-opacity': 0.55, 'stroke-width': 1, 'stroke-dasharray': '3 2' }, svg);
+      }
+      const fh = shadow ? bh * 0.55 : bh;
+      el('rect', { x: rx, y: yc - fh/2, width: Math.max(0, len), height: fh, rx: 1.5, fill }, svg);
+      if (hv != null && shadow.sum) {   // 보유 + 당일 = 현재 보유(추정) 눈금
+        const sv = hv + v; const sl = Math.abs(sv) / vmax * half; const sx = x0 + dir * sl;
+        el('line', { x1: sx, x2: sx, y1: yc - bh/2 - 3, y2: yc + bh/2 + 3, stroke: css('--panel'), 'stroke-width': 4 }, svg);
+        el('line', { x1: sx, x2: sx, y1: yc - bh/2 - 3, y2: yc + bh/2 + 3, stroke: css(sv >= 0 ? '--pos' : '--neg'), 'stroke-width': 2 }, svg);
+      }
       if (!signed && r[s + '0'] != null) { const l0 = r[s + '0'] / vmax * half; el('line', { x1: x0 + dir * l0, x2: x0 + dir * l0, y1: yc - bh/2 - 1, y2: yc + bh/2 + 1, stroke: css('--ink'), 'stroke-width': 1.2 }, svg); }
       if (isWall) el('text', { x: x0 + dir * (len + 4), y: yc + 4, 'font-size': 10.5, 'font-weight': 700, 'text-anchor': dir > 0 ? 'start' : 'end', fill: css('--ink') }, svg, s === 'R' ? '◆콜벽' : '◆풋벽');
     });
     if (r.k % 10 === 0) el('text', { x: profX + profW/2, y: yc - bh/2 - 2, 'text-anchor': 'middle', 'font-size': 9.5, fill: css('--ink-3'), class: 'num' }, svg, r.k);
     const hit = el('rect', { x: profX, y: yc - 4, width: profW, height: 8, fill: 'transparent' }, svg);
-    hit.addEventListener('mousemove', ev => showTip(ev, `<b>행사가 ${r.k}</b> → 선물 ${(r.k + B).toFixed(2)}<br>콜 ${signed ? fmt(r.R, unit === '계약' ? 0 : 2) : r.R.toLocaleString()}${!signed ? ` <span class="muted">(첫 스냅샷 ${r.R0.toLocaleString()})</span>` : ''}<br>풋 ${signed ? fmt(r.L, unit === '계약' ? 0 : 2) : r.L.toLocaleString()}${!signed ? ` <span class="muted">(첫 스냅샷 ${r.L0.toLocaleString()})</span>` : ''}<br><span class="muted">${unit}</span>`));
+    const nd = unit === '계약' ? 0 : 2;
+    const side = (nm, v, h0) => `${nm} ${signed ? fmt(v, nd) : v.toLocaleString()}` + (h0 != null ? ` <span class="muted">· 전일 보유 ${fmt(h0, nd)}${shadow.sum ? ' → 현재 ' + fmt(h0 + v, nd) : ''}</span>` : '');
+    hit.addEventListener('mousemove', ev => showTip(ev, signed ? `<b>행사가 ${r.k}</b> → 선물 ${(r.k + B).toFixed(2)}<br>${side('콜', r.R, shadow ? r.HR : null)}<br>${side('풋', r.L, shadow ? r.HL : null)}<br><span class="muted">${unit}${shadow && !shadow.sum ? ' · 보유가 직전 거래일이 아니라 합(현재 보유)은 생략' : ''}</span>` : `<b>행사가 ${r.k}</b> → 선물 ${(r.k + B).toFixed(2)}<br>콜 ${signed ? fmt(r.R, unit === '계약' ? 0 : 2) : r.R.toLocaleString()}${!signed ? ` <span class="muted">(첫 스냅샷 ${r.R0.toLocaleString()})</span>` : ''}<br>풋 ${signed ? fmt(r.L, unit === '계약' ? 0 : 2) : r.L.toLocaleString()}${!signed ? ` <span class="muted">(첫 스냅샷 ${r.L0.toLocaleString()})</span>` : ''}<br><span class="muted">${unit}</span>`));
     hit.addEventListener('mouseleave', hideTip);
   });
   // legend
@@ -396,7 +416,10 @@ function drawLadder(){
     `<span><i class="sw-box" style="background:var(--band-hi);border:1px solid var(--rule)"></i>고 50·80% 밴드</span><span><i class="sw-box" style="background:var(--band-lo);border:1px solid var(--rule)"></i>저 밴드</span>` +
     `<span><i class="sw-line" style="border-color:var(--peter);border-top-style:dotted"></i>피터맥점</span><span style="color:var(--peter)">▼ 피터 체결 · ✕ 청산</span>` +
     `<span><i class="sw-box" style="background:var(--o-back);border-radius:50%"></i>되돌림</span><span><i class="sw-box" style="background:var(--o-break);clip-path:polygon(50% 0,100% 100%,0 100%)"></i>돌파</span><span><i class="sw-box" style="background:var(--o-stay)"></i>정거장</span>` +
-    (signed ? `<span><i class="sw-box" style="background:var(--pos)"></i>순매수(+)</span><span><i class="sw-box" style="background:var(--neg)"></i>순매도(−)</span>` : `<span><i class="sw-box" style="background:var(--oi)"></i>OI 최신</span><span><i class="sw-line" style="width:2px;height:12px;border:0;background:var(--ink)"></i>첫 스냅샷 위치</span>`);
+    (signed ? `<span><i class="sw-box" style="background:var(--pos)"></i>순매수(+)</span><span><i class="sw-box" style="background:var(--neg)"></i>순매도(−)</span>` +
+      (shadow ? `<span><i class="sw-box" style="background:color-mix(in srgb, var(--pos) 16%, transparent);border:1px dashed var(--pos)"></i>그림자 = 전일 보유</span>` +
+        (shadow.sum ? `<span><i class="sw-line" style="width:2px;height:12px;border:0;background:var(--ink)"></i>눈금 = 전일 보유 + 당일 = 현재 보유</span>` : `<span class="muted">보유 파일이 직전 거래일이 아니어서 현재 보유 눈금 생략</span>`) : '') +
+      (shadowWhy ? `<span class="muted">${shadowWhy}</span>` : '') : `<span><i class="sw-box" style="background:var(--oi)"></i>OI 최신</span><span><i class="sw-line" style="width:2px;height:12px;border:0;background:var(--ink)"></i>첫 스냅샷 위치</span>`);
   document.getElementById('ladderNote').textContent = `행사가는 베이시스 ${fmt(B,2)}pt를 더해 선물가 위치에 그렸다. 08:50 맥점은 08:51부터, 09:30 맥점은 09:31부터, 피터맥점은 트윗 다음 분부터 판정한다. ${D.peter.available ? '피터 가격은 정규선물 기준이라 보정값 ' + D.peter.offset + 'pt를 더해 미니로 옮겼다.' : '이 날 피터 원문 없음.'} 밴드는 ${state.stage === '0930' ? '09:30' : '08:50'} 기준.`;
 }
 

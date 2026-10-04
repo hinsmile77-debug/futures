@@ -577,6 +577,28 @@ def _read_9842_cached(path):
     return res
 
 
+def _is_prev_trading_day(hold_day, day):
+    """hold_day 가 day 의 **직전 거래일**인가 — 그래야 보유(P) + 당일(D) = 현재 보유가 정확하다.
+
+    사이에 거래일이 끼면(그날 _P 를 못 받음) 합은 그 날들의 순매수를 빠뜨린다.
+    KRX 달력(utils.time_utils)을 못 읽으면 None(미측정) — 거짓 True 로 두지 않는다.
+    """
+    try:
+        import sys
+        if ROOT not in sys.path:
+            sys.path.insert(0, ROOT)
+        from utils.time_utils import is_trading_day
+    except Exception:
+        return None
+    a = _dt.date.fromisoformat(hold_day); b = _dt.date.fromisoformat(day)
+    x = a + _dt.timedelta(days=1)
+    while x < b:
+        if is_trading_day(_dt.datetime.combine(x, _dt.time(12))):
+            return False
+        x += _dt.timedelta(days=1)
+    return a < b
+
+
 def hts9842(day):
     """그날의 당일 순매수(D) 파일과, 그날 이전 가장 최근의 기간 보유(P) 파일.
 
@@ -590,6 +612,7 @@ def hts9842(day):
     snaps = sorted([f for f in day_d if f["hm"]], key=lambda f: f["hm"])
     hold_f = sorted([f for f in files if f["date"] < day and f["mode"] == "P"], key=lambda f: f["date"])
     res = dict(hold={}, flow={}, hold_src=None, flow_src=None, hold_unit=None, flow_unit=None,
+               hold_date=None, hold_is_prev=None,
                flow_snaps=[], flow_snaps_err=[])
     derived = _derived_manifest()
     snap_ok = []
@@ -606,6 +629,9 @@ def hts9842(day):
         res["flow_snaps"].append(dict(hm=f["hm"], fn=f["fn"], unit=unit,
                                       rows={k: {x: v[x] for x in _SNAP_KEYS if x in v} for k, v in rows.items()}))
     flow_pick = daily[-1] if daily else (snap_ok[-1] if snap_ok else None)
+    if hold_f:
+        res["hold_date"] = hold_f[-1]["date"]
+        res["hold_is_prev"] = _is_prev_trading_day(hold_f[-1]["date"], day)
     for key, f in (("flow", flow_pick), ("hold", hold_f[-1] if hold_f else None)):
         if f:
             try:
@@ -684,5 +710,6 @@ def build_day(day, now=None):
                 basis_measured=basis is not None, times=times, books=bk, mins=mins, flow1m=f1m, flow_last=flow_last,
                 hold=h["hold"], flow=h["flow"], hold_src=h["hold_src"], flow_src=h["flow_src"],
                 hold_unit=h["hold_unit"], flow_unit=h["flow_unit"],
+                hold_date=h["hold_date"], hold_is_prev=h["hold_is_prev"],
                 flow_snaps=h["flow_snaps"], flow_snaps_err=h["flow_snaps_err"],
                 peter=pt, actual=actual, warnings=warn)
