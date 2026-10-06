@@ -135,3 +135,89 @@ def test_ladder_page_and_data_wire_shindong2():
     assert "D.shindong2" in html and "drawSD2Table" in html and "segSd2" in html
     assert "shindong2=sd2" in data
     assert "cs[:-1] if live" in data, "장중에는 덜 찬 마지막 봉을 넘기면 안 된다"
+
+
+# ── G. 피터 1116 딥다이브 S1·S2·S3 (신동2-P2) ──────────────────────────────
+def test_touch_count_and_high_touch_level():
+    bars = [["09:%02d" % i, 100, 100.4, 99.6, 100] for i in range(8)] + [["09:%02d" % (8 + i), 103, 103.2, 102.8, 103] for i in range(3)]
+    assert R.touch_count(bars, 100.0) == 8 and R.touch_count(bars, 103.0) == 3 and R.touch_count(bars, None) is None
+    lvl, n = R.hi_touch_level(bars, 101.0)
+    assert lvl is not None and abs(lvl - 100.0) <= 0.5 and n >= R.P2_HT_MIN
+    assert R.hi_touch_level(bars[:3], 101.0)[0] is None          # 접촉 < 6봉이면 레벨 아님
+
+
+def test_fib_stop_side():
+    bars = [["09:00", 110, 120, 110, 112], ["09:01", 112, 112, 100, 101]]
+    assert R.fib_stop(bars, -1) == round(100 + 0.618 * 20, 2)    # 매도 — 하락폭 61.8% 되돌림(위)
+    assert R.fib_stop(bars, +1) == round(120 - 0.618 * 20, 2)    # 매수 — 상승폭 61.8% 되돌림(아래)
+
+
+def test_p_is_unchanged_by_config_and_p2_is_separate():
+    """사전등록 P 는 cfg 도입 뒤에도 그대로다 — 기본값 = P_CFG."""
+    S = _synthetic()
+    a, b = R.run_p(S), R.run_p(S, cfg=R.P_CFG)
+    strip = lambda P: [(t["entry_t"], t["fill"], t["stop"], t["pnl"]) for t in P["trades"]]
+    assert strip(a) == strip(b) and a["ver"] == R.P_VER
+    P2 = R.run_p(S, cfg=R.P2_CFG)
+    assert P2["ver"] == R.P2_VER and P2["name"] == "P2"
+    _check_invariants(P2)
+    for t in a["trades"] + P2["trades"]:
+        assert "touch60" in t                                       # S1 은 모든 진입에 기록
+
+
+def test_p2_real_days_invariants_and_p_unchanged():
+    dbs = [os.path.join(R.DB, n) for n in ("regular_candles.db", "raw_data.db", "option_flow.db")]
+    if not all(os.path.exists(p) for p in dbs):
+        pytest.skip("실데이터 DB 없음")
+    S = R.load("2026-10-06")
+    if not S["cs"]:
+        pytest.skip("10/6 봉 없음")
+    out = R.analyze(S)
+    assert out["summary"]["p"] == 10.87                              # 사전등록 P 드라이런 값 고정
+    _check_invariants(out["p2"])
+    assert all(p["rule"].get("touch60") is not None for p in out["points"] if p["rule"]["dir"] != "관망")
+
+
+# ── H. 피터 청산가 1095 딥다이브 E1·E2 (신동2-P3) ──────────────────────────
+def _prof_S(cs_close=1100.0, off_today=True):
+    S = _synthetic()
+    # 정규 5일 매물대: 1094 에 두꺼운 봉우리, 1099–1101 얇음
+    S["reg_prev"] = [(1094.4, 1093.6, 1000)] * 5 + [(1100.4, 1099.6, 50)] + [(1110.4, 1109.6, 300)]
+    S["reg_today"] = {c[0]: c[4] + 5.0 for c in S["cs"]} if off_today else {}
+    S["off_prev"] = 4.0
+    return S
+
+
+def test_hvn_target_front_runs_peak_by_1pt():
+    S = _prof_S()
+    tg, peak, off, src = R.hvn_target(S, 1100.0 - 5.0, -1, 3.0, "10:00")     # 미니 1095 에서 매도
+    assert peak == 1094 and src == "당일" and off == 5.0
+    assert tg == round(1094 - 5.0 + 1.0, 2)                                     # 봉우리 1pt 앞(위)
+    assert R.hvn_target(S, 1095.0, -1, 50.0, "10:00")[0] is None                # 3R 안에 없으면 None
+
+
+def test_offset_falls_back_to_previous_day_when_live():
+    S = _prof_S(off_today=False)
+    off, src = R.reg_offset(S, "10:00")
+    assert off == 4.0 and src == "전일"                                          # 장중 — 정규 당일봉 없음
+
+
+def test_thin_ahead_records_distance_and_thin_share():
+    S = _prof_S()
+    th = R.thin_ahead(S, 1101.0 - 5.0, -1, "10:00")                             # 정규 1101 에서 아래로
+    assert th["to_hvn"] == 7 and 0 < th["thin_pct"] <= 1
+
+
+def test_p3_differs_from_p_only_in_final_target():
+    dbs = [os.path.join(R.DB, n) for n in ("regular_candles.db", "raw_data.db", "option_flow.db")]
+    if not all(os.path.exists(p) for p in dbs):
+        pytest.skip("실데이터 DB 없음")
+    S = R.load("2026-10-06")
+    if not S["cs"]:
+        pytest.skip("10/6 봉 없음")
+    out = R.analyze(S)
+    assert out["summary"]["p"] == 10.87 and out["summary"]["p2"] == 11.52      # P·P2 고정
+    P, P3 = out["p"], out["p3"]
+    _check_invariants(P3)
+    assert [(t["entry_t"], t["fill"], t["stop"]) for t in P["trades"]] == [(t["entry_t"], t["fill"], t["stop"]) for t in P3["trades"]]
+    assert all("thin" in t for t in P["trades"] + P3["trades"])                  # E2 기록
