@@ -62,7 +62,8 @@ _SUBDIRS = (
 
 
 def ensure_conda_dll_path(verbose: bool = False) -> list:
-    """실행 중인 인터프리터의 conda env DLL 경로를 PATH 앞에 보장한다.
+    """실행 중인 인터프리터의 conda env DLL 경로를 PATH 앞에 보장한다
+    (같은 env 의 `pywin32_system32` 가 PATH 에 있으면 그 바로 뒤 — 662차).
 
     Returns: 이번 호출로 **새로 추가된** 경로 목록(이미 있었으면 빈 리스트).
     Windows가 아니면 아무것도 하지 않는다.
@@ -89,7 +90,21 @@ def ensure_conda_dll_path(verbose: bool = False) -> list:
         # 이 env의 것이 먼저 걸리게 한다. 448차 실측상 append로도 동작했지만
         # (파일명이 `mkl_core.2.dll` vs `.3.dll`로 달라 충돌이 아니었다), 버전이
         # 같은 이름으로 겹치는 조합에서는 prepend만 안전하다.
-        os.environ["PATH"] = os.pathsep.join(added + ([cur] if cur else []))
+        #
+        # 🔴 [662차 / 2026-10-06] 단, 같은 env 의 `pywin32_system32` 보다는 **뒤**다.
+        # py37_32 에는 pywin32 가 두 벌 있다 — pip 판(`Lib\site-packages\pywin32_system32`,
+        # 실제 `win32api.pyd` 와 짝)과 conda 302 판(`Library\bin`, 2022). 3.7 의
+        # `pywin32_bootstrap`(pth) 은 site 초기화 때 전자를 PATH 맨 앞에 넣는데, 여기서
+        # Library\bin 을 그보다 앞에 넣으면 옛 `pywintypes37.dll` 이 먼저 걸려
+        # `import win32api` 가 「지정된 프로시저를 찾을 수 없습니다」로 죽는다.
+        # 맨손 실행(예약작업)에서만 재현된다 — conda 활성화 상태면 Library\bin 이 이미
+        # PATH 에 있어 이 함수가 아무것도 안 한다. 그래서 OptionFlowBackfill_1605 가
+        # 2026-10-06 첫 평일 실행에서 COM 을 못 열었다.
+        parts = cur.split(os.pathsep) if cur else []
+        pyw = os.path.join(env_root, "Lib", "site-packages", "pywin32_system32").rstrip("\\").lower()
+        norm = [p.strip().rstrip("\\").lower() for p in parts]
+        at = norm.index(pyw) + 1 if pyw in norm else 0
+        os.environ["PATH"] = os.pathsep.join(parts[:at] + added + parts[at:])
         if verbose:
             sys.stderr.write("[dll_bootstrap] PATH 보강: %s\n" % os.pathsep.join(added))
     return added

@@ -47289,3 +47289,21 @@ Windows `git status` 수정 개수 배포 전과 동일, 스테이징된 내용 
 **How to apply**: 매일 장후 `_P` 하나만 저장해도 `python tools/maekjeom_ladder/derive_9842_daily.py` 로 그날 `_D` 생성. 메시아 변환은 필요 시 수동. 서버는 세션 프로세스에 붙지 않게 배치로 띄울 것.
 
 **검증**: `tests/test_656_maekjeom_ladder.py` 26건(+537 감사) 28 passed. Edge 헤드리스로 10/2 복기 · 10/2 장중 가정(실시간 칩·「지금」 선·라이브 봉) · 9/22(메시아 원천) 화면 확인.
+
+## 2026-10-06 (MW0601 662차 — 옵션 흐름 마감 재수집 실패 원인: dll_bootstrap 이 pywin32 두 벌 중 옛 판을 앞세움)
+
+1. **증상 — 655차가 고친 16:20 마감 재수집이 첫 평일에 다른 원인으로 실패**
+   - `Mireuk_OptionFlowBackfill_1605` 2026-10-06 16:20 rc=2, 로그 `CpCybos COM 을 열지 못했다: DLL load failed: 지정된 프로시저를 찾을 수 없습니다`(07:24 실행도 동일).
+   - 결과: option_flow.db 가 15:34 에서 끊김 → 사다리 옵션 띠 마감 구간 공백. 7222 는 당일분만 주므로 자정 넘기면 영구 결손.
+2. **원인 (재현 확정)**
+   - py37_32 에 pywin32 두 벌: pip 판 `Lib\site-packages\pywin32_system32`(2025-04, `win32api.pyd` 와 짝) · conda 302 판 `Library\bin`(2022).
+   - `utils/dll_bootstrap.py:ensure_conda_dll_path()` 가 `Library\bin` 을 PATH **맨 앞**에 넣어 pth 부트스트랩이 앞세운 pip 판보다 앞에 옴 → 옛 `pywintypes37.dll` 로드 → `import win32api` 실패.
+   - 맨손 python.exe 만 해당. conda 활성화 상태(`main.py`·`conda run`)는 Library\bin 이 이미 PATH 에 있어 함수가 무동작이라 재현 안 됨.
+   - 655차 리허설이 못 잡은 이유: 10/4 일요일 → 휴장일 판정으로 COM 열기 전 종료(rc=0 이 COM 경로를 안 거친 0).
+3. **조치**
+   - 같은 env 의 `pywin32_system32` 가 PATH 에 있으면 그 **바로 뒤**에 넣는다. 없으면 종전대로 맨 앞(448차 MKL 대책 유지). 다른 env 의 pywin32_system32 는 기준이 아니다.
+   - 회귀: `tests/test_662_dll_bootstrap_pywin32_order.py` 5건 — 최소 PATH 맨손 py37_32 에서 부트스트랩 후 `win32api·pythoncom·win32com` import 를 실제로 띄워 본다. test_537·test_655 포함 31 passed, `audit_dll_bootstrap --fail-on-gap` 결손 없음, 맨손 py37_32 BLAS(np.corrcoef) 정상.
+   - 10/6 마감 구간은 `conda run` 수동 백필로 복구(16:07 까지, 순증 228행).
+4. **같은 날 발견 — 10/6 월물 콜 마감 직전 외인 매수는 실제 매매(수집 오류 아님)**
+   - 15:20 −393 → 15:45 **+8,433**(16:07 +9,405), 기관 −1,165 → −10,021, 개인 거의 불변. 장중 행 덮어쓰기 없음(09:30 −2,036 일치).
+   - 9/21–10/2 같은 구간 외인 변화 ±200 이내 → 10/6 단독 이벤트. 15:21 부터 계약당 금액 0.3 → 2–3백만원 = 등가격 근처 콜. 행사가 분해는 9842 당일 마감본 필요(미확보).
