@@ -13,7 +13,7 @@
   --o-back:#3d434c; --o-break:#eb6834; --o-stay:#9aa1aa; --peter:#8a5cd6;
   --up:#d6453f; --dn:#2a6fd0; --oi:#b9bfc7; --oi-wall:#15181c; --path:#15181c;
   --chip:#eef0f3; --chip-on:#15181c; --chip-on-ink:#ffffff;
-  --i-for:#4a3aa7; --i-ind:#eb6834; --i-ins:#1baf7a; --sd2:#0f8b8d; --sd2p:#b4236b; --sd2q:#8b5e34; --sd2r:#6b7a00;
+  --i-for:#4a3aa7; --i-ind:#eb6834; --i-ins:#1baf7a; --sd2:#0f8b8d; --sd2p:#b4236b; --sd2q:#8b5e34; --sd2r:#6b7a00; --sd2ai:#0369a1;
   --sans:"IBM Plex Sans KR",system-ui,-apple-system,"Malgun Gothic",sans-serif;
   --mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
 }
@@ -24,7 +24,7 @@
   --pos:#3987e5; --neg:#e66767; --mid:#383835;
   --o-back:#c9ced5; --o-break:#d95926; --o-stay:#6b727c; --peter:#9d6ff0;
   --up:#e66767; --dn:#5598e7; --oi:#4a5059; --oi-wall:#eef0f2; --path:#eef0f2;
-  --chip:#252a30; --chip-on:#eef0f2; --chip-on-ink:#141619; --i-for:#9085e9; --i-ind:#d95926; --i-ins:#199e70; --sd2:#3cc6c8; --sd2p:#ee6aa7; --sd2q:#d6a77a; --sd2r:#c3d36a; color-scheme:dark}}
+  --chip:#252a30; --chip-on:#eef0f2; --chip-on-ink:#141619; --i-for:#9085e9; --i-ind:#d95926; --i-ins:#199e70; --sd2:#3cc6c8; --sd2p:#ee6aa7; --sd2q:#d6a77a; --sd2r:#c3d36a; --sd2ai:#7dd3fc; color-scheme:dark}}
 :root[data-theme="dark"]{
   --bg:#141619; --panel:#1b1e22; --ink:#eef0f2; --ink-2:#b4bac2; --ink-3:#848b95; --rule:#2e3339; --grid:#252a30;
   --struct:#e0a526; --struct-line:#c98500; --dist:#3cc391; --dist-line:#199e70;
@@ -32,7 +32,7 @@
   --pos:#3987e5; --neg:#e66767; --mid:#383835;
   --o-back:#c9ced5; --o-break:#d95926; --o-stay:#6b727c; --peter:#9d6ff0;
   --up:#e66767; --dn:#5598e7; --oi:#4a5059; --oi-wall:#eef0f2; --path:#eef0f2;
-  --chip:#252a30; --chip-on:#eef0f2; --chip-on-ink:#141619; --i-for:#9085e9; --i-ind:#d95926; --i-ins:#199e70; --sd2:#3cc6c8; --sd2p:#ee6aa7; --sd2q:#d6a77a; --sd2r:#c3d36a; color-scheme:dark}
+  --chip:#252a30; --chip-on:#eef0f2; --chip-on-ink:#141619; --i-for:#9085e9; --i-ind:#d95926; --i-ins:#199e70; --sd2:#3cc6c8; --sd2p:#ee6aa7; --sd2q:#d6a77a; --sd2r:#c3d36a; --sd2ai:#7dd3fc; color-scheme:dark}
 body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.55}
 .wrap{max-width:1180px;margin:0 auto;padding-inline:16px;padding-block:24px 48px;display:grid;gap:22px}
 header{display:grid;gap:8px}
@@ -67,7 +67,16 @@ td.mono{font-family:var(--mono)}
 .k-struct{color:var(--struct);font-weight:600}.k-sd2{color:var(--sd2);font-weight:600}.k-sd2p{color:var(--sd2p);font-weight:600}
 .sd2sum{display:flex;flex-wrap:wrap;gap:8px 18px;font:400 12.5px/1.4 var(--mono);color:var(--ink-2)}.sd2sum b{color:var(--ink);font-weight:600}
 .sd2log{margin:0;padding-left:18px;font:400 12px/1.6 var(--mono);color:var(--ink-2)}
-#sd2Tbl th,#sd2Tbl td,#sd2pTbl th,#sd2pTbl td,#sd2p2Tbl th,#sd2p2Tbl td,#sd2p3Tbl th,#sd2p3Tbl td{padding:6px 5px}.k-sd2q{color:var(--sd2q);font-weight:600}.k-sd2r{color:var(--sd2r);font-weight:600}td.win{color:var(--pos);font-weight:600}td.loss{color:var(--neg);font-weight:600}.k-peter{color:var(--peter);font-weight:600}.k-dist{color:var(--dist);font-weight:600}
+#sd2Tbl th,#sd2Tbl td,#sd2pTbl th,#sd2pTbl td,#sd2p2Tbl th,#sd2p2Tbl td,#sd2p3Tbl th,#sd2p3Tbl td{padding:6px 5px}.k-sd2q{color:var(--sd2q);font-weight:600}.k-sd2r{color:var(--sd2r);font-weight:600}.k-sd2ai{color:var(--sd2ai);font-weight:600}
+.aibox{border-left:3px solid var(--sd2ai);background:var(--chip);border-radius:0 6px 6px 0;padding:12px 14px;display:grid;gap:8px}
+.aibox .meta{font:500 12px/1.4 var(--mono);color:var(--ink-3)}
+.aibox .plan{display:flex;flex-wrap:wrap;gap:6px 14px;font:500 13px/1.4 var(--mono)}
+.aibox .body{font-size:13.5px;line-height:1.65;white-space:normal}
+.aibox .body p{margin:0 0 6px}
+.evlist{margin:0;padding-left:0;list-style:none;display:grid;gap:3px;font:400 12.5px/1.5 var(--mono);color:var(--ink-2)}
+.evlist b{color:var(--ink);font-weight:600}
+details.ailog summary{cursor:pointer;color:var(--ink-2);font-size:12.5px}
+.aigrid{display:grid;gap:14px;grid-template-columns:minmax(0,2fr) minmax(0,1fr);align-items:start}.evlist{max-height:340px;overflow:auto}@media (max-width:760px){.aigrid{grid-template-columns:1fr}}td.win{color:var(--pos);font-weight:600}td.loss{color:var(--neg);font-weight:600}.k-peter{color:var(--peter);font-weight:600}.k-dist{color:var(--dist);font-weight:600}
 .pill{display:inline-flex;gap:5px;align-items:center;padding:2px 8px;border-radius:999px;font-weight:600;font-size:12px;border:1px solid var(--rule)}
 .pill .dot{width:8px;height:8px;border-radius:50%}
 .pred{font-size:12px;color:var(--ink-2)}
@@ -137,6 +146,17 @@ td.mono{font-family:var(--mono)}
     <p class="sub" id="ladderNote"></p>
   </section>
 
+
+  <section id="sd2aiSec">
+    <h2>신동2 해설 — Claude 재량 <span class="muted" id="sd2aiMeta" style="font-weight:400;font-size:12.5px"></span></h2>
+    <p class="sub">08:52 장전 전망 → 장중 갱신 → 보유 관리 → 장후 종합. <code>shindong2</code> 스킬이 기록할 때마다 바뀐다(이 페이지는 매분 다시 읽는다). 재량 제안은 「신동2-AI」로 따로 기록·채점한다 — 사전등록 규칙(기본·P·P2·P3)과 섞지 않는다. 주문 없음.</p>
+    <div class="aigrid">
+      <div class="aibox" id="aiBox"></div>
+      <div><h3 style="margin:0 0 6px;font-size:13px">이벤트 <span class="muted" id="evN"></span></h3><ul class="evlist" id="evList"></ul></div>
+    </div>
+    <div class="scroll"><table id="aiTbl"></table></div>
+    <details class="ailog"><summary>재량 기록 전체 <span id="aiLogN"></span></summary><ol class="sd2log" id="aiLog"></ol></details>
+  </section>
   <section id="sd2Sec">
     <h2>신동2 — 외인 수급 시점별 제안</h2>
     <p class="sub">08:55–09:55 10분마다 <b>그 시각 이전 데이터만으로</b> 방향·진입·손절·청산을 낸다(기본 규칙). 신동2-P 는 같은 원천으로 아침에 방향을 한 번 정하고, 진입은 가격으로만, 손실은 짧게·이익은 길게 가져가는 섀도 변형이다. P2 는 P 에 피터 1116 딥다이브의 두 가지(고접촉 레벨 · 61.8% 손절)를 더한 섀도다. P3 는 P 에서 최종 목표만 「직전 5일 매물대 봉우리 1pt 앞」으로 바꾼 섀도다(피터 청산가 1095 딥다이브). 위 차트의 청록(기본)·자홍(P)·갈색(P2)·올리브(P3) 표시가 이 표와 같다. 「앞길」은 진입가에서 진행 방향 다음 두꺼운 매물대까지 거리와 그 사이 얇은 구간 비율(기록만). 「접촉」은 진입 레벨을 직전 60분 동안 지난 봉 수(기록만, 판단에 안 씀).</p>
@@ -275,7 +295,7 @@ function seg(id, key, opts, onChange){
 }
 seg('segStage', 'stage', [['all','둘 다'],['0850','08:50'],['0930','09:30']], drawLadder);
 seg('segPeter', 'peter', [['on','켬'],['off','끔']], () => { drawLadder(); drawTable(); });
-seg('segSd2', 'sd2', [['both','전부'],['base','기본'],['p','P'],['p2','P2'],['p3','P3'],['off','끔']], drawLadder);
+seg('segSd2', 'sd2', [['both','전부'],['base','기본'],['p','P'],['p2','P2'],['p3','P3'],['ai','AI'],['off','끔']], drawLadder);
 seg('segLayer', 'layer', [['mon','먼스리 OI'],['wkm','월위클리 OI'],['wkt','목위클리 OI'],['hold','전일 외인 보유'],['flowF','당일 외인'],['flowI','당일 개인'],['dF','외인 증감'],['dI','개인 증감']], drawLadder);
 // 9842 시점 파일 — 직전 시점 대비 증감. 시점이 하나뿐이면 개장(0) 대비
 function snapDelta(who){
@@ -429,6 +449,35 @@ function drawLadder(){
       });
     });
   }
+  // 신동2-AI — 재량 계획선(진입 점선·손절 빨강·목표 실선) · 체결 ◆ · 청산 ✕
+  const AI = D.sd2ai;
+  if (AI && AI.log && AI.log.length && (state.sd2 === 'both' || state.sd2 === 'ai')) {
+    const col = css('--sd2ai'), nowT = N ? C[N-1][0] : '15:09';
+    const effT = r => { const t = r.ts.slice(11, 16); return (r.ts.slice(0, 10) < D.date || t < '08:45') ? '08:45' : t; };
+    const plans = AI.log.filter(r => r.action === 'plan' || r.action === 'manage' || r.action === 'stand' || r.action === 'exit');
+    plans.forEach((r, i) => {
+      const t0 = effT(r); const nxt = plans.slice(i + 1).find(q => q.action !== 'manage' || r.action === 'manage'); const t1 = nxt ? effT(nxt) : (nowT > '15:10' ? '15:10' : nowT);
+      if (t0 > '15:45' || t1 <= t0) return;
+      const x0 = xT(t0), x1 = xT(t1 > '15:45' ? '15:45' : t1);
+      const line = (pv, stroke, dash, w) => { if (pv == null) return; el('line', { x1: x0, x2: x1, y1: y(pv), y2: y(pv), stroke, 'stroke-dasharray': dash, 'stroke-width': w, opacity: .95 }, svg); };
+      line(r.entry, col, '1 3', 2); line(r.stop, css('--neg'), '6 3', 1.4); line(r.target, col, '', 1.6);
+      if (r.entry != null || r.stop != null || r.target != null) {
+        const yy = y(r.entry != null ? r.entry : (r.target != null ? r.target : r.stop));
+        el('text', { x: x0 + 3, y: yy - 4, 'font-size': 10, 'font-weight': 700, fill: col }, svg, 'AI ' + (r.dir || ''));
+        const hb = el('rect', { x: x0, y: Math.min(...[r.entry, r.stop, r.target].filter(v => v != null).map(y)) - 6, width: Math.max(4, x1 - x0),
+          height: Math.max(...[r.entry, r.stop, r.target].filter(v => v != null).map(y)) - Math.min(...[r.entry, r.stop, r.target].filter(v => v != null).map(y)) + 12, fill: 'transparent' }, svg);
+        hb.addEventListener('mousemove', ev => showTip(ev, `<b style="color:var(--sd2ai)">신동2-AI ${r.ts.slice(11, 16)} ${r.phase} · ${r.action}</b><br>${r.dir || ''} 진입 ${r.entry ?? '시장가'} · 손절 ${r.stop ?? '—'} · 청산 ${r.target ?? '—'}`));
+        hb.addEventListener('mouseleave', hideTip);
+      }
+    });
+    ((AI.sim && AI.sim.trades) || []).forEach(tr => {
+      const xx = xT(tr.entry_t), yy = y(tr.fill);
+      el('path', { d: `M${xx} ${yy-7} L${xx+7} ${yy} L${xx} ${yy+7} L${xx-7} ${yy} Z`, fill: col, stroke: css('--panel'), 'stroke-width': 1.5 }, svg);
+      if (tr.exit_t) { const x1 = xT(tr.exit_t > '15:45' ? '15:45' : tr.exit_t), y1 = y(tr.exit_px);
+        el('line', { x1: xx, y1: yy, x2: x1, y2: y1, stroke: col, 'stroke-width': 1.2, 'stroke-dasharray': '1 3' }, svg);
+        el('path', { d: `M${x1-5} ${y1-5} L${x1+5} ${y1+5} M${x1+5} ${y1-5} L${x1-5} ${y1+5}`, stroke: col, 'stroke-width': 2.4 }, svg); }
+    });
+  }
   // profile
   el('line', { x1: profX + profW/2, x2: profX + profW/2, y1: mT, y2: H - mB, stroke: css('--rule') }, svg);
   const half = profW / 2 - 4; let rows = [], unit = '', title = '', shadow = null, shadowWhy = '';
@@ -496,7 +545,7 @@ function drawLadder(){
   lg.innerHTML = `<span><i class="sw-line" style="border-color:var(--struct-line)"></i>구조맥점</span><span><i class="sw-line" style="border-color:var(--dist-line);border-top-style:dashed"></i>거리맥점</span><span>★ 합류(굵은 선)</span>` +
     `<span><i class="sw-box" style="background:var(--band-hi);border:1px solid var(--rule)"></i>고 50·80% 밴드</span><span><i class="sw-box" style="background:var(--band-lo);border:1px solid var(--rule)"></i>저 밴드</span>` +
     `<span><i class="sw-line" style="border-color:var(--peter);border-top-style:dotted"></i>피터맥점</span><span style="color:var(--peter)">▼ 피터 체결 · ✕ 청산</span>` +
-    (state.sd2 !== 'off' ? `<span class="k-sd2">▲▼ 신동2 기본</span><span class="k-sd2p">▲▼ 신동2-P</span><span class="k-sd2q">▲▼ 신동2-P2</span><span class="k-sd2r">▲▼ 신동2-P3</span><span>● 절반 청산</span><span><i class="sw-line" style="border-color:var(--neg);border-top-style:dashed"></i>손절선</span><span>실선 = 청산 목표 · ✕ 청산 · 빈 ▲▼ = 미체결</span>` : '') +
+    (state.sd2 !== 'off' ? `<span class="k-sd2">▲▼ 신동2 기본</span><span class="k-sd2p">▲▼ 신동2-P</span><span class="k-sd2q">▲▼ 신동2-P2</span><span class="k-sd2r">▲▼ 신동2-P3</span><span class="k-sd2ai">◆ 신동2-AI(재량) · 점선 진입·실선 목표</span><span>● 절반 청산</span><span><i class="sw-line" style="border-color:var(--neg);border-top-style:dashed"></i>손절선</span><span>실선 = 청산 목표 · ✕ 청산 · 빈 ▲▼ = 미체결</span>` : '') +
     `<span><i class="sw-box" style="background:var(--o-back);border-radius:50%"></i>되돌림</span><span><i class="sw-box" style="background:var(--o-break);clip-path:polygon(50% 0,100% 100%,0 100%)"></i>돌파</span><span><i class="sw-box" style="background:var(--o-stay)"></i>정거장</span>` +
     (signed ? `<span><i class="sw-box" style="background:var(--pos)"></i>순매수(+)</span><span><i class="sw-box" style="background:var(--neg)"></i>순매도(−)</span>` +
       (shadow ? `<span><i class="sw-box" style="background:color-mix(in srgb, var(--pos) 16%, transparent);border:1px dashed var(--pos)"></i>그림자 = 전일 보유</span>` +
@@ -660,6 +709,45 @@ function drawTable(){
 }
 
 
+function drawAI(){
+  const AI = D.sd2ai, sec = document.getElementById('sd2aiSec');
+  const esc = t => String(t ?? '').replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+  const md = t => esc(t).split(/\n{2,}/).map(p => '<p>' + p.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/\n/g, '<br>') + '</p>').join('');
+  const PH = { premarket: '장전', intraday: '장중', position: '보유', postmarket: '장후', overnight: '익일 계획' };
+  if (!AI) {
+    document.getElementById('sd2aiMeta').textContent = '';
+    document.getElementById('aiBox').innerHTML = '<div class="muted">이 날 기록 없음 — <code>shindong2</code> 스킬이 아직 실행되지 않았다(미기록이지 0이 아니다).</div>';
+    ['evList', 'aiTbl', 'aiLog'].forEach(id => document.getElementById(id).innerHTML = ''); document.getElementById('evN').textContent = ''; document.getElementById('aiLogN').textContent = '';
+    return;
+  }
+  const L = AI.latest;
+  document.getElementById('sd2aiMeta').textContent = L ? `최신 ${L.ts.slice(11, 16)} · ${PH[L.phase] || L.phase}` : '';
+  const sim = AI.sim;
+  let box = '';
+  if (L) {
+    box += `<div class="meta">${L.ts.replace('T', ' ')} · ${PH[L.phase] || L.phase} · ${L.action}</div>`;
+    if (L.action === 'manage')
+      box += `<div class="plan"><span class="k-sd2ai">갱신</span><span>손절 <b>${L.stop ?? '유지'}</b></span><span>청산 <b>${L.target ?? '유지'}</b></span></div>`;
+    else if (L.action === 'exit') box += `<div class="plan"><span class="k-sd2ai">즉시 청산</span></div>`;
+    else if (L.dir && L.dir !== '관망' || L.entry != null || L.stop != null || L.target != null)
+      box += `<div class="plan"><span class="k-sd2ai">${esc(L.dir)}</span><span>진입 <b>${L.entry ?? '시장가'}</b></span><span>손절 <b>${L.stop ?? '—'}</b></span><span>청산 <b>${L.target ?? '—'}</b></span></div>`;
+    else box += `<div class="plan"><span class="k-sd2ai">${esc(L.dir || '관망')}</span></div>`;
+    box += `<div class="body">${md(L.comment)}</div>`;
+  } else box = '<div class="muted">재량 기록 없음 — 이벤트만 쌓이는 중</div>';
+  if (sim) box += `<div class="meta">신동2-AI 손익 ${fmt(sim.pnl, 2)}pt · 거래 ${sim.trades.length}${sim.pending ? ' · 대기 ' + (sim.pending.sgn > 0 ? '매수' : '매도') + ' ' + (sim.pending.entry ?? '시장가') : ''}${D.live ? ' (장중 잠정)' : ''}</div>`;
+  document.getElementById('aiBox').innerHTML = box;
+  document.getElementById('evN').textContent = `${AI.events_n}건`;
+  document.getElementById('evList').innerHTML = AI.events.slice().sort((a, b) => (b.t || '').localeCompare(a.t || '')).map(e => `<li><b>${esc(e.t)}</b> [${esc(e.kind)}] ${esc(e.text)}</li>`).join('') || '<li class="muted">없음</li>';
+  let q = '<thead><tr><th class="l">진입</th><th class="l">방향</th><th>체결</th><th class="l">방식</th><th>손절</th><th>청산 목표</th><th class="l">청산</th><th>손익pt</th></tr></thead><tbody>';
+  const tr = (sim && sim.trades) || [];
+  if (!tr.length) q += '<tr><td class="l muted" colspan="8">재량 거래 없음</td></tr>';
+  tr.forEach(t => { q += `<tr><td class="l mono">${t.entry_t}</td><td class="l k-sd2ai">${t.side}</td><td class="mono">${t.fill.toFixed(2)}</td><td class="l">${t.how}</td><td class="mono">${t.stop ?? '—'}</td><td class="mono">${t.target ?? '—'}</td>` +
+    `<td class="l">${t.open ? '보유 중 (평가)' : t.exit_t + ' ' + t.why}</td><td class="mono ${t.pnl > 0 ? 'win' : t.pnl < 0 ? 'loss' : ''}">${fmt(t.pnl, 2)}</td></tr>`; });
+  document.getElementById('aiTbl').innerHTML = q + '</tbody>';
+  document.getElementById('aiLogN').textContent = `(${AI.log.length}건)`;
+  document.getElementById('aiLog').innerHTML = AI.log.map(r => `<li><b>${r.ts.slice(11, 16)}</b> ${PH[r.phase] || r.phase} · ${r.action} · ${esc(r.dir)} 진입 ${r.entry ?? '—'} 손절 ${r.stop ?? '—'} 청산 ${r.target ?? '—'} — ${esc((r.comment || '').split('\n')[0].slice(0, 120))}</li>`).join('');
+}
+
 function drawSD2Table(){
   const SD = D.shindong2, sec = document.getElementById('sd2Sec');
   if (!SD) { sec.hidden = true; return; } sec.hidden = false;
@@ -705,7 +793,7 @@ function setData(d){
   D = d; C = D.candles || []; N = C.length; B = D.basis || 0; tIdx = {}; C.forEach((c, i) => tIdx[c[0]] = i); big = computeBig();
   document.getElementById('h1').textContent = D.date + ' 맥점 × 옵션 사다리';
   document.title = D.date + ' 맥점 옵션 사다리';
-  makeBookSeg(); renderFacts(); renderPeterNotes(); drawLadder(); drawHeat(); drawTable(); drawSD2Table();
+  makeBookSeg(); renderFacts(); renderPeterNotes(); drawLadder(); drawHeat(); drawTable(); drawSD2Table(); drawAI();
 }
 
 // ── 날짜 · 달력 · 실시간 ──────────────────────────────────
