@@ -397,6 +397,8 @@ def main(argv=None):
         sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
+    g = sub.add_parser("gate", help="거래일이면 exit 0, 휴장일이면 exit 3 (예약작업 래퍼용)")
+    g.add_argument("--date", default=_dt.date.today().isoformat())
     for c in ("snapshot", "poll", "score"):
         s = sub.add_parser(c)
         s.add_argument("--date", default=_dt.date.today().isoformat())
@@ -412,9 +414,21 @@ def main(argv=None):
     r.add_argument("--comment", default="")
     r.add_argument("--comment-file")
     a = ap.parse_args(argv)
+    if a.cmd == "gate":
+        try:
+            from utils.time_utils import is_trading_day
+            ok = is_trading_day(_dt.datetime.combine(_dt.date.fromisoformat(a.date), _dt.time(12)))
+        except Exception as e:                       # 달력을 못 읽으면 주말만 거른다 — 그 사실을 남긴다
+            ok = _dt.date.fromisoformat(a.date).weekday() < 5
+            print("달력 읽기 실패(%s) — 주말만 판정" % e)
+        print("%s %s" % (a.date, "거래일" if ok else "휴장일"))
+        return 0 if ok else 3
     if a.cmd == "record":
         comment = a.comment
-        if a.comment_file:
+        if a.comment_file == "-":                    # 표준입력 — 예약작업(파일 쓰기 권한 없음)은 heredoc 으로 넘긴다
+            data = sys.stdin.buffer.read()
+            comment = data.decode("utf-8", errors="replace")
+        elif a.comment_file:
             with open(a.comment_file, encoding="utf-8") as f:
                 comment = f.read()
         day = a.for_date or a.date

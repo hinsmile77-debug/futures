@@ -27,7 +27,9 @@ description: 신동2 — 미륵이 데이터(외인 선물·먼스리/위클리 
 conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py snapshot          # 상태 + 새 이벤트 요약 (읽고 판단)
 conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py poll              # 마지막 기록 이후 새 이벤트 있으면 exit 10
 conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py record --phase <단계> --action <plan|manage|exit|stand|note> \
-      --dir <매수|매도|관망> [--entry X] [--stop Y] [--target Z] --comment-file <해설.md>
+      --dir <매수|매도|관망> [--entry X] [--stop Y] [--target Z] --comment-file - <<'EOF'
+해설 본문(마크다운)
+EOF
 conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py score             # 재량 채점(장중 잠정 · 장후 확정)
 ```
 
@@ -38,7 +40,9 @@ conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py score
 - `--entry` 를 비우면 다음 분 시가 시장가. `plan` 은 손절·청산을 **반드시** 함께 적는다(채점 불가 기록 금지).
 - `manage` = 보유·대기 중 손절/청산만 갱신. `exit` = 다음 분 시가 청산. `stand` = 대기 계획 취소(관망).
   `note` = 가격 변화 없는 해설.
-- 해설은 스크래치 파일에 써서 `--comment-file` 로 넘긴다(따옴표·줄바꿈 문제 회피).
+- 🔴 **해설은 표준입력(heredoc)으로 넘긴다** — `--comment-file -` 뒤에 `<<'EOF' … EOF`. 예약작업 실행은 Write/Edit 도구가
+  **막혀 있고**(허용: Read·Glob·Grep · `conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py …` 만)
+  파일을 만들 수 없다. 명령 앞에 다른 것(`cd`, `&&`, 환경변수)을 붙이면 권한 밖이라 거부된다.
 - 사다리(`MAEKJEOM_LADDER.bat`, 127.0.0.1:8765)가 매분 다시 읽어 「신동2 해설」 패널과 차트(◆·파랑 계획선)에 그린다.
 
 ## 읽을 원천 (snapshot 이 대부분 요약한다)
@@ -78,6 +82,11 @@ conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py score
 2. 유지 / 손절 이동(`manage`) / 급청산(`exit`) — 급청산은 **세팅 변경 조건** 또는 손절선 1pt 안 접근 + 반대 구조 돌파일 때.
 3. 청산되면 그 거래를 3–5줄로 정리(`note`): 진입 근거가 맞았나, 손절·목표가 적절했나.
 
+### position 이 15:10 이후에 불렸을 때 (15:12 마감 실행)
+
+강제청산 직후다. `snapshot` 으로 재량·규칙 결과를 보고 오늘 재량 거래를 정리하는 `note` 하나만 남긴다
+(새 `plan` 금지 — 15:00 이후 진입은 채점되지 않는다).
+
 ### postmarket (15:55 — 정규선물 15:52 적재 뒤)
 
 1. `score` → 재량·규칙(기본·P·P2·P3)·피터를 나란히 본다.
@@ -86,6 +95,13 @@ conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py score
    `record --phase overnight --for-date <다음 거래일> --action plan|stand` 로 **내일 날짜 파일**에 미리 적는다
    (그날 08:45 이전 기록은 개장부터 유효).
 4. 오늘 해설 문서(`docs/미륵이고도화3/신동2/live/`)는 커밋 대상이다 — 커밋은 사람이 지시할 때만.
+
+## 예약작업 (3단계)
+
+`scripts/shindong2_tasks.ps1 -Action Register` 가 `\Mireuk\Mireuk_Shindong2_*` 다섯 개를 월–금으로 등록한다
+(장전 08:52 · 장중 09:05–10:05/10분 + 10:30–14:30/30분 · 이벤트 10:10–15:00/10분 · 마감 15:12 · 장후 15:55).
+실행은 `scripts/shindong2_run.ps1 -Phase …` — 휴장일·중복 실행은 건너뛰고, 이벤트 단계는 새 이벤트가 있을 때만
+Claude 를 부른다. 로그 `logs/shindong2_YYYYMMDD.log`. 해제는 `-Action Unregister`.
 
 ## 해설 쓰는 법
 

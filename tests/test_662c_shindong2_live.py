@@ -133,3 +133,33 @@ def test_skill_file_states_guards():
     assert s.startswith("---\nname: shindong2")
     for must in ("주문하지 않는다", "사전등록 규칙을 건드리지 않는다", "conda run --no-capture-output -n py310_64", "456차", "--for-date"):
         assert must in s, must
+
+
+# ── F. 예약작업(3단계) — 래퍼·등록 스크립트의 안전장치 ─────────────────────
+def _ps(name):
+    with open(os.path.join(_ROOT, "scripts", name), "rb") as f:
+        return f.read()
+
+
+@pytest.mark.parametrize("name", ["shindong2_run.ps1", "shindong2_tasks.ps1"])
+def test_ps1_is_pure_ascii(name):
+    """PowerShell 5.1 은 BOM 없는 파일을 ANSI 로 읽는다 — 한글이 섞이면 깨진다(603차 관례)."""
+    assert all(b < 128 for b in _ps(name))
+
+
+def test_runner_restricts_claude_tools_and_guards():
+    s = _ps("shindong2_run.ps1").decode("ascii")
+    assert "'Bash(conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py:*)'" in s
+    for deny in ("'Edit'", "'Write'", "'WebFetch'", "'WebSearch'"):
+        assert deny in s
+    assert "run --no-capture-output -n py310_64" in s           # cp949 재출력 크래시 회피
+    assert "Run-Live @('gate')" in s and "-eq 3" in s            # 휴장일 건너뜀
+    assert "run.lock" in s and "finally" in s                    # 중복 실행 방지 + 잠금 해제
+    assert "-ne 10" in s                                         # poll: 새 이벤트 있을 때만 Claude
+
+
+def test_tasks_schedule_and_no_catch_up():
+    s = _ps("shindong2_tasks.ps1").decode("ascii")
+    for hm in ("'08:52'", "'09:05' 10 61", "'10:30' 30 241", "'10:10' 10 291", "'15:12'", "'15:55'"):
+        assert hm in s, hm
+    assert "StartWhenAvailable = $false" in s and "-LogonType Interactive" in s
