@@ -413,6 +413,48 @@ def flow1m(day):
     return mins, out, last_bar
 
 
+# ── 선물 투자자 순매수 (7221, raw_investor_futures) ─────────────────────────
+# [656차 후속4 / 2026-10-06] 옵션 흐름과 같은 시간축에 「선물 외인 누적」 띠를 그린다.
+#   값은 일중 누계(계약, 정규 K200 선물 · 승수 25만)이며 09:02 부터 매분(09:00–01 은 의도적 스킵).
+#   7222 흐름(flow1m)과 달리 **앞 값을 이어 붙이지 않는다** — 받지 않은 분은 None(계측 4원칙 ②).
+#   장중에는 마지막으로 받은 ts 이후만 PK 범위로 증분 조회한다(456차, 하루 약 390행).
+FUT_INV = (("foreign", "foreign_net_qty"), ("institution", "institution_net_qty"), ("individual", "retail_net_qty"))
+_fut_cache = {}           # day -> {"rows": {hm: {inv: qty}}, "src": set(), "last_ts": str|None}
+_fut_lock = threading.Lock()
+
+
+def futflow(day, mins):
+    """→ (series {inv: [qty|None] × mins}, last_hm, src) — 행이 없으면 ({}, None, None)."""
+    with _fut_lock:
+        c = _fut_cache.setdefault(day, {"rows": {}, "src": set(), "last_ts": None})
+        lo = c["last_ts"] or (day + " 08:45:00")
+        con = _ro("raw_data.db")
+        try:
+            new = con.execute(
+                "SELECT ts, fields, src FROM raw_investor_futures WHERE ts >= ? AND ts <= ? ORDER BY ts",
+                (lo, day + " 15:35:59")).fetchall()
+        finally:
+            con.close()
+        for ts, fj, src in new:
+            try:
+                f = json.loads(fj)
+            except Exception:
+                continue
+            c["rows"][ts[11:16]] = {inv: f.get(k) for inv, k in FUT_INV}
+            c["src"].add(src or "live")
+        if new:
+            c["last_ts"] = new[-1][0]
+        rows, srcs = c["rows"], sorted(c["src"])
+    if not rows:
+        return {}, None, None
+    series = {}
+    for inv, _ in FUT_INV:
+        arr = [rows[m][inv] if m in rows else None for m in mins]
+        if any(v is not None for v in arr):
+            series[inv] = arr
+    return series, max(rows), "+".join(srcs)
+
+
 # ── [9842] 내보내기 파일 (표준 라이브러리 파서) ─────────────────────────────
 _9842_COLS = ["c_inv_trust", "c_fin", "c_for", "c_ind", "c_px", "k", "p_px", "p_ind", "p_for", "p_fin", "p_inv_trust"]
 
@@ -702,12 +744,20 @@ def build_day(day, now=None):
     except Exception as e:
         mins, f1m, flow_last = [], {}, None
         warn.append("7222 흐름 읽기 실패: %s" % e)
+    try:
+        fut, fut_last, fut_src = futflow(day, mins)
+    except Exception as e:
+        fut, fut_last, fut_src = {}, None, None
+        warn.append("선물 투자자 순매수 읽기 실패: %s" % e)
+    if fut_src and fut_src != "live":
+        warn.append("선물 투자자 순매수 원천 = %s (사후 역변환 백필 — 15:08 종료, 실측 아님)" % fut_src)
     h = hts9842(day)
     warn += ["9842 시점 파일 읽기 실패 — %s" % e for e in h["flow_snaps_err"]]
     actual = dict(high=max((c[2] for c in cs), default=None), low=min((c[3] for c in cs), default=None))
     return dict(date=day, live=live, generated_at=now.isoformat(timespec="seconds"),
                 candles=cs, candle_src=csrc, levels=lv, bands=bands, basis=basis if basis is not None else 0.0,
                 basis_measured=basis is not None, times=times, books=bk, mins=mins, flow1m=f1m, flow_last=flow_last,
+                fut=fut, fut_last=fut_last, fut_src=fut_src,
                 hold=h["hold"], flow=h["flow"], hold_src=h["hold_src"], flow_src=h["flow_src"],
                 hold_unit=h["hold_unit"], flow_unit=h["flow_unit"],
                 hold_date=h["hold_date"], hold_is_prev=h["hold_is_prev"],
