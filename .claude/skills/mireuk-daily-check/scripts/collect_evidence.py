@@ -775,6 +775,15 @@ def git_change_profile(root):
         return [l.split("\t")[-1] for l in raw.splitlines() if l.strip()]
 
     all_files = _files([])                                  # git 이 보는 추적 변경 전량
+    if all_files is None:
+        # [MW0601 661차 / F-1] 첫 diff 가 실패(대개 타임아웃)하면 **두 번째 변형을 부르지
+        # 않는다.** `-w --ignore-cr-at-eol` 은 첫 호출만큼 무거워 같은 타임아웃을 한 번 더
+        # 겪을 뿐이고, 2026-10-06 하루 세 차례 인덱스락 재발이 모두 이 연속 호출 구간이었다.
+        # 결과는 어차피 「실질 변경 미측정」이다 — 그 사실과 생략 사유를 남긴다(원칙 ②·④).
+        out["second_diff_skipped"] = True
+        out["fail_reason"] = ((out["fail_reason"] or "git diff --numstat 실패")
+                              + " — 후속 `-w --ignore-cr-at-eol` 호출 생략")
+        return out
     # `-w`(공백 무시) + `--ignore-cr-at-eol` 로 EOL·공백 파생 diff 를 뺀다.
     real_files = _files(["-w", "--ignore-cr-at-eol"])
     if all_files is None or real_files is None:
@@ -2217,6 +2226,10 @@ def wer_crash_section(root, cfg, day, out):
     lau = launcher_processes(root, day.strftime("%Y%m%d"))
     fau = crash_fault_events(root, day_txt)
     wer = wer_app_faults(day_txt)
+    # [MW0601 661차 / G-3] §11 적신호가 런처 재시작 횟수를 읽을 수 있게 싣는다.
+    # None = 런처 축 미측정 — 「재시작 0회」로 위장하지 않는다(계측 4원칙 ②).
+    if isinstance(fau, dict):
+        fau["launcher_restarts"] = list(lau["restarts"]) if lau.get("measured") else None
 
     # 축마다 측정 여부를 따로 적는다 — 하나가 죽어도 나머지 판정을 살리기 위해서다.
     A("| 축 | 상태 |")
@@ -3222,6 +3235,16 @@ def build(root, day, phase, cfg, discover_only=False):
                      "(정규장 09:00 이후 %d건) — 프로세스는 살아남았다. §9 「프로세스 종료 "
                      "3축 대사」 아래 PID별 표를 볼 것 (641차 637-2)"
                      % (_fau["fatal_total"], _n_open))
+
+    # [MW0601 661차 / G-3] 같은 날 런처 재시작 2회 이상. 2026-10-06 은 10:53·11:59 두 번
+    # 재시작했고 가동시간이 132분 → 67분으로 줄었는데, 횟수는 §9 표 안에만 있어 사람이
+    # 세어야 했다. 문턱 2 는 리포트 제안 그대로 — 관찰용 적신호이지 판정이 아니다.
+    _rst = _fau.get("launcher_restarts") if isinstance(_fau, dict) else None
+    if _rst and len(_rst) >= 2:
+        flags.append("런처 재시작 같은 날 **%d회** (%s) — 재시작 간격·가동시간이 줄어드는지 "
+                     "§9 「프로세스 종료 3축 대사」에서 볼 것 (661차 G-3)"
+                     % (len(_rst), ", ".join("%s %s" % (x["at"], x["kind"]) for x in _rst[:6])
+                        + ((" … 외 %d건" % (len(_rst) - 6)) if len(_rst) > 6 else "")))
 
     if bad_tag:
         flags.append("PC명 태그 누락 커밋 %d건 — 멀티PC 컨벤션 위반" % len(bad_tag))

@@ -104,8 +104,13 @@ description: 피터리(@PeterLeejoa)의 당일 선물매매 트윗을 수집해 
 8. 저장한다. `python tools/peter_build_day.py --date <날짜>`
 9. 월간 문서를 낸다.
    ```
-   python tools/peter_month_report.py <YYYY-MM> --out "C:\Users\82108\PycharmProjects\Peter\트윗원문\피터리_<N>월매매_<YYYYMMDD>_<MMDD>.md"
+   python tools/peter_month_report.py <YYYY-MM> --out "C:/Users/82108/PycharmProjects/Peter/트윗원문/피터리_<N>월매매_<YYYYMMDD>_<MMDD>.md"
    ```
+   🔴 경로는 **슬래시(`/`)로** 쓴다. 역슬래시로 쓰면 리눅스 샌드박스(코웍)에서는 `\`가
+     구분자가 아니라 글자라 futures 저장소 루트에 `CUsers82108…md` 같은 파일이 생긴다
+     (2026-10-02·10-06 실측). ⚠ 리눅스 샌드박스에서는 `C:/…`도 경로가 아니다 —
+     거기서는 마운트 경로(`/mnt/…/Peter/트윗원문/…`)를 쓸 것.
+     스크립트가 그 모양을 감지하면 쓰지 않고 멈춘다(661차 A-3).
    🔴 **문서는 출력이지 입력이 아니다.** 문서를 고쳤다면 `_lv/_tr` 과 DB 에 먼저
      반영하고 다시 낸다 — 아니면 다음 재생성에서 사라진다.
 

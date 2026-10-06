@@ -2610,7 +2610,10 @@ class BatchRetrainer:
             return X, y_dict, feat_names
 
         except Exception as e:
-            logger.warning(f"[Retrain] DB 로드 오류: {e}")
+            # [MW0601 661차 / F-6] str(e) 가 빈 예외(2026-10-06 11:59:57 실측)는 메시지가
+            # 「DB 로드 오류: 」로 끝나 원인(락·타임아웃·기타)을 구분할 수 없었다.
+            # repr 로 예외 타입을 남기고 스택을 붙인다. 반환·동작은 무변경.
+            logger.warning(f"[Retrain] DB 로드 오류: {e!r}", exc_info=True)
             return None, None, None
 
     def prune_raw_data_db(self, keep_weeks: int = RAW_DATA_PRUNE_WEEKS) -> int:

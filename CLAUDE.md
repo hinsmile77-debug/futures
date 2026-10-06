@@ -21,7 +21,7 @@ KOSPI 200 선물 1분봉 기반 방향 예측 + 자동매매 시스템 (별칭: 
 | Python (재학습) | **3.10 64-bit** (`conda env: py310_64`) — GBM/RF 배치 학습 전용 (226차, OOM 방지) |
 | OS | Windows 전용 (Cybos Plus COM/OCX) |
 | scipy | **1.5.4** (32-bit DLL 충돌 회피) |
-| scikit-learn | 1.0.2, joblib 1.1.1 |
+| scikit-learn | 1.0.2, joblib 1.1.0 |
 | 선물 분봉 TR | **OPT50029** (선물분차트요청) — OPT10080 사용 금지 |
 
 > **재학습 환경 분리 이유**: py37_32에서 numpy float32 배열 OOM 반복으로 모델 미교체 → CB③ HALT 유발.

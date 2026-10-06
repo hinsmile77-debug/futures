@@ -151,12 +151,39 @@ def build(month, dbpath):
     return "\n".join(o)
 
 
+_RE_MANGLED_WIN = re.compile(r"^[A-Za-z]:?\\?Users")
+
+
+def mangled_out_path(out):
+    """[MW0601 661차 / A-3] 이 OS 에서 경로로 해석되지 않는 윈도우 절대경로인가.
+
+    `--out "C:\\Users\\...\\Peter\\트윗원문\\....md"` 를 **리눅스 샌드박스**(코웍)에서
+    돌리면 `\\` 는 구분자가 아니라 글자라 `os.path.dirname` 이 빈 문자열이 되고,
+    현재 폴더(= futures 저장소 루트)에 `C:\\Users\\…md` 라는 **이름 하나**로 써진다.
+    윈도우 쪽에서 보면 `:`·`\\` 가 사설 영역 문자(U+F03A·U+F05C)로 바뀌어
+    `CUsers82108PycharmProjectsPeter트윗원문…md` 처럼 보인다(2026-10-02·10-06 실측,
+    점검 1-5·1-10). bash 가 역슬래시를 먹은 경우(`C:Users…`)도 같이 잡는다.
+    판정: 폴더 부분이 없는데 이름이 `C:\\Users`/`C:Users`/`CUsers` 로 시작한다.
+    윈도우 파이썬에서는 `C:\\Users\\…` 의 dirname 이 비지 않으므로 오탐하지 않는다.
+    드라이브를 떼고 본다 — 윈도우에서 `C:Users…` 는 드라이브 상대경로라 dirname 이
+    `C:` 로 나오지만 실제로는 현재 폴더에 써진다.
+    """
+    rest = os.path.splitdrive(out)[1]
+    return os.path.dirname(rest) == "" and bool(_RE_MANGLED_WIN.match(out))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("month", help="YYYY-MM")
     ap.add_argument("--out", required=True)
     ap.add_argument("--db", default=os.path.join(_ROOT, 'data', 'db', 'peter_levels.db'))
     a = ap.parse_args()
+    if mangled_out_path(a.out):
+        sys.stderr.write(
+            "중단: --out 이 구분자가 빠진 윈도우 경로로 보인다 (%s).\n"
+            "      저장소 루트에 엉뚱한 이름으로 써지는 것을 막았다. 경로를 슬래시로 쓸 것 —\n"
+            "      예: --out \"C:/Users/82108/PycharmProjects/Peter/트윗원문/<파일>.md\"\n" % a.out)
+        sys.exit(2)
     txt = build(a.month, a.db)
     io.open(a.out, 'w', encoding='utf-8').write(txt)
     print("생성: %s (%d자)" % (a.out, len(txt)))
