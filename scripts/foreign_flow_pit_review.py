@@ -124,6 +124,28 @@ def load(day, cs=None, fut=None):
 
     lv, _bands = L.levels(day)
 
+    # E1·E2 매물대 원천 — 정규선물(10100) 직전 5거래일. 오프셋(정규 − 미니)은 당일 T 이전 봉 중앙값,
+    # 장중(정규 당일봉 15:52 적재 전)은 전일 마지막 60봉 중앙값으로 폴백한다(offset_src 로 표시).
+    con = _ro("regular_candles.db")
+    rdays = [r[0] for r in con.execute(
+        "SELECT DISTINCT trade_date FROM regular_candles WHERE code='10100' AND trade_date<? ORDER BY trade_date DESC LIMIT 5", (day,))]
+    reg_prev = []
+    for d in rdays:
+        reg_prev += [(h, l, v) for h, l, v in con.execute(
+            "SELECT high, low, volume FROM regular_candles WHERE code='10100' AND trade_date=?"
+            " AND substr(ts,12,5) BETWEEN '08:45' AND '15:45'", (d,))]
+    reg_today = {t: c for t, c in con.execute(
+        "SELECT substr(ts,12,5), close FROM regular_candles WHERE code='10100' AND trade_date=?", (day,))}
+    off_prev = None
+    if rdays:
+        a = {t: c for t, c in con.execute("SELECT substr(ts,12,5), close FROM regular_candles WHERE code='10100' AND trade_date=?"
+                                         " AND substr(ts,12,5) BETWEEN '08:45' AND '15:45'", (rdays[0],))}
+        b = {t: c for t, c in con.execute("SELECT substr(ts,12,5), close FROM regular_candles WHERE code=? AND trade_date=?"
+                                         " AND substr(ts,12,5) BETWEEN '08:45' AND '15:45'", (L.MINI_CODE, rdays[0]))}
+        diffs = sorted(a[t] - b[t] for t in sorted(set(a) & set(b))[-60:])
+        off_prev = diffs[len(diffs) // 2] if diffs else None
+    con.close()
+
     snaps = []
     for db in ("option_book.db", "option_book_fuo.db"):
         if not os.path.exists(os.path.join(DB, db)):
@@ -145,7 +167,8 @@ def load(day, cs=None, fut=None):
             if mt.date().isoformat() == day:            # 그날 저장된 파일만 시점 정보로 쓴다
                 snaps9842.append((mt.strftime("%H:%M"), f["fn"], p))
     snaps9842.sort()
-    return dict(cs=cs, fut=fut, flow=flow, lv=lv, snaps=snaps, s9842=snaps9842, yymmdd=yymmdd)
+    return dict(cs=cs, fut=fut, flow=flow, lv=lv, snaps=snaps, s9842=snaps9842, yymmdd=yymmdd,
+                reg_prev=reg_prev, reg_today=reg_today, off_prev=off_prev, prof_days=rdays)
 
 
 # ── 시점 T 의 관측(엄격 컷오프) ────────────────────────────────────────────
@@ -329,6 +352,119 @@ P_MAX_ENTRIES = 3
 P_DAY_STOP_N = 3         # 손절 3회 → 당일 종료
 P_DAY_STOP_PT = -12.0    # 누적 −12pt → 당일 종료
 
+# ── S1 · 신동2-P2 — 피터 1116 딥다이브(docs/미륵이고도화3/신동2/피터_1116_진입근거_딥다이브_MW0601-20261006.md §5)
+# S1 접촉 횟수: 진입 레벨 ±0.5 를 지난 봉 수(직전 60봉). **기록만** — 어떤 판단에도 쓰지 않는다.
+#    근거: 피터 49건 중 이긴 27건 평균 10.3봉 vs 진 21건 6.1봉.
+# P2 = P 와 같은 규칙 + 두 가지만 다르다(사전등록 SD2P2-2026-10-06-v1, 채점 10/7부터):
+#    S2 고접촉 레벨 — 기준가 ±5pt 를 0.5pt 격자로 보고 직전 60봉 접촉이 가장 많은 가격(≥6봉)을 진입 후보 레벨에 더한다.
+#       피터의 1116 = 반등이 10번 막힌 자리.
+#    S3 61.8% 손절 — 그날 고저폭의 61.8% 되돌림이 진입에서 1.5pt 이상·상한 안에 있으면 손절을 그 +0.5 에 둔다.
+#       10/6 보유 중 최고 1119.60 vs 61.8% 1119.97(정규).
+TOUCH_WIN = 60
+TOUCH_W = 0.5
+P2_VER = "SD2P2-2026-10-06-v1"
+P2_HT_SPAN = 5.0
+P2_HT_MIN = 6
+P2_FIB = 0.618
+P2_FIB_MIN = 1.5
+P_CFG = dict(name="P", ver=P_VER, ht=False, fib=False, hvn=False)
+P2_CFG = dict(name="P2", ver=P2_VER, ht=True, fib=True, hvn=False)
+
+# ── E1 · E2 — 피터 청산가 1095 딥다이브(docs/미륵이고도화3/신동2/피터_청산가1095_근거_딥다이브_MW0601-20261006.md §6)
+# E1 신동2-P3 = P 와 같고 「최종 목표」만 다르다: 진행 방향에서 가장 가까운 직전 5일 매물대 봉우리(최대의 60% 이상
+#    국소 최대, 정규선물 1pt 구간)가 3R 이상 떨어져 있으면, 그 봉우리 **1pt 앞**을 최종 목표로 둔다. 없으면 P 와 같이 15:10.
+#    근거: 피터 목표가 23건 중 8건이 5일 매물대 봉우리 ±1pt(우연 기대 1.9, z=4.76).
+# E2 매물대 앞길(기록만): 진입가에서 진행 방향으로 다음 두꺼운 구간(최대의 60% 이상)까지 거리와,
+#    그 사이 얇은 구간(최대의 40% 미만) 비율. 어떤 판단에도 쓰지 않는다.
+P3_VER = "SD2P3-2026-10-06-v1"
+P3_CFG = dict(name="P3", ver=P3_VER, ht=False, fib=False, hvn=True)
+HVN_PEAK = 0.6
+LVN_THIN = 0.4
+HVN_FRONT = 1.0
+PROFILE_SCAN = 40
+
+
+def profile5(S):
+    """직전 5거래일 정규선물 1pt 구간 거래량(봉 거래량을 고저 사이 균등 배분)."""
+    if "_prof5" not in S:
+        prof = {}
+        for h, l, v in S.get("reg_prev") or []:
+            lo, hi = int(l), int(h)
+            for q in range(lo, hi + 1):
+                prof[q] = prof.get(q, 0) + (v or 0) / (hi - lo + 1)
+        S["_prof5"] = prof
+    return S["_prof5"]
+
+
+def reg_offset(S, t):
+    """정규 − 미니. 당일 t 이전 봉(5개 이상)이 있으면 그 중앙값, 아니면 전일값(장중 폴백)."""
+    rt = S.get("reg_today") or {}
+    diffs = sorted(rt[c[0]] - c[4] for c in S["cs"] if _hm(c[0]) < _hm(t) and c[0] in rt)
+    if len(diffs) >= 5:
+        return diffs[len(diffs) // 2], "당일"
+    if S.get("off_prev") is not None:
+        return S["off_prev"], "전일"
+    return None, None
+
+
+def hvn_target(S, fill, side, min_dist, t):
+    """E1 — 진행 방향 가장 가까운 5일 매물대 봉우리(≥ min_dist)의 1pt 앞(미니 가격). → (목표, 봉우리_정규, 오프셋, 출처)"""
+    prof = profile5(S)
+    off, src = reg_offset(S, t)
+    if not prof or off is None:
+        return None, None, off, src
+    mx = max(prof.values())
+    peaks = [q for q in prof if prof[q] >= HVN_PEAK * mx and prof[q] >= prof.get(q - 1, 0) and prof[q] >= prof.get(q + 1, 0)]
+    cand = [q for q in peaks if ((q - off) - fill) * side >= min_dist]
+    if not cand:
+        return None, None, off, src
+    q = min(cand, key=lambda x: abs((x - off) - fill))
+    return round(q - off - side * HVN_FRONT, 2), q, round(off, 2), src
+
+
+def thin_ahead(S, fill, side, t):
+    """E2 — 진입가에서 진행 방향 다음 두꺼운 구간까지 거리(pt)와 그 사이 얇은 구간 비율. 기록만."""
+    prof = profile5(S)
+    off, src = reg_offset(S, t)
+    if not prof or off is None:
+        return None
+    mx = max(prof.values())
+    start = int(round(fill + off))
+    thin = n = 0
+    for k in range(1, PROFILE_SCAN + 1):
+        q = start + side * k
+        v = prof.get(q, 0)
+        if v >= HVN_PEAK * mx:
+            return dict(to_hvn=k, thin_pct=round(thin / n, 2) if n else 0.0, off_src=src)
+        n += 1
+        thin += v < LVN_THIN * mx
+    return dict(to_hvn=None, thin_pct=round(thin / n, 2) if n else None, off_src=src)
+
+
+def touch_count(bars, lvl, n=TOUCH_WIN, w=TOUCH_W):
+    """직전 n 봉 중 [lvl−w, lvl+w] 를 지난 봉 수 (S1)."""
+    if lvl is None:
+        return None
+    return sum(1 for c in bars[-n:] if c[3] <= lvl + w and c[2] >= lvl - w)
+
+
+def hi_touch_level(bars, px):
+    """기준가 ±P2_HT_SPAN 안에서 직전 60봉 접촉이 가장 많은 0.5pt 격자 가격. 접촉 < P2_HT_MIN 이면 None (S2)."""
+    if not bars:
+        return None, 0
+    grid = [round(px - P2_HT_SPAN + 0.5 * j, 2) for j in range(int(2 * P2_HT_SPAN / 0.5) + 1)]
+    best = max(grid, key=lambda g: (touch_count(bars, g), -abs(g - px)))
+    n = touch_count(bars, best)
+    return (best, n) if n >= P2_HT_MIN else (None, n)
+
+
+def fib_stop(bars, side):
+    """그날(직전 봉까지) 고저폭의 61.8% 되돌림 — 매도면 저점 + 0.618×폭, 매수면 고점 − 0.618×폭 (S3)."""
+    if not bars:
+        return None
+    hi, lo = max(c[2] for c in bars), min(c[3] for c in bars)
+    return round(lo + P2_FIB * (hi - lo), 2) if side < 0 else round(hi - P2_FIB * (hi - lo), 2)
+
 
 def p_bias(o):
     """수준 항만 쓴 세팅 점수 — 피터 「외인 수급으로 상방 하방 예측 못한다」(8/7) → Δ10 제외."""
@@ -344,8 +480,12 @@ def _in_win(hm):
     return any(_hm(a) <= _hm(hm) < _hm(b) for a, b in P_WINDOWS)
 
 
-def run_p(S, live=False):
-    """분 단위로 앞으로만 진행하는 시뮬레이션. 각 시점의 판단은 그 시각 이전 데이터만 쓴다."""
+def run_p(S, live=False, cfg=None):
+    """분 단위로 앞으로만 진행하는 시뮬레이션. 각 시점의 판단은 그 시각 이전 데이터만 쓴다.
+
+    cfg=None → 신동2-P (사전등록 그대로). cfg=P2_CFG → S2·S3 를 켠 섀도 변형.
+    """
+    cfg = cfg or P_CFG
     cs = [c for c in S["cs"] if _hm(c[0]) < _hm(FORCE_EXIT)]
     log, trades = [], []
     side = None            # +1 매수 / −1 매도
@@ -382,14 +522,20 @@ def run_p(S, live=False):
             if side and pos is None and pend is None and not done and _in_win(T):
                 lv = [p for p in o.get("levels", [])] + [p for _, p in o.get("walls", [])]
                 px = o["px"]
+                ht = None
+                if cfg["ht"]:
+                    ht, htn = hi_touch_level([x for x in cs if _hm(x[0]) < _hm(T)], px)
+                    if ht is not None and all(abs(ht - p) > 0.25 for p in lv):
+                        lv = lv + [ht]
                 near = [p for p in lv if 0 < (px - p) * side <= P_NEAR]          # 매도=위 저항, 매수=아래 지지
                 brk = [p for p in lv if 0 < (p - px) * side <= 10.0]              # 매도=아래 지지 돌파
                 pend = dict(armed=T, limit=(min(near, key=lambda p: abs(p - px)) if near else None),
                             brk=(min(brk, key=lambda p: abs(p - px)) if brk else None), lv=lv, atr=o["atr"])
                 if last_entry_level is not None:          # 재진입은 직전 진입 레벨 재돌파만
                     pend.update(limit=None, brk=last_entry_level)
-                log.append("%s 대기 — 지정가 %s · 돌파 %s" % (T, pend["limit"] if pend["limit"] is not None else "없음",
-                                                           pend["brk"] if pend["brk"] is not None else "없음"))
+                log.append("%s 대기 — 지정가 %s · 돌파 %s%s" % (T, pend["limit"] if pend["limit"] is not None else "없음",
+                                                           pend["brk"] if pend["brk"] is not None else "없음",
+                                                           (" · 고접촉 %.2f(%d봉)" % (ht, htn)) if ht is not None else ""))
         if done:
             continue
         # ② 대기 주문 체결(이 봉 안에서)
@@ -402,17 +548,37 @@ def run_p(S, live=False):
                 fill, how = c[4], "돌파 확인(종가)"
             if fill is not None:
                 dist = min(max(P_STOP, 1.5 * pend["atr"]), P_STOP_MAX)
+                before = cs[:i]
+                stop_src = "고정"
+                if cfg["fib"]:
+                    f = fib_stop(before, side)
+                    if f is not None:
+                        d_f = round((f - fill) * -side + 0.5, 2)       # 진입 너머 61.8% +0.5
+                        if P2_FIB_MIN <= d_f <= P_STOP_MAX:
+                            dist, stop_src = d_f, "61.8%% %.2f" % f
                 far = [p for p in pend["lv"] if (p - fill) * side >= P_FAR_R * dist]
+                hvn_info = None
+                if cfg.get("hvn"):
+                    tg, pk, off_, osrc = hvn_target(S, fill, side, P_FAR_R * dist, t)
+                    far = [tg] if tg is not None else []
+                    hvn_info = dict(peak_reg=pk, offset=off_, offset_src=osrc)
                 pos = dict(t=t, fill=round(fill, 2), how=how, stop=round(fill - side * dist, 2), r=dist,
                            half=round(fill + side * P_HALF_R * dist, 2),
                            far=(max(far, key=lambda p: (p - fill) * side) if far else None),
                            half_done=False, legs=[])
                 pos["stop0"] = pos["stop"]
                 last_entry_level = pend["limit"] if how.startswith("되돌림") else pend["brk"]
+                pos["level"] = last_entry_level
+                pos["touch60"] = touch_count(before, last_entry_level)          # S1 — 기록만
+                pos["stop_src"] = stop_src
+                pos["thin"] = thin_ahead(S, fill, side, t)                          # E2 — 기록만
+                pos["hvn"] = hvn_info
                 pend = None
-                log.append("%s 진입 %s @%.2f (%s) 손절 %.2f · 절반 %.2f · 최종 %s" % (
-                    t, "매수" if side > 0 else "매도", pos["fill"], how, pos["stop"], pos["half"],
-                    pos["far"] if pos["far"] is not None else "없음(15:10)"))
+                log.append("%s 진입 %s @%.2f (%s · 레벨 접촉 %s봉) 손절 %.2f(%s) · 절반 %.2f · 최종 %s" % (
+                    t, "매수" if side > 0 else "매도", pos["fill"], how, pos["touch60"], pos["stop"], stop_src, pos["half"],
+                    pos["far"] if pos["far"] is not None else "없음(15:10)")
+                    + ((" [매물대 봉우리 정규 %s · 오프셋 %s %s]" % (hvn_info["peak_reg"], hvn_info["offset"], hvn_info["offset_src"])) if hvn_info else "")
+                    + ((" · 앞길 두꺼운 구간까지 %spt(얇은 %s)" % (pos["thin"]["to_hvn"], pos["thin"]["thin_pct"])) if pos["thin"] else ""))
                 if how.startswith("돌파"):
                     continue      # 종가 체결 — 그 봉은 끝났다
                 # 지정가는 봉 중간 체결 — 같은 봉의 반대쪽 극값이 손절에 닿았으면 손절로 본다(보수)
@@ -439,7 +605,7 @@ def run_p(S, live=False):
             if exit_all:
                 pnl = sum(x[0] for x in pos["legs"]) / 2.0
                 trades.append(dict(entry_t=pos["t"], side="매수" if side > 0 else "매도", fill=pos["fill"], how=pos["how"],
-                                   exit_t=t, exit_px=exit_all[0], why=exit_all[1], stop=pos["stop0"], half=pos["half"], far=pos["far"],
+                                   exit_t=t, exit_px=exit_all[0], why=exit_all[1], stop=pos["stop0"], half=pos["half"], far=pos["far"], touch60=pos["touch60"], thin=pos["thin"], hvn=pos["hvn"], stop_src=pos["stop_src"], level=pos["level"],
                                    legs=[(round(a, 2), b, tt) for a, b, tt in pos["legs"]], pnl=round(pnl, 2)))
                 cum += pnl
                 if exit_all[1] == "손절":
@@ -458,7 +624,7 @@ def run_p(S, live=False):
         px = cs[-1][4]
         legs = pos["legs"] + [((px - pos["fill"]) * side, "평가", cs[-1][0])] * (1 if pos["half_done"] else 2)
         trades.append(dict(entry_t=pos["t"], side="매수" if side > 0 else "매도", fill=pos["fill"], how=pos["how"],
-                           exit_t=None, open=True, stop=pos["stop0"], stop_now=pos["stop"], half=pos["half"], far=pos["far"],
+                           exit_t=None, open=True, stop=pos["stop0"], stop_now=pos["stop"], half=pos["half"], far=pos["far"], touch60=pos["touch60"], thin=pos["thin"], hvn=pos["hvn"], stop_src=pos["stop_src"], level=pos["level"],
                            legs=[(round(a, 2), b, tt) for a, b, tt in legs], pnl=round(sum(x[0] for x in legs) / 2.0, 2)))
         log.append("%s 보유 중 — 평가 %+.2fpt" % (cs[-1][0], trades[-1]["pnl"]))
         pos = None
@@ -469,11 +635,11 @@ def run_p(S, live=False):
             pos["legs"].append(((px - pos["fill"]) * side, "15:10 강제청산", cs[-1][0]))
         pnl = sum(x[0] for x in pos["legs"]) / 2.0
         trades.append(dict(entry_t=pos["t"], side="매수" if side > 0 else "매도", fill=pos["fill"], how=pos["how"],
-                           exit_t=cs[-1][0], exit_px=round(px, 2), why="15:10 강제청산", stop=pos["stop0"], half=pos["half"], far=pos["far"],
+                           exit_t=cs[-1][0], exit_px=round(px, 2), why="15:10 강제청산", stop=pos["stop0"], half=pos["half"], far=pos["far"], touch60=pos["touch60"], thin=pos["thin"], hvn=pos["hvn"], stop_src=pos["stop_src"], level=pos["level"],
                            legs=[(round(a, 2), b, tt) for a, b, tt in pos["legs"]], pnl=round(pnl, 2)))
         cum += pnl
         log.append("%s 15:10 강제청산 @%.2f → %+.2fpt (누적 %+.2f)" % (cs[-1][0], px, pnl, cum))
-    return dict(ver=P_VER, set_t=set_t, side=("매수" if side and side > 0 else "매도" if side else "관망"),
+    return dict(ver=cfg["ver"], name=cfg["name"], set_t=set_t, side=("매수" if side and side > 0 else "매도" if side else "관망"),
                 trades=trades, pnl=round(cum, 2), log=log)
 
 
@@ -512,14 +678,19 @@ def analyze(S, live=False, start="08:55", end="09:55", step=10):
             break                                   # T 직전 봉이 아직 없다 — 미래 시점
         o = observe(S, T)
         r = decide(o)
+        if r["dir"] != "관망":
+            r["touch60"] = touch_count([c for c in S["cs"] if _hm(c[0]) < _hm(T)], r["entry"])   # S1 — 기록만
+            r["thin"] = thin_ahead(S, r["entry"], 1 if r["dir"] == "매수" else -1, T)              # E2 — 기록만
         pts.append(dict(obs={k: v for k, v in o.items() if k != "levels"}, rule=r, grade=grade(S, T, o, r, live=live)))
         t += step
     P = run_p(S, live=live)
+    P2 = run_p(S, live=live, cfg=P2_CFG)
+    P3 = run_p(S, live=live, cfg=P3_CFG)
     done = [p["grade"].get("pnl") for p in pts if isinstance(p["grade"].get("pnl"), (int, float))]
-    return dict(ver=P_VER, live=live, last_bar=last, points=pts, p=P,
+    return dict(ver=P_VER, live=live, last_bar=last, points=pts, p=P, p2=P2, p3=P3,
                 params=dict(W=W, DEAD=DEAD, SCORE_GO=SCORE_GO, LOOK=LOOK, STOP_ATR=STOP_ATR, STOP_MAX=STOP_MAX,
                             RR_MIN=RR_MIN, FILL_WIN=FILL_WIN, P_STOP=P_STOP, P_HALF_R=P_HALF_R),
-                summary=dict(base=round(sum(done), 2), base_n=len(done), p=P["pnl"]))
+                summary=dict(base=round(sum(done), 2), base_n=len(done), p=P["pnl"], p2=P2["pnl"], p3=P3["pnl"]))
 
 
 def main(argv=None):
@@ -558,14 +729,18 @@ def main(argv=None):
     print("장 마감 규칙:", json.dumps(out_eod["rule"], ensure_ascii=False))
 
     P = run_p(S)
-    print("\n## 신동2-P (%s) — 세팅 %s %s, 합계 %+.2fpt (1계약 환산, 2분할 평균)" % (P["ver"], P["set_t"] or "—", P["side"], P["pnl"]))
-    print("| 진입 | 방향 | 체결 | 방식 | 청산 | 레그 | 손익pt |")
-    print("|---|---|---|---|---|---|---|")
-    for x in P["trades"]:
-        print("| %s | %s | %.2f | %s | %s | %s | %+.2f |" % (x["entry_t"], x["side"], x["fill"], x["how"], x["exit_t"],
-              " / ".join("%s %+.2f@%s" % (b_, a_, t_) for a_, b_, t_ in x["legs"]), x["pnl"]))
-    for line in P["log"]:
-        print("  ·", line)
+    P2 = run_p(S, cfg=P2_CFG)
+    P3 = run_p(S, cfg=P3_CFG)
+    for nm, X in (("신동2-P", P), ("신동2-P2", P2), ("신동2-P3", P3)):
+        print("\n## %s (%s) — 세팅 %s %s, 합계 %+.2fpt (1계약 환산, 2분할 평균)" % (nm, X["ver"], X["set_t"] or "—", X["side"], X["pnl"]))
+        print("| 진입 | 방향 | 체결 | 방식 | 레벨 접촉 | 손절(출처) | 청산 | 레그 | 손익pt |")
+        print("|---|---|---|---|---|---|---|---|---|")
+        for x in X["trades"]:
+            print("| %s | %s | %.2f | %s | %s | %.2f (%s) | %s | %s | %+.2f |" % (x["entry_t"], x["side"], x["fill"], x["how"],
+                  x.get("touch60"), x["stop"], x.get("stop_src"), x["exit_t"],
+                  " / ".join("%s %+.2f@%s" % (b_, a_, t_) for a_, b_, t_ in x["legs"]), x["pnl"]))
+        for line in X["log"]:
+            print("  ·", line)
 
     PT = peter_trades(a.date)
     print("\n## 피터 대조 (트윗 기준 · 정규선물 pt · 미니 환산 = 원문 %s)" % (("%+.2f" % PT["offset"]) if PT and PT["offset"] is not None else "—"))
@@ -576,12 +751,12 @@ def main(argv=None):
             print("  %s %s %.1f(미니 %.2f) → %s %.1f(미니 %.2f)  %+.1fpt" % (x["entry_t"], x["side"], x["entry"], x["entry_mini"],
                   x["exit_t"], x["exit"], x["exit_mini"], x["pnl"]))
     base = sum(x["grade"].get("pnl", 0) or 0 for x in out if x["grade"].get("result") not in ("관망", None))
-    print("\n## 요약  신동2(기본) %+.2f · 신동2-P %+.2f · 피터 %s" % (base, P["pnl"],
+    print("\n## 요약  신동2(기본) %+.2f · 신동2-P %+.2f · 신동2-P2 %+.2f · 신동2-P3 %+.2f · 피터 %s" % (base, P["pnl"], P2["pnl"], P3["pnl"],
           ("%+.1f" % PT["pnl"]) if PT and PT["measured"] else "미측정"))
     if a.json:
         with open(a.json, "w", encoding="utf-8") as fp:
             json.dump(dict(date=a.date, params=dict(W=W, DEAD=DEAD, SCORE_GO=SCORE_GO, LOOK=LOOK), points=out, eod=out_eod,
-                           shindong2_p=P, peter=PT, summary=dict(base=round(base, 2), p=P["pnl"],
+                           shindong2_p=P, shindong2_p2=P2, shindong2_p3=P3, peter=PT, summary=dict(base=round(base, 2), p=P["pnl"], p2=P2["pnl"], p3=P3["pnl"],
                                                                   peter=(PT["pnl"] if PT and PT["measured"] else None))),
                       fp, ensure_ascii=False, indent=1, default=str)
     return 0

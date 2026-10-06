@@ -13,7 +13,7 @@
   --o-back:#3d434c; --o-break:#eb6834; --o-stay:#9aa1aa; --peter:#8a5cd6;
   --up:#d6453f; --dn:#2a6fd0; --oi:#b9bfc7; --oi-wall:#15181c; --path:#15181c;
   --chip:#eef0f3; --chip-on:#15181c; --chip-on-ink:#ffffff;
-  --i-for:#4a3aa7; --i-ind:#eb6834; --i-ins:#1baf7a; --sd2:#0f8b8d; --sd2p:#b4236b;
+  --i-for:#4a3aa7; --i-ind:#eb6834; --i-ins:#1baf7a; --sd2:#0f8b8d; --sd2p:#b4236b; --sd2q:#8b5e34; --sd2r:#6b7a00;
   --sans:"IBM Plex Sans KR",system-ui,-apple-system,"Malgun Gothic",sans-serif;
   --mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
 }
@@ -24,7 +24,7 @@
   --pos:#3987e5; --neg:#e66767; --mid:#383835;
   --o-back:#c9ced5; --o-break:#d95926; --o-stay:#6b727c; --peter:#9d6ff0;
   --up:#e66767; --dn:#5598e7; --oi:#4a5059; --oi-wall:#eef0f2; --path:#eef0f2;
-  --chip:#252a30; --chip-on:#eef0f2; --chip-on-ink:#141619; --i-for:#9085e9; --i-ind:#d95926; --i-ins:#199e70; --sd2:#3cc6c8; --sd2p:#ee6aa7; color-scheme:dark}}
+  --chip:#252a30; --chip-on:#eef0f2; --chip-on-ink:#141619; --i-for:#9085e9; --i-ind:#d95926; --i-ins:#199e70; --sd2:#3cc6c8; --sd2p:#ee6aa7; --sd2q:#d6a77a; --sd2r:#c3d36a; color-scheme:dark}}
 :root[data-theme="dark"]{
   --bg:#141619; --panel:#1b1e22; --ink:#eef0f2; --ink-2:#b4bac2; --ink-3:#848b95; --rule:#2e3339; --grid:#252a30;
   --struct:#e0a526; --struct-line:#c98500; --dist:#3cc391; --dist-line:#199e70;
@@ -32,7 +32,7 @@
   --pos:#3987e5; --neg:#e66767; --mid:#383835;
   --o-back:#c9ced5; --o-break:#d95926; --o-stay:#6b727c; --peter:#9d6ff0;
   --up:#e66767; --dn:#5598e7; --oi:#4a5059; --oi-wall:#eef0f2; --path:#eef0f2;
-  --chip:#252a30; --chip-on:#eef0f2; --chip-on-ink:#141619; --i-for:#9085e9; --i-ind:#d95926; --i-ins:#199e70; --sd2:#3cc6c8; --sd2p:#ee6aa7; color-scheme:dark}
+  --chip:#252a30; --chip-on:#eef0f2; --chip-on-ink:#141619; --i-for:#9085e9; --i-ind:#d95926; --i-ins:#199e70; --sd2:#3cc6c8; --sd2p:#ee6aa7; --sd2q:#d6a77a; --sd2r:#c3d36a; color-scheme:dark}
 body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.55}
 .wrap{max-width:1180px;margin:0 auto;padding-inline:16px;padding-block:24px 48px;display:grid;gap:22px}
 header{display:grid;gap:8px}
@@ -67,7 +67,7 @@ td.mono{font-family:var(--mono)}
 .k-struct{color:var(--struct);font-weight:600}.k-sd2{color:var(--sd2);font-weight:600}.k-sd2p{color:var(--sd2p);font-weight:600}
 .sd2sum{display:flex;flex-wrap:wrap;gap:8px 18px;font:400 12.5px/1.4 var(--mono);color:var(--ink-2)}.sd2sum b{color:var(--ink);font-weight:600}
 .sd2log{margin:0;padding-left:18px;font:400 12px/1.6 var(--mono);color:var(--ink-2)}
-#sd2Tbl th,#sd2Tbl td,#sd2pTbl th,#sd2pTbl td{padding:6px 5px}td.win{color:var(--pos);font-weight:600}td.loss{color:var(--neg);font-weight:600}.k-peter{color:var(--peter);font-weight:600}.k-dist{color:var(--dist);font-weight:600}
+#sd2Tbl th,#sd2Tbl td,#sd2pTbl th,#sd2pTbl td,#sd2p2Tbl th,#sd2p2Tbl td,#sd2p3Tbl th,#sd2p3Tbl td{padding:6px 5px}.k-sd2q{color:var(--sd2q);font-weight:600}.k-sd2r{color:var(--sd2r);font-weight:600}td.win{color:var(--pos);font-weight:600}td.loss{color:var(--neg);font-weight:600}.k-peter{color:var(--peter);font-weight:600}.k-dist{color:var(--dist);font-weight:600}
 .pill{display:inline-flex;gap:5px;align-items:center;padding:2px 8px;border-radius:999px;font-weight:600;font-size:12px;border:1px solid var(--rule)}
 .pill .dot{width:8px;height:8px;border-radius:50%}
 .pred{font-size:12px;color:var(--ink-2)}
@@ -139,13 +139,19 @@ td.mono{font-family:var(--mono)}
 
   <section id="sd2Sec">
     <h2>신동2 — 외인 수급 시점별 제안</h2>
-    <p class="sub">08:55–09:55 10분마다 <b>그 시각 이전 데이터만으로</b> 방향·진입·손절·청산을 낸다(기본 규칙). 신동2-P 는 같은 원천으로 아침에 방향을 한 번 정하고, 진입은 가격으로만, 손실은 짧게·이익은 길게 가져가는 섀도 변형이다. 위 차트의 청록(기본)·자홍(P) 표시가 이 표와 같다.</p>
+    <p class="sub">08:55–09:55 10분마다 <b>그 시각 이전 데이터만으로</b> 방향·진입·손절·청산을 낸다(기본 규칙). 신동2-P 는 같은 원천으로 아침에 방향을 한 번 정하고, 진입은 가격으로만, 손실은 짧게·이익은 길게 가져가는 섀도 변형이다. P2 는 P 에 피터 1116 딥다이브의 두 가지(고접촉 레벨 · 61.8% 손절)를 더한 섀도다. P3 는 P 에서 최종 목표만 「직전 5일 매물대 봉우리 1pt 앞」으로 바꾼 섀도다(피터 청산가 1095 딥다이브). 위 차트의 청록(기본)·자홍(P)·갈색(P2)·올리브(P3) 표시가 이 표와 같다. 「앞길」은 진입가에서 진행 방향 다음 두꺼운 매물대까지 거리와 그 사이 얇은 구간 비율(기록만). 「접촉」은 진입 레벨을 직전 60분 동안 지난 봉 수(기록만, 판단에 안 씀).</p>
     <div class="sd2sum" id="sd2Sum"></div>
     <div class="caveat" id="sd2Cav"></div>
     <div class="scroll"><table id="sd2Tbl"></table></div>
     <h2 style="font-size:14px">신동2-P <span class="muted" id="sd2pVer"></span></h2>
     <div class="scroll"><table id="sd2pTbl"></table></div>
     <ol class="sd2log" id="sd2Log"></ol>
+    <h2 style="font-size:14px">신동2-P2 <span class="muted" id="sd2p2Ver"></span></h2>
+    <div class="scroll"><table id="sd2p2Tbl"></table></div>
+    <ol class="sd2log" id="sd2Log2"></ol>
+    <h2 style="font-size:14px">신동2-P3 <span class="muted" id="sd2p3Ver"></span></h2>
+    <div class="scroll"><table id="sd2p3Tbl"></table></div>
+    <ol class="sd2log" id="sd2Log3"></ol>
     <div class="notes">
       <div><h3>기본 규칙</h3><ul>
         <li>점수 = 선물 외인 Δ10 ×2 · 선물 외인 누계 · 먼스리 외인 콜−풋 Δ10 · 위클리 콜−풋 Δ10 · 현물 외인 Δ10 · 가격 Δ10 (각 ±1, 데드밴드 안이면 0)</li>
@@ -157,6 +163,16 @@ td.mono{font-family:var(--mono)}
         <li>진입: 세팅 방향으로만, 되돌림 지정가 또는 맥점 종가 돌파</li>
         <li>손절 4pt 고정(최대 5) — 넓히지 않는다 · 절반 1.5R 청산 후 본전 손절 · 나머지 먼 맥점 또는 15:10</li>
         <li>재진입은 같은 방향·직전 레벨 재돌파만 · 하루 3회 · 손절 3회 또는 −12pt 에서 종료</li></ul></div>
+      <div><h3>신동2-P2 (사전등록 SD2P2-2026-10-06-v1)</h3><ul>
+        <li>P 와 같다. 다른 것은 둘뿐</li>
+        <li>고접촉 레벨: 기준가 ±5pt 를 0.5pt 격자로 보고 직전 60봉 접촉이 가장 많은 가격(6봉 이상)을 진입 후보에 더함</li>
+        <li>61.8% 손절: 그날 고저폭의 61.8% 되돌림이 진입에서 1.5–5pt 안이면 손절을 그 +0.5 에</li>
+        <li>근거: 피터 10/6 「1116」 = 반등이 10번 막힌 자리, 보유 중 최고가가 61.8% 바로 아래에서 꺾임</li></ul></div>
+      <div><h3>신동2-P3 (사전등록 SD2P3-2026-10-06-v1)</h3><ul>
+        <li>P 와 같다. 다른 것은 최종 목표 하나</li>
+        <li>직전 5거래일 정규선물 매물대(1pt) 봉우리 — 최대의 60% 이상인 국소 최대 — 중 진행 방향으로 가장 가까운 것이 3R 이상이면 그 1pt 앞</li>
+        <li>정규 → 미니 환산: 당일 그 시각 이전 봉의 (정규 − 미니) 중앙값. 장중(정규 당일봉 적재 전)은 전일값 — 확정은 장후</li>
+        <li>근거: 피터 목표가 23건 중 8건이 5일 매물대 봉우리 ±1pt (우연 기대 1.9)</li></ul></div>
       <div><h3>미래 참조 차단</h3><ul>
         <li>시각 T 의 제안 = 봉·7221·7222 는 T 직전까지, 9842 는 저장 시각 ≤ T, 맥점은 생성 뒤부터</li>
         <li>장중에는 덜 찬 마지막 봉을 쓰지 않는다 — 아직 오지 않은 시점은 표에 없다</li>
@@ -259,7 +275,7 @@ function seg(id, key, opts, onChange){
 }
 seg('segStage', 'stage', [['all','둘 다'],['0850','08:50'],['0930','09:30']], drawLadder);
 seg('segPeter', 'peter', [['on','켬'],['off','끔']], () => { drawLadder(); drawTable(); });
-seg('segSd2', 'sd2', [['both','둘 다'],['base','기본'],['p','P'],['off','끔']], drawLadder);
+seg('segSd2', 'sd2', [['both','전부'],['base','기본'],['p','P'],['p2','P2'],['p3','P3'],['off','끔']], drawLadder);
 seg('segLayer', 'layer', [['mon','먼스리 OI'],['wkm','월위클리 OI'],['wkt','목위클리 OI'],['hold','전일 외인 보유'],['flowF','당일 외인'],['flowI','당일 개인'],['dF','외인 증감'],['dI','개인 증감']], drawLadder);
 // 9842 시점 파일 — 직전 시점 대비 증감. 시점이 하나뿐이면 개장(0) 대비
 function snapDelta(who){
@@ -392,7 +408,7 @@ function drawLadder(){
     const hitbox = (t0, t1, ps, html) => { const xs = [xc(t0), xc(t1)], ys = ps.filter(v => v != null).map(y);
       const hb = el('rect', { x: Math.min(...xs) - 8, y: Math.min(...ys) - 8, width: Math.abs(xs[1] - xs[0]) + 16, height: Math.max(...ys) - Math.min(...ys) + 16, fill: 'transparent' }, svg);
       hb.addEventListener('mousemove', ev => showTip(ev, html)); hb.addEventListener('mouseleave', hideTip); };
-    if (state.sd2 !== 'p') (SD.points || []).forEach(pt => {
+    if (state.sd2 === 'both' || state.sd2 === 'base') (SD.points || []).forEach(pt => {
       const r = pt.rule, g = pt.grade, T = pt.obs.T; if (!r || r.dir === '관망') return;
       const col = css('--sd2'), buy = r.dir === '매수', filled = !!g.fill_t;
       const t0 = filled ? g.fill_t : T, t1 = g.exit_t || (N ? C[N-1][0] : T);
@@ -401,13 +417,16 @@ function drawLadder(){
       if (g.exit_t) { el('line', { x1: xc(t0), y1: y(g.fill), x2: xc(g.exit_t), y2: y(g.exit), stroke: col, 'stroke-width': 1, 'stroke-dasharray': '1 3' }, svg); cross(xc(g.exit_t), y(g.exit), col); }
       hitbox(t0, t1, [r.entry, r.stop, r.target, g.exit], `<b style="color:var(--sd2)">신동2 기본 ${T} ${r.dir}</b> (점수 ${r.score > 0 ? '+' : ''}${r.score})<br>진입 ${r.entry} ${r.entry_type}${filled ? ' → 체결 ' + g.fill_t : ''}<br>손절 ${r.stop} · 청산 ${r.target}<br>${g.result}${g.pnl != null ? ' ' + fmt(g.pnl, 2) + 'pt' : ''}`);
     });
-    if (state.sd2 !== 'base' && SD.p) SD.p.trades.forEach(tr => {
-      const col = css('--sd2p'), buy = tr.side === '매수', t1 = tr.exit_t || (N ? C[N-1][0] : tr.entry_t);
-      seg_(tr.entry_t, t1, tr.stop, css('--neg'), '4 3'); seg_(tr.entry_t, t1, tr.half, col, '2 2'); if (tr.far != null) seg_(tr.entry_t, t1, tr.far, col, '');
-      tri(xc(tr.entry_t), y(tr.fill), buy, col, false);
-      tr.legs.filter(l => l[1] === '절반 청산').forEach(l => el('circle', { cx: xc(l[2]), cy: y(tr.half), r: 4.5, fill: col, stroke: css('--panel'), 'stroke-width': 1.5 }, svg));
-      if (tr.exit_t) { el('line', { x1: xc(tr.entry_t), y1: y(tr.fill), x2: xc(tr.exit_t), y2: y(tr.exit_px), stroke: col, 'stroke-width': 1.2, 'stroke-dasharray': '1 3' }, svg); cross(xc(tr.exit_t), y(tr.exit_px), col); }
-      hitbox(tr.entry_t, t1, [tr.fill, tr.stop, tr.half, tr.exit_px], `<b style="color:var(--sd2p)">신동2-P ${tr.side}</b> ${tr.entry_t} @${tr.fill.toFixed(2)} (${tr.how})<br>손절 ${tr.stop} · 절반 ${tr.half}${tr.far != null ? ' · 최종 ' + tr.far : ''}<br>${tr.open ? '보유 중 — 평가' : tr.exit_t + ' ' + tr.why} ${fmt(tr.pnl, 2)}pt`);
+    [['p', SD.p, '--sd2p', '신동2-P'], ['p2', SD.p2, '--sd2q', '신동2-P2'], ['p3', SD.p3, '--sd2r', '신동2-P3']].forEach(([key, X, cv, nm]) => {
+      if (!X || !(state.sd2 === 'both' || state.sd2 === key)) return;
+      X.trades.forEach(tr => {
+        const col = css(cv), buy = tr.side === '매수', t1 = tr.exit_t || (N ? C[N-1][0] : tr.entry_t);
+        seg_(tr.entry_t, t1, tr.stop, css('--neg'), '4 3'); seg_(tr.entry_t, t1, tr.half, col, '2 2'); if (tr.far != null) seg_(tr.entry_t, t1, tr.far, col, '');
+        tri(xc(tr.entry_t), y(tr.fill), buy, col, false);
+        tr.legs.filter(l => l[1] === '절반 청산').forEach(l => el('circle', { cx: xc(l[2]), cy: y(tr.half), r: 4.5, fill: col, stroke: css('--panel'), 'stroke-width': 1.5 }, svg));
+        if (tr.exit_t) { el('line', { x1: xc(tr.entry_t), y1: y(tr.fill), x2: xc(tr.exit_t), y2: y(tr.exit_px), stroke: col, 'stroke-width': 1.2, 'stroke-dasharray': '1 3' }, svg); cross(xc(tr.exit_t), y(tr.exit_px), col); }
+        hitbox(tr.entry_t, t1, [tr.fill, tr.stop, tr.half, tr.exit_px], `<b style="color:var(${cv})">${nm} ${tr.side}</b> ${tr.entry_t} @${tr.fill.toFixed(2)} (${tr.how})<br>레벨 접촉 ${tr.touch60 != null ? tr.touch60 + '봉' : '—'} · 손절 ${tr.stop} (${tr.stop_src || '고정'})<br>절반 ${tr.half}${tr.far != null ? ' · 최종 ' + tr.far : ''}${tr.hvn && tr.hvn.peak_reg != null ? ' (5일 매물대 봉우리 정규 ' + tr.hvn.peak_reg + ' 1pt 앞)' : ''}<br>${tr.thin ? '앞길: 두꺼운 구간까지 ' + (tr.thin.to_hvn != null ? tr.thin.to_hvn + 'pt' : '40pt 밖') + ' · 얇은 ' + Math.round((tr.thin.thin_pct || 0) * 100) + '%<br>' : ''}${tr.open ? '보유 중 — 평가' : tr.exit_t + ' ' + tr.why} ${fmt(tr.pnl, 2)}pt`);
+      });
     });
   }
   // profile
@@ -477,7 +496,7 @@ function drawLadder(){
   lg.innerHTML = `<span><i class="sw-line" style="border-color:var(--struct-line)"></i>구조맥점</span><span><i class="sw-line" style="border-color:var(--dist-line);border-top-style:dashed"></i>거리맥점</span><span>★ 합류(굵은 선)</span>` +
     `<span><i class="sw-box" style="background:var(--band-hi);border:1px solid var(--rule)"></i>고 50·80% 밴드</span><span><i class="sw-box" style="background:var(--band-lo);border:1px solid var(--rule)"></i>저 밴드</span>` +
     `<span><i class="sw-line" style="border-color:var(--peter);border-top-style:dotted"></i>피터맥점</span><span style="color:var(--peter)">▼ 피터 체결 · ✕ 청산</span>` +
-    (state.sd2 !== 'off' ? `<span class="k-sd2">▲▼ 신동2 기본</span><span class="k-sd2p">▲▼ 신동2-P · ● 절반 청산</span><span><i class="sw-line" style="border-color:var(--neg);border-top-style:dashed"></i>손절선</span><span>실선 = 청산 목표 · ✕ 청산 · 빈 ▲▼ = 미체결</span>` : '') +
+    (state.sd2 !== 'off' ? `<span class="k-sd2">▲▼ 신동2 기본</span><span class="k-sd2p">▲▼ 신동2-P</span><span class="k-sd2q">▲▼ 신동2-P2</span><span class="k-sd2r">▲▼ 신동2-P3</span><span>● 절반 청산</span><span><i class="sw-line" style="border-color:var(--neg);border-top-style:dashed"></i>손절선</span><span>실선 = 청산 목표 · ✕ 청산 · 빈 ▲▼ = 미체결</span>` : '') +
     `<span><i class="sw-box" style="background:var(--o-back);border-radius:50%"></i>되돌림</span><span><i class="sw-box" style="background:var(--o-break);clip-path:polygon(50% 0,100% 100%,0 100%)"></i>돌파</span><span><i class="sw-box" style="background:var(--o-stay)"></i>정거장</span>` +
     (signed ? `<span><i class="sw-box" style="background:var(--pos)"></i>순매수(+)</span><span><i class="sw-box" style="background:var(--neg)"></i>순매도(−)</span>` +
       (shadow ? `<span><i class="sw-box" style="background:color-mix(in srgb, var(--pos) 16%, transparent);border:1px dashed var(--pos)"></i>그림자 = 전일 보유</span>` +
@@ -647,27 +666,32 @@ function drawSD2Table(){
   const n2 = v => v == null ? '—' : (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(Math.round(v)).toLocaleString();
   const pc = v => v == null ? '' : v > 0 ? 'win' : v < 0 ? 'loss' : '';
   const esc = t => String(t).replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+  const thinTxt = th => !th ? '—' : (th.to_hvn != null ? th.to_hvn + 'pt' : '40+') + ' <span class="muted">' + Math.round((th.thin_pct || 0) * 100) + '%</span>';
   const pt = SD.peter && SD.peter.measured ? fmt(SD.peter.pnl, 1) + 'pt (' + SD.peter.trades.length + '건, 정규선물 기준)' : '미측정';
-  document.getElementById('sd2Sum').innerHTML = `<span>기본 <b>${fmt(SD.summary.base, 2)}pt</b> (${SD.summary.base_n}건)</span><span>신동2-P <b>${fmt(SD.summary.p, 2)}pt</b></span><span>피터 <b>${pt}</b></span>` +
+  document.getElementById('sd2Sum').innerHTML = `<span>기본 <b>${fmt(SD.summary.base, 2)}pt</b> (${SD.summary.base_n}건)</span><span>신동2-P <b>${fmt(SD.summary.p, 2)}pt</b></span><span>신동2-P2 <b>${SD.summary.p2 != null ? fmt(SD.summary.p2, 2) + 'pt' : '—'}</b></span><span>신동2-P3 <b>${SD.summary.p3 != null ? fmt(SD.summary.p3, 2) + 'pt' : '—'}</b></span><span>피터 <b>${pt}</b></span>` +
     `<span>${SD.live ? '장중 — 완결 봉 ' + (SD.last_bar || '—') + '까지' : '확정'}</span>`;
-  document.getElementById('sd2Cav').innerHTML = `<b>사전등록 채점 중.</b> 2026-10-07부터 20거래일 동안 규칙을 바꾸지 않고 기본·P·피터를 나란히 채점한 뒤 판정한다. 10/6 이전 날짜는 참고용 재계산이다(P 는 그 기간 피터 기록을 보고 만들었다). 손익은 1계약 환산 pt, 수수료·슬리피지 제외.`;
-  let h = '<thead><tr><th class="l">시각</th><th>기준가</th><th>선물외인 (Δ10)</th><th>먼스리 C−P (Δ10)</th><th>위클리 C−P (Δ10)</th><th>현물외인 (Δ10)</th><th>가격Δ10</th><th>점수</th><th class="l">방향</th><th>진입</th><th>손절</th><th>청산</th><th class="l">결과</th><th>손익pt</th></tr></thead><tbody>';
+  document.getElementById('sd2Cav').innerHTML = `<b>사전등록 채점 중.</b> 2026-10-07부터 20거래일 동안 규칙을 바꾸지 않고 기본·P·P2·P3·피터를 나란히 채점한 뒤 판정한다. 10/6 이전 날짜는 참고용 재계산이다(P 는 그 기간 피터 기록을 보고 만들었다). 손익은 1계약 환산 pt, 수수료·슬리피지 제외.`;
+  let h = '<thead><tr><th class="l">시각</th><th>기준가</th><th>선물외인 (Δ10)</th><th>먼스리 C−P (Δ10)</th><th>위클리 C−P (Δ10)</th><th>현물외인 (Δ10)</th><th>가격Δ10</th><th>점수</th><th class="l">방향</th><th>진입</th><th>접촉</th><th>앞길</th><th>손절</th><th>청산</th><th class="l">결과</th><th>손익pt</th></tr></thead><tbody>';
   (SD.points || []).forEach(p => { const o = p.obs, r = p.rule, g = p.grade, go = r.dir !== '관망';
     h += `<tr><td class="l mono">${o.T}</td><td class="mono">${o.px != null ? o.px.toFixed(2) : '—'}</td>` +
       `<td class="mono">${n2(o.fut_for)} (${n2(o.fut_for_d)})</td><td class="mono">${n2(o.mon_cp)} (${n2(o.mon_cp_d)})</td><td class="mono">${n2(o.wk_cp)} (${n2(o.wk_cp_d)})</td><td class="mono">${n2(o.spot)} (${n2(o.spot_d)})</td>` +
       `<td class="mono">${o.dpx == null ? '—' : fmt(o.dpx, 1)}</td><td class="mono">${r.score > 0 ? '+' : ''}${r.score}</td><td class="l ${go ? 'k-sd2' : 'muted'}">${r.dir}</td>` +
-      `<td class="mono">${go ? r.entry + ' <span class="muted">' + (r.entry_type === '지정가' ? '지정' : '시장') + '</span>' : '—'}</td><td class="mono">${go ? r.stop : '—'}</td><td class="mono">${go ? r.target : '—'}</td>` +
+      `<td class="mono">${go ? r.entry + ' <span class="muted">' + (r.entry_type === '지정가' ? '지정' : '시장') + '</span>' : '—'}</td><td class="mono">${go && r.touch60 != null ? r.touch60 : '—'}</td><td class="mono">${go ? thinTxt(r.thin) : '—'}</td><td class="mono">${go ? r.stop : '—'}</td><td class="mono">${go ? r.target : '—'}</td>` +
       `<td class="l">${g.result}${g.fill_t ? ' <span class="muted">' + g.fill_t + (g.exit_t ? '→' + g.exit_t : '') + '</span>' : ''}</td><td class="mono ${pc(g.pnl)}">${g.pnl != null ? fmt(g.pnl, 2) : '—'}</td></tr>`; });
-  if (!(SD.points || []).length) h += '<tr><td class="l muted" colspan="14">아직 첫 시점(08:55) 전이다</td></tr>';
+  if (!(SD.points || []).length) h += '<tr><td class="l muted" colspan="16">아직 첫 시점(08:55) 전이다</td></tr>';
   document.getElementById('sd2Tbl').innerHTML = h + '</tbody>';
-  const P = SD.p; document.getElementById('sd2pVer').textContent = `${P.ver} · 세팅 ${P.set_t || '—'} ${P.side}`;
-  let q = '<thead><tr><th class="l">진입</th><th class="l">방향</th><th>체결</th><th class="l">방식</th><th>손절</th><th>절반</th><th>최종 목표</th><th class="l">청산</th><th>손익pt</th></tr></thead><tbody>';
-  if (!P.trades.length) q += `<tr><td class="l muted" colspan="9">${P.side === '관망' ? '세팅 없음 — 수준 점수가 ±2에 못 미쳤다' : '체결 없음'}</td></tr>`;
-  P.trades.forEach(t => { q += `<tr><td class="l mono">${t.entry_t}</td><td class="l k-sd2p">${t.side}</td><td class="mono">${t.fill.toFixed(2)}</td><td class="l">${t.how}</td>` +
-    `<td class="mono">${t.stop}</td><td class="mono">${t.half}</td><td class="mono">${t.far != null ? t.far : '15:10'}</td>` +
-    `<td class="l">${t.open ? '보유 중 (평가)' : t.exit_t + ' ' + t.why}</td><td class="mono ${pc(t.pnl)}">${fmt(t.pnl, 2)}</td></tr>`; });
-  document.getElementById('sd2pTbl').innerHTML = q + '</tbody>';
-  document.getElementById('sd2Log').innerHTML = P.log.map(l => `<li>${esc(l)}</li>`).join('');
+  [[SD.p, 'sd2pVer', 'sd2pTbl', 'sd2Log', 'k-sd2p'], [SD.p2, 'sd2p2Ver', 'sd2p2Tbl', 'sd2Log2', 'k-sd2q'], [SD.p3, 'sd2p3Ver', 'sd2p3Tbl', 'sd2Log3', 'k-sd2r']].forEach(([P, vid, tid, lid, kc]) => {
+    const tb = document.getElementById(tid), lg = document.getElementById(lid), vr = document.getElementById(vid);
+    if (!P) { vr.textContent = '— 없음'; tb.innerHTML = ''; lg.innerHTML = ''; return; }
+    vr.textContent = `${P.ver} · 세팅 ${P.set_t || '—'} ${P.side}`;
+    let q = '<thead><tr><th class="l">진입</th><th class="l">방향</th><th>체결</th><th class="l">방식</th><th>접촉</th><th>앞길</th><th>손절</th><th class="l">손절 근거</th><th>절반</th><th>최종 목표</th><th class="l">청산</th><th>손익pt</th></tr></thead><tbody>';
+    if (!P.trades.length) q += `<tr><td class="l muted" colspan="12">${P.side === '관망' ? '세팅 없음 — 수준 점수가 ±2에 못 미쳤다' : '체결 없음'}</td></tr>`;
+    P.trades.forEach(t => { q += `<tr><td class="l mono">${t.entry_t}</td><td class="l ${kc}">${t.side}</td><td class="mono">${t.fill.toFixed(2)}</td><td class="l">${t.how}</td>` +
+      `<td class="mono">${t.touch60 != null ? t.touch60 : '—'}</td><td class="mono">${thinTxt(t.thin)}</td><td class="mono">${t.stop}</td><td class="l muted">${t.stop_src || '고정'}</td><td class="mono">${t.half}</td><td class="mono">${t.far != null ? t.far + (t.hvn && t.hvn.peak_reg != null ? ' <span class="muted">매물대</span>' : '') : '15:10'}</td>` +
+      `<td class="l">${t.open ? '보유 중 (평가)' : t.exit_t + ' ' + t.why}</td><td class="mono ${pc(t.pnl)}">${fmt(t.pnl, 2)}</td></tr>`; });
+    tb.innerHTML = q + '</tbody>';
+    lg.innerHTML = P.log.map(l => `<li>${esc(l)}</li>`).join('');
+  });
 }
 
 function renderPeterNotes(){
