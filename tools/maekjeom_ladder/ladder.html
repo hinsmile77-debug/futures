@@ -13,7 +13,7 @@
   --o-back:#3d434c; --o-break:#eb6834; --o-stay:#9aa1aa; --peter:#8a5cd6;
   --up:#d6453f; --dn:#2a6fd0; --oi:#b9bfc7; --oi-wall:#15181c; --path:#15181c;
   --chip:#eef0f3; --chip-on:#15181c; --chip-on-ink:#ffffff;
-  --i-for:#4a3aa7; --i-ind:#eb6834; --i-ins:#1baf7a;
+  --i-for:#4a3aa7; --i-ind:#eb6834; --i-ins:#1baf7a; --sd2:#0f8b8d; --sd2p:#b4236b;
   --sans:"IBM Plex Sans KR",system-ui,-apple-system,"Malgun Gothic",sans-serif;
   --mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
 }
@@ -24,7 +24,7 @@
   --pos:#3987e5; --neg:#e66767; --mid:#383835;
   --o-back:#c9ced5; --o-break:#d95926; --o-stay:#6b727c; --peter:#9d6ff0;
   --up:#e66767; --dn:#5598e7; --oi:#4a5059; --oi-wall:#eef0f2; --path:#eef0f2;
-  --chip:#252a30; --chip-on:#eef0f2; --chip-on-ink:#141619; --i-for:#9085e9; --i-ind:#d95926; --i-ins:#199e70; color-scheme:dark}}
+  --chip:#252a30; --chip-on:#eef0f2; --chip-on-ink:#141619; --i-for:#9085e9; --i-ind:#d95926; --i-ins:#199e70; --sd2:#3cc6c8; --sd2p:#ee6aa7; color-scheme:dark}}
 :root[data-theme="dark"]{
   --bg:#141619; --panel:#1b1e22; --ink:#eef0f2; --ink-2:#b4bac2; --ink-3:#848b95; --rule:#2e3339; --grid:#252a30;
   --struct:#e0a526; --struct-line:#c98500; --dist:#3cc391; --dist-line:#199e70;
@@ -32,7 +32,7 @@
   --pos:#3987e5; --neg:#e66767; --mid:#383835;
   --o-back:#c9ced5; --o-break:#d95926; --o-stay:#6b727c; --peter:#9d6ff0;
   --up:#e66767; --dn:#5598e7; --oi:#4a5059; --oi-wall:#eef0f2; --path:#eef0f2;
-  --chip:#252a30; --chip-on:#eef0f2; --chip-on-ink:#141619; --i-for:#9085e9; --i-ind:#d95926; --i-ins:#199e70; color-scheme:dark}
+  --chip:#252a30; --chip-on:#eef0f2; --chip-on-ink:#141619; --i-for:#9085e9; --i-ind:#d95926; --i-ins:#199e70; --sd2:#3cc6c8; --sd2p:#ee6aa7; color-scheme:dark}
 body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.55}
 .wrap{max-width:1180px;margin:0 auto;padding-inline:16px;padding-block:24px 48px;display:grid;gap:22px}
 header{display:grid;gap:8px}
@@ -64,7 +64,10 @@ th,td{padding:7px 8px;border-bottom:1px solid var(--rule);text-align:right;white
 th{font-weight:600;color:var(--ink-2);font-size:11.5px;background:var(--panel);position:sticky;top:0}
 td.l,th.l{text-align:left}
 td.mono{font-family:var(--mono)}
-.k-struct{color:var(--struct);font-weight:600}.k-peter{color:var(--peter);font-weight:600}.k-dist{color:var(--dist);font-weight:600}
+.k-struct{color:var(--struct);font-weight:600}.k-sd2{color:var(--sd2);font-weight:600}.k-sd2p{color:var(--sd2p);font-weight:600}
+.sd2sum{display:flex;flex-wrap:wrap;gap:8px 18px;font:400 12.5px/1.4 var(--mono);color:var(--ink-2)}.sd2sum b{color:var(--ink);font-weight:600}
+.sd2log{margin:0;padding-left:18px;font:400 12px/1.6 var(--mono);color:var(--ink-2)}
+#sd2Tbl th,#sd2Tbl td,#sd2pTbl th,#sd2pTbl td{padding:6px 5px}td.win{color:var(--pos);font-weight:600}td.loss{color:var(--neg);font-weight:600}.k-peter{color:var(--peter);font-weight:600}.k-dist{color:var(--dist);font-weight:600}
 .pill{display:inline-flex;gap:5px;align-items:center;padding:2px 8px;border-radius:999px;font-weight:600;font-size:12px;border:1px solid var(--rule)}
 .pill .dot{width:8px;height:8px;border-radius:50%}
 .pred{font-size:12px;color:var(--ink-2)}
@@ -126,11 +129,39 @@ td.mono{font-family:var(--mono)}
     <div class="bar">
       <div><span class="seg-label">맥점 단계 </span><span class="seg" id="segStage"></span></div>
       <div><span class="seg-label">피터맥점 </span><span class="seg" id="segPeter"></span></div>
+      <div><span class="seg-label">신동2 </span><span class="seg" id="segSd2"></span></div>
       <div><span class="seg-label">옵션층 </span><span class="seg" id="segLayer"></span></div>
     </div>
     <div class="legend" id="legend1"></div>
     <div class="scroll"><svg id="ladder" role="img" aria-label="맥점, 1분봉, 행사가별 옵션 분포를 가격축 하나에 겹친 사다리 차트"></svg></div>
     <p class="sub" id="ladderNote"></p>
+  </section>
+
+  <section id="sd2Sec">
+    <h2>신동2 — 외인 수급 시점별 제안</h2>
+    <p class="sub">08:55–09:55 10분마다 <b>그 시각 이전 데이터만으로</b> 방향·진입·손절·청산을 낸다(기본 규칙). 신동2-P 는 같은 원천으로 아침에 방향을 한 번 정하고, 진입은 가격으로만, 손실은 짧게·이익은 길게 가져가는 섀도 변형이다. 위 차트의 청록(기본)·자홍(P) 표시가 이 표와 같다.</p>
+    <div class="sd2sum" id="sd2Sum"></div>
+    <div class="caveat" id="sd2Cav"></div>
+    <div class="scroll"><table id="sd2Tbl"></table></div>
+    <h2 style="font-size:14px">신동2-P <span class="muted" id="sd2pVer"></span></h2>
+    <div class="scroll"><table id="sd2pTbl"></table></div>
+    <ol class="sd2log" id="sd2Log"></ol>
+    <div class="notes">
+      <div><h3>기본 규칙</h3><ul>
+        <li>점수 = 선물 외인 Δ10 ×2 · 선물 외인 누계 · 먼스리 외인 콜−풋 Δ10 · 위클리 콜−풋 Δ10 · 현물 외인 Δ10 · 가격 Δ10 (각 ±1, 데드밴드 안이면 0)</li>
+        <li>+3 이상 매수 · −3 이하 매도 · 그 외 관망</li>
+        <li>진입: 유리한 쪽 3pt 안 맥점·벽에 지정가(30분 유효), 없으면 시장가</li>
+        <li>손절: 진입 너머 맥점 +1pt (1.5×ATR–8pt) · 청산: 손절거리 ×1.5 이상 떨어진 맥점</li></ul></div>
+      <div><h3>신동2-P (사전등록 SD2P-2026-10-06-v1)</h3><ul>
+        <li>세팅: 수급 <b>수준</b>만(먼스리 콜−풋 ±1,000 · 선물 외인 ±300 · 위클리 ±1,000 · 가격−시가 ±3pt), 합이 처음 ±2 이상인 시점에 고정</li>
+        <li>진입: 세팅 방향으로만, 되돌림 지정가 또는 맥점 종가 돌파</li>
+        <li>손절 4pt 고정(최대 5) — 넓히지 않는다 · 절반 1.5R 청산 후 본전 손절 · 나머지 먼 맥점 또는 15:10</li>
+        <li>재진입은 같은 방향·직전 레벨 재돌파만 · 하루 3회 · 손절 3회 또는 −12pt 에서 종료</li></ul></div>
+      <div><h3>미래 참조 차단</h3><ul>
+        <li>시각 T 의 제안 = 봉·7221·7222 는 T 직전까지, 9842 는 저장 시각 ≤ T, 맥점은 생성 뒤부터</li>
+        <li>장중에는 덜 찬 마지막 봉을 쓰지 않는다 — 아직 오지 않은 시점은 표에 없다</li>
+        <li>「보유 중」·「대기」는 장중 평가값이다. 15:10 이후 확정</li></ul></div>
+    </div>
   </section>
 
   <section>
@@ -197,7 +228,7 @@ function showTip(ev, html){ tip.innerHTML = html; tip.hidden = false; const w = 
 function hideTip(){ tip.hidden = true; }
 
 let C = [], N = 0, B = 0, tIdx = {}, big = 0, CUR = null, DATES = {}, TODAY = null;
-const state = { stage: 'all', layer: 'mon', book: 'monthly', cp: 'call', inv: 'all', peter: 'on' };
+const state = { stage: 'all', layer: 'mon', book: 'monthly', cp: 'call', inv: 'all', peter: 'on', sd2: 'both' };
 try { const s = JSON.parse(localStorage.getItem('maekjeom_ladder') || '{}'); Object.assign(state, s); } catch(e) {}
 // 주소창 ?layer=dF&inv=foreign 처럼 화면 상태를 지정할 수 있다(저장값보다 우선)
 new URLSearchParams(location.search).forEach((v, k) => { if (k in state) state[k] = v; });
@@ -228,6 +259,7 @@ function seg(id, key, opts, onChange){
 }
 seg('segStage', 'stage', [['all','둘 다'],['0850','08:50'],['0930','09:30']], drawLadder);
 seg('segPeter', 'peter', [['on','켬'],['off','끔']], () => { drawLadder(); drawTable(); });
+seg('segSd2', 'sd2', [['both','둘 다'],['base','기본'],['p','P'],['off','끔']], drawLadder);
 seg('segLayer', 'layer', [['mon','먼스리 OI'],['wkm','월위클리 OI'],['wkt','목위클리 OI'],['hold','전일 외인 보유'],['flowF','당일 외인'],['flowI','당일 개인'],['dF','외인 증감'],['dI','개인 증감']], drawLadder);
 // 9842 시점 파일 — 직전 시점 대비 증감. 시점이 하나뿐이면 개장(0) 대비
 function snapDelta(who){
@@ -349,6 +381,35 @@ function drawLadder(){
     hb.addEventListener('mousemove', ev => showTip(ev, `<b>피터 ${tr.direction === 'SHORT' ? '매도' : '매수'}</b> ${tr.entry_hm} ${tr.entry_price.toFixed(2)}<br>→ ${open ? '보유 중 (' + ex[0] + ' 평가)' : tr.exit_hm + ' ' + tr.exit_price.toFixed(2) + ' ' + tr.why}<br>${fmt(pnl, 2)}pt (미니 환산)`));
     hb.addEventListener('mouseleave', hideTip);
   });
+  // 신동2 — 진입 ▲▼ · 손절선(빨강 점선) · 목표선(실선) · 청산 ✕. 기본=청록, P=자홍
+  const SD = D.shindong2;
+  if (SD && state.sd2 !== 'off') {
+    const xc = t => xT(!t ? (N ? C[N-1][0] : '15:09') : (t > '15:45' ? '15:45' : t));
+    const tri = (xx, yy, buy, col, hollow) => el('path', { d: buy ? `M${xx-6} ${yy+9} L${xx+6} ${yy+9} L${xx} ${yy+1} Z` : `M${xx-6} ${yy-9} L${xx+6} ${yy-9} L${xx} ${yy-1} Z`,
+      fill: hollow ? css('--panel') : col, stroke: col, 'stroke-width': 1.6, opacity: hollow ? .75 : 1 }, svg);
+    const cross = (xx, yy, col) => el('path', { d: `M${xx-5} ${yy-5} L${xx+5} ${yy+5} M${xx+5} ${yy-5} L${xx-5} ${yy+5}`, stroke: col, 'stroke-width': 2.4 }, svg);
+    const seg_ = (t0, t1, p, col, dash) => { if (p == null) return; el('line', { x1: xc(t0), x2: xc(t1), y1: y(p), y2: y(p), stroke: col, 'stroke-width': 1.4, 'stroke-dasharray': dash, opacity: .9 }, svg); };
+    const hitbox = (t0, t1, ps, html) => { const xs = [xc(t0), xc(t1)], ys = ps.filter(v => v != null).map(y);
+      const hb = el('rect', { x: Math.min(...xs) - 8, y: Math.min(...ys) - 8, width: Math.abs(xs[1] - xs[0]) + 16, height: Math.max(...ys) - Math.min(...ys) + 16, fill: 'transparent' }, svg);
+      hb.addEventListener('mousemove', ev => showTip(ev, html)); hb.addEventListener('mouseleave', hideTip); };
+    if (state.sd2 !== 'p') (SD.points || []).forEach(pt => {
+      const r = pt.rule, g = pt.grade, T = pt.obs.T; if (!r || r.dir === '관망') return;
+      const col = css('--sd2'), buy = r.dir === '매수', filled = !!g.fill_t;
+      const t0 = filled ? g.fill_t : T, t1 = g.exit_t || (N ? C[N-1][0] : T);
+      seg_(t0, t1, r.stop, css('--neg'), '4 3'); seg_(t0, t1, r.target, col, '');
+      tri(xc(t0), y(filled ? g.fill : r.entry), buy, col, !filled);
+      if (g.exit_t) { el('line', { x1: xc(t0), y1: y(g.fill), x2: xc(g.exit_t), y2: y(g.exit), stroke: col, 'stroke-width': 1, 'stroke-dasharray': '1 3' }, svg); cross(xc(g.exit_t), y(g.exit), col); }
+      hitbox(t0, t1, [r.entry, r.stop, r.target, g.exit], `<b style="color:var(--sd2)">신동2 기본 ${T} ${r.dir}</b> (점수 ${r.score > 0 ? '+' : ''}${r.score})<br>진입 ${r.entry} ${r.entry_type}${filled ? ' → 체결 ' + g.fill_t : ''}<br>손절 ${r.stop} · 청산 ${r.target}<br>${g.result}${g.pnl != null ? ' ' + fmt(g.pnl, 2) + 'pt' : ''}`);
+    });
+    if (state.sd2 !== 'base' && SD.p) SD.p.trades.forEach(tr => {
+      const col = css('--sd2p'), buy = tr.side === '매수', t1 = tr.exit_t || (N ? C[N-1][0] : tr.entry_t);
+      seg_(tr.entry_t, t1, tr.stop, css('--neg'), '4 3'); seg_(tr.entry_t, t1, tr.half, col, '2 2'); if (tr.far != null) seg_(tr.entry_t, t1, tr.far, col, '');
+      tri(xc(tr.entry_t), y(tr.fill), buy, col, false);
+      tr.legs.filter(l => l[1] === '절반 청산').forEach(l => el('circle', { cx: xc(l[2]), cy: y(tr.half), r: 4.5, fill: col, stroke: css('--panel'), 'stroke-width': 1.5 }, svg));
+      if (tr.exit_t) { el('line', { x1: xc(tr.entry_t), y1: y(tr.fill), x2: xc(tr.exit_t), y2: y(tr.exit_px), stroke: col, 'stroke-width': 1.2, 'stroke-dasharray': '1 3' }, svg); cross(xc(tr.exit_t), y(tr.exit_px), col); }
+      hitbox(tr.entry_t, t1, [tr.fill, tr.stop, tr.half, tr.exit_px], `<b style="color:var(--sd2p)">신동2-P ${tr.side}</b> ${tr.entry_t} @${tr.fill.toFixed(2)} (${tr.how})<br>손절 ${tr.stop} · 절반 ${tr.half}${tr.far != null ? ' · 최종 ' + tr.far : ''}<br>${tr.open ? '보유 중 — 평가' : tr.exit_t + ' ' + tr.why} ${fmt(tr.pnl, 2)}pt`);
+    });
+  }
   // profile
   el('line', { x1: profX + profW/2, x2: profX + profW/2, y1: mT, y2: H - mB, stroke: css('--rule') }, svg);
   const half = profW / 2 - 4; let rows = [], unit = '', title = '', shadow = null, shadowWhy = '';
@@ -416,6 +477,7 @@ function drawLadder(){
   lg.innerHTML = `<span><i class="sw-line" style="border-color:var(--struct-line)"></i>구조맥점</span><span><i class="sw-line" style="border-color:var(--dist-line);border-top-style:dashed"></i>거리맥점</span><span>★ 합류(굵은 선)</span>` +
     `<span><i class="sw-box" style="background:var(--band-hi);border:1px solid var(--rule)"></i>고 50·80% 밴드</span><span><i class="sw-box" style="background:var(--band-lo);border:1px solid var(--rule)"></i>저 밴드</span>` +
     `<span><i class="sw-line" style="border-color:var(--peter);border-top-style:dotted"></i>피터맥점</span><span style="color:var(--peter)">▼ 피터 체결 · ✕ 청산</span>` +
+    (state.sd2 !== 'off' ? `<span class="k-sd2">▲▼ 신동2 기본</span><span class="k-sd2p">▲▼ 신동2-P · ● 절반 청산</span><span><i class="sw-line" style="border-color:var(--neg);border-top-style:dashed"></i>손절선</span><span>실선 = 청산 목표 · ✕ 청산 · 빈 ▲▼ = 미체결</span>` : '') +
     `<span><i class="sw-box" style="background:var(--o-back);border-radius:50%"></i>되돌림</span><span><i class="sw-box" style="background:var(--o-break);clip-path:polygon(50% 0,100% 100%,0 100%)"></i>돌파</span><span><i class="sw-box" style="background:var(--o-stay)"></i>정거장</span>` +
     (signed ? `<span><i class="sw-box" style="background:var(--pos)"></i>순매수(+)</span><span><i class="sw-box" style="background:var(--neg)"></i>순매도(−)</span>` +
       (shadow ? `<span><i class="sw-box" style="background:color-mix(in srgb, var(--pos) 16%, transparent);border:1px dashed var(--pos)"></i>그림자 = 전일 보유</span>` +
@@ -579,6 +641,35 @@ function drawTable(){
 }
 
 
+function drawSD2Table(){
+  const SD = D.shindong2, sec = document.getElementById('sd2Sec');
+  if (!SD) { sec.hidden = true; return; } sec.hidden = false;
+  const n2 = v => v == null ? '—' : (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(Math.round(v)).toLocaleString();
+  const pc = v => v == null ? '' : v > 0 ? 'win' : v < 0 ? 'loss' : '';
+  const esc = t => String(t).replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+  const pt = SD.peter && SD.peter.measured ? fmt(SD.peter.pnl, 1) + 'pt (' + SD.peter.trades.length + '건, 정규선물 기준)' : '미측정';
+  document.getElementById('sd2Sum').innerHTML = `<span>기본 <b>${fmt(SD.summary.base, 2)}pt</b> (${SD.summary.base_n}건)</span><span>신동2-P <b>${fmt(SD.summary.p, 2)}pt</b></span><span>피터 <b>${pt}</b></span>` +
+    `<span>${SD.live ? '장중 — 완결 봉 ' + (SD.last_bar || '—') + '까지' : '확정'}</span>`;
+  document.getElementById('sd2Cav').innerHTML = `<b>사전등록 채점 중.</b> 2026-10-07부터 20거래일 동안 규칙을 바꾸지 않고 기본·P·피터를 나란히 채점한 뒤 판정한다. 10/6 이전 날짜는 참고용 재계산이다(P 는 그 기간 피터 기록을 보고 만들었다). 손익은 1계약 환산 pt, 수수료·슬리피지 제외.`;
+  let h = '<thead><tr><th class="l">시각</th><th>기준가</th><th>선물외인 (Δ10)</th><th>먼스리 C−P (Δ10)</th><th>위클리 C−P (Δ10)</th><th>현물외인 (Δ10)</th><th>가격Δ10</th><th>점수</th><th class="l">방향</th><th>진입</th><th>손절</th><th>청산</th><th class="l">결과</th><th>손익pt</th></tr></thead><tbody>';
+  (SD.points || []).forEach(p => { const o = p.obs, r = p.rule, g = p.grade, go = r.dir !== '관망';
+    h += `<tr><td class="l mono">${o.T}</td><td class="mono">${o.px != null ? o.px.toFixed(2) : '—'}</td>` +
+      `<td class="mono">${n2(o.fut_for)} (${n2(o.fut_for_d)})</td><td class="mono">${n2(o.mon_cp)} (${n2(o.mon_cp_d)})</td><td class="mono">${n2(o.wk_cp)} (${n2(o.wk_cp_d)})</td><td class="mono">${n2(o.spot)} (${n2(o.spot_d)})</td>` +
+      `<td class="mono">${o.dpx == null ? '—' : fmt(o.dpx, 1)}</td><td class="mono">${r.score > 0 ? '+' : ''}${r.score}</td><td class="l ${go ? 'k-sd2' : 'muted'}">${r.dir}</td>` +
+      `<td class="mono">${go ? r.entry + ' <span class="muted">' + (r.entry_type === '지정가' ? '지정' : '시장') + '</span>' : '—'}</td><td class="mono">${go ? r.stop : '—'}</td><td class="mono">${go ? r.target : '—'}</td>` +
+      `<td class="l">${g.result}${g.fill_t ? ' <span class="muted">' + g.fill_t + (g.exit_t ? '→' + g.exit_t : '') + '</span>' : ''}</td><td class="mono ${pc(g.pnl)}">${g.pnl != null ? fmt(g.pnl, 2) : '—'}</td></tr>`; });
+  if (!(SD.points || []).length) h += '<tr><td class="l muted" colspan="14">아직 첫 시점(08:55) 전이다</td></tr>';
+  document.getElementById('sd2Tbl').innerHTML = h + '</tbody>';
+  const P = SD.p; document.getElementById('sd2pVer').textContent = `${P.ver} · 세팅 ${P.set_t || '—'} ${P.side}`;
+  let q = '<thead><tr><th class="l">진입</th><th class="l">방향</th><th>체결</th><th class="l">방식</th><th>손절</th><th>절반</th><th>최종 목표</th><th class="l">청산</th><th>손익pt</th></tr></thead><tbody>';
+  if (!P.trades.length) q += `<tr><td class="l muted" colspan="9">${P.side === '관망' ? '세팅 없음 — 수준 점수가 ±2에 못 미쳤다' : '체결 없음'}</td></tr>`;
+  P.trades.forEach(t => { q += `<tr><td class="l mono">${t.entry_t}</td><td class="l k-sd2p">${t.side}</td><td class="mono">${t.fill.toFixed(2)}</td><td class="l">${t.how}</td>` +
+    `<td class="mono">${t.stop}</td><td class="mono">${t.half}</td><td class="mono">${t.far != null ? t.far : '15:10'}</td>` +
+    `<td class="l">${t.open ? '보유 중 (평가)' : t.exit_t + ' ' + t.why}</td><td class="mono ${pc(t.pnl)}">${fmt(t.pnl, 2)}</td></tr>`; });
+  document.getElementById('sd2pTbl').innerHTML = q + '</tbody>';
+  document.getElementById('sd2Log').innerHTML = P.log.map(l => `<li>${esc(l)}</li>`).join('');
+}
+
 function renderPeterNotes(){
   document.getElementById('pOff').textContent = D.peter.available ? D.peter.offset : '—';
   document.getElementById('pExcl').textContent = D.peter.excluded.length ? '제외: ' + D.peter.excluded.map(e => e.hm + ' ' + e.raw.slice(0, 24) + '… (' + e.why + ')').join(' / ') : '제외한 줄 없음';
@@ -590,7 +681,7 @@ function setData(d){
   D = d; C = D.candles || []; N = C.length; B = D.basis || 0; tIdx = {}; C.forEach((c, i) => tIdx[c[0]] = i); big = computeBig();
   document.getElementById('h1').textContent = D.date + ' 맥점 × 옵션 사다리';
   document.title = D.date + ' 맥점 옵션 사다리';
-  makeBookSeg(); renderFacts(); renderPeterNotes(); drawLadder(); drawHeat(); drawTable();
+  makeBookSeg(); renderFacts(); renderPeterNotes(); drawLadder(); drawHeat(); drawTable(); drawSD2Table();
 }
 
 // ── 날짜 · 달력 · 실시간 ──────────────────────────────────
