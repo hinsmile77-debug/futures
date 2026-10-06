@@ -522,6 +522,34 @@ def _next_plan(M, day):
     return None
 
 
+def _pc_id():
+    """이 PC 식별자 — `utils/db_utils.py:pc_id()` 가 호스트명에서 뽑는다.
+
+    🔴 종전에는 `ladder.html` 에 `MW0601` 이 **하드코딩**돼 있어 MW0602 에서도
+       MW0601 로 찍혔다. 2026-10-06 에 실제로 사고가 났다 — 세션이 브라우저로 사다리를
+       보며 「이 PC 화면」이라고 판단했는데 그것이 다른 PC 의 사다리였고, 같은 날짜의
+       손익이 `10.87`(저쪽) vs `5.28`(이쪽)로 갈린 것을 **같은 서버의 비결정성으로
+       오진**했다. 화면에 PC 가 박혀 있었으면 첫 화면에서 끝났을 혼선이다.
+
+    `pc_id()` 의 독스트링도 「config 상수로 두지 않는 이유는 PC별로 다른 값을 git 에
+    커밋할 수 없기 때문」이라고 못박고 있다 — 그 함수를 그대로 쓴다. 실패하면
+    호스트명, 그마저 안 되면 "UNKNOWN" 이다(미측정을 0 으로 위장하지 않는다).
+    """
+    try:
+        import sys as _s, os as _o
+        _r = _o.path.dirname(_o.path.dirname(_o.path.dirname(_o.path.abspath(__file__))))
+        if _r not in _s.path:
+            _s.path.insert(0, _r)
+        from utils.db_utils import pc_id as _f
+        return _f()
+    except Exception:
+        try:
+            import platform as _pf
+            return (_pf.node() or "UNKNOWN")[:32]
+        except Exception:
+            return "UNKNOWN"
+
+
 def shindong2(day, cs, live):
     R = _sd2_mod()
     bars = [list(c) for c in (cs[:-1] if live else cs)]
@@ -843,6 +871,7 @@ def build_day(day, now=None):
     warn += ["9842 시점 파일 읽기 실패 — %s" % e for e in h["flow_snaps_err"]]
     actual = dict(high=max((c[2] for c in cs), default=None), low=min((c[3] for c in cs), default=None))
     return dict(date=day, live=live, generated_at=now.isoformat(timespec="seconds"),
+                pc=_pc_id(),
                 candles=cs, candle_src=csrc, levels=lv, bands=bands, basis=basis if basis is not None else 0.0,
                 basis_measured=basis is not None, times=times, books=bk, mins=mins, flow1m=f1m, flow_last=flow_last,
                 fut=fut, fut_last=fut_last, fut_src=fut_src, shindong2=sd2, sd2ai=sd2ai,
