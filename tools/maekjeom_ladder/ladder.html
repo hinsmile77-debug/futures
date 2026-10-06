@@ -135,7 +135,7 @@ td.mono{font-family:var(--mono)}
 
   <section>
     <h2>행사가 × 시간 미결제약정 증감과 주체 흐름</h2>
-    <p class="sub">위 띠 = 상품 단위 주체별 누적 순매수(1분, 계약). 가운데 = 행사가별 미결제약정 첫 스냅샷 대비 증감(5분, 전체 참여자). 오른쪽 열 = 종합이면 행사가별 하루 OI 증감, 주체를 고르면 그 주체의 행사가별 당일 순매수([9842]) — 시점 파일(YYMMDD_HHMM_D)이 2개 이상이면 행사가 × 저장 시각 칸으로 펼쳐 직전 시점 대비 증감을 칠한다. 굵은 선은 선물가를 지수 단위로 환산한 경로.</p>
+    <p class="sub">맨 위 띠 = 선물(정규 K200) 주체별 누적 순매수(1분, 계약, 7221 — 받지 않은 분은 잇지 않는다). 둘째 띠 = 옵션 상품 단위 주체별 누적 순매수(1분, 계약). 가운데 = 행사가별 미결제약정 첫 스냅샷 대비 증감(5분, 전체 참여자). 오른쪽 열 = 종합이면 행사가별 하루 OI 증감, 주체를 고르면 그 주체의 행사가별 당일 순매수([9842]) — 시점 파일(YYMMDD_HHMM_D)이 2개 이상이면 행사가 × 저장 시각 칸으로 펼쳐 직전 시점 대비 증감을 칠한다. 굵은 선은 선물가를 지수 단위로 환산한 경로.</p>
     <div class="bar">
       <div><span class="seg-label">상품 </span><span class="seg" id="segBook"></span></div>
       <div><span class="seg-label">구분 </span><span class="seg" id="segCP"></span></div>
@@ -177,6 +177,7 @@ td.mono{font-family:var(--mono)}
         <li>맥점: <code>premarket_levels</code> 08:50 · 09:30</li>
         <li>1분봉: <span id="srcCandle"></span></li>
         <li>행사가별 OI·벽: <code>option_book_strike/snap</code> (5분)</li>
+        <li>선물 투자자: <code>raw_investor_futures</code> (7221 「선물」 행 · 일중 누계 계약 · 09:02–15:34 매분, 09:00–01 의도적 스킵) — 같은 분 가격과 강하게 같이 가지만 <b>가격을 선행하지 않는다</b>(10/2 조사: 오히려 1분 후행). 해석·복기용이다</li>
         <li>투자자: HTS [9842] 내보내기 — 보유 <span id="srcHold"></span> · 당일 <span id="srcFlow"></span>. 단위는 파일에서 판정 — 값이 전부 정수면 계약, 소수점이 있으면 금액(십만원 추정 → 억원). _D 가 없는 날은 전 거래일 _P 를 뺀 생성본(P 차분, 10/2 실제 _D 와 전 칸 일치 검증)을 쓴다. 새 파일은 이름 끝에 _P(기간 보유) / _D(당일 순매수). 장중 시점 파일은 YYMMDD_HHMM_D — 「외인/개인 증감」 버튼과 히트맵 오른쪽 칸(주체 선택 시)이 직전 시점 대비 변화를 그린다</li>
         <li>행사가 → 선물가 환산: 베이시스(선물 − KOSPI200) 일중 중앙값</li></ul></div>
     </div>
@@ -212,7 +213,7 @@ function renderFacts(){
   const last = C[N-1]; const wb = b => (b && b.wall_close) ? `${b.wall_open ? b.wall_open.join('/') + ' → ' : ''}${b.wall_close.join('/')}` : '—';
   f.innerHTML = `<span>시가 <b>${C[0][1].toFixed(2)}</b></span><span>고 <b>${D.actual.high.toFixed(2)}</b></span><span>저 <b>${D.actual.low.toFixed(2)}</b></span><span>${last[0]} <b>${last[4].toFixed(2)}</b></span>` +
     `<span>베이시스(중앙) <b>${D.basis_measured ? fmt(B,2) + 'pt' : '미측정'}</b></span><span>먼스리 콜벽/풋벽 <b>${wb(D.books.monthly)}</b></span><span>월위클리 콜벽/풋벽 <b>${wb(D.books.weekly_mon)}</b></span>` +
-    `<span>7222 최신 <b>${D.flow_last || '—'}</b></span><span>행사가 OI <b>${D.books.monthly && D.books.monthly.src ? D.books.monthly.src : '없음'}</b></span>`;
+    `<span>7222 최신 <b>${D.flow_last || '—'}</b></span><span>선물 외인 <b>${(D.fut && D.fut.foreign) ? fmt(D.fut.foreign.filter(v => v !== null).slice(-1)[0], 0) + '계약 · ' + D.fut_last : '없음'}</b></span><span>행사가 OI <b>${D.books.monthly && D.books.monthly.src ? D.books.monthly.src : '없음'}</b></span>`;
   const w = document.getElementById('warnbox'); w.hidden = !(D.warnings && D.warnings.length); w.textContent = (D.warnings || []).join(' · ');
   document.getElementById('srcCandle').textContent = D.candle_src || '—';
   document.getElementById('srcHold').textContent = D.hold_src || '없음';
@@ -429,12 +430,12 @@ function drawHeat(){
   const svg = document.getElementById('heat'); svg.innerHTML = '';
   const bk = D.books[state.book]; const T = bk.times || []; const K = bk.strikes;
   const INV = { foreign: ['외인', '--i-for', 'for'], individual: ['개인', '--i-ind', 'ind'], institution: ['기관', '--i-ins', 'ins'] };
-  const W = 1120, mL = 64, mR = 168, mT = 10, stripH = 120, gapS = 26, heatH = 380, mB = 30;
-  const H = mT + stripH + gapS + heatH + mB; const pw = W - mL - mR;
+  const W = 1120, mL = 64, mR = 168, mT = 10, futH = 110, gapF = 14, stripH = 120, gapS = 26, heatH = 380, mB = 30;
+  const H = mT + futH + gapF + stripH + gapS + heatH + mB; const pw = W - mL - mR;
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.style.width = '100%'; svg.style.minWidth = '900px'; svg.style.height = 'auto';
   const tm = t => +t.slice(0, 2) * 60 + +t.slice(3, 5); const T0 = tm('08:45'), T1 = tm('16:10');
   const xT = t => mL + (tm(t) - T0) / (T1 - T0) * pw; const step = 5 / (T1 - T0) * pw;
-  const hy0 = mT + stripH + gapS;  // 히트맵 위 끝
+  const hy0 = mT + futH + gapF + stripH + gapS;  // 히트맵 위 끝
   // 시간 격자 + 축
   ['09:00','10:00','11:00','12:00','13:00','14:00','15:00'].forEach(t => {
     el('line', { x1: xT(t), x2: xT(t), y1: mT, y2: hy0 + heatH, stroke: css('--grid') }, svg);
@@ -443,14 +444,13 @@ function drawHeat(){
   const empty = (y0, h, msg) => { el('rect', { x: mL, y: y0, width: pw, height: h, fill: css('--chip'), rx: 4 }, svg);
     el('text', { x: mL + pw / 2, y: y0 + h / 2 + 4, 'text-anchor': 'middle', 'font-size': 12.5, fill: css('--ink-2') }, svg, msg); };
 
-  // ── 위 띠: 상품 단위 주체별 누적 순매수 ──
-  el('text', { x: mL, y: mT + 2, 'font-size': 11.5, 'font-weight': 600, fill: css('--ink-2'), 'dominant-baseline': 'hanging' }, svg,
-    `${{ monthly: '먼스리', weekly_mon: '월위클리', weekly_thu: '목위클리' }[state.book]} ${state.cp === 'call' ? '콜' : '풋'} — 주체별 누적 순매수 (계약, 상품 합계)`);
-  const fl = D.flow1m[prodKey] || {}; const have = Object.keys(INV).filter(i => fl[i]);
-  const sy0 = mT + 18, sh = stripH - 18;
-  if (!have.length) empty(sy0, sh, '이 날 이 상품의 주체 흐름이 없다 — 상장 없음');
-  else {
-    const vals = have.flatMap(i => fl[i].filter(v => v !== null)); const lo = Math.min(0, ...vals), hi = Math.max(0, ...vals); const pad = (hi - lo) * 0.08 || 1;
+  // ── 띠 그리기(선물·옵션 공용): series = {inv: [값|null] × D.mins} ──
+  const strip = (y0, h, title, ser, emptyMsg) => {
+    el('text', { x: mL, y: y0 + 2, 'font-size': 11.5, 'font-weight': 600, fill: css('--ink-2'), 'dominant-baseline': 'hanging' }, svg, title);
+    const have = Object.keys(INV).filter(i => ser[i]);
+    const sy0 = y0 + 18, sh = h - 18;
+    if (!have.length) { empty(sy0, sh, emptyMsg); return; }
+    const vals = have.flatMap(i => ser[i].filter(v => v !== null)); const lo = Math.min(0, ...vals), hi = Math.max(0, ...vals); const pad = (hi - lo) * 0.08 || 1;
     const ys = v => sy0 + (hi + pad - v) / (hi - lo + 2 * pad) * sh;
     el('line', { x1: mL, x2: mL + pw, y1: ys(0), y2: ys(0), stroke: css('--rule') }, svg);
     el('text', { x: mL - 6, y: ys(0) + 4, 'text-anchor': 'end', 'font-size': 10.5, fill: css('--ink-3'), class: 'num' }, svg, '0');
@@ -458,9 +458,9 @@ function drawHeat(){
     const order = state.inv === 'all' ? have : [...have.filter(i => i !== state.inv), ...have.filter(i => i === state.inv)];
     const ends = [];
     order.forEach(i => { const on = state.inv === 'all' || state.inv === i; const pts = [];
-      D.mins.forEach((t, j) => { const v = fl[i][j]; if (v !== null) pts.push(`${xT(t)},${ys(v)}`); });
+      D.mins.forEach((t, j) => { const v = ser[i][j]; if (v !== null) pts.push(`${xT(t)},${ys(v)}`); });
       el('polyline', { points: pts.join(' '), fill: 'none', stroke: on ? css(INV[i][1]) : css('--rule'), 'stroke-width': on ? 2 : 1.5, 'stroke-linejoin': 'round' }, svg);
-      const last = fl[i].filter(v => v !== null).slice(-1)[0]; if (on) ends.push({ i, v: last, yy: ys(last) }); });
+      const last = ser[i].filter(v => v !== null).slice(-1)[0]; if (on) ends.push({ i, v: last, yy: ys(last) }); });
     ends.sort((a, b) => a.yy - b.yy); for (let k = 1; k < ends.length; k++) if (ends[k].yy - ends[k-1].yy < 13) ends[k].yy = ends[k-1].yy + 13;
     ends.forEach(e => { const g = el('text', { x: mL + pw + 6, y: e.yy + 4, 'font-size': 11, fill: css('--ink') }, svg);
       el('tspan', { fill: css(INV[e.i][1]), 'font-weight': 700 }, g, '● '); el('tspan', {}, g, `${INV[e.i][0]} ${fmt(e.v, 0)}`); });
@@ -469,9 +469,17 @@ function drawHeat(){
     hit.addEventListener('mousemove', ev => { const r = svg.getBoundingClientRect(); const sx = (ev.clientX - r.left) * W / r.width;
       const j = Math.max(0, Math.min(D.mins.length - 1, Math.round((sx - mL) / pw * (T1 - T0)))); const t = D.mins[j];
       hv.setAttribute('x1', xT(t)); hv.setAttribute('x2', xT(t)); hv.setAttribute('visibility', 'visible');
-      showTip(ev, `<b>${t}</b><br>` + have.map(i => `${INV[i][0]} ${fl[i][j] === null ? '—' : fmt(fl[i][j], 0)}`).join('<br>')); });
+      showTip(ev, `<b>${t}</b><br>` + have.map(i => `${INV[i][0]} ${ser[i][j] === null ? '—' : fmt(ser[i][j], 0)}`).join('<br>')); });
     hit.addEventListener('mouseleave', () => { hv.setAttribute('visibility', 'hidden'); hideTip(); });
-  }
+  };
+
+  // ── 맨 위 띠: 선물 주체별 누적 순매수 (7221) ──
+  strip(mT, futH, `선물 — 주체별 누적 순매수 (계약, 정규 K200 선물 · 7221${D.fut_last ? ' · 최신 ' + D.fut_last : ''}${D.fut_src && D.fut_src !== 'live' ? ' · ⚠ ' + D.fut_src + ' 백필' : ''})`,
+    D.fut || {}, '이 날 선물 투자자 순매수가 없다 — 미륵이 미실행이거나 수집 전 날짜');
+
+  // ── 둘째 띠: 상품 단위 주체별 누적 순매수 (7222) ──
+  strip(mT + futH + gapF, stripH, `${{ monthly: '먼스리', weekly_mon: '월위클리', weekly_thu: '목위클리' }[state.book]} ${state.cp === 'call' ? '콜' : '풋'} — 주체별 누적 순매수 (계약, 상품 합계)`,
+    D.flow1m[prodKey] || {}, '이 날 이 상품의 주체 흐름이 없다 — 상장 없음');
 
   // ── 가운데: 행사가 × 시간 OI 증감 ──
   el('text', { x: mL, y: hy0 - 8, 'font-size': 11.5, 'font-weight': 600, fill: css('--ink-2') }, svg,

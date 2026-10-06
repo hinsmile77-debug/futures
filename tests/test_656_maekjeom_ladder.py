@@ -351,3 +351,44 @@ def test_page_draws_hold_shadow_on_daily_layer():
     s = _src("ladder.html")
     assert "shadow = { date: D.hold_date, sum: D.hold_is_prev === true }" in s   # 직전 거래일일 때만 합 눈금
     assert "D.hold_unit === D.flow_unit" in s                                     # 단위가 다르면 그림자 생략
+
+
+# ── H. 선물 투자자 순매수 띠 (656차 후속4) ────────────────────────────────
+def _fut_db(tmp_path, rows):
+    con = sqlite3.connect(str(tmp_path / "raw_data.db"))
+    con.execute("CREATE TABLE IF NOT EXISTS raw_investor_futures (ts TEXT PRIMARY KEY, fields TEXT, src TEXT)")
+    for ts, f, q in rows:
+        con.execute("INSERT OR REPLACE INTO raw_investor_futures VALUES (?,?,?)",
+                    (ts, '{"foreign_net_qty": %d, "institution_net_qty": %d, "retail_net_qty": %d}' % (f, -f, 0), q))
+    con.commit(); con.close()
+
+
+def test_futflow_incremental_and_no_forward_fill(tmp_path, monkeypatch):
+    """받지 않은 분은 None — 7222 처럼 앞 값을 이어 붙여 수평선을 만들지 않는다(계측 4원칙 ②)."""
+    monkeypatch.setattr(L, "DB", str(tmp_path))
+    L._fut_cache.clear()
+    _fut_db(tmp_path, [("2026-10-06 09:02:00", -652, "live"), ("2026-10-06 09:03:00", -700, "live")])
+    mins = ["09:01", "09:02", "09:03", "09:04"]
+    s, last, src = L.futflow("2026-10-06", mins)
+    assert s["foreign"] == [None, -652, -700, None] and last == "09:03" and src == "live"
+    assert s["institution"] == [None, 652, 700, None]
+    _fut_db(tmp_path, [("2026-10-06 09:03:00", -710, "live"), ("2026-10-06 09:04:00", -720, "live")])
+    s, last, _ = L.futflow("2026-10-06", mins)
+    assert s["foreign"] == [None, -652, -710, -720] and last == "09:04"   # 마지막 분은 다시 받아 덮어쓴다
+
+
+def test_futflow_empty_day_is_empty_not_zero(tmp_path, monkeypatch):
+    monkeypatch.setattr(L, "DB", str(tmp_path))
+    L._fut_cache.clear()
+    _fut_db(tmp_path, [])
+    assert L.futflow("2026-10-06", ["09:02"]) == ({}, None, None)
+
+
+def test_futflow_query_is_ts_range_only():
+    q = re.findall(r'"(SELECT[^"]*raw_investor_futures[^"]*)"', _src("ladder_data.py"))
+    assert q and all("ts >= ?" in x and "ts <= ?" in x for x in q), "장중 raw_data.db 는 ts 범위 증분 조회만(456차)"
+
+
+def test_page_draws_futures_strip():
+    s = _src("ladder.html")
+    assert "D.fut" in s and "선물 — 주체별 누적 순매수" in s
