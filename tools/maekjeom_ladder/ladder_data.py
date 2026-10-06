@@ -474,6 +474,35 @@ def _sd2_mod():
     return _SD2
 
 
+_SD2L = None
+
+
+def _sd2_live_mod():
+    global _SD2L
+    if _SD2L is None:
+        import importlib.util
+        p = os.path.join(ROOT, "scripts", "shindong2_live.py")
+        spec = importlib.util.spec_from_file_location("shindong2_live", p)
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        _SD2L = m
+    return _SD2L
+
+
+def shindong2_ai(day, cs, live):
+    """「신동2 해설」 패널 — Claude 재량 기록(ai_log)·최신 해설·이벤트·재량 채점. 파일이 없으면 None(미기록 ≠ 0)."""
+    M = _sd2_live_mod()
+    d = os.path.join(M.LIVE_DIR, day.replace("-", ""))
+    if not os.path.isdir(d):
+        return None
+    log = M._read_jsonl(os.path.join(d, "ai_log.jsonl"))
+    ev = M._read_jsonl(os.path.join(d, "events.jsonl"))
+    latest = log[-1] if log else None
+    bars = [list(c) for c in (cs[:-1] if live else cs)]
+    sim = M.simulate_ai(day, bars, log, live=live) if (log and bars) else None
+    return dict(latest=latest, log=log, events=ev[-40:], events_n=len(ev), sim=sim)
+
+
 def shindong2(day, cs, live):
     R = _sd2_mod()
     bars = [list(c) for c in (cs[:-1] if live else cs)]
@@ -786,13 +815,18 @@ def build_day(day, now=None):
     except Exception as e:
         sd2 = None
         warn.append("신동2 계산 실패: %s" % e)
+    try:
+        sd2ai = shindong2_ai(day, cs, live)
+    except Exception as e:
+        sd2ai = None
+        warn.append("신동2 해설 읽기 실패: %s" % e)
     h = hts9842(day)
     warn += ["9842 시점 파일 읽기 실패 — %s" % e for e in h["flow_snaps_err"]]
     actual = dict(high=max((c[2] for c in cs), default=None), low=min((c[3] for c in cs), default=None))
     return dict(date=day, live=live, generated_at=now.isoformat(timespec="seconds"),
                 candles=cs, candle_src=csrc, levels=lv, bands=bands, basis=basis if basis is not None else 0.0,
                 basis_measured=basis is not None, times=times, books=bk, mins=mins, flow1m=f1m, flow_last=flow_last,
-                fut=fut, fut_last=fut_last, fut_src=fut_src, shindong2=sd2,
+                fut=fut, fut_last=fut_last, fut_src=fut_src, shindong2=sd2, sd2ai=sd2ai,
                 hold=h["hold"], flow=h["flow"], hold_src=h["hold_src"], flow_src=h["flow_src"],
                 hold_unit=h["hold_unit"], flow_unit=h["flow_unit"],
                 hold_date=h["hold_date"], hold_is_prev=h["hold_is_prev"],
