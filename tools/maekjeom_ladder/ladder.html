@@ -151,7 +151,7 @@ details.ailog summary{cursor:pointer;color:var(--ink-2);font-size:12.5px}
     <h2>신동2 해설 — Claude 재량 <span class="muted" id="sd2aiMeta" style="font-weight:400;font-size:12.5px"></span></h2>
     <p class="sub">08:52 장전 전망 → 장중 갱신 → 보유 관리 → 장후 종합. <code>shindong2</code> 스킬이 기록할 때마다 바뀐다(이 페이지는 매분 다시 읽는다). 재량 제안은 「신동2-AI」로 따로 기록·채점한다 — 사전등록 규칙(기본·P·P2·P3)과 섞지 않는다. 주문 없음.</p>
     <div class="aigrid">
-      <div class="aibox" id="aiBox"></div>
+      <div style="display:grid;gap:10px"><div class="aibox" id="aiBox"></div><div class="aibox" id="aiNext" hidden></div></div>
       <div><h3 style="margin:0 0 6px;font-size:13px">이벤트 <span class="muted" id="evN"></span></h3><ul class="evlist" id="evList"></ul></div>
     </div>
     <div class="scroll"><table id="aiTbl"></table></div>
@@ -716,6 +716,7 @@ function drawAI(){
   const PH = { premarket: '장전', intraday: '장중', position: '보유', postmarket: '장후', overnight: '익일 계획' };
   if (!AI) {
     document.getElementById('sd2aiMeta').textContent = '';
+    document.getElementById('aiNext').hidden = true;
     document.getElementById('aiBox').innerHTML = '<div class="muted">이 날 기록 없음 — <code>shindong2</code> 스킬이 아직 실행되지 않았다(미기록이지 0이 아니다).</div>';
     ['evList', 'aiTbl', 'aiLog'].forEach(id => document.getElementById(id).innerHTML = ''); document.getElementById('evN').textContent = ''; document.getElementById('aiLogN').textContent = '';
     return;
@@ -736,6 +737,14 @@ function drawAI(){
   } else box = '<div class="muted">재량 기록 없음 — 이벤트만 쌓이는 중</div>';
   if (sim) box += `<div class="meta">신동2-AI 손익 ${fmt(sim.pnl, 2)}pt · 거래 ${sim.trades.length}${sim.pending ? ' · 대기 ' + (sim.pending.sgn > 0 ? '매수' : '매도') + ' ' + (sim.pending.entry ?? '시장가') : ''}${D.live ? ' (장중 잠정)' : ''}</div>`;
   document.getElementById('aiBox').innerHTML = box;
+  const NP = AI.next_plan, nb = document.getElementById('aiNext');
+  if (NP && NP.latest) {
+    const r = NP.latest;
+    nb.hidden = false;
+    nb.innerHTML = `<div class="meta">익일 계획 → <b>${NP.for_date}</b> · ${r.ts.replace('T', ' ')} 작성 · ${r.action}${NP.n > 1 ? ' · ' + NP.n + '건 중 최신' : ''} · 그날 08:45부터 유효</div>` +
+      ((r.dir && r.dir !== '관망') ? `<div class="plan"><span class="k-sd2ai">${esc(r.dir)}</span><span>진입 <b>${r.entry ?? '시장가'}</b></span><span>손절 <b>${r.stop ?? '—'}</b></span><span>청산 <b>${r.target ?? '—'}</b></span></div>` : `<div class="plan"><span class="k-sd2ai">${esc(r.dir || '관망')}</span></div>`) +
+      `<div class="body">${md(r.comment)}</div>`;
+  } else { nb.hidden = true; nb.innerHTML = ''; }
   document.getElementById('evN').textContent = `${AI.events_n}건`;
   document.getElementById('evList').innerHTML = AI.events.slice().sort((a, b) => (b.t || '').localeCompare(a.t || '')).map(e => `<li><b>${esc(e.t)}</b> [${esc(e.kind)}] ${esc(e.text)}</li>`).join('') || '<li class="muted">없음</li>';
   let q = '<thead><tr><th class="l">진입</th><th class="l">방향</th><th>체결</th><th class="l">방식</th><th>손절</th><th>청산 목표</th><th class="l">청산</th><th>손익pt</th></tr></thead><tbody>';

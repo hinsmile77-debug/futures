@@ -163,3 +163,22 @@ def test_tasks_schedule_and_no_catch_up():
     for hm in ("'08:52'", "'09:05' 10 61", "'10:30' 30 241", "'10:10' 10 291", "'15:12'", "'15:55'"):
         assert hm in s, hm
     assert "StartWhenAvailable = $false" in s and "-LogonType Interactive" in s
+
+
+def test_ladder_shows_next_day_plan_written_today(tmp_path, monkeypatch):
+    """장후에 다음 거래일 파일로 미리 적은 계획(overnight)을 그날 화면에서도 보여 준다 — 다음 날 장중 기록은 섞지 않는다."""
+    sys.path.insert(0, os.path.join(_ROOT, "tools", "maekjeom_ladder"))
+    import ladder_data as LD
+    mod = LD._sd2_live_mod()
+    monkeypatch.setattr(mod, "LIVE_DIR", str(tmp_path))
+    os.makedirs(tmp_path / "20261006")
+    os.makedirs(tmp_path / "20261007")
+    lines = [dict(id="a", ts="2026-10-06T20:46:55", phase="overnight", action="plan", dir="매도", entry=1104.0, stop=1108.5, target=1098.2),
+             dict(id="b", ts="2026-10-07T09:05:00", phase="intraday", action="note", dir="관망")]
+    with open(tmp_path / "20261007" / "ai_log.jsonl", "w", encoding="utf-8") as f:
+        for r in lines:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    out = LD.shindong2_ai("2026-10-06", [], False)
+    assert out["next_plan"]["for_date"] == "2026-10-07" and out["next_plan"]["latest"]["id"] == "a" and out["next_plan"]["n"] == 1
+    html = open(os.path.join(_ROOT, "tools", "maekjeom_ladder", "ladder.html"), encoding="utf-8").read()
+    assert 'id="aiNext"' in html and "AI.next_plan" in html

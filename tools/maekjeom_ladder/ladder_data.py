@@ -500,7 +500,26 @@ def shindong2_ai(day, cs, live):
     latest = log[-1] if log else None
     bars = [list(c) for c in (cs[:-1] if live else cs)]
     sim = M.simulate_ai(day, bars, log, live=live) if (log and bars) else None
-    return dict(latest=latest, log=log, events=ev[-40:], events_n=len(ev), sim=sim)
+    return dict(latest=latest, log=log, events=ev[-40:], events_n=len(ev), sim=sim, next_plan=_next_plan(M, day))
+
+
+def _next_plan(M, day):
+    """그날 장후에 다음 거래일 파일로 미리 적은 계획(phase=overnight) — 그날 화면에도 보여 준다.
+
+    기록은 설계대로 다음 날 폴더(--for-date)에 있다. 다음 날 폴더 중 가장 가까운 것에서
+    **그날 작성된** overnight 기록만 고른다(다음 날 장중 기록은 섞지 않는다).
+    """
+    key = day.replace("-", "")
+    try:
+        later = sorted(d for d in os.listdir(M.LIVE_DIR) if d.isdigit() and len(d) == 8 and d > key)
+    except OSError:
+        return None
+    for d in later:
+        recs = [r for r in M._read_jsonl(os.path.join(M.LIVE_DIR, d, "ai_log.jsonl"))
+                if r.get("phase") == "overnight" and str(r.get("ts", ""))[:10] == day]
+        if recs:
+            return dict(for_date="%s-%s-%s" % (d[:4], d[4:6], d[6:]), latest=recs[-1], n=len(recs))
+    return None
 
 
 def shindong2(day, cs, live):
