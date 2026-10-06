@@ -455,6 +455,36 @@ def futflow(day, mins):
     return series, max(rows), "+".join(srcs)
 
 
+# ── 신동2 시점별 제안 (scripts/foreign_flow_pit_review.py) ─────────────────────
+# [662차 후속 / 2026-10-06] 규칙·채점은 스크립트가 단일 출처다 — 여기서는 원천을 넘기고 결과만 싣는다.
+#   장중에는 **완결된 봉만** 넘긴다(덜 찬 마지막 봉의 종가로 돌파 체결을 판정하면 다음 갱신에 뒤집힌다).
+#   7221 은 futflow 캐시를 그대로 쓴다 — raw_data.db 를 다시 읽지 않는다(456차).
+_SD2 = None
+
+
+def _sd2_mod():
+    global _SD2
+    if _SD2 is None:
+        import importlib.util
+        p = os.path.join(ROOT, "scripts", "foreign_flow_pit_review.py")
+        spec = importlib.util.spec_from_file_location("foreign_flow_pit_review", p)
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        _SD2 = m
+    return _SD2
+
+
+def shindong2(day, cs, live):
+    R = _sd2_mod()
+    bars = [list(c) for c in (cs[:-1] if live else cs)]
+    c = _fut_cache.get(day) or {"rows": {}}
+    fut = [(hm, v.get("foreign"), v.get("institution"), v.get("individual")) for hm, v in sorted(c["rows"].items())]
+    S = R.load(day, cs=bars, fut=fut)
+    out = R.analyze(S, live=live)
+    out["peter"] = R.peter_trades(day)
+    return out
+
+
 # ── [9842] 내보내기 파일 (표준 라이브러리 파서) ─────────────────────────────
 _9842_COLS = ["c_inv_trust", "c_fin", "c_for", "c_ind", "c_px", "k", "p_px", "p_ind", "p_for", "p_fin", "p_inv_trust"]
 
@@ -751,13 +781,18 @@ def build_day(day, now=None):
         warn.append("선물 투자자 순매수 읽기 실패: %s" % e)
     if fut_src and fut_src != "live":
         warn.append("선물 투자자 순매수 원천 = %s (사후 역변환 백필 — 15:08 종료, 실측 아님)" % fut_src)
+    try:
+        sd2 = shindong2(day, cs, live) if cs else None
+    except Exception as e:
+        sd2 = None
+        warn.append("신동2 계산 실패: %s" % e)
     h = hts9842(day)
     warn += ["9842 시점 파일 읽기 실패 — %s" % e for e in h["flow_snaps_err"]]
     actual = dict(high=max((c[2] for c in cs), default=None), low=min((c[3] for c in cs), default=None))
     return dict(date=day, live=live, generated_at=now.isoformat(timespec="seconds"),
                 candles=cs, candle_src=csrc, levels=lv, bands=bands, basis=basis if basis is not None else 0.0,
                 basis_measured=basis is not None, times=times, books=bk, mins=mins, flow1m=f1m, flow_last=flow_last,
-                fut=fut, fut_last=fut_last, fut_src=fut_src,
+                fut=fut, fut_last=fut_last, fut_src=fut_src, shindong2=sd2,
                 hold=h["hold"], flow=h["flow"], hold_src=h["hold_src"], flow_src=h["flow_src"],
                 hold_unit=h["hold_unit"], flow_unit=h["flow_unit"],
                 hold_date=h["hold_date"], hold_is_prev=h["hold_is_prev"],
