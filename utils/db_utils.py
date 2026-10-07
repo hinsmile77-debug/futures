@@ -2506,7 +2506,8 @@ def fetch_recent_raw_candles(limit: int = 60) -> List[sqlite3.Row]:
 def fetch_pnl_history(limit_days: int = 90) -> List[sqlite3.Row]:
     """최근 N일 체결 완료 거래 전체 반환 — 손익 추이 패널용.
     반환 컬럼: direction, entry_price, exit_price, quantity, pnl_pts, pnl_krw,
-               exit_reason, grade, entry_ts, exit_ts
+               exit_reason, grade, entry_ts, exit_ts, entry_source
+    [MW0602 610차] `entry_source` — 손익 추이의 「피터2」 출처 필터용(PETER2 = 외부 지시 대리 집행).
     """
     import datetime as _dt
     cutoff = (_dt.date.today() - _dt.timedelta(days=limit_days)).isoformat()
@@ -2522,6 +2523,7 @@ def fetch_pnl_history(limit_days: int = 90) -> List[sqlite3.Row]:
                   gross_pnl_krw, commission_krw, formula_version,
                   forward_gross_pnl_krw, forward_commission_krw,
                   reverse_entry_enabled,
+                  entry_source,
                   exit_reason, grade, entry_ts, exit_ts
            FROM trades
            WHERE exit_ts IS NOT NULL AND exit_ts >= ?

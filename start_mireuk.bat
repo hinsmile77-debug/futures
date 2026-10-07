@@ -444,6 +444,20 @@ IF !_RECHECK_ERR! NEQ 0 (
 )
 
 REM ============================================================
+REM  6-D. Peter2 receiver sidecar (MW0601 668th, ported to MW0602 dev)
+REM  - 127.0.0.1:8766 only. Receives @PeterLeejoa tweets from the Chrome
+REM    extension (tools\peter2_live\extension) and appends them to
+REM    data\peter_feed\_raw\<date>.jsonl. Never sends orders.
+REM  - Singleton: a second start exits immediately (exclusive port bind).
+REM ============================================================
+IF EXIST "!WORKDIR!\tools\peter2_live\receiver.py" (
+    CALL :L "[PETER2] 수신기 사이드카 기동 (127.0.0.1:8766, 주문 없음)"
+    START "MireukPeter2Receiver" /MIN "!PY32!" "!WORKDIR!\tools\peter2_live\receiver.py"
+) ELSE (
+    CALL :L "[PETER2] receiver.py 없음 -- 피터2 실시간 수집 비활성"
+)
+
+REM ============================================================
 REM  7. Launch main.py -- Auto-Restart Loop (장중 자동 재시작)
 REM  - 장중(09:00~15:10) 비정상 종료 시 최대 5회 자동 재시작
 REM  - 5분 이상 정상 실행 후 종료 시 재시작 카운터 초기화 (일시적 크래시 대응)

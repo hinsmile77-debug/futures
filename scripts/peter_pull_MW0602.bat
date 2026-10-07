@@ -9,6 +9,10 @@ REM
 REM  하는 일 : origin/peter-feed 에서 data/peter_feed/ 만 받아
 REM            이 PC 의 캔들로 오프셋을 다시 재서 peter_levels.db 를 만든다.
 REM  안 하는 일 : 코드 브랜치·작업본 변경, 주문/계좌 TR, 푸시.
+REM  [610차] _raw/*.jsonl 은 덮지 않고 트윗 id 로 병합한다 -- 피터2 수신기가 이 PC 에
+REM            적은 장중 기록(src=live, seen_at)을 지키고, 받은 신규분만 src=pull 로 붙인다.
+REM  [610차] 끝에 자체 확정: peter2_eod -> peter_build_day --date 오늘 (이 PC 원본·캔들).
+REM            MW0601 사료가 안 온 날(rc=2)에도 차트 확정본이 생긴다. rc=2 는 그대로 남긴다.
 REM
 REM  작업 스케줄러 등록은 scripts/peter_pull_task_register.ps1 참조 (평일 16:30).
 REM  🔴 16:30 인 이유 : 이 PC 의 정규 10100 수집이 끝나야 오프셋을 잴 수 있다.

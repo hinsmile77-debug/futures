@@ -421,6 +421,15 @@ POSITION_LONG  = "LONG"
 POSITION_SHORT = "SHORT"
 POSITION_FLAT  = "FLAT"
 
+# ── 진입 출처 — 피터2 [MW0602 668차 이식] ─────────────────────
+#: 피터리 트윗 지시를 실시간 추종한 진입(`strategy/peter2/`). 실거래(주문이 나간다)이나
+#: 판단 주체가 미륵이가 아니다. dev 에는 v9-dev 의 ENTRY_SOURCE_REGISTRY(555차)가 없어
+#: 상수 하나만 둔다 — `PROFIT_GUARD_SYSTEM_SOURCES=("SYSTEM_AUTO",)` 가 화이트리스트라
+#: PETER2 는 「시스템 거래」에서 자동으로 빠진다.
+#: ⚠ `entry_source != 'OPERATOR_MANUAL'` 같은 블랙리스트 소비처를 새로 만들지 말 것 —
+#:   PETER2 가 시스템 성과에 섞인다(이식 시 `scripts/hurst_threshold_shadow.py` 1곳 수정).
+PETER2_ENTRY_SOURCE = "PETER2"
+
 # ── Circuit Breaker 상태 ──────────────────────────────────────
 CB_STATE_NORMAL    = "NORMAL"
 CB_STATE_PAUSED    = "PAUSED"     # 일시 정지

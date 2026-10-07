@@ -46,6 +46,7 @@ from PyQt5.QtGui import (
 )
 
 from config.constants import FUTURES_PT_VALUE, MINI_FUTURES_PT_VALUE
+from config.constants import PETER2_ENTRY_SOURCE   # [MW0602 610차] 손익 추이 「피터2」 출처 필터
 from config.settings import (
     RAW_DATA_DB, DATA_DIR, TIME_ZONES, ENTRY_GRADE, MAX_CONTRACTS,
     HEALTH_LATENCY_WARN_MS, HEALTH_LATENCY_CRIT_MS,
@@ -6834,6 +6835,14 @@ class PnlHistoryPanel(QWidget):
     · 신동 = shindong.db 가상거래(MAIN). 🔴 실주문 없음 — 실전 전환 기준 ① 판정에 쓰지 말 것.
       손익은 **크레온 요율(0.0019% 편도)** 로 재환산해 보인다(`strategy.shindong.display`).
     두 주체를 한 표에 섞지 않는다 — 섞으면 브로커 net(실측)과 가상 net 이 같은 누적에 들어간다.
+
+    [MW0602 610차] [미륵] 안의 **「피터2」 체크박스**(출처 필터, 순/역방향 옆).
+    · 피터2(entry_source=PETER2)는 **같은 계좌의 실거래**다 — 신동처럼 별도 주체로 떼면
+      「미륵+피터2 = 브로커 실측」인 계좌 전체 보기가 사라진다. 그래서 전환이 아니라 필터다.
+    · 셋 다 체크 = 계좌 전체(브로커 실측 유지, 종전 화면) / 피터2만 = 피터2 단독 /
+      피터2 해제 = 미륵만. 순방향·역방향은 **미륵 거래에만** 적용된다(피터2 는 역방향이 없다).
+    · 일부만 선택된 날은 `_day_is_whole` 이 브로커 net 대신 엔진 net 으로 떨어뜨린다 —
+      브로커 예탁금 차액은 계좌 전체라 쪼갤 수 없다(557차 후속2와 같은 관문).
     """
 
     _DAILY_HEADERS   = ["날짜",  "거래", "승", "패", "승률", "P/L pt", "P/L 원",   "누적 원"]
@@ -6945,6 +6954,18 @@ class PnlHistoryPanel(QWidget):
         self._cb_reverse.setStyleSheet(_cb_style)
         self._cb_forward.stateChanged.connect(self._on_source_changed)
         self._cb_reverse.stateChanged.connect(self._on_source_changed)
+        # [MW0602 610차] 피터2 출처 필터 — 기본 켜짐(= 종전 화면: 계좌 전체)
+        self._cb_peter2 = QCheckBox("피터2")
+        self._cb_peter2.setChecked(self._load_p2_pref())
+        self._cb_peter2.setStyleSheet(_cb_style.replace(C['cyan'], C['purple']))
+        self._cb_peter2.setToolTip(
+            "피터2 — 피터리 트윗 지시를 실시간 추종한 **실거래**(entry_source=PETER2).\n"
+            "· 순방향·역방향과 함께 모두 체크 = 계좌 전체(일 손익은 브로커 실측)\n"
+            "· 피터2만 체크 = 피터2 단독 / 해제 = 미륵만\n"
+            "· 일부만 선택된 날은 브로커 실측을 쪼갤 수 없어 **엔진 net** 으로 보인다\n"
+            "· 순방향·역방향은 미륵 거래에만 적용된다\n"
+            "🔴 피터2 는 미륵 판단이 아니다 — 실전 전환 기준 ① 은 미륵(자동)으로 본다.")
+        self._cb_peter2.stateChanged.connect(self._on_source_changed)
 
         def _mode_btn(text, col, tip):
             b = QPushButton(text)
@@ -6987,6 +7008,7 @@ class PnlHistoryPanel(QWidget):
         _cl.addSpacing(S.p(8))
         _cl.addWidget(self._cb_forward)
         _cl.addWidget(self._cb_reverse)
+        _cl.addWidget(self._cb_peter2)
         inner.setCornerWidget(_corner, Qt.TopRightCorner)
 
         lay.addWidget(inner, 1)
@@ -7096,6 +7118,8 @@ class PnlHistoryPanel(QWidget):
                     "forward_pnl_krw": float(r["forward_pnl_krw"] or r["pnl_krw"] or 0),
                     "quantity": int(r["quantity"]    or 1),
                     "reverse_entry_enabled": int(r["reverse_entry_enabled"] or 0),
+                    # [610차] 구버전 행(열 없음)은 None — 미륵 거래로 둔다(피터2는 610차 이후에만 존재)
+                    "is_p2": self._row_src(r) == PETER2_ENTRY_SOURCE,
                 })
             except Exception:
                 pass
@@ -7151,9 +7175,35 @@ class PnlHistoryPanel(QWidget):
     def _update_mode_banner(self):
         """지금 표가 담은 것을 한 줄로. QLabel 은 평문이다 — 마크다운 금지."""
         if not self._sd_mode():
+            _fwd, _rev = self._cb_forward.isChecked(), self._cb_reverse.isChecked()
+            _p2 = self._cb_peter2.isChecked()
+            _p2_n = sum(1 for r in self._rows if r.get("is_p2"))
+            _p2_days = len(set(r["entry_ts"][:10] for r in self._rows if r.get("is_p2")))
+            if _p2 and not (_fwd or _rev):
+                # 피터2 단독 — 0건을 「0원」으로 읽히게 두지 않는다(계측 4원칙 ②)
+                if _p2_n == 0:
+                    _mode = self._peter2_mode()
+                    self._mode_banner.setStyleSheet(f"color:{C['text2']};")
+                    self._mode_banner.setText(
+                        "⚪ 피터2 단독 — 실거래 0건(최근 90일). "
+                        + ("모드=%s → 주문을 내지 않고 기록만 한다. 추종 손익은 "
+                           "docs/미륵이고도화3/피터2/일일/ 의 섀도 열을 볼 것." % _mode
+                           if _mode != "live" else "모드=live — 아직 청산된 추종이 없다."))
+                    return
+                self._mode_banner.setStyleSheet(f"color:{C['purple']};")
+                self._mode_banner.setText(
+                    "🟪 피터2 단독 — 실거래 %d건 · %d일. 일 손익은 엔진 net"
+                    "(그날 미륵 거래가 있으면 브로커 실측을 쪼갤 수 없다). "
+                    "실전 전환 기준 ① 판정에 쓰지 말 것." % (_p2_n, _p2_days))
+                return
             _tail = ""
-            if not (self._cb_forward.isChecked() or self._cb_reverse.isChecked()):
-                _tail = "  · ⚠ 순방향·역방향이 모두 해제돼 표가 비어 있다"
+            if not (_fwd or _rev or _p2):
+                _tail = "  · ⚠ 순방향·역방향·피터2가 모두 해제돼 표가 비어 있다"
+            elif _p2 and _p2_n:
+                _tail = "  · 피터2 %d건(%d일) 포함 — 계좌 전체" % (_p2_n, _p2_days)
+            elif not _p2 and _p2_n:
+                _tail = ("  · 피터2 %d건 제외 — 그 %d일은 브로커 실측 대신 엔진 net"
+                         % (_p2_n, _p2_days))
             self._mode_banner.setStyleSheet(f"color:{C['text2']};")
             self._mode_banner.setText(
                 "⚪ 미륵 — 실거래(모의) 손익. 일 손익은 브로커 실측 net 우선." + _tail)
@@ -7191,6 +7241,7 @@ class PnlHistoryPanel(QWidget):
         _m = not self._sd_mode()
         self._cb_forward.setVisible(_m)
         self._cb_reverse.setVisible(_m)
+        self._cb_peter2.setVisible(_m)
 
     def _on_mode_toggled(self, _on=None):
         _new = self.MODE_SHINDONG if self._btn_shindong.isChecked() else self.MODE_MIREUK
@@ -7211,13 +7262,47 @@ class PnlHistoryPanel(QWidget):
             return list(self._sd_rows)
         fwd = self._cb_forward.isChecked()
         rev = self._cb_reverse.isChecked()
-        if fwd and rev:
-            return list(self._rows)
-        if fwd:
-            return [r for r in self._rows if not r["reverse_entry_enabled"]]
-        if rev:
-            return [r for r in self._rows if r["reverse_entry_enabled"]]
-        return []
+        p2 = self._cb_peter2.isChecked()
+        out = []
+        for r in self._rows:
+            if r.get("is_p2"):
+                # [610차] 피터2 는 출처 필터만 탄다 — 순/역방향은 미륵 판단의 축이다
+                if p2:
+                    out.append(r)
+            elif (fwd and not r["reverse_entry_enabled"]) or (rev and r["reverse_entry_enabled"]):
+                out.append(r)
+        return out
+
+    # ── [MW0602 610차] 피터2 출처 ──────────────────────────────
+    @staticmethod
+    def _row_src(r):
+        try:
+            return r["entry_source"]
+        except (KeyError, IndexError):
+            return None
+
+    @staticmethod
+    def _peter2_mode() -> str:
+        try:
+            import config.settings as _rs
+            return str(getattr(_rs, "PETER2_FOLLOW_MODE", "off") or "off").lower()
+        except Exception:
+            return "?"
+
+    def is_peter2_only(self) -> bool:
+        return (not self._sd_mode() and self._cb_peter2.isChecked()
+                and not self._cb_forward.isChecked() and not self._cb_reverse.isChecked())
+
+    def set_peter2_only(self, only: bool) -> None:
+        """P&L 탭 「피터2」 버튼용 — 피터2 단독 ↔ 계좌 전체(셋 다 체크)."""
+        if self._sd_mode():
+            self._btn_mireuk.setChecked(True)        # toggled → _on_mode_toggled
+        for cb, on in ((self._cb_forward, not only), (self._cb_reverse, not only),
+                       (self._cb_peter2, True)):
+            cb.blockSignals(True)
+            cb.setChecked(on)
+            cb.blockSignals(False)
+        self._on_source_changed()
 
     def _group(self, key_fn):
         from collections import defaultdict
@@ -7379,6 +7464,10 @@ class PnlHistoryPanel(QWidget):
         _p = self._load_prefs_dict()
         return bool(_p.get("pnl_cb_forward", True)), bool(_p.get("pnl_cb_reverse", True))
 
+    def _load_p2_pref(self) -> bool:
+        """[610차] 피터2 체크 복원. 기본 True — 저장값이 없으면 종전 화면(계좌 전체)과 같다."""
+        return bool(self._load_prefs_dict().get("pnl_cb_peter2", True))
+
     def _load_mode_pref(self) -> str:
         """[590차] 주체 선택 복원. 🔴 기본값 **미륵** — 가상을 여는 것은 사용자 행위다."""
         _m = self._load_prefs_dict().get("pnl_mode", self.MODE_MIREUK)
@@ -7391,6 +7480,7 @@ class PnlHistoryPanel(QWidget):
             _p = self._load_prefs_dict()
             _p["pnl_cb_forward"] = self._cb_forward.isChecked()
             _p["pnl_cb_reverse"] = self._cb_reverse.isChecked()
+            _p["pnl_cb_peter2"] = self._cb_peter2.isChecked()
             _p["pnl_mode"] = self._mode
             _p.pop("pnl_cb_gp", None)          # 557차 GP 스위치 — 590차에 폐기
             with open(_f, "w", encoding="utf-8") as _fp:
@@ -7773,6 +7863,23 @@ class LogPanel(QWidget):
                         self._pnl_bars[attr] = pb
                     mrow.addWidget(mf)
                     self._pnl_vals[attr] = vl
+                # [MW0601 668차 / MW0602 이식] 피터2 — 당일 실현·보유를 따로 보여 주는 버튼.
+                #   미륵이 「일일 누적」 타일은 계좌 전체(피터2 포함)다 — 섞인 값이라 따로 뗀다.
+                #   클릭: «📊 손익 추이» 를 피터2 단독 ↔ 계좌 전체로 토글(610차 「피터2」 출처 필터).
+                self._peter2_btn = QPushButton("피터2\n—")
+                self._peter2_btn.setToolTip(
+                    "피터2 — 피터리 트윗 실시간 추종(모의 1계약)\n"
+                    "· 표시: 당일 실현 순손익 · 청산 건수 · 보유 중이면 방향·미실현\n"
+                    "· 상태: 감시 중 / 대기 매수·매도 가격 / 정지 사유 / 기록만\n"
+                    "· 클릭: «📊 손익 추이» 를 피터2 단독 집계로 전환 / 다시 클릭하면 계좌 전체\n"
+                    "· 「—」 = 피터2 미기동(오늘 첫 폴링 전)이지 0원이 아니다")
+                self._peter2_btn.setStyleSheet(
+                    f"QPushButton{{background:{C['bg3']};color:{C['purple']};"
+                    f"border:1px solid {C['purple']};border-radius:3px;"
+                    f"font-size:{S.f(11)}px;font-weight:bold;padding:2px 8px;}}"
+                    f"QPushButton:hover{{background:{C['bg2']};}}")
+                self._peter2_btn.clicked.connect(self._on_peter2_btn)
+                mrow.addWidget(self._peter2_btn)
                 pl.addLayout(mrow)
 
             elif key == "model":
@@ -7906,6 +8013,39 @@ class LogPanel(QWidget):
         else:
             act_lbl.setText("○ 대기")
             act_lbl.setStyleSheet(f"color:{C['text2']};font-size:{S.f(13)}px;font-weight:bold;")
+
+    def update_peter2_metrics(self, realized_krw, closed_n, open_side=None,
+                              unrealized_krw=None, status_txt=""):
+        """[MW0601 668차] 피터2 버튼 갱신. realized_krw=None 이면 미기동(「—」)."""
+        try:
+            btn = self._peter2_btn
+        except AttributeError:
+            return
+        if realized_krw is None:
+            btn.setText("피터2\n—")
+            return
+        txt = "피터2 %s원 · %d건" % (format(float(realized_krw), "+,.0f"), int(closed_n or 0))
+        if open_side:
+            txt += "\n보유 %s %s원" % (open_side, format(float(unrealized_krw or 0.0), "+,.0f"))
+        elif status_txt:
+            txt += "\n" + status_txt
+        btn.setText(txt)
+        _tot = float(realized_krw) + float(unrealized_krw or 0.0)
+        _col = C['green'] if _tot > 0 else (C['red'] if _tot < 0 else C['purple'])
+        btn.setStyleSheet(
+            f"QPushButton{{background:{C['bg3']};color:{_col};"
+            f"border:1px solid {C['purple']};border-radius:3px;"
+            f"font-size:{S.f(11)}px;font-weight:bold;padding:2px 8px;}}"
+            f"QPushButton:hover{{background:{C['bg2']};}}")
+
+    def _on_peter2_btn(self):
+        """[610차] «📊 손익 추이» 를 피터2 단독 ↔ 계좌 전체로 토글하고 그 탭으로 이동한다."""
+        try:
+            ph = self.pnl_history
+            ph.set_peter2_only(not ph.is_peter2_only())
+            self.tabs.setCurrentIndex(self.tabs.indexOf(ph))
+        except Exception as _e:
+            logger.warning("[Peter2] 손익 추이 전환 실패: %s", _e)
 
     def update_order_metrics(self, trades: int, avg_lat_ms: float, peak_lat_ms: float, samples: int):
         """창3 주문/체결 탭 상단 지표 갱신."""
@@ -8770,6 +8910,29 @@ def peter_load(session_date: str):
     except Exception as _e:
         logger.debug("[ChartDBG] 피터 사료 조회 실패: %s", _e)
         return None
+
+
+def peter2_live_row(session_date: str):
+    """[MW0601 668차] 피터2 실시간 사료 — 장후 확정본(peter_paste)이 **없을 때만** 쓴다.
+
+    장중에는 그날 행이 없다(오프셋을 15:52 정규 10100 뒤에야 잴 수 있어서). 그 사이
+    피터2 가 받은 트윗과 그가 트윗한 거래줄을 같은 형식으로 보여 준다. 오프셋은 직전
+    실측일 값이다 — 상태줄에 「실시간」으로 표시해 확정본과 구분한다.
+    None = 실시간 사료 없음(피터2 미기동·트윗 0건)이지 「피터가 쉬었다」가 아니다.
+    """
+    try:
+        from strategy.peter2.store import load_feed
+        f = load_feed(session_date)
+    except Exception as _e:
+        logger.debug("[ChartDBG] 피터2 실시간 사료 조회 실패: %s", _e)
+        return None
+    if not f or (not (f.get("raw_lv") or "").strip() and not (f.get("raw_tr") or "").strip()):
+        return None
+    if f.get("offset") is None:
+        return None
+    return {"date": session_date, "offset": f.get("offset"), "raw_lv": f.get("raw_lv") or "",
+            "raw_tr": f.get("raw_tr") or "", "live": True,
+            "offset_src": f.get("offset_src"), "updated_at": f.get("updated_at")}
 
 
 def peter_save(session_date: str, offset: float, raw_lv: str, raw_tr: str):
@@ -12428,6 +12591,8 @@ class MinuteChartDialog(QDialog):
         self._cov = {}            # {layer: 그 레이어에 행이 있는 날짜 set} · None = 원천없음
         self._cnt = {}            # {layer: 당일 건수} · None = 조회 실패
         self._layer_lbl = None
+        # [668차] 피터2 실시간 사료로 레이어를 자동으로 켰는가(세션당 1회)
+        self._peter2_autoshown = False
 
         self._chart = MinuteChartCanvas(self)
         self._status = QLabel(
@@ -13005,10 +13170,23 @@ class MinuteChartDialog(QDialog):
         except Exception as _e:
             logger.warning("[ChartDBG] 피터 입력 실패: %s", _e)
 
+    def refresh_peter_live(self):
+        """[668차] 피터2 가 새 트윗을 처리할 때마다 부른다 — 오늘·라이브 화면일 때만."""
+        try:
+            if self._live_mode and self._session_date == datetime.now().date().isoformat():
+                self._apply_peter()
+        except Exception as _e:
+            logger.debug("[ChartDBG] 피터2 실시간 갱신 실패: %s", _e)
+
     def _apply_peter(self):
         """저장된 사료를 캔버스에 올린다. 없으면 **빈 채로** 올린다(0 이 아니라 없음)."""
         try:
             _row = peter_load(self._session_date)
+            _live = False
+            if not _row:
+                # [668차] 확정본이 없으면 피터2 실시간 사료 — 장후 확정되면 자동으로 확정본이 이긴다
+                _row = peter2_live_row(self._session_date)
+                _live = _row is not None
             if not _row:
                 self._chart.set_peter([], [])
                 # 빈 상태에 **다음 행동**을 적는다. "없음"만 쓰면 막다른 길이다.
@@ -13037,6 +13215,15 @@ class MinuteChartDialog(QDialog):
                 _tr_txt = "거래 %d" % len(_tr)
             _t = "피터 지시 %d%s · 거래 %s · 오프셋 %+.2f" % (
                 len(_od), (" · 예고 %d" % len(_ax)) if _ax else "", _tr_txt[3:], _off)
+            if _live:
+                _t = "실시간(피터2 · 장후 확정 전 · 오프셋 %s) · " % (_row.get("offset_src") or "?") + _t
+                # 처음 사료가 생기면 레이어를 한 번 켠다 — 넣었는데 안 보이면 「안 들어왔다」로 읽힌다(586차)
+                if (_od or _tr) and not self._peter2_autoshown:
+                    self._peter2_autoshown = True
+                    for _k in ("peter_lv", "trade_peter"):
+                        _b = self._ov_btn.get(_k)
+                        if _b is not None and not _b.isChecked():
+                            _b.setChecked(True)
             # [594차] 저장된 오프셋이 실측과 어긋나면 화면이 조용히 틀린 가격을
             #   그린다 — 어긋남 자체를 상태줄에 띄운다(계측 4원칙 ②).
             _mv, _mn, _, _ = peter_offset_measure(
@@ -13067,7 +13254,8 @@ class MinuteChartDialog(QDialog):
         #   사용자는 "입력란이 없다"고 읽는다(실측). 토글 자체를 입구로 만든다.
         if on and key in ("peter_lv", "trade_peter"):
             try:
-                if not peter_load(self._session_date):
+                # [668차] 피터2 실시간 사료가 있으면 입력창을 띄우지 않는다 — 장중에 창이 뜨면 안 된다
+                if not peter_load(self._session_date) and not peter2_live_row(self._session_date):
                     self._open_peter_input()
             except Exception as _e:
                 logger.debug("[ChartDBG] 피터 토글 진입 실패: %s", _e)
@@ -15150,6 +15338,13 @@ class MireukDashboard(QMainWindow):
 
     def minute_chart_record_entry(self, direction: str, price: float, ts=None):
         self._minute_chart_dialog.record_entry(direction, price, ts=ts)
+
+    def minute_chart_refresh_peter(self):
+        """[MW0601 668차] 피터2 실시간 사료 갱신 → 당일 1분봉의 피터맥점·거래피터 레이어."""
+        try:
+            self._minute_chart_dialog.refresh_peter_live()
+        except Exception as _e:
+            logger.debug("[ChartDBG] minute_chart_refresh_peter 실패: %s", _e)
 
     def minute_chart_record_exit(
         self,
@@ -17315,6 +17510,29 @@ DashboardAdapter.minute_chart_candle_closed = _adapter_minute_chart_candle_close
 DashboardAdapter.minute_chart_set_regime = _adapter_minute_chart_set_regime
 DashboardAdapter.minute_chart_set_direction = _adapter_minute_chart_set_direction
 DashboardAdapter.minute_chart_record_entry = _adapter_minute_chart_record_entry
+
+
+def _adapter_minute_chart_refresh_peter(self):
+    """[MW0601 668차] 피터2 실시간 사료 → 당일 1분봉."""
+    try:
+        self._win.minute_chart_refresh_peter()
+    except Exception as _e:
+        logger.debug("[Peter2] 차트 갱신 실패: %s", _e)
+
+
+def _adapter_update_peter2_metrics(self, realized_krw, closed_n, open_side=None,
+                                   unrealized_krw=None, status_txt=""):
+    """[MW0601 668차] 창4 손익 탭의 「피터2」 버튼 갱신."""
+    try:
+        self._win.log_panel.update_peter2_metrics(
+            realized_krw, closed_n, open_side=open_side,
+            unrealized_krw=unrealized_krw, status_txt=status_txt)
+    except Exception as _e:
+        logger.debug("[Peter2] 버튼 갱신 실패: %s", _e)
+
+
+DashboardAdapter.minute_chart_refresh_peter = _adapter_minute_chart_refresh_peter
+DashboardAdapter.update_peter2_metrics = _adapter_update_peter2_metrics
 DashboardAdapter.minute_chart_record_exit = _adapter_minute_chart_record_exit
 DashboardAdapter.minute_chart_sync_active_position = _adapter_minute_chart_sync_active_position
 DashboardAdapter.minute_chart_clear_active_position = _adapter_minute_chart_clear_active_position

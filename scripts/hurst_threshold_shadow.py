@@ -126,7 +126,8 @@ def _load_positions(since: str) -> list:
         rows = [dict(r) for r in c.execute(
             "SELECT entry_ts, direction, entry_qty, pnl_pts, net_pnl_krw "
             "FROM trades WHERE entry_ts >= ? AND exit_ts IS NOT NULL "
-            "AND (entry_source IS NULL OR entry_source != 'OPERATOR_MANUAL') "
+            # [668차 이식] PETER2(외부 지시 대리 집행)도 시스템 판단이 아니다
+            "AND (entry_source IS NULL OR entry_source NOT IN ('OPERATOR_MANUAL', 'PETER2')) "
             "ORDER BY entry_ts", (since,))]
     agg = collections.OrderedDict()
     for r in rows:

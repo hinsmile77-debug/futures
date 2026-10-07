@@ -117,6 +117,10 @@ from config.settings import (
 )
 import config.settings as runtime_settings
 from config.constants import MINI_FUTURES_PT_VALUE, get_contract_spec, CB_STATE_HALTED, DIRECTION_FLAT
+# [MW0601 668차 / MW0602 이식] 피터2 — 피터리 트윗 실시간 추종(모의 1계약). 설계: docs/미륵이고도화3/피터2/
+from config.constants import PETER2_ENTRY_SOURCE
+from strategy.peter2.follower import Peter2Follower
+from strategy.peter2 import store as peter2_store
 # [2026-08-06] 자본 기준 단일 출처. daily_loss_pct 분모가 세 곳에
 # `max(잔고, 50_000_000)` 으로 하드코딩돼 있던 것을 이 모듈로 이관했다.
 from config.capital import (
@@ -899,6 +903,13 @@ class TradingSystem:
         # 분당 1회(:33초)라 최악 60초 지연되던 비대칭을 해소. 위 두 형제와 동일 패턴.
         self._tick_tp1_triggered: bool  = False
         self._tick_tp1_price:     float = 0.0
+        # [MW0601 668차 / MW0602 이식] 피터2 상태 — 날짜가 바뀌면 `_peter2_init()` 이 새로 만든다.
+        # None = 아직 미기동(오늘 첫 폴링 전)이지 「신호 없음」이 아니다(계측 4원칙 ②).
+        self._peter2 = None                    # Peter2Follower
+        self._peter2_tail = None               # store.RawTail
+        self._peter2_rows: list = []           # 오늘 받은 트윗 원본(차트 사료용)
+        self._peter2_last_mode = None          # 모드 전환 로그용
+        self._peter2_stale_logged = False      # 수집기 정지 경보 1회 제한
         # [MW0602 425차] qty=1 손절1차 — **위 세 형제와 달리 elif 체인 밖의 독립 경로**다.
         # 섀도(계측)일 때는 액션이 없어 상호배타가 필요 없고, 오히려 elif에 넣으면
         # "같은 틱이 tier1과 풀스톱을 함께 뚫은" 사건을 또 놓친다 — 그게 지금 이
@@ -3085,6 +3096,299 @@ class TradingSystem:
         self._execute_entry(direction, price, qty, atr, grade)
         # _execute_entry() 내부에서 기본값(SYSTEM_AUTO)으로 설정되므로 호출 후 덮어씀
         self._entry_source = "OPERATOR_MANUAL"
+
+    # ── [MW0601 668차 / MW0602 이식] 피터2 — 피터리 트윗 실시간 추종 ─────────────
+    #
+    # 수집: Chrome 확장 → tools/peter2_live/receiver.py → data/peter_feed/_raw/<날짜>.jsonl
+    # 해석: strategy/peter2/parse.py(문장 단위·엄격) → follower.py(상태기계·순수)
+    # 집행: 여기 — 게이트를 거쳐 `_execute_entry(..., entry_source=PETER2)` 와 외부 손절·목표.
+    # 이식 지도: docs/미륵이고도화3/피터2/피터2_MW0602_독자개발_가이드_20261007.md
+    #
+    # 결정(MW0601 2026-10-07, MW0602 동일 채택)
+    #   · 미륵이 보유 중이면 피터 신호를 건너뛴다(follower 가 DISARM engine_busy 로 기록).
+    #     피터2 보유 중에는 엔진이 단일 포지션이라 미륵이 신규 진입이 자연히 막힌다.
+    #   · 피터2 손절도 CB②에 센다. 켈리·앙상블 학습에는 넣지 않는다(_post_exit).
+    # 🔴 15:10 강제청산·15:18 안전망·CB⑤·킬스위치는 피터2 포지션에도 그대로다.
+    def _peter2_tick(self) -> None:
+        """QTimer 슬롯(2초). 예외를 삼키지 않고 ERROR 로 남긴다(617차 — 슬롯 예외는 qFatal)."""
+        try:
+            self._peter2_tick_body()
+        except Exception as _e:
+            logger.exception("[Peter2] 폴링 예외 — 이번 주기 건너뜀: %s", _e)
+            try:
+                log_manager.system(f"[Peter2] 폴링 예외: {_e}", "ERROR")
+            except Exception:
+                pass
+
+    def _peter2_last_price(self):
+        """최신 가격(없으면 None). dev 는 `_last_pipeline_price` 를 __init__ 에서 만들지
+        않으므로(첫 파이프라인 전 미존재) 기존 관례대로 getattr 로 읽는다."""
+        try:
+            return float(getattr(self, "_last_pipeline_price", 0.0) or 0.0) or None
+        except Exception:
+            return None
+
+    def _peter2_engine_state(self) -> dict:
+        pos = self.position
+        _ext = pos.is_external()
+        return {
+            "status": pos.status,
+            "source": pos.entry_source,
+            "pending": self._has_pending_order(),
+            "price": self._peter2_last_price(),
+            "stop": pos.ext_stop if _ext else None,
+            "target": pos.ext_target if _ext else None,
+        }
+
+    def _peter2_init(self, date: str, now) -> None:
+        off, src, safe = peter2_store.load_offset(date)
+        _cut = NEW_ENTRY_CUTOFF.strftime("%H:%M") if hasattr(NEW_ENTRY_CUTOFF, "strftime") else "14:50"
+        cfg = {
+            "chase": float(getattr(runtime_settings, "PETER2_CHASE_MAX_PT", 1.0)),
+            "tol": float(getattr(runtime_settings, "PETER2_OFFSET_TOL_PT", 0.2)),
+            "arm_expire_min": int(getattr(runtime_settings, "PETER2_ARM_EXPIRE_MIN", 10)),
+            "arm_max_dist": float(getattr(runtime_settings, "PETER2_ARM_MAX_DIST_PT", 8.0)),
+            "plausible": float(getattr(runtime_settings, "PETER2_PLAUSIBLE_DIST_PT", 40.0)),
+            "default_stop": float(getattr(runtime_settings, "PETER2_DEFAULT_STOP_PT", 4.0)),
+            "stop_cap": float(getattr(runtime_settings, "PETER2_STOP_CAP_PT", 8.0)),
+            "daily_stop_limit": int(getattr(runtime_settings, "PETER2_DAILY_STOP_LIMIT", 0) or 0),
+            "daily_max_entries": int(getattr(runtime_settings, "PETER2_DAILY_MAX_ENTRIES", 6)),
+            "last_entry_hm": _cut,
+        }
+        fw = Peter2Follower(date, off, src, safe, cfg=cfg)
+        fw.restore(peter2_store.load_state(date))
+        tail = peter2_store.RawTail(date)
+        rows = tail.read_new()
+        eng = self._peter2_engine_state()
+        for tw in rows:                      # 재기동 복원 — 주문 의도는 내지 않는다
+            fw.ingest(tw, eng, now, replay=True)
+        fw.events = []
+        self._peter2, self._peter2_tail, self._peter2_rows = fw, tail, list(rows)
+        self._peter2_stale_logged = False
+        msg = ("[Peter2] 기동 date=%s offset=%s src=%s safe=%s 복원트윗=%d 집행이력=%d 손절=%d%s"
+               % (date, off, src, safe, len(rows), len(fw.consumed), fw.losses,
+                  (" 대기=%s" % fw.armed["sig"]) if fw.armed else ""))
+        log_manager.system(msg, "INFO" if (off is not None and safe) else "WARNING")
+        if off is None or not safe:
+            log_manager.system(
+                "[Peter2] 오프셋 사용 불가(%s) — 오늘은 **해석·기록만** 하고 진입하지 않는다" % src,
+                "WARNING")
+        peter2_store.append_signal(date, {"kind": "INIT", "offset": off, "offset_src": src,
+                                          "safe": safe, "replayed": len(rows),
+                                          "consumed": sorted(fw.consumed)})
+        self._peter2_write_feed(date)
+
+    def _peter2_tick_body(self) -> None:
+        mode = str(getattr(runtime_settings, "PETER2_FOLLOW_MODE", "off") or "off").lower()
+        if mode != self._peter2_last_mode:
+            log_manager.system(f"[Peter2] 모드={mode}", "INFO")
+            self._peter2_last_mode = mode
+        if mode == "off":
+            return
+        now = datetime.datetime.now()
+        if now.weekday() >= 5:
+            return
+        hm = now.strftime("%H:%M")
+        if hm < "08:30" or hm > "15:40":
+            return
+        date = now.date().isoformat()
+        if self._peter2 is None or self._peter2.date != date:
+            self._peter2_init(date, now)
+        fw = self._peter2
+        new_rows = self._peter2_tail.read_new()
+        if new_rows:
+            self._peter2_rows.extend(new_rows)
+        intents = []
+        for tw in new_rows:
+            intents.extend(fw.ingest(tw, self._peter2_engine_state(), now))
+        intents.extend(fw.on_price(self._peter2_engine_state(), now))
+        for it in intents:
+            self._peter2_execute(it, mode, date, now)
+        # 그가 걸어 둔 청산가 — 2초 폴링으로 본다(지정가 대기 주문은 내지 않는다)
+        _eng = self._peter2_engine_state()
+        if (_eng["price"] and not _eng["pending"]
+                and self.position.is_ext_target_hit(_eng["price"])):
+            self._peter2_exit("피터2청산가", date, now,
+                              why="target %.2f price %.2f" % (self.position.ext_target, _eng["price"]))
+        self._peter2_flush(date)
+        if new_rows or intents:
+            peter2_store.save_state(date, fw.snapshot())
+            self._peter2_write_feed(date)
+        self._peter2_update_button(_eng, mode)
+        # 수집기 하트비트 — 장중에 끊기면 1회 경보(재개되면 다시 무장)
+        if "09:00" <= hm < "15:10":
+            age, _info = peter2_store.collector_heartbeat(date)
+            stale = age is None or age > float(getattr(runtime_settings, "PETER2_HEARTBEAT_STALE_SEC", 90))
+            if stale and not self._peter2_stale_logged:
+                self._peter2_stale_logged = True
+                log_manager.system(
+                    "[Peter2] 수집기 하트비트 없음/지연(%s) — 신규 추종 진입 정지. "
+                    "Chrome 확장·수신기(tools/peter2_live) 확인" % (
+                        "미기동" if age is None else "%.0f초" % age), "WARNING")
+            elif not stale and self._peter2_stale_logged:
+                self._peter2_stale_logged = False
+                log_manager.system("[Peter2] 수집기 하트비트 회복", "INFO")
+
+    def _peter2_update_button(self, eng: dict, mode: str = "live") -> None:
+        fw = self._peter2
+        if fw is None:
+            return
+        pos = self.position
+        side = unreal = None
+        if pos.is_external() and eng.get("price"):
+            side = "매수" if pos.status == "LONG" else "매도"
+            try:
+                unreal = pos.unrealized_pnl_pts(eng["price"]) * pos._pt_value   # 수량 포함 pt
+            except Exception:
+                unreal = None
+        if fw.halted:
+            st = "정지: %s" % fw.halted
+        elif fw.armed:
+            st = "대기 %s %.2f" % ("매수" if fw.armed["side"] == "L" else "매도", fw.armed["level_m"])
+        elif fw.offset is None or not fw.offset_safe:
+            st = "기록만(오프셋 불가)"
+        else:
+            st = "감시 중"
+        if mode != "live":
+            st = "[%s] %s" % (mode, st)       # [MW0602] 섀도로 시작 — 주문이 안 나간다는 사실을 버튼에 박는다
+        self.dashboard.update_peter2_metrics(fw.realized_krw, fw.closed, open_side=side,
+                                             unrealized_krw=unreal, status_txt=st)
+
+    def _peter2_flush(self, date: str) -> None:
+        fw = self._peter2
+        if fw is None or not fw.events:
+            return
+        evs, fw.events = fw.events, []
+        for e in evs:
+            peter2_store.append_signal(date, e)
+            line = peter2_store.event_md(e)
+            if line:
+                peter2_store.append_doc(date, line)
+            if e.get("kind") in ("ARM", "REJECT", "DISARM", "EXPIRE", "HALT", "CONFIRM", "SHADOW"):
+                log_manager.signal("[Peter2] %s %s" % (e.get("kind"), {
+                    k: v for k, v in e.items() if k not in ("kind", "facts", "raw")}))
+
+    def _peter2_write_feed(self, date: str) -> None:
+        fw = self._peter2
+        if fw is None:
+            return
+        try:
+            peter2_store.write_feed(date, {
+                "date": date, "offset": fw.offset, "offset_src": fw.offset_src,
+                "raw_lv": peter2_store.build_live_lv(self._peter2_rows, date),
+                "raw_tr": fw.peter_tr_text(),
+                "updated_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            })
+            self.dashboard.minute_chart_refresh_peter()
+        except Exception as _e:
+            logger.warning("[Peter2] 실시간 사료 기록 실패: %s", _e)
+
+    def _peter2_reject(self, date, now, it, why) -> None:
+        self._peter2._ev("REJECT", now, sig=it.get("sig"), why=why, intent=it.get("type"))
+        log_manager.system(f"[Peter2] {it.get('type')} 기각 — {why}", "WARNING")
+
+    def _peter2_execute(self, it: dict, mode: str, date: str, now) -> None:
+        fw = self._peter2
+        typ = it.get("type")
+        pos = self.position
+        if typ == "ENTER":
+            if mode != "live":
+                fw._ev("SHADOW", now, sig=it.get("sig"), side=it.get("side"), price=it.get("price"),
+                       stop=it.get("stop"), target=it.get("target"), why="mode=%s" % mode)
+                return
+            age, _ = peter2_store.collector_heartbeat(date)
+            if age is None or age > float(getattr(runtime_settings, "PETER2_HEARTBEAT_STALE_SEC", 90)):
+                return self._peter2_reject(date, now, it, "collector_stale")
+            if pos.status != "FLAT" or self._has_pending_order():
+                return self._peter2_reject(date, now, it, "engine_busy(%s)" % pos.status)
+            if not self.circuit_breaker.is_entry_allowed():
+                return self._peter2_reject(date, now, it, "CB %s" % self.circuit_breaker.state)
+            if self.kill_switch.is_active():
+                return self._peter2_reject(date, now, it, "kill_switch")
+            if not is_new_entry_allowed():
+                return self._peter2_reject(date, now, it, "time(신규진입 마감)")
+            if is_force_exit_time():
+                return self._peter2_reject(date, now, it, "force_exit_time")
+            qty = max(1, int(getattr(runtime_settings, "PETER2_QTY", 1) or 1))
+            _ctx = self._manual_entry_ctx or {}
+            atr = float(_ctx.get("atr") or 0.0) or 1.0
+            # FLAT 에서 먼저 건다 — 체결 경로(낙관 오픈·지정가 체결·브로커 동기화)가 어디든
+            # open_position/_recalculate_levels 끝에서 PETER2 일 때만 적용된다.
+            pos.set_external_levels(stop=it["stop"], target=it.get("target"),
+                                    src=it.get("stop_src"), clear_target=True)
+            log_manager.trade(
+                "[Peter2] 진입 %s %d계약 @%.2f 손절 %.2f 목표 %s — %s" % (
+                    it["side"], qty, it["price"], it["stop"],
+                    ("%.2f" % it["target"]) if it.get("target") is not None else "-", it.get("why")))
+            self._execute_entry(it["side"], it["price"], qty, atr, "P",
+                                entry_source=PETER2_ENTRY_SOURCE)
+            _sent = (self._has_pending_order()
+                     and str((self._pending_order or {}).get("kind", "")) == "ENTRY") \
+                or (pos.status != "FLAT" and pos.entry_source == PETER2_ENTRY_SOURCE)
+            if _sent:
+                fw.mark_entered()
+                fw._ev("ENTER", now, sig=it.get("sig"), side=it["side"], price=it["price"],
+                       stop=it["stop"], target=it.get("target"), stop_src=it.get("stop_src"),
+                       why=it.get("why"))
+            else:
+                if pos.status == "FLAT":
+                    pos.clear_external_levels()
+                self._peter2_reject(date, now, it, "execute_entry_blocked(로그 [EntryBlock] 참조)")
+            return
+        if not pos.is_external():
+            if typ in ("SET_STOP", "SET_TARGET", "EXIT"):
+                fw._ev("SKIP", now, sig=it.get("sig"), why="no_peter2_position", intent=typ)
+            return
+        if typ == "SET_STOP":
+            new = float(it["stop"])
+            cap = float(getattr(runtime_settings, "PETER2_STOP_CAP_PT", 8.0))
+            ent = float(pos.entry_price or 0.0)
+            capped = False
+            if pos.status == "LONG" and new < ent - cap:
+                new, capped = round(ent - cap, 2), True
+            elif pos.status == "SHORT" and new > ent + cap:
+                new, capped = round(ent + cap, 2), True
+            old = pos.ext_stop
+            pos.set_external_levels(stop=new, src="peter(capped)" if capped else "peter")
+            fw._ev("SET_STOP", now, sig=it.get("sig"), old=old, new=new, capped=capped,
+                   why=it.get("why"))
+            log_manager.trade("[Peter2] 손절가 %s → %.2f%s (%s)" % (
+                old, new, " (캡)" if capped else "", it.get("why")))
+            return
+        if typ == "SET_TARGET":
+            old = pos.ext_target
+            pos.set_external_levels(target=float(it["target"]))
+            fw._ev("SET_TARGET", now, sig=it.get("sig"), old=old, new=it["target"], why=it.get("why"))
+            log_manager.trade("[Peter2] 청산가 %s → %.2f" % (old, float(it["target"])))
+            return
+        if typ == "EXIT":
+            self._peter2_exit(it.get("reason") or "피터2미러", date, now, why=it.get("why"),
+                              sig=it.get("sig"))
+
+    def _peter2_exit(self, reason: str, date: str, now, why: str = "", sig=None) -> None:
+        """피터2 포지션 전량 청산(시장가). 수동 전량청산과 같은 pending→주문 순서."""
+        pos = self.position
+        if not pos.is_external() or pos.quantity <= 0:
+            return
+        if self._has_pending_order():
+            self._peter2._ev("SKIP", now, sig=sig, why="exit_pending_exists", reason=reason)
+            return
+        qty = int(pos.quantity)
+        price_hint = float(self._peter2_last_price() or pos.entry_price or 0.0)
+        self._set_pending_order(
+            kind="EXIT_FULL", direction=pos.status, qty=qty,
+            price_hint=round(price_hint, 2), reason=reason,
+            stage=pos.resolve_stage_for_exit_qty(qty, full_close=True) or None,
+        )
+        ret = self._send_broker_exit_order(qty, throttle=False)
+        if ret != 0:
+            self._clear_pending_order()
+            log_manager.system(f"[Peter2] 청산 주문 실패 ret={ret} reason={reason}", "ERROR")
+            _ts_on_exit_order_reject(self, kind="피터2청산", direction=pos.status, qty=qty, ret=ret)
+            self._peter2._ev("EXIT_FAIL", now, sig=sig, ret=ret, reason=reason)
+            return
+        self._peter2._ev("EXIT", now, sig=sig, reason=reason, price=price_hint, why=why)
+        log_manager.trade(f"[주문요청] {reason} {pos.status} {qty}계약 @ {price_hint:.2f} 체결대기 ({why})")
 
     def _on_instant_exit_requested(self) -> None:
         """즉시청산 버튼 클릭 — 보유 포지션 전량 즉시 청산."""
@@ -11262,12 +11566,15 @@ class TradingSystem:
         # [MW0602 470차 C1] CB② 는 **포지션 단위**로 센다 — 부분청산 레그는 카운터를
         # 올리지도, 리셋하지도 않는다. Kelly 는 종전대로 레그를 기록한다(별개 축이며
         # 사이징에 직접 영향을 주므로 이 점검의 범위가 아니다 — 470차 C2 결론 참조).
+        _is_p2 = (result.get("pos_entry_src") == PETER2_ENTRY_SOURCE)   # [668차] 켈리 격리
         if pnl > 0:
             self.circuit_breaker.record_win(is_partial_leg=True)
-            self.kelly.record(win=True, pnl_pts=pnl)
+            if not _is_p2:
+                self.kelly.record(win=True, pnl_pts=pnl)
         else:
             self.circuit_breaker.record_stop_loss(is_partial_leg=True)
-            self.kelly.record(win=False, pnl_pts=pnl)
+            if not _is_p2:
+                self.kelly.record(win=False, pnl_pts=pnl)
 
         log_manager.trade(
             f"[TP{stage} 부분청산] {qty}계약 @ {result['exit_price']:.2f} "
@@ -11349,12 +11656,15 @@ class TradingSystem:
         #   13:07:27 손절1차 조기축소 → [CB] 연속 손절 1회
         #   13:07:31 하드스톱(틱)     → [CB] 연속 손절 2회   ← 같은 포지션
         # 실제 손실 포지션은 그 시점 1건이었다. 부분청산 레그는 카운터를 올리지 않는다.
+        _is_p2 = (result.get("pos_entry_src") == PETER2_ENTRY_SOURCE)   # [668차] 켈리 격리
         if pnl > 0:
             self.circuit_breaker.record_win(is_partial_leg=True)
-            self.kelly.record(win=True, pnl_pts=pnl)
+            if not _is_p2:
+                self.kelly.record(win=True, pnl_pts=pnl)
         else:
             self.circuit_breaker.record_stop_loss(is_partial_leg=True)
-            self.kelly.record(win=False, pnl_pts=pnl)
+            if not _is_p2:
+                self.kelly.record(win=False, pnl_pts=pnl)
 
         log_manager.trade(
             f"[손절1차 조기축소] {qty}계약 @ {result['exit_price']:.2f} "
@@ -11699,15 +12009,33 @@ class TradingSystem:
         filled_at: Cybos Chejan 콜백에서 전달된 실제 체결 시각 (None이면 now() 사용)
         """
         pnl = result["pnl_pts"]
+        # [MW0601 668차 / MW0602 이식] 피터2 — CB는 센다(계좌 안전장치), 켈리·앙상블 학습은 뺀다
+        #   (미륵이 판단이 아닌 거래가 미륵이 사이징·가중치를 움직이면 안 된다).
+        #   포지션이 리셋 전에 result 에 실어 보낸 진입 출처를 쓴다(라벨 프로퍼티 직접 비교 금지).
+        #   ⚠ dev 의 CB② 기록은 `record_stop_loss(is_partial_leg=...)` 계열 — 기존 호출 무변경.
+        #   (승/패 분기 `was_correct = pnl > 0` 은 kelly 호출 8줄 안에 둔다 — test_586 구조 가드)
+        _is_p2 = (result.get("pos_entry_src") == PETER2_ENTRY_SOURCE)
         was_correct = pnl > 0
         if was_correct:
             self.circuit_breaker.record_win()
-            self.kelly.record(win=True, pnl_pts=pnl)
+            if not _is_p2:
+                self.kelly.record(win=True, pnl_pts=pnl)
         else:
             self.circuit_breaker.record_stop_loss()
-            self.kelly.record(win=False, pnl_pts=pnl)
+            if not _is_p2:
+                self.kelly.record(win=False, pnl_pts=pnl)
+        if _is_p2 and self._peter2 is not None:
+            try:
+                _now = datetime.datetime.now()
+                self._peter2.on_peter2_closed(pnl, _now, pnl_krw=result.get("pnl_krw"))
+                self._peter2._ev("CLOSED", _now, pnl_pts=round(float(pnl), 2),
+                                 pnl_krw=result.get("pnl_krw"), reason=result.get("exit_reason"))
+                self._peter2_flush(self._peter2.date)
+                peter2_store.save_state(self._peter2.date, self._peter2.snapshot())
+            except Exception as _p2e:
+                logger.warning("[Peter2] 청산 후처리 실패: %s", _p2e)
         # EnsembleGater 온라인 가중치 갱신 — 진입 시 저장된 gate signals 사용
-        if self._last_gate_signals and self._last_gate_direction != 0:
+        if self._last_gate_signals and self._last_gate_direction != 0 and not _is_p2:
             try:
                 self.ensemble.record_trade_outcome(
                     was_correct=was_correct,
@@ -12483,6 +12811,24 @@ class TradingSystem:
                     _sdr_res["filt_b_excluded"])
             except Exception as _sdr_e:
                 logger.warning("[ShindongRunner] 장후 섀도 기록 실패 (스킵 — 백필로 복구): %s", _sdr_e)
+
+        # ── [MW0601 668차 / MW0602 이식] 피터2 장후 정리 — 그의 거래줄(_tr) 초안 · 실추종 · 섀도 · 지연 ──
+        # 읽기 전용(사료 텍스트 제외)·주문 없음. 실패해도 마감은 계속된다.
+        # 장후 16:00 peter-daily 스킬이 오프셋 확정(peter_build_day) 뒤 같은 도구를 다시 돌린다(멱등).
+        if str(getattr(runtime_settings, "PETER2_FOLLOW_MODE", "off") or "off").lower() != "off":
+            try:
+                _tools_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools")
+                if _tools_dir not in sys.path:
+                    sys.path.insert(0, _tools_dir)
+                import peter2_eod as _p2eod
+                _p2r = _p2eod.build(now.date().isoformat())
+                logger.info("[Peter2EOD] 트윗 %d · 피터 %+.2fpt · 실추종 %s · %s → %s",
+                            _p2r["n_tweets"], _p2r["peter_pts"],
+                            ("%d포지션" % len(_p2r["follow"])) if _p2r["follow"] is not None else "미측정",
+                            _p2r["tr_note"], _p2r["md_path"])
+            except Exception as _p2e:
+                logger.warning("[Peter2EOD] 장후 정리 실패 (스킵 — `python tools/peter2_eod.py` 로 재생성): %s",
+                               _p2e)
 
         # ── [MW0601 632차 후속] 신동 일일 리포트 — 러너 섀도 기록 직후 1회 ──────
         # 「거래 흐름 + 손익 vs 섀도 흐름 + 손익」 md + SVG. 읽기 전용(주문·기록 무변경).
@@ -14249,6 +14595,14 @@ class TradingSystem:
         self._limit_entry_timer.setInterval(2_000)
         self._limit_entry_timer.timeout.connect(self._check_limit_entry_timeout)
         self._limit_entry_timer.start()
+
+        # [MW0601 668차 / MW0602 이식] 피터2 폴링 — 2초. 수신기가 적은 `_raw/<날짜>.jsonl` 새 줄을
+        # 읽어 해석·집행한다. COM 콜백 밖(메인 스레드 타이머)에서만 주문을 낸다(절대원칙 §4).
+        # 위상: 위 2초 타이머와 1초 어긋나게 시작한다(같은 순간 펌프 재진입 회피 — 622차 교훈).
+        self._peter2_timer = QTimer()
+        self._peter2_timer.setInterval(int(getattr(runtime_settings, "PETER2_POLL_MS", 2000) or 2000))
+        self._peter2_timer.timeout.connect(self._peter2_tick)
+        QTimer.singleShot(1_000, self._peter2_timer.start)
 
         # 대시보드 표시 + 긴급정지 버튼 연결
         self.dashboard.show()
@@ -18398,8 +18752,13 @@ def _ts_execute_entry(
     extra_stop_mult: float = 1.0,
     quantile_expected_pt: float = None,
     quantile_uncertainty_pt: float = None,
+    entry_source: str = "SYSTEM_AUTO",
 ):
     cooldown_active, cooldown_remain = _ts_in_exit_cooldown(self)
+    # [MW0601 668차] 피터2는 청산 후 쿨다운을 받지 않는다 — 그는 손절 직후 재진입한다
+    #   (10-07 09:16 손절 → 09:35 재매도). 쿨다운은 미륵이 자체 판단의 과열 방지 장치다.
+    if entry_source == PETER2_ENTRY_SOURCE:
+        cooldown_active = False
     raw_direction = raw_direction or direction
     _ts_log_diag(
         self,
@@ -18487,6 +18846,12 @@ def _ts_execute_entry(
     if self._has_pending_order():
         logger.info("[Entry] pending order exists -> skip new entry %s %s", direction, quantity)
         return
+    # [MW0602 668차 이식 / 🔴 가이드 §3-2] 진입 출처 라벨 — **게이트 전부 뒤 · 주문 앞**.
+    #   dev 에는 v9-dev 518차 F-3(진입 퍼널에서 SYSTEM_AUTO 로 되돌리는 할당)이 없었다.
+    #   그대로 두면 피터2 진입 뒤의 정상 자동진입이 PETER2 로 오귀속된다. 기본값이
+    #   SYSTEM_AUTO 라 518차 F-3 과 같은 효과다(수동 진입은 호출 뒤 OPERATOR_MANUAL 로 덮는다
+    #   — `_on_manual_entry_requested` 무변경). 게이트에서 막힌 시도는 라벨을 건드리지 않는다.
+    self._entry_source = entry_source or "SYSTEM_AUTO"
     # [Fix-PendingFirst] CYBOS BlockRequest()는 COM 이벤트 루프를 pump하므로
     # send_market_order() 반환 전에 Chejan 콜백이 먼저 실행될 수 있음.
     # pending을 SendOrder 이전에 등록해 pending_matched=False 및 ret=1 오판 방지.

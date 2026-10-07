@@ -132,12 +132,13 @@ class FakePanel(object):
     """`PnlHistoryPanel` 의 계산 메서드를 실물에서 **바인딩**해 쓰는 껍데기(복제 아님)."""
 
     def __init__(self, rows, broker, sd_rows, mode, fwd=True, rev=True,
-                 wired=True, loaded=True, sd_open=0):
+                 wired=True, loaded=True, sd_open=0, p2=True):
         from dashboard.main_dashboard import PnlHistoryPanel as _P
         self.MODE_MIREUK, self.MODE_SHINDONG = _P.MODE_MIREUK, _P.MODE_SHINDONG
         self._rows, self._broker_pnl, self._sd_rows = rows, dict(broker), sd_rows
         self._mode = mode
         self._cb_forward, self._cb_reverse = _CB(fwd), _CB(rev)
+        self._cb_peter2 = _CB(p2)          # [MW0602 610차] 피터2 출처 필터(기본 켜짐 = 종전 화면)
         self._sd_wired, self._sd_loaded, self._sd_open_n = wired, loaded, sd_open
         self._mode_banner = _Banner()
         self._day_total_n = {}
@@ -146,7 +147,7 @@ class FakePanel(object):
         for _n in ("_sd_mode", "_active_rows", "_group", "_stats", "_daily_bucket",
                    "_effective_day_krw", "_day_is_whole", "_effective_day_pt",
                    "_group_effective_krw", "_group_effective_pt", "_mdd", "_mdd_daily",
-                   "_update_mode_banner", "_virtual_mark"):
+                   "_update_mode_banner", "_virtual_mark", "_peter2_mode"):
             setattr(self, _n, getattr(_P, _n).__get__(self, FakePanel))
 
 

@@ -133,6 +133,8 @@ def _run():
     local = []
     if old:
         for path, sha in old.items():
+            if _is_raw(path):
+                continue            # [610차] 원본은 덮지 않고 병합한다 — _merge_raw 참조
             f = os.path.join(_ROOT, path.replace('/', os.sep))
             if not os.path.exists(f):
                 continue
@@ -141,11 +143,14 @@ def _run():
             if was is not None and cur != was:
                 local.append(path)
 
+    # [610차] 원본(_raw/*.jsonl)은 「바뀌는 것」에서 뺀다 — 이 PC 의 실시간 수집분이 섞여
+    #   받은 것과 다른 게 정상이고, 덮지 않고 _merge_raw 로 합친다.
     changed = [p for p, sha in new.items()
-               if not os.path.exists(os.path.join(_ROOT, p.replace('/', os.sep)))
+               if not _is_raw(p) and (
+               not os.path.exists(os.path.join(_ROOT, p.replace('/', os.sep)))
                or _norm(io.open(os.path.join(_ROOT, p.replace('/', os.sep)),
                                 encoding='utf-8', errors='replace').read())
-               != _norm(_blob(ref, p) or '')]
+               != _norm(_blob(ref, p) or ''))]
 
     print('  %s 파일 %d개 · 이번에 바뀌는 것 %d개 · 이 PC 로컬 수정 %d개'
           % (ref, len(new), len(changed), len(local)))
@@ -157,9 +162,12 @@ def _run():
         print('     ! 로컬 수정: %s' % p)
 
     if a.dry:
+        _merge_raw(ref, new, _snapshot_raw(), dry=True)
         print('  [dry] 받지 않았다.')
         return 0
+    snap = _snapshot_raw()          # [610차] checkout 이 덮기 전에 이 PC 의 원본을 잡아 둔다
     if not changed and prev == head:
+        _merge_raw(ref, new, snap)
         if not a.no_rebuild:
             return _rebuild()
         return 0
@@ -182,11 +190,131 @@ def _run():
     git('reset', '-q', '--', SUBDIR)
     io.open(MARK, 'w', encoding='utf-8').write(head + '\n')
     print('  받음: %s (%s)' % (head[:9], SUBDIR))
+    _merge_raw(ref, new, snap)      # checkout 이 덮은 원본을 이 PC 기록 + 받은 신규분으로 되돌린다
 
     if a.no_rebuild:
         print('  [--no-rebuild] DB 는 그대로다 — 차트에는 아직 안 뜬다.')
         return 0
     return _rebuild()
+
+
+RAW_PREFIX = SUBDIR + '/_raw/'
+
+
+def _is_raw(path):
+    return path.startswith(RAW_PREFIX) and path.endswith('.jsonl')
+
+
+def _snapshot_raw():
+    """이 PC 의 `_raw/*.jsonl` 바이트 — {repo 상대경로: bytes}."""
+    d = os.path.join(_ROOT, RAW_PREFIX.replace('/', os.sep))
+    out = {}
+    if os.path.isdir(d):
+        for n in os.listdir(d):
+            if n.endswith('.jsonl'):
+                with io.open(os.path.join(d, n), 'rb') as f:
+                    out[RAW_PREFIX + n] = f.read()
+    return out
+
+
+def _ids(blob_bytes):
+    import json
+    ids = set()
+    for ln in blob_bytes.decode('utf-8', 'replace').splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        try:
+            r = json.loads(ln)
+        except ValueError:
+            continue
+        if r.get('id'):
+            ids.add(str(r['id']))
+    return ids
+
+
+def _merge_raw(ref, tree, snap, dry=False):
+    """[MW0602 610차] 원본(`_raw/<날짜>.jsonl`)은 **덮지 않고 트윗 id 로 합친다.**
+
+    🔴 왜: 피터2 수신기가 장중에 이 PC 의 `_raw` 에 `src=live`·`seen_at` 으로 적는다.
+      종전처럼 checkout 으로 덮으면 그 파일은 「지난번에 받은 목록」에 없어 로컬 수정으로도
+      안 잡히고 **백업 없이** MW0601 판으로 바뀐다 — 수신 지연(사전등록 ③)과 삭제 탐지의
+      원천이 MW0601 수집기 값으로 조용히 바뀐다(계측 4원칙 ④).
+
+    규칙
+      · 이 PC 의 기록은 **바이트 그대로** 앞에 둔다(엔진 RawTail 의 바이트 오프셋 보존).
+      · 받은 것 중 이 PC 에 없는 id 만 **뒤에 덧붙인다** — `src='pull'`, 원래 src 는
+        `src_origin` 에 남긴다. peter2_eod 는 `src=='live'` 만 지연·삭제 계산에 쓰므로
+        MW0601 이 본 것을 MW0602 가 본 것으로 세지 않는다.
+      · 이 PC 에 파일이 없던 날(수집기 정지·도입 전)도 같은 규칙 — 전부 `src=pull`.
+      · 멱등이다 — 이미 있는 id 는 다시 붙이지 않는다.
+    """
+    import json
+    files = days = 0
+    for path in sorted(p for p in tree if _is_raw(p)):
+        pulled = _blob(ref, path)
+        if pulled is None:
+            continue
+        mine = snap.get(path)
+        have = _ids(mine) if mine else set()
+        add = []
+        for ln in pulled.splitlines():
+            ln = ln.strip()
+            if not ln:
+                continue
+            try:
+                r = json.loads(ln)
+            except ValueError:
+                continue
+            rid = str(r.get('id') or '')
+            if not rid or rid in have:
+                continue
+            have.add(rid)
+            if r.get('src') != 'pull':
+                r['src_origin'] = r.get('src')
+                r['src'] = 'pull'
+            add.append(json.dumps(r, ensure_ascii=False))
+        f = os.path.join(_ROOT, path.replace('/', os.sep))
+        base = mine if mine is not None else b''
+        if base and not base.endswith(b'\n'):
+            base += b'\n'
+        body = base + (('\n'.join(add) + '\n').encode('utf-8') if add else b'')
+        cur = io.open(f, 'rb').read() if os.path.exists(f) else None
+        if cur == body:
+            continue
+        files += 1
+        if add:
+            days += 1
+            print('     ~ 원본 병합 %s: 이 PC %d건 + 받은 신규 %d건(src=pull)'
+                  % (os.path.basename(path), len(_ids(mine)) if mine else 0, len(add)))
+        if not dry:
+            with io.open(f, 'wb') as fp:
+                fp.write(body)
+    print('  원본 병합: %d개 파일 정리 · %d일에 신규 덧붙임%s'
+          % (files, days, ' [dry]' if dry else ''))
+
+
+def _self_build():
+    """[MW0602 610차] 오늘 차트를 **이 PC 원본만으로도** 확정한다.
+
+    받기(MW0601 공급)가 없거나 늦은 날에도 확정본이 생기게 하는 자체 경로다.
+      1. `peter2_eod` — 일일 복기 md(삭제 탐지는 받은 eod_ids 반영) · `_tr.txt` 가 없으면 초안
+      2. `peter_build_day --date 오늘` — `_lv` 초안 + **이 PC 캔들 오프셋 실측** → peter_paste
+    🔴 MW0601 사료가 이미 왔으면 그쪽(사람이 검증한 `_lv`/`_tr`)이 이긴다 — build_day 는
+      다른 `_lv` 를 덮지 않고, peter2_eod 는 있는 `_tr.txt` 를 덮지 않는다.
+    🔴 도착 판정(_check_today) **뒤에** 돈다 — 자체로 만든 `_lv` 를 「MW0601 도착」으로
+      읽지 않기 위해서다.
+    """
+    iso = datetime.date.today().isoformat()
+    raw = os.path.join(_ROOT, RAW_PREFIX.replace('/', os.sep), '%s.jsonl' % iso)
+    if not os.path.exists(raw):
+        print('  자체 확정: 오늘 원본 없음 — 건너뜀(수집기 미가동 또는 휴장).')
+        return
+    for args in (['tools/peter2_eod.py', '--date', iso],
+                 ['tools/peter_build_day.py', '--date', iso]):
+        p = subprocess.Popen([sys.executable] + args, cwd=_ROOT)
+        p.communicate()
+        print('  자체 확정: %s rc=%s' % (os.path.basename(args[0]), p.returncode))
 
 
 def _rebuild():
@@ -276,7 +404,14 @@ def _check_today(rc):
 
 def main():
     #  받기/재생성이 성공해도 「오늘이 왔는가」는 별개의 질문이다.
-    return _check_today(_run() or 0)
+    rc = _check_today(_run() or 0)
+    # [610차] 자체 확정은 rc 와 별개다 — 공급이 없었다는 사실(rc=2)은 그대로 남긴다.
+    if '--dry' not in sys.argv:
+        try:
+            _self_build()
+        except Exception as e:
+            print('  ⚠ 자체 확정 실패: %s' % e)
+    return rc
 
 
 if __name__ == '__main__':
