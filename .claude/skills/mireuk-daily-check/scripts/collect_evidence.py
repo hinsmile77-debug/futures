@@ -1123,10 +1123,21 @@ class LogDigest(object):
                 out.append((a, b, b - a))
         return out
 
-    def minute_coverage(self):
-        """매분 루프가 정말 매분 돌았는지 — 분 단위 커버리지."""
+    def minute_coverage(self, upto_min=None):
+        """매분 루프가 정말 매분 돌았는지 — 분 단위 커버리지.
+
+        [MW0601 667차 / G-2] `upto_min` 이 주어지면 분모 끝을 그 분으로 줄인다.
+        장중 수집(12:27 등)에서 고정 분모 09:00~15:10 을 쓰면 「아직 오지 않은
+        미래」가 「기록 없는 과거」로 세어져 커버리지 56%·연속 163분 공백 같은
+        거짓 적신호가 났다(2026-09-14·09-29·10-07 장중, 매번 수동 정정).
+        `None` 이면 종전과 같다 — 장후·과거 날짜는 전 구간을 본다.
+        """
         lo = hhmm_to_min(self.cfg["minute_loop_window"][0])
         hi = hhmm_to_min(self.cfg["minute_loop_window"][1])
+        if upto_min is not None:
+            hi = min(hi, upto_min)
+        if hi < lo:
+            return 0, 0, []
         have = set(e["minutes"] for e in self.records
                    if e["minutes"] is not None and lo <= e["minutes"] <= hi)
         total = hi - lo + 1
@@ -2084,7 +2095,22 @@ def preretrain_bypass_lines(root, day, out):
     A("")
 
 
-def bar_gap_section(root, cfg, day, out):
+def split_due_bars(ts_list, upto_min):
+    """[MW0601 667차 / G-2] 분봉 ts 목록을 (이미 확정됐어야 할 것, 미도래) 로 가른다.
+
+    ts=m 봉은 m+1 분에 마감되고 파이프라인이 1분 늦게 적재하므로, 수집 시각
+    `upto_min` 기준 **ts ≤ upto_min − 2** 만 「있어야 할 봉」으로 본다.
+    `upto_min` 이 None(장후·과거 날짜)이면 전부 확정 대상이다.
+    """
+    if upto_min is None:
+        return list(ts_list), []
+    due, later = [], []
+    for t in ts_list:
+        (due if hhmm_to_min(t) <= upto_min - 2 else later).append(t)
+    return due, later
+
+
+def bar_gap_section(root, cfg, day, out, upto_min=None):
     """[MW0601 618차] `raw_candles` 절단선·결손 — 오독 재발 차단용.
 
     무엇을 막는가
@@ -2138,10 +2164,16 @@ def bar_gap_section(root, cfg, day, out):
 
     cut = raw_candles_last_ts().strftime("%H:%M")
     max_ts = max(raw) if raw else None
+    # [667차 / G-2] 장중 수집이면 절단선이 아직 안 왔을 수 있다 — 미도래를 결손으로 세지 않는다
+    _live = upto_min is not None and hhmm_to_min(cut) > upto_min - 2
     if max_ts is None:
-        verdict = "**행 없음** — 그날 파이프라인이 한 번도 안 돌았다"
+        verdict = ("**행 없음** — 수집 시각 %s 기준 아직 적재 전일 수 있다" % m2hhmm(upto_min)
+                   if _live else "**행 없음** — 그날 파이프라인이 한 번도 안 돌았다")
     elif max_ts == cut:
         verdict = "정상 (절단선과 일치)"
+    elif max_ts < cut and _live:
+        verdict = ("진행 중 — 수집 시각 %s 라 절단선 `%s` 미도래. "
+                   "결손은 아래 「확정 대상」만 본다" % (m2hhmm(upto_min), cut))
     elif max_ts < cut:
         verdict = "**결손** — 아래 목록과 그 시각의 `[START]`/`[CLEAN EXIT]` 대조"
     else:
@@ -2160,7 +2192,15 @@ def bar_gap_section(root, cfg, day, out):
     A("")
 
     if ses:
-        r = gap_vs_session(raw, ses)
+        r = dict(gap_vs_session(raw, ses))
+        if upto_min is not None:
+            r["missing"], _miss_later = split_due_bars(r["missing"], upto_min)
+            r["permanent"], _perm_later = split_due_bars(r["permanent"], upto_min)
+            _later = sorted(set(_miss_later) | set(_perm_later))
+            if _later:
+                # 계측 4원칙 ③ — 뺀 개수를 남긴다
+                A("- 미도래 **%d봉** (%s~%s) — 수집 시각 %s 이후라 결손·영구결손에서 제외"
+                  % (len(_later), _later[0], _later[-1], m2hhmm(upto_min)))
         if r["missing"]:
             A("- 결손 **%d봉**: %s" % (len(r["missing"]), ", ".join(r["missing"][:20])
                                       + (" … 외 %d개" % (len(r["missing"]) - 20)
@@ -2434,9 +2474,25 @@ def market_closed(root, day):
         return None, "휴장일 목록 로드 실패(%s: %s)" % (type(e).__name__, e)
 
 
+def live_cutoff_min(phase, day, closed, now=None):
+    """[MW0601 667차 / G-2] 장중 수집이면 분모를 끊을 「현재 분」, 아니면 None.
+
+    장전·장중 국면이고, 오늘 날짜이고, 휴장일이 아닐 때만 끊는다. 장후·과거
+    날짜는 하루가 끝났으므로 종전대로 전 구간(09:00~15:10)을 분모로 쓴다 —
+    장후에서 분모를 줄이면 진짜 결손(14시대 루프 정지 등)을 가린다.
+    """
+    if closed or phase not in ("pre", "intra"):
+        return None
+    now = now or now_kst()
+    if day != now.date():
+        return None
+    return now.hour * 60 + now.minute
+
+
 def build(root, day, phase, cfg, discover_only=False):
     toks = date_tokens(day)
     _closed, _closed_why = market_closed(root, day)
+    _cov_upto = live_cutoff_min(phase, day, _closed)
     D = toks["y_m_d"]
     phases = {"pre": ["pre"], "intra": ["pre", "intra"],
               "post": ["pre", "intra", "post"], "all": ["pre", "intra", "post"]}[phase]
@@ -2847,10 +2903,20 @@ def build(root, day, phase, cfg, discover_only=False):
             A("_이 로그는 매분 루프 로그가 아니므로 커버리지·공백 판정을 하지 않는다._")
             A("")
             continue
-        have, total, missing = dg.minute_coverage()
+        have, total, missing = dg.minute_coverage(_cov_upto)
         pct = (100.0 * have / total) if total else 0.0
+        _cov_hi = cfg["minute_loop_window"][1]
+        if _cov_upto is not None and _cov_upto < hhmm_to_min(_cov_hi):
+            _cov_hi = m2hhmm(_cov_upto)
         A("**매분 루프 커버리지 %s~%s: %d/%d분 (%.1f%%)**" % (
-            cfg["minute_loop_window"][0], cfg["minute_loop_window"][1], have, total, pct))
+            cfg["minute_loop_window"][0], _cov_hi, have, total, pct))
+        if _cov_hi != cfg["minute_loop_window"][1]:
+            # 계측 4원칙 ③ — 분모에서 뺀 분을 숨기지 않는다
+            A("")
+            A("_장중 수집 — 분모를 수집 시각 %s 까지로 줄였다. 이후 %d분(~%s)은 "
+              "**미도래**라 제외(결손 아님)._" % (
+                  _cov_hi, hhmm_to_min(cfg["minute_loop_window"][1]) - _cov_upto,
+                  cfg["minute_loop_window"][1]))
         if missing:
             runs = []
             s = prev = missing[0]
@@ -2939,7 +3005,7 @@ def build(root, day, phase, cfg, discover_only=False):
     state_snapshot_section(root, cfg, day, L)
 
     # ---- 9-c. raw_candles 절단선·결손 (618차) ----
-    bar_gap_section(root, cfg, day, L)
+    bar_gap_section(root, cfg, day, L, upto_min=_cov_upto)
 
     # ---- 9-d. 프로세스 종료 3축 대사 (620차) ----
     _fau = wer_crash_section(root, cfg, day, L)
@@ -3013,7 +3079,7 @@ def build(root, day, phase, cfg, discover_only=False):
         if n_err:
             flags.append("`%s`: ERROR 이상 %d건" % (dg.rel, n_err))
         if dg.records and dg.is_main_loop() and not _closed:
-            have, total, missing = dg.minute_coverage()
+            have, total, missing = dg.minute_coverage(_cov_upto)
             if total and have < total * 0.98:
                 flags.append("`%s`: 매분 루프 커버리지 %d/%d분 (%.1f%%) — 루프가 빠진 구간이 있다" % (
                     dg.rel, have, total, 100.0 * have / total))
