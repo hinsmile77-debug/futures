@@ -276,6 +276,22 @@ def test_main_wiring():
     assert 'entry_source: str = "SYSTEM_AUTO"' in s and 'self._entry_source = entry_source' in s
 
 
+def test_engine_dashboard_calls_exist_on_adapter():
+    """엔진(main.py)이 `self.dashboard.X()` 로 부르는 피터2 메서드는 **어댑터**에 있어야 한다.
+
+    2026-10-08 08:41 실측: 창 클래스에만 넣어 AttributeError(차트 실시간 갱신 누락).
+    문자열 존재 검사로는 못 잡았다 — 클래스를 직접 확인한다.
+    """
+    import ast
+    tree = ast.parse(_src('dashboard/main_dashboard.py'))
+    adapter = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'DashboardAdapter')
+    have = {f.name for f in adapter.body if isinstance(f, ast.FunctionDef)}
+    called = set(re.findall(r'self\.dashboard\.((?:update_peter2|minute_chart_refresh_peter)\w*)\(',
+                            _src('main.py')))
+    assert called, '엔진이 피터2 대시보드 메서드를 부르지 않는다?'
+    assert called <= have, '어댑터에 없는 메서드: %s' % sorted(called - have)
+
+
 def test_dashboard_wiring():
     s = _src('dashboard/main_dashboard.py')
     assert '"pt2": "피터2"' in s

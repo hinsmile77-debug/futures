@@ -17904,6 +17904,18 @@ class DashboardAdapter:
         """창3 주문/체결 탭 상단 지표 갱신"""
         self._win.log_panel.update_order_metrics(trades, avg_lat_ms, peak_lat_ms, samples)
 
+    def minute_chart_refresh_peter(self):
+        """[MW0601 668차 후속4] 피터2 실시간 사료 → 당일 1분봉. 엔진은 어댑터를 부른다.
+
+        🔴 2026-10-08 08:41 실측: 창(MireukDashboard)에만 있고 여기(어댑터)에 없어
+          `'DashboardAdapter' object has no attribute 'minute_chart_refresh_peter'` —
+          수집·주문은 정상이었고 차트 실시간 갱신만 빠졌다.
+        """
+        try:
+            self._win.minute_chart_refresh_peter()
+        except Exception as _e:
+            logger.debug("[Peter2] 차트 갱신 전달 실패: %s", _e)
+
     def update_peter2_metrics(self, realized_krw, closed_n, open_side=None,
                               unrealized_krw=None, status_txt=""):
         """[MW0601 668차] 창4 손익 탭의 「피터2」 버튼 갱신."""

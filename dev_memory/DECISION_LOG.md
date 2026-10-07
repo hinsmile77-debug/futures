@@ -47588,3 +47588,5 @@ F-1(538-4) 승인 시 다음 장후 세션에서 `strategy/runtime/session_recov
 **검증**: `tests/test_668_peter2.py` 16 pass(py37_32). 수신기 단독 기동·중복 기동 차단(Windows SO_REUSEADDR 중복 바인딩 실측 → SO_EXCLUSIVEADDRUSE)·UTF-8 적재 실측.
 
 **[668차 후속 — 사용자 결정 2026-10-07]** `PETER2_DAILY_STOP_LIMIT` 2 → **0(해제)**. 「피터 손절 2회면 당일 정지」 제외. 근거: 재생에서 2회 정지가 41일간 약 47pt 손실(해제 시 +199.7pt, 최악일 −7.6). 0 = 해제로 follower 가 해석. 집행 시작(10-08) 전이라 사전등록 표본 분할 불필요. 남은 안전장치: CB②·일 최대 진입 6회·15:10.
+
+**[668차 후속4 — 2026-10-08 장전 첫 기동 점검]** 피터2 08:41:28 정상 기동(live · offset −5.4 · safe=True), 수신기 08:40:37, Chrome 확장 설치 확인(Default 프로필), 하트비트 5초 간격. **결함 1건**: 엔진의 `self.dashboard` 는 `DashboardAdapter` 인데 `minute_chart_refresh_peter` 를 창(`MireukDashboard`)에만 넣어 `AttributeError`(WARN) — 당일 1분봉 실시간 사료 갱신만 누락, 수집·주문·버튼 무영향. 어댑터에 전달 메서드 추가 + AST 회귀 테스트(`test_engine_dashboard_calls_exist_on_adapter`). 문자열 존재 검사(`test_dashboard_wiring`)로는 못 잡았다 — 클래스 귀속을 확인해야 한다. **반영은 미륵이 재시작 시**. ⚠ 장중(08:5x) 커밋 — v9-dev 「장중 실시간코드 커밋 금지」의 **사용자 지시 예외**(「커밋하고 dev 배포해」). 기동 스크립트에 git pull 이 없어 실행 중 세션 무영향. dev 에는 코드가 없으므로 가이드 문서(어댑터 함정 추가)만 배포.
