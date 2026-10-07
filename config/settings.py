@@ -7682,7 +7682,10 @@ PETER2_ARM_MAX_DIST_PT = 8.0         # 지시가가 현재가에서 이보다 �
 PETER2_PLAUSIBLE_DIST_PT = 40.0      # 트윗 숫자가 가격으로 읽힐 수 있는 범위(현재가 기준)
 PETER2_DEFAULT_STOP_PT = 4.0         # 손절가 없는 진입의 기본 손절폭(관행 ±4pt — 49건 딥다이브)
 PETER2_STOP_CAP_PT = 8.0             # 손절가가 진입가에서 이보다 멀면 캡(불리 이동도 따르되 상한)
-PETER2_DAILY_STOP_LIMIT = 2          # 피터2 손실 청산 n회 → 당일 신규 추종 정지
+# [2026-10-07 사용자 결정] 해제(0). 그는 손절 뒤 재도전해 이기는 날이 많다 — 41일 재생에서
+#   2회 정지가 약 47pt 를 깎았다(구현계획 §4). 계좌 안전은 CB②(5분 내 3연속 손절 → 당일 정지)와
+#   PETER2_DAILY_MAX_ENTRIES 가 맡는다. 다시 켜려면 양수(n회 손실 → 당일 신규 추종 정지).
+PETER2_DAILY_STOP_LIMIT = 0          # 0 = 해제
 PETER2_DAILY_MAX_ENTRIES = 6         # 피터2 일 최대 진입 수
 PETER2_LIVE_DIR = os.path.join(DATA_DIR, "peter2_live")
 PETER2_DOC_DIR = os.path.join(BASE_DIR, "docs", "미륵이고도화3", "피터2")

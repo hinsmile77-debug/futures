@@ -22565,6 +22565,6 @@ docs/정기점검/매일점검/evidence_MW0601-20260826_post.md
 - [ ] **10-08 장전(사람)**: Chrome 확장 설치 — `chrome://extensions` → 개발자 모드 → 압축해제 로드 `tools\peter2_live\extension`. X 로그인 확인. 08:30 이후 고정 탭 생성·`receiver.py --check` posts 증가 확인. SYSTEM `[Peter2] 기동 … offset=-5.4 safe=True` 확인.
 - [ ] **10-08 장후**: `일일/피터2_일일_MW0601_20261008.md` 검토 — 수신 지연 중앙값(재생 가정 20초 대비), 기각·해제 사유, 오진입 0건 여부(사전등록 ④ 즉시정지 조건).
 - [ ] X 호출 제한 실측 — 15초 새로고침에서 오류 화면(`collector.json` error) 발생 여부. 나면 주기 재조정.
-- [ ] 사용자 결정 안건: `PETER2_DAILY_STOP_LIMIT` 2 유지 vs 3/해제(재생 근거 구현계획 §4).
+- [x] `PETER2_DAILY_STOP_LIMIT` → 0(해제) — 2026-10-07 사용자 결정.
 - [ ] `peter_month_report.py` 에 피터2 추종 집계 절 추가.
 - [ ] 10-12(만기 다음 첫날) `safe=False` 로 진입 없이 기록만 되는지 확인 → 그날 장후 offset 실측 뒤 10-13 재개.

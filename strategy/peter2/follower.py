@@ -32,7 +32,7 @@ from strategy.peter2.parse import parse_tweet
 
 DEFAULTS = dict(
     chase=1.0, tol=0.2, arm_expire_min=10, arm_max_dist=8.0, plausible=40.0,
-    default_stop=4.0, stop_cap=8.0, daily_stop_limit=2, daily_max_entries=6,
+    default_stop=4.0, stop_cap=8.0, daily_stop_limit=0, daily_max_entries=6,
     open_hm='09:00', last_entry_hm='14:50', close_hm='15:10',
 )
 
@@ -454,7 +454,8 @@ class Peter2Follower(object):
         self.realized_krw += float(pnl_krw or 0.0)
         if pnl_pts is not None and pnl_pts < 0:
             self.losses += 1
-            if self.losses >= self.cfg['daily_stop_limit'] and not self.halted:
+            _lim = int(self.cfg.get('daily_stop_limit') or 0)    # 0 = 해제(2026-10-07 사용자 결정)
+            if _lim > 0 and self.losses >= _lim and not self.halted:
                 self.halted = 'daily_stop_limit(%d)' % self.losses
                 self._ev('HALT', now, why=self.halted)
                 if self.armed:

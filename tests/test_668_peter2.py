@@ -188,6 +188,18 @@ def test_offset_unsafe_blocks_entry():
     assert fw.on_price({'status': 'FLAT', 'pending': False, 'price': 1090.4}, t) == []
 
 
+def test_daily_stop_limit_off_by_default():
+    """[2026-10-07 사용자 결정] 손절 n회 당일 정지는 해제 — 손실이 몇 번이어도 멈추지 않는다."""
+    from config.settings import PETER2_DAILY_STOP_LIMIT
+    assert PETER2_DAILY_STOP_LIMIT == 0
+    fw = Peter2Follower('2026-10-07', -5.5, 'test', True,
+                        cfg={'daily_stop_limit': PETER2_DAILY_STOP_LIMIT})
+    now = datetime.datetime(2026, 10, 7, 10, 0)
+    for _ in range(5):
+        fw.on_peter2_closed(-4.0, now)
+    assert fw.halted is None and fw.losses == 5
+
+
 def test_daily_stop_limit_halts():
     fw = Peter2Follower('2026-10-07', -5.5, 'test', True, cfg={'daily_stop_limit': 2})
     now = datetime.datetime(2026, 10, 7, 10, 0)

@@ -3838,7 +3838,7 @@ class TradingSystem:
             "plausible": float(getattr(runtime_settings, "PETER2_PLAUSIBLE_DIST_PT", 40.0)),
             "default_stop": float(getattr(runtime_settings, "PETER2_DEFAULT_STOP_PT", 4.0)),
             "stop_cap": float(getattr(runtime_settings, "PETER2_STOP_CAP_PT", 8.0)),
-            "daily_stop_limit": int(getattr(runtime_settings, "PETER2_DAILY_STOP_LIMIT", 2)),
+            "daily_stop_limit": int(getattr(runtime_settings, "PETER2_DAILY_STOP_LIMIT", 0) or 0),
             "daily_max_entries": int(getattr(runtime_settings, "PETER2_DAILY_MAX_ENTRIES", 6)),
             "last_entry_hm": _cut,
         }
