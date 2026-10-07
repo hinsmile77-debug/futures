@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Mireuk Peter2 Collector",
+  "description": "미륵이 피터2 — 장중 @PeterLeejoa 트윗을 로컬 수신기(127.0.0.1:8766)로 보낸다. 읽기만 한다.",
+  "version": "1.0.0",
+  "permissions": ["alarms", "tabs", "storage"],
+  "host_permissions": ["https://x.com/*", "http://127.0.0.1:8766/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://x.com/search*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

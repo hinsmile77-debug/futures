@@ -16,7 +16,8 @@ from utils.time_utils import now_kst
 from config.constants import (POSITION_LONG, POSITION_SHORT, POSITION_FLAT,
                               FUTURES_PT_VALUE,
                               # [555차 후속2 / P0] entry_source 분류 정본
-                              entry_source_is_system)
+                              entry_source_is_system,
+                              PETER2_ENTRY_SOURCE)
 from config.settings import (
     ATR_STOP_MULT, ATR_TP1_MULT, ATR_TP2_MULT, ATR_TP3_MULT,
     ATR_HORIZON_TP1_MULT, FUTURES_COMMISSION_RATE,
@@ -195,6 +196,13 @@ class PositionTracker:
         self._tp1_fallback_warned_for: Optional[str] = None
 
         self.stop_price:   float = 0.0
+        # [MW0601 668차 피터2] 외부 지시 손절·목표(미니가). `entry_source == PETER2` 일 때만
+        # 효력이 있다 — 이 값이 서 있는 동안 ATR 손절·TP1~3·손절계단·트레일링은 꺼지고
+        # stop_price = ext_stop 으로 고정된다(15:10 강제청산·CB 즉시청산은 무관하게 유지).
+        # None = 외부 지시 없음. 0 으로 채우지 않는다(계측 4원칙 ②).
+        self.ext_stop:   Optional[float] = None
+        self.ext_target: Optional[float] = None
+        self.ext_stop_src: Optional[str] = None
         # [MW0602 423차] 스톱이 마지막으로 조여진 시각 — "유령 하드스톱" 차단용.
         # is_stop_hit_intrabar()가 이 시각과 봉 시작시각을 비교해, 스톱을 조인
         # 그 분봉의 고저가로는 봉중 판정을 하지 않는다(그 고저가는 조이기 이전에
@@ -536,6 +544,8 @@ class PositionTracker:
         self.last_update_reason = f"open_position:{direction}"
         self.last_update_ts = now_kst()
 
+        self._apply_ext_levels("open")
+
         _hz_tag = f" horizon={entry_horizon}" if entry_horizon else ""
         _hb_tag = f" hurst={hurst_bucket}" if _regime_mult else ""
         _vb_tag = f" stop×{_extra_stop_mult:.2f}(VolBurst)" if _extra_stop_mult != 1.0 else ""
@@ -691,6 +701,8 @@ class PositionTracker:
             #   `partial_1_done` 이 False 라 모든 스톱이 INITIAL_STOP 으로 보인다
             #   (483차 P1-A 와 같은 「리셋 뒤에 읽기」 함정).
             "exit_stage":   self.classify_exit_stage(reason, self._tp1_armed()),
+            # [668차] 진입 출처를 리셋 전에 실어 보낸다 — _post_exit 가 라벨을 직접 읽지 않게(518차 불변식)
+            "pos_entry_src": self.entry_source,
             # ── [MW0601 494차 후속 / F-AE] 포지션 누계를 **리셋 전에 실어 보낸다** ──
             #
             # 🔴 바로 아래 `_reset_position()` 이 `_pos_realized_*` 를 0 으로 되돌린다.
@@ -1175,6 +1187,8 @@ class PositionTracker:
             #   스톱 계열보다 먼저라 라벨은 `TP1` 로 정확하다 — `tp1_armed` 는
             #   스톱 계열에서만 쓰인다.
             "exit_stage":   self.classify_exit_stage(reason, self._tp1_armed()),
+            # [668차] 진입 출처를 리셋 전에 실어 보낸다 — _post_exit 가 라벨을 직접 읽지 않게(518차 불변식)
+            "pos_entry_src": self.entry_source,
             # [MW0601 494차 후속 / F-AE] 부분청산 레그에도 **그 시점까지의** 누계를
             #   싣는다. 없으면 F-AF 섀도가 `pos=미측정` 으로 찍혀 TP1 레그의
             #   불일치 여부를 영영 못 본다 — 계측을 켜놓고 절반을 못 보는 꼴이다.
@@ -1312,6 +1326,8 @@ class PositionTracker:
         """트레일링 스톱 업데이트"""
         if self.status == POSITION_FLAT:
             return
+        if self.is_external():
+            return          # [668차] 피터2 — 손절은 그의 지시만 따른다
 
         _prev = self.stop_price
         self.trailing_anchor_price, self.stop_price = compute_trailing_stop_tier(
@@ -1635,6 +1651,71 @@ class PositionTracker:
         self.tp1_price = self.entry_price + mult * atr * _tp1_mult
         self.tp2_price = self.entry_price + mult * atr * _tp2_mult
         self.tp3_price = self.entry_price + mult * atr * ATR_TP3_MULT
+        self._apply_ext_levels("recalc")
+
+    # ── [MW0601 668차] 피터2 외부 손절·목표 ───────────────────────────────
+    def is_external(self) -> bool:
+        return (self.status != POSITION_FLAT
+                and self.entry_source == PETER2_ENTRY_SOURCE)
+
+    def set_external_levels(self, stop: Optional[float] = None,
+                            target: Optional[float] = None,
+                            src: Optional[str] = None,
+                            clear_target: bool = False) -> None:
+        """외부 지시 손절·목표를 건다. FLAT 에서 걸면 **다음 진입**(PETER2 일 때만)에 적용된다."""
+        if stop is not None:
+            self.ext_stop = float(stop)
+            self.ext_stop_src = src or self.ext_stop_src
+        if target is not None:
+            self.ext_target = float(target)
+        elif clear_target:
+            self.ext_target = None
+        self._apply_ext_levels("set")
+        if self.status != POSITION_FLAT:
+            self._save_state()
+
+    def clear_external_levels(self) -> None:
+        self.ext_stop = None
+        self.ext_target = None
+        self.ext_stop_src = None
+
+    def is_ext_target_hit(self, price: float) -> bool:
+        if not self.is_external() or self.ext_target is None:
+            return False
+        if self.status == POSITION_LONG:
+            return price >= self.ext_target
+        return price <= self.ext_target
+
+    def _apply_ext_levels(self, path: str) -> None:
+        """외부 손절이 서 있고 포지션이 PETER2 면 시스템 청산 레벨을 덮는다.
+
+        🔴 출처가 PETER2 가 아닌데 ext 값이 남아 있으면 **지운다** — 피터 손절이 미륵이
+          자동진입에 붙는 사고를 구조적으로 막는다(실패 진입 뒤 잔존값).
+        """
+        if self.status == POSITION_FLAT:
+            return
+        if self.entry_source != PETER2_ENTRY_SOURCE:
+            if self.ext_stop is not None or self.ext_target is not None:
+                logger.warning("[Peter2] 외부 손절이 비-PETER2 포지션(%s)에 남아 있어 폐기 "
+                               "stop=%s target=%s path=%s", self.entry_source,
+                               self.ext_stop, self.ext_target, path)
+                self.clear_external_levels()
+            return
+        mult = 1 if self.status == POSITION_LONG else -1
+        if self.ext_stop is None:
+            # 손절 없는 외부 진입은 없게 한다 — 기본 ±4pt(피터 관행), 출처를 남긴다(4원칙 ④)
+            try:
+                from config.settings import PETER2_DEFAULT_STOP_PT as _d
+            except Exception:
+                _d = 4.0
+            self.ext_stop = round(self.entry_price - mult * float(_d), 2)
+            self.ext_stop_src = "default(tracker)"
+        if abs(self.stop_price - self.ext_stop) > 1e-9:
+            self.stop_price = self.ext_stop
+            self._mark_stop_tightened("peter2")
+        far = self.entry_price + mult * 10000.0     # TP1~3 무력화(도달 불가)
+        self.tp1_price = self.tp2_price = self.tp3_price = far
+        self.loss_tier1_price = 0.0                 # 손절계단 무력화(is_loss_tier1_hit 가 0 이하 배제)
 
     def get_trailing_reference_price(self, current_price: float, atr: float) -> float:
         if self.status == POSITION_FLAT:
@@ -1718,6 +1799,8 @@ class PositionTracker:
             #    덮으면 계측 4원칙 ②를 정면으로 어긴다(`partial_1_done` 은 청산 시점에만
             #    알 수 있어 복원 자체가 불가능하다 — 420차와 같다).
             "exit_stage": self.classify_exit_stage(reason, self._tp1_armed()),
+            # [668차] 진입 출처를 리셋 전에 실어 보낸다 — _post_exit 가 라벨을 직접 읽지 않게(518차 불변식)
+            "pos_entry_src": self.entry_source,
             # ── [MW0601 494차 후속 / F-AE] 포지션 누계를 **리셋 전에** 실어 보낸다 ──
             #
             # 🔴 최종 청산이면 호출부가 로그를 찍기 **전에** `_reset_position()` 이
@@ -1745,6 +1828,7 @@ class PositionTracker:
         self.reverse_entry_enabled = False
         self.entry_horizon = None
         self.entry_source = None          # [552-11] 포지션 경계에서 리셋
+        self.clear_external_levels()      # [668차] 피터2 외부 손절도 포지션 경계에서 리셋
         self.entry_extra_stop_mult = 1.0
         self.stop_price = 0.0
         self.stop_updated_at = None
@@ -2057,6 +2141,9 @@ class PositionTracker:
                 "entry_hurst_bucket": self.entry_hurst_bucket,
                 "entry_extra_stop_mult": self.entry_extra_stop_mult,
                 "stop_price":   self.stop_price,
+                "ext_stop":     self.ext_stop,       # [668차] 피터2 재기동 생존
+                "ext_target":   self.ext_target,
+                "ext_stop_src": self.ext_stop_src,
                 # [423차] 유령 하드스톱 가드용 조이기 시각. 장중 재기동 시 이 값이
                 # 없으면 복원 직후 첫 봉에서 봉중 판정이 되살아나므로 함께 남긴다.
                 "stop_updated_at": (self.stop_updated_at.isoformat()
@@ -2211,6 +2298,9 @@ class PositionTracker:
             self.entry_hurst_bucket = state.get("entry_hurst_bucket")
             self.entry_extra_stop_mult = float(state.get("entry_extra_stop_mult", 1.0) or 1.0)
             self.stop_price   = float(state.get("stop_price", 0))
+            self.ext_stop     = state.get("ext_stop")        # [668차] 없으면 None(구버전)
+            self.ext_target   = state.get("ext_target")
+            self.ext_stop_src = state.get("ext_stop_src")
             # [423차] 구버전 상태파일에는 이 키가 없다 — None이면 가드가 비활성
             # 되어 종전과 동일하게 동작한다(하위호환, 재기동 1회 한정 노출).
             _sua_raw = state.get("stop_updated_at")

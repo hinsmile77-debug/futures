@@ -88,7 +88,8 @@ def _day_krw(p, day=_DAY):
 
 # ── 축 ──────────────────────────────────────────────────────────────────
 def test_sd_replaces_gp_origin():
-    assert PnlHistoryPanel._ORIGIN_KEYS == ("auto", "manual", "unknown", "sd")
+    # [MW0601 668차] "pt2"(피터2 — 실거래) 추가. 신동은 여전히 마지막·단독 배타 키다.
+    assert PnlHistoryPanel._ORIGIN_KEYS == ("auto", "manual", "unknown", "pt2", "sd")
     assert PnlHistoryPanel._ORIGIN_LABEL["sd"] == "신동(가상)"
     assert "gp" not in PnlHistoryPanel._ORIGIN_LABEL
     tip = PnlHistoryPanel._ORIGIN_TIP["sd"]

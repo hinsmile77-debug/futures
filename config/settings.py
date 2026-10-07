@@ -7656,3 +7656,33 @@ SHINDONG_DAILY_REPORT_DIR = os.path.join(BASE_DIR, "docs", "신동거래", "일�
 #   (MIREUK_SMTP_USER / MIREUK_SMTP_PASSWORD / MIREUK_REPORT_MAIL_TO — `utils/mailer.py`).
 #   환경변수가 없으면 PDF 만 만들고 발송은 건너뛴다(로그에 빠진 이름을 남긴다).
 SHINDONG_REPORT_MAIL_ENABLED = True
+
+# ── [MW0601 668차] 피터2 — 피터리 트윗 실시간 추종 매매 ─────────────────────────
+# 장중 피터리(@PeterLeejoa) 트윗을 Chrome 확장 → 로컬 수신기(127.0.0.1)로 받아
+# `data/peter_feed/_raw/<날짜>.jsonl` 에 적고, main.py 가 2초마다 새 줄을 읽어
+# 그의 진입·손절가·청산가·청산 지시대로 **모의계좌 1계약**을 집행한다.
+#   설계·결정: docs/미륵이고도화3/피터2/피터2_실시간추종매매_구현계획_MW0601-20261007.md
+#   사전등록 : docs/미륵이고도화3/피터2/피터2_사전등록_20261007.md
+# 사용자 결정(2026-10-07):
+#   · 미륵이와의 우선순위 — 미륵이 보유 중이면 피터 신호를 건너뛴다(섀도 기록),
+#     피터2 보유 중에는 엔진이 단일 포지션이라 미륵이 신규 진입이 자연히 막힌다.
+#   · 피터2 손절도 CB②에 센다(계좌 안전장치). 단 켈리·앙상블 학습에는 넣지 않는다.
+# 🔴 15:10 강제청산·15:18 안전망·CB⑤ 즉시청산은 피터2 포지션에도 **그대로** 적용된다.
+# 🔴 `runtime_settings` 핫리로드 대상 — 장중에 "off"/"shadow" 로 바꾸면 다음 2초 폴링부터
+#   신규 진입이 멈춘다(보유 포지션의 손절·청산은 계속 관리한다).
+PETER2_FOLLOW_MODE = "live"          # "off" | "shadow"(해석·기록만) | "live"(모의 주문)
+PETER2_QTY = 1                       # 고정 1계약 — MAX_CONTRACTS 와 무관
+PETER2_POLL_MS = 2000                # main.py 폴링 주기
+PETER2_RECEIVER_PORT = 8766          # 수신기(127.0.0.1 전용)
+PETER2_HEARTBEAT_STALE_SEC = 90      # 수집기 하트비트가 이보다 오래되면 신규 진입 금지
+PETER2_CHASE_MAX_PT = 1.0            # 지시가 대비 불리 이격 허용(이상이면 추격하지 않고 대기)
+PETER2_OFFSET_TOL_PT = 0.2           # 돌파 판정 허용폭 — 재생 sweep(0.5/0.2/0.0)에서 0.2 최적(2026-10-07)
+PETER2_ARM_EXPIRE_MIN = 10           # 대기(ARMED) 지시 유효시간
+PETER2_ARM_MAX_DIST_PT = 8.0         # 지시가가 현재가에서 이보다 멀면 오독으로 보고 기각
+PETER2_PLAUSIBLE_DIST_PT = 40.0      # 트윗 숫자가 가격으로 읽힐 수 있는 범위(현재가 기준)
+PETER2_DEFAULT_STOP_PT = 4.0         # 손절가 없는 진입의 기본 손절폭(관행 ±4pt — 49건 딥다이브)
+PETER2_STOP_CAP_PT = 8.0             # 손절가가 진입가에서 이보다 멀면 캡(불리 이동도 따르되 상한)
+PETER2_DAILY_STOP_LIMIT = 2          # 피터2 손실 청산 n회 → 당일 신규 추종 정지
+PETER2_DAILY_MAX_ENTRIES = 6         # 피터2 일 최대 진입 수
+PETER2_LIVE_DIR = os.path.join(DATA_DIR, "peter2_live")
+PETER2_DOC_DIR = os.path.join(BASE_DIR, "docs", "미륵이고도화3", "피터2")

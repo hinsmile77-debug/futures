@@ -47575,3 +47575,14 @@ F-1(538-4) 승인 시 다음 장후 세션에서 `strategy/runtime/session_recov
 **663-3 조사(코드 무변경)**: `logs/crash_fault.log` 08:40 `Windows fatal exception: access violation`(Current thread = `main_dashboard.py:7249` `_ol.addWidget(_cb)`) 바로 뒤에 `[FreezeWatchdog] START`가 이어진다 — 프로세스 생존. 같은 스택 21회(10/1–10/7 로그) 전부 생존. py3.7 Windows faulthandler는 벡터 예외 핸들러로 **처리된(first-chance) 예외도** "fatal exception"으로 덤프한다 → Qt 내부에서 수습된 예외를 기록한 것으로 **추정**. 7235–7249행 코드 자체 결함 없음. 확정 전이라 663-3은 닫지 않고 "판정 후보: 무해"로 하향, D-664-1 관측에 "오류 뒤 FreezeWatchdog START 연속 여부"를 병기.
 
 **미처리(C/승인 대기)**: F-2(15:10 중단 가드 분봉 ts 병행 — 청산 경로 인접 + 15:09 학습 포함 여부 사용자 결정 선행), F-1/538-4(승인 대기), G-3(리포트가 코드 변경 비제안). 제5부 신규 0.
+## 2026-10-07 (MW0601 668차 — 피터2: 피터리 트윗 실시간 추종 모의매매 신설)
+
+**결정(사용자, 2026-10-07 장후)**: 장중 피터리(@PeterLeejoa) 트윗을 실시간 수집해 그의 진입·손절·청산 지시대로 **모의 1계약**을 추종한다. 10-08부터 집행(P1 섀도 관찰 생략 — 사용자 지시). 우선순위·CB는 권고안(미륵이 보유 중이면 건너뜀 / 피터2 손절도 CB②에 계수, 자체 한도 손절 2회). 수집은 로그인된 X 세션의 Chrome 확장. P&L 패널 「피터2」 별도 집계. 당일 1분봉 실시간 표시 → 장후 확정. 모든 문서는 `docs/미륵이고도화3/피터2/`.
+
+**구현**: `strategy/peter2/{parse,follower,store}.py`(순수 해석·상태기계) · `tools/peter2_live/{receiver.py,extension/}`(127.0.0.1:8766 배타 바인딩, start_mireuk 6-D) · main.py `_peter2_*`(QTimer 2초, `_execute_entry(entry_source=PETER2)`, 외부 손절/목표, 미러 청산) · `PositionTracker.ext_stop/ext_target`(PETER2일 때만 ATR·TP1–3·손절계단·트레일링 덮음, 비-PETER2면 폐기) · `_post_exit` 켈리·앙상블 학습 제외(CB는 유지) · 청산 후 쿨다운 면제 · 대시보드(손익추이 출처 `pt2`, P&L 탭 「피터2」 버튼, `peter2_live_row` 실시간 사료) · `tools/peter2_eod.py`(daily_close 연결: `_tr` 초안·삭제 탐지·실추종·섀도·지연) · `tools/peter2_replay.py` · `peter_capture --src eod`. 출처 분류 `external` 신설(`PETER2` — system 아님, 전환기준 ① 판정에서 제외).
+
+**근거(재생, 실측 아님)**: 41거래일(08-03–10-07) 지연 20초 재생에서 피터 +153.5pt vs 추종 +152.9pt(효율 1.00, 44건). 10-07 그의 거래줄이 손으로 쓴 `_tr.txt` 와 글자까지 일치. ⚠ 일일 손절 2회 정지가 41일간 약 47pt를 깎는다(한도 없음 +199.7pt, 3회 +189.6pt) — 한도 변경은 사용자 결정 안건으로 남김. 지연 40초면 효율 0.85.
+
+**오프셋**: 장중엔 직전 실측일 값(10-08 → −5.40). 직전 실측일이 둘째 목요일(만기) 이전이면 `safe=False` → 진입 안 함(10-12가 해당).
+
+**검증**: `tests/test_668_peter2.py` 16 pass(py37_32). 수신기 단독 기동·중복 기동 차단(Windows SO_REUSEADDR 중복 바인딩 실측 → SO_EXCLUSIVEADDRUSE)·UTF-8 적재 실측.

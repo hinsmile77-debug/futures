@@ -57,10 +57,16 @@ def load(date):
     return out, True
 
 
-def append(date, tweets):
-    """새 id 만 덧붙인다. (추가수, 중복수, 총계)"""
+def append(date, tweets, src=None, seen_at=None):
+    """새 id 만 덧붙인다. (추가수, 중복수, 총계)
+
+    [MW0601 668차 피터2] `src` 는 어디서 받았는가 — "live"(장중 Chrome 확장 수신기) /
+    "eod"(장후 캡처). 장후에 "live 로 봤는데 지금 검색에 없는 id" 가 곧 **삭제된 트윗**이다.
+    `seen_at` 을 주면 그것을 쓴다(수신기는 `+09:00` 을 붙인 KST 를 준다 — 종전 값은
+    실행 기계의 지역시각이라 Cowork(UTC)와 Windows(KST)가 섞여 지연을 잴 수 없었다).
+    """
     have, _ = load(date)
-    now = datetime.datetime.now().isoformat(timespec='seconds')
+    now = seen_at or datetime.datetime.now().isoformat(timespec='seconds')
     new, dup = [], 0
     for t in tweets:
         tid = str(t.get('id') or '').strip()
@@ -69,8 +75,11 @@ def append(date, tweets):
         if tid in have:
             dup += 1
             continue
-        new.append({'id': tid, 'dt': t.get('dt'), 'text': t.get('text') or '',
-                    'seen_at': now})
+        rec = {'id': tid, 'dt': t.get('dt'), 'text': t.get('text') or '',
+               'seen_at': now}
+        if src:
+            rec['src'] = src
+        new.append(rec)
         have[tid] = new[-1]
     if new:
         if not os.path.isdir(RAW_DIR):
@@ -108,6 +117,8 @@ def main():
     ap.add_argument('--date', required=True, help='YYYY-MM-DD (KST 기준 장 날짜)')
     ap.add_argument('--json', help='트윗 배열 파일. 없으면 stdin')
     ap.add_argument('--stats', action='store_true')
+    ap.add_argument('--src', choices=['eod', 'live', 'manual'], default=None,
+                    help='eod = 장후 캡처(삭제 트윗 판정용 id 목록도 남긴다)')
     a = ap.parse_args()
     if a.stats:
         stats(a.date)
@@ -119,9 +130,22 @@ def main():
         raise SystemExit('입력이 JSON 배열이 아니다: %s' % e)
     if not isinstance(tweets, list):
         raise SystemExit('입력은 배열이어야 한다.')
-    n, dup, total = append(a.date, tweets)
+    n, dup, total = append(a.date, tweets, src=a.src)
     print('%s  신규 %d · 중복 %d · 누적 %d  -> %s'
           % (a.date, n, dup, total, os.path.relpath(raw_path(a.date), _ROOT)))
+    if a.src == 'eod':
+        # [668차 피터2] 장후 검색에 **보인** id 목록 — 장중(live)에 봤는데 여기 없으면 삭제된 트윗이다.
+        p = os.path.join(RAW_DIR, '%s.eod_ids.json' % a.date)
+        ids = set()
+        if os.path.exists(p):
+            try:
+                ids = set(json.load(io.open(p, encoding='utf-8')))
+            except ValueError:
+                ids = set()
+        ids |= {str(t.get('id')) for t in tweets if t.get('id')}
+        with io.open(p, 'w', encoding='utf-8') as f:
+            json.dump(sorted(ids), f)
+        print('  장후 확인 id %d개 -> %s' % (len(ids), os.path.relpath(p, _ROOT)))
 
 
 if __name__ == '__main__':

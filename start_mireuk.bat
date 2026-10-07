@@ -521,6 +521,20 @@ IF EXIST "!WORKDIR!\scripts\force_flat_guard.py" (
 )
 
 REM ============================================================
+REM  6-D. Peter2 receiver sidecar (668th session)
+REM  - 127.0.0.1:8766 only. Receives @PeterLeejoa tweets from the Chrome
+REM    extension (tools\peter2_live\extension) and appends them to
+REM    data\peter_feed\_raw\<date>.jsonl. Never sends orders.
+REM  - Singleton: a second start exits immediately (exclusive port bind).
+REM ============================================================
+IF EXIST "!WORKDIR!\tools\peter2_live\receiver.py" (
+    CALL :L "[PETER2] 수신기 사이드카 기동 (127.0.0.1:8766, 주문 없음)"
+    START "MireukPeter2Receiver" /MIN "!PY32!" "!WORKDIR!\tools\peter2_live\receiver.py"
+) ELSE (
+    CALL :L "[PETER2] receiver.py 없음 -- 피터2 실시간 수집 비활성"
+)
+
+REM ============================================================
 REM  6-C. Freeze Sentinel sidecar / FZ-2 (490th session / F-M)
 REM  - FZ-1 watchdog is a python thread INSIDE main.py, so a GIL-holding
 REM    freeze starves it too: on 2026-08-24 15:40:20 the 30s [TS] heartbeat

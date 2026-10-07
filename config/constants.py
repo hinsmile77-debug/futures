@@ -234,6 +234,13 @@ ENTRY_SOURCE_MANUAL   = "manual"
 ENTRY_SOURCE_ARTIFACT = "artifact"
 ENTRY_SOURCE_VIRTUAL  = "virtual"
 ENTRY_SOURCE_UNKNOWN  = "unknown"
+#   external : [MW0601 668차] **외부 지시를 미륵이 엔진이 대리 집행**한 실거래(피터2).
+#              주문은 실제로 나갔다(virtual 이 아니다). 그러나 판단 주체가 미륵이가
+#              아니므로 성과 축(system)에도, 사람 개입(manual)에도 넣지 않는다 —
+#              손익 패널은 「피터2」 출처로 따로 센다.
+ENTRY_SOURCE_EXTERNAL = "external"
+#: 피터2 — 피터리 트윗 지시를 실시간 추종한 진입(`strategy/peter2/`).
+PETER2_ENTRY_SOURCE = "PETER2"
 
 ENTRY_SOURCE_REGISTRY = {
     # 시스템 자동 진입 — 성과 축의 유일한 구성원
@@ -250,6 +257,8 @@ ENTRY_SOURCE_REGISTRY = {
     # 가상 — 주문이 나간 적 없다. `trades` 테이블에는 들어가지 않으며 패널 행에만 붙는다.
     "GP_SHADOW":              ENTRY_SOURCE_VIRTUAL,  # 553차 GP 규칙 섀도 가상 체결
     "SIGNAL":                 ENTRY_SOURCE_VIRTUAL,  # 사전등록 채널의 신호 단위 표기
+    # 외부 지시 대리 집행 — 실거래이나 미륵이 판단이 아니다(668차)
+    PETER2_ENTRY_SOURCE:      ENTRY_SOURCE_EXTERNAL, # 피터리 트윗 실시간 추종(피터2)
 }
 
 SYSTEM_ENTRY_SOURCES = tuple(
@@ -258,6 +267,8 @@ MANUAL_ENTRY_SOURCES = tuple(
     k for k, v in ENTRY_SOURCE_REGISTRY.items() if v == ENTRY_SOURCE_MANUAL)
 ARTIFACT_ENTRY_SOURCES = tuple(
     k for k, v in ENTRY_SOURCE_REGISTRY.items() if v == ENTRY_SOURCE_ARTIFACT)
+EXTERNAL_ENTRY_SOURCES = tuple(
+    k for k, v in ENTRY_SOURCE_REGISTRY.items() if v == ENTRY_SOURCE_EXTERNAL)
 
 
 def classify_entry_source(src):
