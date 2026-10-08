@@ -526,7 +526,7 @@ def _learning(M, d):
     if t:
         out["trend"] = dict(generated_at=t.get("generated_at"), verdict=t.get("verdict"), windows=t.get("windows"))
     learn_dir = os.environ.get("SHINDONG2_LEARN_DIR") or os.path.join(ROOT, "docs", "미륵이고도화3", "신동2", "학습")
-    ls = _j(os.path.join(learn_dir, "lessons.json"))
+    ls = _j(os.path.join(learn_dir, "lessons_%s.json" % _pc_id()))   # [MW0602 614차 후속] PC별 레지스트리
     if ls is not None:
         out["lessons_active"] = sum(1 for l in ls if l.get("status") in ("적용중", "검증"))
         out["lessons_n"] = len(ls)

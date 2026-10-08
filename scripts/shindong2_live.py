@@ -24,7 +24,7 @@
                                  ai_latest.json  사다리 「신동2 해설」 패널이 읽는 최신 해설
                                  ai_score.json   채점 결과
 문서 (커밋 대상)
-    docs/미륵이고도화3/신동2/live/신동2_해설_MW0601-YYYYMMDD.md   기록마다 덧붙인다
+    docs/미륵이고도화3/신동2/live/신동2_해설_<PC>-YYYYMMDD.md   기록마다 덧붙인다
 
 🔴 미래 참조 차단
   · 기록 시각은 **벽시계**다. 지정할 수 없다(`--asof` 없음). 효력은 기록 시각 **다음 분 봉부터**.
@@ -52,6 +52,28 @@ PHASES = ("premarket", "intraday", "position", "postmarket", "overnight")
 ACTIONS = ("plan", "manage", "exit", "stand", "note")
 VARIANTS = ("live", "legacy")   # 672차 — live 는 실제 재량(개선방식), legacy 는 기존방식 섀도(채점 비교용, 시뮬 제외)
 PHASE_KO = dict(premarket="장전", intraday="장중", position="보유", postmarket="장후", overnight="익일 계획")
+
+
+def _pc_id():
+    """[MW0602 613차] 이 PC 식별자 — `utils/db_utils.py:pc_id()` 와 같은 규칙(호스트명의 `MW####`).
+
+    종전에는 문서 파일명·머리글에 `MW0601` 이 하드코딩돼 MW0602 의 기록이 MW0601 이름 파일에 쌓였다
+    (2026-10-07 해설은 MW0601 원본 파일 뒤에 MW0602 기록이 덧붙었다). 두 PC 는 별개 계좌·별개 DB 다.
+    db_utils 를 import 하지 않는 이유: config 전체를 끌어오는 무거운 경로라 장중 가벼운 명령(snapshot/poll)에
+    부담이 된다. 실패하면 호스트명, 그마저 안 되면 "UNKNOWN" — 미측정을 다른 PC 이름으로 위장하지 않는다.
+    `SHINDONG2_PC` 로 덮어쓸 수 있다(시험용).
+    """
+    try:
+        import platform as _pf
+        import re as _re
+        host = _pf.node() or ""
+        m = _re.search(r"(MW\d{4})", host, _re.IGNORECASE)
+        return m.group(1).upper() if m else (host[:32] or "UNKNOWN")
+    except Exception:
+        return "UNKNOWN"
+
+
+PC = os.environ.get("SHINDONG2_PC") or _pc_id()
 
 
 def _hm(t):
@@ -325,7 +347,7 @@ def simulate_ai(day, cs, records, live=False):
 
 def _doc_path(day):
     os.makedirs(DOC_DIR, exist_ok=True)
-    return os.path.join(DOC_DIR, "신동2_해설_MW0601-%s.md" % day.replace("-", ""))
+    return os.path.join(DOC_DIR, "신동2_해설_%s-%s.md" % (PC, day.replace("-", "")))
 
 
 def record(day, phase, action, direction, entry, stop, target, comment, now=None, variant="live", lessons=None):
@@ -347,8 +369,8 @@ def record(day, phase, action, direction, entry, stop, target, comment, now=None
         _atomic_json(os.path.join(day_dir(day), "ai_latest.json"), rec)
     with open(_doc_path(day), "a", encoding="utf-8") as f:
         if os.path.getsize(_doc_path(day)) == 0:
-            f.write("# 신동2 해설 — %s (MW0601)\n\n> Claude 재량 제안 기록. append-only · 시각은 벽시계 · 채점은 `scripts/shindong2_live.py score`.\n"
-                    "> 주문 없음(절대원칙 §6). 사전등록 규칙(기본·P·P2·P3)과 별개 주체 「신동2-AI」.\n\n" % day)
+            f.write("# 신동2 해설 — %s (%s)\n\n> Claude 재량 제안 기록. append-only · 시각은 벽시계 · 채점은 `scripts/shindong2_live.py score`.\n"
+                    "> 주문 없음(절대원칙 §6). 사전등록 규칙(기본·P·P2·P3)과 별개 주체 「신동2-AI」.\n\n" % (day, PC))
         plan = ""
         if direction in ("매수", "매도") or entry is not None or stop is not None or target is not None:
             plan = " · **%s** 진입 %s · 손절 %s · 청산 %s" % (direction or "—", entry if entry is not None else "시장가", stop, target)
@@ -456,7 +478,7 @@ def _learn_cmd(a):
     if a.cmd == "trend":
         out = LN.trend(a.date)
         print(LN.trend_text(out, last=a.last))
-        print("\n문서 %s" % os.path.join(LN.LEARN_DIR, "추이_MW0601.md"))
+        print("\n문서 %s" % os.path.join(LN.LEARN_DIR, "추이_%s.md" % PC))
         return 0
     if a.cmd == "brief":
         print(LN.brief(a.date))

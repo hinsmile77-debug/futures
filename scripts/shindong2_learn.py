@@ -8,16 +8,16 @@
               방향 적중 · 체결 · 손익 · MFE/MAE · 포착률(손익 ÷ 당일 고저폭) · 진입품질 · 목표/손절 여유.
     feedback  평가 표 + Claude 의 평가·반성(잘한 점 / 잘못한 점 / 개선점 / 레슨)을 그날 피드백 문서에 남기고,
               적용·적중·실패 레슨의 집계를 갱신한다.
-    lesson    레슨런 레지스트리(후보 → 적용중 → 검증 / 폐기 / 딥다이브). 값의 단일 출처 = lessons.json.
+    lesson    레슨런 레지스트리(후보 → 적용중 → 검증 / 폐기 / 딥다이브). 값의 단일 출처 = lessons_<PC>.json.
     trend     워크포워드 추이 — 날짜별 행 + 최근 5/10/20일 창. 「개선(live) − 기존(legacy)」 이 0 이하로 머물면 🔴 딥다이브.
     brief     장전 브리핑 — 활성 레슨 · 전일 피드백 · 추이 판정 한 화면(예약작업이 한 번에 읽는다).
 
 저장
     data/shindong2_live/YYYYMMDD/eval.json · feedback.jsonl · feedback.json   (런타임 — gitignore)
     data/shindong2_live/trend.json
-    docs/미륵이고도화3/신동2/학습/피드백_MW0601-YYYYMMDD.md       (커밋 대상 — 그날 반성)
-    docs/미륵이고도화3/신동2/학습/lessons.json · 레슨런_레지스트리.md (커밋 대상 — 레슨 단일 출처 + 렌더)
-    docs/미륵이고도화3/신동2/학습/추이_MW0601.md                  (커밋 대상 — 파생 뷰, 매번 다시 쓴다)
+    docs/미륵이고도화3/신동2/학습/피드백_<PC>-YYYYMMDD.md          (커밋 대상 — 그날 반성)
+    docs/미륵이고도화3/신동2/학습/lessons_<PC>.json · 레슨런_레지스트리_<PC>.md (커밋 대상 — 레슨 단일 출처 + 렌더)
+    docs/미륵이고도화3/신동2/학습/추이_<PC>.md                     (커밋 대상 — 파생 뷰, 매번 다시 쓴다)
 
 🔴 미래 참조 차단은 live.py 와 같다 — 평가는 기록 시각 이후 봉만 쓰고, 기록은 벽시계다.
 🔴 「미측정 ≠ 0」(계측 4원칙 ②) — legacy 섀도가 없는 날의 개선폭은 None 이지 0 이 아니다.
@@ -35,8 +35,10 @@ if _HERE not in sys.path:
 import shindong2_live as SL  # noqa: E402
 
 ROOT = SL.ROOT
+PC = SL.PC                  # [MW0602 613차] 파일명·머리글의 PC — 하드코딩 MW0601 제거
 LEARN_DIR = os.environ.get("SHINDONG2_LEARN_DIR") or os.path.join(ROOT, "docs", "미륵이고도화3", "신동2", "학습")
-LESSONS_JSON = "lessons.json"
+LESSONS_JSON = "lessons_%s.json" % PC   # [MW0602 614차 후속] PC별 — 두 PC 레지스트리가 dev 에서 덮어쓰지 않게
+REGISTRY_MD = "레슨런_레지스트리_%s.md" % PC
 DIR_DEADBAND = 2.0          # pt — |종가 − 시가| 가 이 안이면 「보합」
 STATUSES = ("후보", "적용중", "검증", "폐기", "딥다이브")
 ACTIVE = ("적용중", "검증")
@@ -281,7 +283,7 @@ def load_lessons():
 
 def save_lessons(ls):
     SL._atomic_json(_lessons_path(), ls)
-    with open(os.path.join(_learn_dir(), "레슨런_레지스트리.md"), "w", encoding="utf-8") as f:
+    with open(os.path.join(_learn_dir(), REGISTRY_MD), "w", encoding="utf-8") as f:
         f.write(render_lessons(ls))
 
 
@@ -351,8 +353,8 @@ def lesson_suggestion(l):
 
 
 def render_lessons(ls):
-    L = ["# 신동2 레슨런 레지스트리 (MW0601)", "",
-         "> 값의 단일 출처는 같은 폴더 `lessons.json` — 이 파일은 렌더다(손으로 고치지 말 것).",
+    L = ["# 신동2 레슨런 레지스트리 (%s)" % PC, "",
+         "> 값의 단일 출처는 같은 폴더 `%s` — 이 파일은 렌더다(손으로 고치지 말 것)." % LESSONS_JSON,
          "> 상태: 후보 → 적용중 → 검증 / 폐기 / 딥다이브. 적용·적중·실패는 **날짜 목록**이라 횟수가 곧 표본 수다.",
          "> 🔴 하루를 보고 만든 레슨은 그 하루에 다시 대 보면 당연히 좋아 보인다(과적합) — 적용은 **다음 거래일부터** 센다.",
          "", "| ID | 상태 | 레슨 | 적용 규칙 | 발동 조건 | 기원 | 적용/적중/실패 | 비고 |", "|---|---|---|---|---|---|---|---|"]
@@ -386,7 +388,7 @@ def lessons_text(active_only=False):
 
 # ── 피드백 ────────────────────────────────────────────────────────────────
 def _fb_doc_path(day):
-    return os.path.join(_learn_dir(), "피드백_MW0601-%s.md" % day.replace("-", ""))
+    return os.path.join(_learn_dir(), "피드백_%s-%s.md" % (PC, day.replace("-", "")))
 
 
 def feedback(day, comment, applied=(), hits=(), misses=(), now=None):
@@ -414,8 +416,8 @@ def feedback(day, comment, applied=(), hits=(), misses=(), now=None):
     new = not os.path.exists(p) or os.path.getsize(p) == 0
     with open(p, "a", encoding="utf-8") as f:
         if new:
-            f.write("# 신동2 피드백 — %s (MW0601)\n\n> 예측 → 실행 → 평가·반성 → 레슨 기록 사이클의 그날 기록. append-only · 시각은 벽시계.\n"
-                    "> 기계 평가는 `scripts/shindong2_live.py evaluate`, 본문은 Claude 의 반성. 레슨은 `학습/레슨런_레지스트리.md`.\n\n" % day)
+            f.write("# 신동2 피드백 — %s (%s)\n\n> 예측 → 실행 → 평가·반성 → 레슨 기록 사이클의 그날 기록. append-only · 시각은 벽시계.\n"
+                    "> 기계 평가는 `scripts/shindong2_live.py evaluate`, 본문은 Claude 의 반성. 레슨은 `학습/%s`.\n\n" % (day, PC, REGISTRY_MD))
         f.write("## %s 피드백%s\n\n%s\n\n### 평가·반성\n\n적용 레슨 %s · 적중 %s · 실패 %s\n\n%s\n\n" % (
             now.strftime("%Y-%m-%d %H:%M"), " (장중 잠정)" if out["live"] else "", render_eval(out),
             ", ".join(applied) or "—", ", ".join(sorted(hits)) or "—", ", ".join(sorted(misses)) or "—", rec["comment"]))
@@ -574,7 +576,7 @@ def _cell(c):
 
 
 def render_trend(rows, win, verdict):
-    L = ["# 신동2 워크포워드 추이 (MW0601)", "",
+    L = ["# 신동2 워크포워드 추이 (%s)" % PC, "",
          "> `scripts/shindong2_live.py trend` 가 매번 다시 쓴다(파생 뷰). 원천은 날짜별 `eval.json`·`feedback.json`.",
          "> 계획 손익은 그 계획을 **단독**으로 1분봉에 대 본 값(실제 재량 실현과 다르다). 개선(live) − 기존(legacy) 이 핵심 지표.",
          "> 「—」 는 미측정이다(계측 4원칙 ② — 0 이 아니다).", "",
@@ -612,7 +614,7 @@ def trend(today=None, now=None, write=True):
     out = dict(generated_at=(now or _dt.datetime.now()).isoformat(timespec="seconds"), rows=rows, windows=win, verdict=verdict)
     if write:
         SL._atomic_json(os.path.join(SL.LIVE_DIR, "trend.json"), out)
-        with open(os.path.join(_learn_dir(), "추이_MW0601.md"), "w", encoding="utf-8") as f:
+        with open(os.path.join(_learn_dir(), "추이_%s.md" % PC), "w", encoding="utf-8") as f:
             f.write(render_trend(rows, win, verdict))
     return out
 

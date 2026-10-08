@@ -159,7 +159,7 @@ def test_lessons_registry(sandbox):
     assert "승격 검토" in LN.lesson_suggestion(LN._find(LN.load_lessons(), "L9"))
     LN.lesson_set("L9", status="적용중", why="3회 적중 우세", now=now)
     assert [x["id"] for x in LN.load_lessons() if x["status"] in LN.ACTIVE] == ["L9"]
-    md = io.open(os.path.join(LN.LEARN_DIR, "레슨런_레지스트리.md"), encoding="utf-8").read()
+    md = io.open(os.path.join(LN.LEARN_DIR, LN.REGISTRY_MD), encoding="utf-8").read()
     assert "| L9 | 적용중 |" in md and "3/3/1" in md
     assert "L9" in LN.lessons_text(active_only=True)
 
@@ -174,7 +174,7 @@ def test_feedback_requires_registered_lesson_and_writes_doc(sandbox, monkeypatch
     LN.lesson_add("L1", "Δ10 은 그림자", "Δ10 만으로 뒤집지 않는다", status="적용중", now=dt.datetime(2026, 10, 6))
     rec, out, p = LN.feedback("2026-10-07", "잘한 점: 방향. 잘못한 점: 없음.", applied=["L1"], hits=["L1"], now=dt.datetime(2026, 10, 7, 16, 0))
     assert rec["applied"] == ["L1"] and rec["hits"] == ["L1"] and rec["actual_dir"] == "매도"
-    assert os.path.basename(p) == "피드백_MW0601-20261007.md"
+    assert os.path.basename(p) == "피드백_%s-20261007.md" % LN.PC   # [MW0602 613차] PC 파생(하드코딩 MW0601 제거)
     doc = io.open(p, encoding="utf-8").read()
     assert "기계 평가" in doc and "잘한 점: 방향" in doc
     assert LN._find(LN.load_lessons(), "L1")["hit"] == ["2026-10-07"]
