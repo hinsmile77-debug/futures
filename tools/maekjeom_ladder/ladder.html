@@ -151,7 +151,7 @@ details.ailog summary{cursor:pointer;color:var(--ink-2);font-size:12.5px}
     <h2>신동2 해설 — Claude 재량 <span class="muted" id="sd2aiMeta" style="font-weight:400;font-size:12.5px"></span></h2>
     <p class="sub">08:52 장전 전망 → 장중 갱신 → 보유 관리 → 장후 종합. <code>shindong2</code> 스킬이 기록할 때마다 바뀐다(이 페이지는 매분 다시 읽는다). 재량 제안은 「신동2-AI」로 따로 기록·채점한다 — 사전등록 규칙(기본·P·P2·P3)과 섞지 않는다. 주문 없음.</p>
     <div class="aigrid">
-      <div style="display:grid;gap:10px"><div class="aibox" id="aiBox"></div><div class="aibox" id="aiNext" hidden></div></div>
+      <div style="display:grid;gap:10px"><div class="aibox" id="aiBox"></div><div class="aibox" id="aiNext" hidden></div><div class="aibox" id="aiLearn" hidden></div></div>
       <div><h3 style="margin:0 0 6px;font-size:13px">이벤트 <span class="muted" id="evN"></span></h3><ul class="evlist" id="evList"></ul></div>
     </div>
     <div class="scroll"><table id="aiTbl"></table></div>
@@ -745,6 +745,27 @@ function drawAI(){
       ((r.dir && r.dir !== '관망') ? `<div class="plan"><span class="k-sd2ai">${esc(r.dir)}</span><span>진입 <b>${r.entry ?? '시장가'}</b></span><span>손절 <b>${r.stop ?? '—'}</b></span><span>청산 <b>${r.target ?? '—'}</b></span></div>` : `<div class="plan"><span class="k-sd2ai">${esc(r.dir || '관망')}</span></div>`) +
       `<div class="body">${md(r.comment)}</div>`;
   } else { nb.hidden = true; nb.innerHTML = ''; }
+  // [672차] 학습 사이클 — 그날 계획 평가 · 워크포워드 판정 · 전일 피드백
+  const LR = AI.learning, lb = document.getElementById('aiLearn');
+  if (LR && (LR.eval || LR.trend || LR.feedback)) {
+    lb.hidden = false;
+    const cell = e => e ? `${esc(e.dir)}${e.dir_hit == null ? '' : (e.dir_hit ? '✅' : '❌')} ${e.sim && e.sim.kind === '계획' ? (e.sim.filled ? fmt(e.sim.pnl, 2) + 'pt' : '미체결') : ''}` : '—';
+    let h = `<div class="meta">학습 사이클 — 예측 → 실행 → 평가·반성 → 레슨 → 개선 예측${LR.lessons_n != null ? ` · 레슨 ${LR.lessons_n}개(활성 ${LR.lessons_active})` : ''}</div>`;
+    if (LR.eval) {
+      const E = LR.eval, on = E.overnight || {}, pm = E.premarket || {};
+      h += `<div class="plan"><span class="k-sd2ai">계획 평가${E.live ? '(잠정)' : ''}</span><span>실제 <b>${esc(E.actual_dir)}</b></span>` +
+        `<span>익일계획 <b>${cell(on.live)}</b>${on.legacy ? ' / 기존 ' + cell(on.legacy) : ''}</span>` +
+        `<span>장전 <b>${cell(pm.live)}</b>${pm.legacy ? ' / 기존 ' + cell(pm.legacy) : ''}</span>` +
+        `<span>적용 레슨 ${esc((E.lessons_applied || []).join(', ') || '—')}</span></div>`;
+    }
+    if (LR.trend && LR.trend.verdict) {
+      h += `<div class="body">${(LR.trend.verdict.messages || []).map(esc).join('<br>')}</div>`;
+      const w = LR.trend.windows && LR.trend.windows['5'];
+      if (w) h += `<div class="meta">최근 ${w.n}일: 익일계획 적중 ${w.on_hit[0] == null ? '—' : Math.round(w.on_hit[0] * 100) + '% (n=' + w.on_hit[1] + ')'} · 개선−기존 ${w.improve_on[0] == null ? '—(미측정)' : fmt(w.improve_on[0], 2) + 'pt (n=' + w.improve_on[1] + ')'} · 재량 실현 ${fmt(w.ai_pnl, 2)}pt · 규칙 기본 ${fmt(w.rules_base, 2)}pt</div>`;
+    }
+    if (LR.feedback) h += `<div class="meta">피드백 ${(LR.feedback.ts || '').replace('T', ' ')} · 적용 ${esc((LR.feedback.applied || []).join(', ') || '—')} · 적중 ${esc((LR.feedback.hits || []).join(', ') || '—')} · 실패 ${esc((LR.feedback.misses || []).join(', ') || '—')}</div><div class="body">${md((LR.feedback.comment || '').split('\n').slice(0, 14).join('\n'))}</div>`;
+    lb.innerHTML = h;
+  } else { lb.hidden = true; lb.innerHTML = ''; }
   document.getElementById('evN').textContent = `${AI.events_n}건`;
   document.getElementById('evList').innerHTML = AI.events.slice().sort((a, b) => (b.t || '').localeCompare(a.t || '')).map(e => `<li><b>${esc(e.t)}</b> [${esc(e.kind)}] ${esc(e.text)}</li>`).join('') || '<li class="muted">없음</li>';
   let q = '<thead><tr><th class="l">진입</th><th class="l">방향</th><th>체결</th><th class="l">방식</th><th>손절</th><th>청산 목표</th><th class="l">청산</th><th>손익pt</th></tr></thead><tbody>';

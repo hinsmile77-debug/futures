@@ -1,9 +1,15 @@
 ---
 name: shindong2
-description: 신동2 — 미륵이 데이터(외인 선물·먼스리/위클리 옵션·현물 수급, 맥점, 매물대, 사전등록 규칙 기본·P·P2·P3)로 KOSPI200 미니선물 장세를 전망하고 재량 진입·손절·청산가를 제시·관리·채점한다. 단계 인자 premarket(08:52) · intraday(09:05–10:05 10분, 이후 30분) · position(진입 뒤 이벤트) · postmarket(15:55). 결과는 맥점 옵션 사다리 「신동2 해설」 패널과 docs/미륵이고도화3/신동2/live/ 에 남는다. 트리거 - "신동2", "신동2 장전", "신동2 장중", "신동2 보유", "신동2 장후", "/shindong2 premarket|intraday|position|postmarket".
+description: 신동2 — 미륵이 데이터(외인 선물·먼스리/위클리 옵션·현물 수급, 맥점, 매물대, 사전등록 규칙 기본·P·P2·P3)로 KOSPI200 미니선물 장세를 전망하고 재량 진입·손절·청산가를 제시·관리·채점하며, 「예측 → 실행 → 평가·반성 → 레슨런 → 개선 예측」 학습 사이클을 기록으로 돌린다. 단계 인자 premarket(08:52) · intraday(09:05–10:05 10분, 이후 30분) · position(진입 뒤 이벤트) · postmarket(15:55). 결과는 맥점 옵션 사다리 「신동2 해설」 패널과 docs/미륵이고도화3/신동2/live/ · 학습/ 에 남는다. 트리거 - "신동2", "신동2 장전", "신동2 장중", "신동2 보유", "신동2 장후", "신동2 학습", "/shindong2 premarket|intraday|position|postmarket".
 ---
 
-# 신동2 — 장세 전망 · 재량 제안 · 관리 · 채점
+# 신동2 — 장세 전망 · 재량 제안 · 관리 · 채점 · 자가개선
+
+## 목적 한 줄
+
+KOSPI200 미니선물에서 **최고의 수익률 진입·청산 타점**을 잡는 것. 그래서 이 스킬은 하루를 다음 사이클로 돈다 —
+**예측 → 실행 → 평가·반성 → 레슨런 기록 → (레슨 반영) 개선 예측 → 실행 → …** 이 사이클의 추이가 워크포워드로
+기록되고, 개선되지 않으면 딥다이브로 해결책을 찾아 다시 반영한다. 기록이 곧 학습이다 — 적지 않은 개선은 없는 것이다.
 
 ## 이 스킬이 지키는 것
 
@@ -15,9 +21,11 @@ description: 신동2 — 미륵이 데이터(외인 선물·먼스리/위클리 
 4. **뒤집기를 아낀다.** 방향 전환은 「세팅 변경」 조건일 때만 — 지금 계획의 손절이 실제로 닿았고, 반대편 구조(맥점·전일
    고저)를 종가로 넘었고, 수급 **수준**도 반대로 돌았을 때. 10분 변화량(Δ10)만으로 뒤집지 않는다
    (10/6 신동2 기본이 반등 추격 매수 두 번으로 손절 — 레슨 L1. 외인 선물 흐름은 가격을 1분 **뒤따른다**).
-5. **장중에는 무거운 분석을 하지 않는다**(456차). `snapshot`/`poll`/`record`/`score` 는 사다리와 같은 가벼운 경로다.
-   `foreign_flow_pit_review.py` 본체·전수 분석·DB 스캔은 장후에만.
-6. **모르는 것은 모른다고 쓴다.** 데이터가 없으면(`None`·미측정) 0 으로 읽지 않는다.
+5. **장중에는 무거운 분석을 하지 않는다**(456차). `snapshot`/`poll`/`record`/`score`/`brief` 는 사다리와 같은 가벼운 경로다.
+   `evaluate`/`feedback`/`trend`·`foreign_flow_pit_review.py` 본체·전수 분석·DB 스캔은 장후에만.
+6. **모르는 것은 모른다고 쓴다.** 데이터가 없으면(`None`·미측정) 0 으로 읽지 않는다. 개선폭도 기존방식 섀도가 없으면 「미측정」이다.
+7. **레슨은 다음 거래일부터 센다.** 하루를 보고 만든 레슨을 그 하루에 다시 대 보면 당연히 좋아 보인다(과적합).
+   후보 → 적용중 승격은 **적용 3회 이상·적중 우세** 뒤에만. 승격·폐기는 레지스트리에 이력으로 남긴다.
 
 ## 도구
 
@@ -27,10 +35,21 @@ description: 신동2 — 미륵이 데이터(외인 선물·먼스리/위클리 
 conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py snapshot          # 상태 + 새 이벤트 요약 (읽고 판단)
 conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py poll              # 마지막 기록 이후 새 이벤트 있으면 exit 10
 conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py record --phase <단계> --action <plan|manage|exit|stand|note> \
-      --dir <매수|매도|관망> [--entry X] [--stop Y] [--target Z] --comment-file - <<'EOF'
+      --dir <매수|매도|관망> [--entry X] [--stop Y] [--target Z] [--lessons L1,L9] [--variant legacy] --comment-file - <<'EOF'
 해설 본문(마크다운)
 EOF
 conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py score             # 재량 채점(장중 잠정 · 장후 확정)
+
+# ── 학습 사이클 (672차) ──
+conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py brief             # 장전: 활성 레슨 · 전일 피드백 · 추이 판정 한 화면
+conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py evaluate          # 장후: 익일계획·장전계획(개선/기존) 단독 시뮬 평가
+conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py feedback [--applied L1,L3] [--hit L1] [--miss L3] --comment-file - <<'EOF'
+평가·반성 본문
+EOF
+conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py lesson list [--active]
+conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py lesson add --id L14 --title "…" --rule "…" [--trigger "…"] [--status 후보] [--evidence 2026-10-08]
+conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py lesson set --id L9 --status 적용중 --why "적용 3회 적중 2"
+conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py trend             # 장후: 워크포워드 추이 + 딥다이브 판정 (문서 갱신)
 ```
 
 - ⚠ **`--no-capture-output` 필수** — 빼면 conda(py37_32 의 conda)가 출력을 cp949 로 다시 찍다가 `−` 같은 문자에서
@@ -40,10 +59,14 @@ conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py score
 - `--entry` 를 비우면 다음 분 시가 시장가. `plan` 은 손절·청산을 **반드시** 함께 적는다(채점 불가 기록 금지).
 - `manage` = 보유·대기 중 손절/청산만 갱신. `exit` = 다음 분 시가 청산. `stand` = 대기 계획 취소(관망).
   `note` = 가격 변화 없는 해설.
+- **`--lessons L1,L3`** — 그 계획에 적용한 레슨 ID 를 표기한다. 표기해야 레슨 집계(적용/적중/실패)가 맞는다.
+- **`--variant legacy`** — 「기존방식」 섀도. overnight/premarket 의 plan·stand 에만 쓴다. 실제 재량 시뮬·패널 최신 해설에는
+  들어가지 않고 **평가 비교(개선 − 기존)에만** 쓰인다. 기본(미지정)은 `live` = 개선방식 = 실제 채점 대상.
 - 🔴 **해설은 표준입력(heredoc)으로 넘긴다** — `--comment-file -` 뒤에 `<<'EOF' … EOF`. 예약작업 실행은 Write/Edit 도구가
   **막혀 있고**(허용: Read·Glob·Grep · `conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py …` 만)
   파일을 만들 수 없다. 명령 앞에 다른 것(`cd`, `&&`, 환경변수)을 붙이면 권한 밖이라 거부된다.
 - 사다리(`MAEKJEOM_LADDER.bat`, 127.0.0.1:8765)가 매분 다시 읽어 「신동2 해설」 패널과 차트(◆·파랑 계획선)에 그린다.
+  학습 블록(계획 평가·추이 판정·전일 피드백)도 같은 패널에 뜬다.
 
 ## 읽을 원천 (snapshot 이 대부분 요약한다)
 
@@ -57,30 +80,62 @@ conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py score
 | 신동2 규칙 | 기본·P·P2·P3 세팅·진입·청산 | 내 판단의 대조군 |
 | 매물대(정규 5일) | 봉우리·얇은 구간 | 피터 목표가의 유일한 체계적 근거(z 4.76) |
 | 피터 | 장후 수집분 | 장중에는 없다 — 추측하지 말 것 |
+| **학습 기록** | `brief` — 활성 레슨 · 전일 피드백 · 추이 판정 | 장전에 **반드시** 읽는다. 레슨을 안 읽은 예측은 개선 예측이 아니다 |
 
-전날 문서: `docs/미륵이고도화3/신동2/` 의 전날 PIT 복기 §5(익일 계획)·`live/신동2_해설_MW0601-<전날>.md` 장후 기록.
+전날 문서: `docs/미륵이고도화3/신동2/` 의 전날 PIT 복기 §5(익일 계획)·`live/신동2_해설_MW0601-<전날>.md` 장후 기록 ·
+`학습/피드백_MW0601-<전날>.md`(평가·반성) · `학습/레슨런_레지스트리.md` · `학습/추이_MW0601.md`.
+
+## 학습 사이클 — 하루의 흐름
+
+```
+전날 장후   익일계획 2건: 개선(live, 레슨 반영) + 기존(legacy 섀도)      ← 예측
+당일 장전   brief 로 레슨·피드백·추이를 읽고 장전계획 2건(개선 + 기존)    ← 개선 예측
+당일 장중   계획 실행·관리(live 만) — 레슨 적용은 --lessons 로 표기       ← 실행
+당일 장후   evaluate → feedback(잘한 점/잘못한 점/개선점/레슨) → lesson   ← 평가·반성·레슨런
+            → trend(개선−기존 추이, 딥다이브 판정) → 익일계획 2건        ← 다시 개선 예측
+```
+
+**정량화 지표**(`evaluate` 가 계산, `trend` 가 창 5/10/20일로 집계)
+- 방향 적중: 종가−시가 ±2pt 보합. 관망은 분모 제외.
+- 계획 손익: 그 계획을 **단독**으로 1분봉에 대 본 값(효력 다음 분·지정가 고저 포함 체결·같은 봉 손절 우선·15:10 강제청산).
+- MFE/MAE · **포착률**(손익 ÷ 당일 고저폭) · **진입품질**(1 − 진입가와 최악 극단 거리 ÷ 고저폭) · 목표/손절 여유 · R:R.
+- **개선 − 기존**: live 계획 손익 − legacy 계획 손익. 이것이 「학습으로 향상되는가」의 지표다. 섀도가 없으면 미측정.
+- 재량 실현(신동2-AI) vs 규칙(기본·P·P2·P3) — 대조군.
+
+**딥다이브 트리거**(`trend` 판정) — 최근 5일 개선−기존 ≤ 0 · 익일계획 방향 적중 < 50% · 개선−기존 ≤ 0 이 3일 연속 중 하나.
+발동하면 장후 피드백에 **「딥다이브」 절**을 쓴다: 원인 가설 3개(방향 근거 / 진입 레벨 / 손절·청산 설계 중 어디가 병목인가) ·
+각 가설을 가르는 실측(eval.json 의 entry_miss·stop_margin·target_margin·MFE/MAE 분포) · 바꿀 것 하나 → 새 레슨(후보) 등록 ·
+다음 날 그 레슨을 live 계획에 적용하고 legacy 는 그대로 둬 효과를 분리 측정.
 
 ## 단계별 절차
 
 ### premarket (08:52)
 
-1. `snapshot`(장 시작 전이면 「봉 없음」 — 정상). 전날 장후 기록·익일 계획과 08:50 맥점을 읽는다.
+1. `brief` → 활성 레슨·전일 피드백·추이 판정·오늘 익일계획(개선/기존)을 읽는다. `snapshot`(장 시작 전이면 「봉 없음」 — 정상).
+   전날 장후 기록·익일 계획과 08:50 맥점을 읽는다.
 2. 전망을 쓴다: **방향(매수/매도/관망) · 근거 3가지 이내 · 시나리오(기본/대안)**. 각 시나리오는 조건(09:05까지 확인할 것) ·
-   진입 · 손절 · 청산.
-3. 기본 시나리오를 `record --phase premarket --action plan`(또는 `stand`)으로 남긴다. 대안은 해설 본문에 쓴다.
+   진입 · 손절 · 청산. **어느 레슨을 어떻게 적용했는지** 한 줄(예: L12 → 진입 1060.6 = 맥점 1060.95 − 0.35).
+3. 기본 시나리오를 `record --phase premarket --action plan --lessons …`(또는 `stand`)으로 남긴다 — 개선방식(live).
+4. 이어서 **기존방식**을 `--variant legacy` 로 한 건 더 남긴다: 레슨 반영 전 방식(맥점 정수 지정 · 다음 맥점 손절 · 가장 가까운
+   맥점/벽 청산 · Δ 가중 그대로). 해설 2–3줄이면 된다. 둘이 같으면 같다고 쓰고 **그래도 남긴다**(개선폭 0 을 측정하기 위해).
+5. 익일계획(전날 장후)이 갭으로 무효가 돼도 그 레벨은 **대안으로 남긴다**(L13 — 10/7 익일계획 1104 가 장전 갱신 1091 보다
+   나았다: +5.80 vs −4.50).
 
 ### intraday (09:05–10:05 10분 · 10:30–14:30 30분)
 
 1. `snapshot`. 직전 기록과 비교해 **무엇이 바뀌었나**만 본다 — 세팅(P 계열), 전일 고저, 맥점 이탈, 수급 수준.
-2. 판단: 계획 유지 → `note`(짧게) / 진입가·손절·청산 조정 → `manage` 또는 새 `plan` / 관망 전환 → `stand`.
+2. 판단: 계획 유지 → `note`(짧게) / 진입가·손절·청산 조정 → `manage` 또는 새 `plan`(`--lessons` 표기) / 관망 전환 → `stand`.
    방향 전환은 「지키는 것 4」 조건일 때만.
 3. 신동2 규칙(P 계열)과 다른 판단이면 **왜 다른지** 한 줄 남긴다.
+4. 되돌림 지정가가 **2회 연속 미체결**이고 수급 세 축이 일치하면 L11(이탈추종 전환) 적용 여부를 명시적으로 판단해 적는다 —
+   적용하든 안 하든 **그 이유**를 남겨야 장후 평가에서 레슨 적중/실패를 가를 수 있다.
 
 ### position (진입 뒤 — `poll` 이 exit 10 일 때, 10분마다 확인)
 
 1. `snapshot` 의 「재량(AI)」 줄로 보유·평가손익을 본다.
 2. 유지 / 손절 이동(`manage`) / 급청산(`exit`) — 급청산은 **세팅 변경 조건** 또는 손절선 1pt 안 접근 + 반대 구조 돌파일 때.
-3. 청산되면 그 거래를 3–5줄로 정리(`note`): 진입 근거가 맞았나, 손절·목표가 적절했나.
+   만기일·피닝 구간에서 MFE ≥ 5pt 면 L10(본전 이동·부분청산 앞당김) 적용을 판단해 적는다.
+3. 청산되면 그 거래를 3–5줄로 정리(`note`): 진입 근거가 맞았나, 손절·목표가 적절했나, 어느 레슨이 작동/실패했나.
 
 ### position 이 15:10 이후에 불렸을 때 (15:12 마감 실행)
 
@@ -89,12 +144,23 @@ conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py score
 
 ### postmarket (15:55 — 정규선물 15:52 적재 뒤)
 
-1. `score` → 재량·규칙(기본·P·P2·P3)·피터를 나란히 본다.
-2. 오늘 정리: 방향 적중, 재량 거래 결과, 규칙과의 차이, 레슨(있으면).
-3. 내일 전망: 마감 수급(선물 외인 누계·먼스리 콜−풋·현물 외인), 전일 고저·매물대 봉우리, 만기 일정.
-   `record --phase overnight --for-date <다음 거래일> --action plan|stand` 로 **내일 날짜 파일**에 미리 적는다
-   (그날 08:45 이전 기록은 개장부터 유효).
-4. 오늘 해설 문서(`docs/미륵이고도화3/신동2/live/`)는 커밋 대상이다 — 커밋은 사람이 지시할 때만.
+1. `score` → 재량·규칙(기본·P·P2·P3)·피터를 나란히 본다. `evaluate` → 전날 장후 익일계획(개선/기존)·오늘 장전계획(개선/기존)의
+   방향 적중·체결·손익·MFE/MAE·포착률·진입품질·개선−기존을 본다.
+2. **평가·반성을 `feedback` 으로 남긴다**(15–30줄). 반드시 이 네 절로:
+   - **잘한 점** — 예측(방향·레벨)과 근거 선택 중 맞은 것. 어느 레슨이 작동했나(`--hit`).
+   - **잘못한 점** — 틀린 예측·근거, 체결 못 한 레벨(entry_miss), 좁은 손절(stop_margin), 못 간 목표(target_margin).
+     적용했는데 실패한 레슨(`--miss`), 적용 안 해서 손해 본 레슨.
+   - **개선점** — 내일 바꿀 것 **하나 이상**, 수치로(진입 −0.4pt / 손절 개장폭 1/3 / 목표 다음 벽).
+   - **레슨런** — 새 레슨이 있으면 `lesson add`(후보). 후보가 적용 3회·적중 우세면 `lesson set --status 적용중`.
+     실패 우세면 딥다이브 또는 폐기. 이력(`--why`)을 남긴다.
+   `--applied` 는 오늘 live 계획에 표기한 레슨과 일치시킨다.
+3. `trend` → 추이 판정을 읽는다. **🔴 딥다이브** 면 위 「딥다이브 트리거」 절차대로 피드백에 딥다이브 절을 **추가로** 남긴다
+   (`feedback` 한 번 더 — append-only 라 괜찮다).
+4. 내일 전망: 마감 수급(선물 외인 누계·먼스리 콜−풋·현물 외인), 전일 고저·매물대 봉우리, 만기 일정.
+   `record --phase overnight --for-date <다음 거래일> --action plan|stand --lessons …` 로 **내일 날짜 파일**에 미리 적는다
+   (그날 08:45 이전 기록은 개장부터 유효) — 개선방식(live). 이어서 **기존방식 `--variant legacy`** 한 건. 개선방식 본문에
+   「기존방식과 무엇이 다른가 · 어느 레슨 때문인가」 한 줄.
+5. 오늘 해설·피드백·레지스트리·추이 문서(`docs/미륵이고도화3/신동2/live/`, `학습/`)는 커밋 대상이다 — 커밋은 사람이 지시할 때만.
 
 ## 예약작업 (3단계)
 
@@ -102,17 +168,19 @@ conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py score
 (장전 08:52 · 장중 09:05–10:05/10분 + 10:30–14:30/30분 · 이벤트 10:10–15:00/10분 · 마감 15:12 · 장후 15:55).
 실행은 `scripts/shindong2_run.ps1 -Phase …` — 휴장일·중복 실행은 건너뛰고, 이벤트 단계는 새 이벤트가 있을 때만
 Claude 를 부른다. 로그 `logs/shindong2_YYYYMMDD.log`. 해제는 `-Action Unregister`.
+학습 명령(`brief`·`evaluate`·`feedback`·`lesson`·`trend`)도 같은 허용 패턴(`scripts/shindong2_live.py …`) 안이라 추가 권한이 필요 없다.
 
 ## 해설 쓰는 법
 
 - 한국어. 범위는 대시(–), 물결표 금지.
-- 첫 줄 = 결론(방향·한 줄 이유). 그다음 근거 · 시나리오 · 무효화 조건.
-- 숫자는 snapshot 에서 온 것만. 지어내지 않는다.
-- 길이: 장전·장후 15–30줄, 장중·보유 3–10줄.
+- 첫 줄 = 결론(방향·한 줄 이유). 그다음 근거 · 시나리오 · 무효화 조건 · 적용 레슨.
+- 숫자는 snapshot/evaluate 에서 온 것만. 지어내지 않는다.
+- 길이: 장전·장후 15–30줄, 장중·보유 3–10줄, 기존방식 섀도 2–3줄, 피드백 15–30줄(딥다이브 시 +10줄).
 
 ## 하지 말 것
 
-- 사전등록 상수·규칙 변경, 과거 기록 수정, 지난 시각 기록.
-- 장중 전수 스캔·무거운 스크립트(`foreign_flow_pit_review.py` 본체 포함 — `guard_intraday` 가 막는다).
+- 사전등록 상수·규칙 변경, 과거 기록 수정, 지난 시각 기록, 레슨 집계 소급 조작.
+- 장중 전수 스캔·무거운 스크립트(`evaluate`/`feedback`/`trend`/`foreign_flow_pit_review.py` 본체 포함 — `guard_intraday` 가 막는다).
 - 주문·브로커 API 호출.
 - Slack 알림 추가(사용자 보류 결정).
+- 하루 표본으로 레슨을 「검증」으로 올리기. 기존방식(legacy) 섀도를 빼먹기(그날 개선폭이 미측정이 된다).

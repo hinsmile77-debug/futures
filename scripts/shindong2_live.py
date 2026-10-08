@@ -9,6 +9,14 @@
            --entry 1104 --stop 1108.5 --target 1098.2 --comment-file c.md   # 재량 제안 기록(시각 = 지금)
     python scripts/shindong2_live.py score [--date D]        # 재량 제안 채점(장중이면 잠정)
 
+[672차 학습 사이클 — scripts/shindong2_learn.py]
+    python scripts/shindong2_live.py evaluate [--date D]     # 그날 계획(익일계획·장전계획, live/legacy)을 단독 시뮬 — 적중·손익·MFE/MAE·포착률
+    python scripts/shindong2_live.py feedback [--date D] [--applied L1,L9] [--hit L9] [--miss L1] --comment-file -   # 평가·반성 기록
+    python scripts/shindong2_live.py lesson add|set|tally|list ...                                                 # 레슨런 레지스트리
+    python scripts/shindong2_live.py trend                   # 워크포워드 추이(개선−기존) + 딥다이브 판정
+    python scripts/shindong2_live.py brief [--date D]        # 장전 브리핑 — 활성 레슨 · 전일 피드백 · 추이
+    record 에 `--variant legacy`(기존방식 섀도 — 채점 비교용, 실제 재량 시뮬에서 제외) · `--lessons L1,L9`(적용 레슨 표기)
+
 저장 (gitignore — 런타임 산출물)
     data/shindong2_live/YYYYMMDD/state.json      마지막 스냅샷
                                  events.jsonl    이벤트(키 단위 1회)
@@ -42,6 +50,7 @@ FORCE_EXIT = "15:10"
 PLAN_EXPIRE = "15:00"        # 미체결 재량 진입 계획의 마지막 유효 봉
 PHASES = ("premarket", "intraday", "position", "postmarket", "overnight")
 ACTIONS = ("plan", "manage", "exit", "stand", "note")
+VARIANTS = ("live", "legacy")   # 672차 — live 는 실제 재량(개선방식), legacy 는 기존방식 섀도(채점 비교용, 시뮬 제외)
 PHASE_KO = dict(premarket="장전", intraday="장중", position="보유", postmarket="장후", overnight="익일 계획")
 
 
@@ -246,7 +255,7 @@ def simulate_ai(day, cs, records, live=False):
     """재량 기록을 1분봉에 대 본다. 1계약 · 같은 봉 손절 우선 · 15:10 강제청산. 효력은 기록 다음 분 봉부터."""
     recs = []
     for r in records:
-        if r.get("backfill"):
+        if r.get("backfill") or (r.get("variant") or "live") != "live":   # 섀도(legacy)는 실제 재량이 아니다
             continue
         ts = _dt.datetime.fromisoformat(r["ts"])
         eff = "08:45" if ts.date().isoformat() < day or ts.strftime("%H:%M") < "08:45" else _fmt(_hm(ts.strftime("%H:%M")) + 1)
@@ -319,18 +328,23 @@ def _doc_path(day):
     return os.path.join(DOC_DIR, "신동2_해설_MW0601-%s.md" % day.replace("-", ""))
 
 
-def record(day, phase, action, direction, entry, stop, target, comment, now=None):
+def record(day, phase, action, direction, entry, stop, target, comment, now=None, variant="live", lessons=None):
     now = now or _dt.datetime.now()
     if phase not in PHASES or action not in ACTIONS:
         raise SystemExit("phase/action 이 잘못됐다: %s / %s" % (phase, action))
     if action == "plan" and direction in ("매수", "매도") and (stop is None or target is None):
         raise SystemExit("plan 은 손절·청산을 함께 적어야 한다(채점 불가 기록 금지)")
+    if variant not in VARIANTS:
+        raise SystemExit("variant 는 %s 중 하나" % (VARIANTS,))
+    if variant == "legacy" and (phase not in ("overnight", "premarket") or action not in ("plan", "stand")):
+        raise SystemExit("legacy(기존방식 섀도)는 overnight/premarket 의 plan·stand 만 — 장중 관리는 live 하나다")
     log = load_ai_log(day)
     rid = "%s-%02d" % (now.strftime("%H%M%S"), len(log) + 1)
     rec = dict(id=rid, ts=now.isoformat(timespec="seconds"), date=day, phase=phase, action=action, dir=direction,
-               entry=entry, stop=stop, target=target, comment=comment)
+               entry=entry, stop=stop, target=target, comment=comment, variant=variant, lessons=sorted(set(lessons or [])))
     _append_jsonl(os.path.join(day_dir(day), "ai_log.jsonl"), rec)
-    _atomic_json(os.path.join(day_dir(day), "ai_latest.json"), rec)
+    if variant == "live":                                # 섀도는 패널 최신 해설을 덮지 않는다
+        _atomic_json(os.path.join(day_dir(day), "ai_latest.json"), rec)
     with open(_doc_path(day), "a", encoding="utf-8") as f:
         if os.path.getsize(_doc_path(day)) == 0:
             f.write("# 신동2 해설 — %s (MW0601)\n\n> Claude 재량 제안 기록. append-only · 시각은 벽시계 · 채점은 `scripts/shindong2_live.py score`.\n"
@@ -338,7 +352,9 @@ def record(day, phase, action, direction, entry, stop, target, comment, now=None
         plan = ""
         if direction in ("매수", "매도") or entry is not None or stop is not None or target is not None:
             plan = " · **%s** 진입 %s · 손절 %s · 청산 %s" % (direction or "—", entry if entry is not None else "시장가", stop, target)
-        f.write("## %s %s — %s%s\n\n%s\n\n" % (now.strftime("%H:%M"), PHASE_KO[phase], action, plan, (comment or "").strip()))
+        tag = " 〔기존방식 섀도 — 채점 비교용〕" if variant == "legacy" else ""
+        les = (" · 레슨 " + ", ".join(rec["lessons"])) if rec["lessons"] else ""
+        f.write("## %s %s — %s%s%s%s\n\n%s\n\n" % (now.strftime("%H:%M"), PHASE_KO[phase], action, plan, les, tag, (comment or "").strip()))
     return rec
 
 
@@ -392,6 +408,62 @@ def cmd_snapshot(day, now=None):
     return st, new, ai
 
 
+def _split(x):
+    return [t.strip() for t in (x or "").split(",") if t.strip()]
+
+
+def _learn_cmd(a):
+    """672차 — 학습 사이클 하위명령. 무거운 평가(DB 읽기)는 장후 전용이다(456차)."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import shindong2_learn as LN
+    if a.cmd == "evaluate":
+        out = LN.evaluate_day(a.date)
+        print(LN.render_eval(out))
+        return 0
+    if a.cmd == "feedback":
+        comment = a.comment
+        if a.comment_file == "-":
+            comment = sys.stdin.buffer.read().decode("utf-8", errors="replace")
+        elif a.comment_file:
+            with open(a.comment_file, encoding="utf-8") as f:
+                comment = f.read()
+        if not comment.strip():
+            raise SystemExit("피드백 본문이 비었다 — 잘한 점·잘못한 점·개선점·레슨을 적을 것")
+        rec, out, p = LN.feedback(a.date, comment, applied=_split(a.applied), hits=_split(a.hit), misses=_split(a.miss))
+        print(LN.render_eval(out))
+        print("\n피드백 기록 %s · 적용 %s · 적중 %s · 실패 %s · 문서 %s" % (rec["ts"], rec["applied"], rec["hits"], rec["misses"], p))
+        return 0
+    if a.cmd == "lesson":
+        if a.op == "add":
+            if not (a.id and a.title and a.rule):
+                raise SystemExit("lesson add 는 --id --title --rule 필수")
+            l = LN.lesson_add(a.id, a.title, a.rule, trigger=a.trigger, status=a.status or "후보", origin=a.origin,
+                              evidence=_split(a.evidence), note=a.note or "")
+            print("레슨 신설 %s [%s] %s" % (l["id"], l["status"], l["title"]))
+        elif a.op == "set":
+            if not a.id:
+                raise SystemExit("--id 필수")
+            l = LN.lesson_set(a.id, status=a.status, note=a.note, rule=a.rule, why=a.why)
+            print("레슨 갱신 %s [%s] %s" % (l["id"], l["status"], l["title"]))
+        elif a.op == "tally":
+            if not a.id or not (a.hit or a.miss or a.applied):
+                raise SystemExit("--id 와 --hit/--miss/--applied 중 하나")
+            l = LN.lesson_tally(a.id, a.date, hit=(True if a.hit else False if a.miss else None), applied=True)
+            print("레슨 집계 %s 적용 %d · 적중 %d · 실패 %d" % (l["id"], len(l["applied"]), len(l["hit"]), len(l["miss"])))
+        else:
+            print(LN.lessons_text(active_only=a.active))
+        return 0
+    if a.cmd == "trend":
+        out = LN.trend(a.date)
+        print(LN.trend_text(out, last=a.last))
+        print("\n문서 %s" % os.path.join(LN.LEARN_DIR, "추이_MW0601.md"))
+        return 0
+    if a.cmd == "brief":
+        print(LN.brief(a.date))
+        return 0
+    return 1
+
+
 def main(argv=None):
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -413,7 +485,42 @@ def main(argv=None):
     r.add_argument("--target", type=float)
     r.add_argument("--comment", default="")
     r.add_argument("--comment-file")
+    r.add_argument("--variant", default="live", choices=VARIANTS, help="legacy = 기존방식 섀도(채점 비교용)")
+    r.add_argument("--lessons", default="", help="이 계획에 적용한 레슨 ID, 쉼표 구분(예: L1,L9)")
+    # ── 672차 학습 사이클 ──
+    e = sub.add_parser("evaluate", help="그날 계획(익일계획·장전계획 live/legacy) 단독 시뮬 평가")
+    e.add_argument("--date", default=_dt.date.today().isoformat())
+    fb = sub.add_parser("feedback", help="기계 평가 + 평가·반성 본문을 피드백 문서에 남기고 레슨 집계 갱신")
+    fb.add_argument("--date", default=_dt.date.today().isoformat())
+    fb.add_argument("--applied", default="", help="오늘 적용한 레슨 ID(쉼표)")
+    fb.add_argument("--hit", default="", help="오늘 적중한 레슨 ID(쉼표)")
+    fb.add_argument("--miss", default="", help="오늘 실패한 레슨 ID(쉼표)")
+    fb.add_argument("--comment", default="")
+    fb.add_argument("--comment-file")
+    ls = sub.add_parser("lesson", help="레슨런 레지스트리")
+    ls.add_argument("op", choices=("add", "set", "tally", "list"))
+    ls.add_argument("--id")
+    ls.add_argument("--title")
+    ls.add_argument("--rule")
+    ls.add_argument("--trigger", default="")
+    ls.add_argument("--status")
+    ls.add_argument("--origin")
+    ls.add_argument("--evidence", default="", help="근거 날짜(쉼표)")
+    ls.add_argument("--note")
+    ls.add_argument("--why", default="")
+    ls.add_argument("--date", default=_dt.date.today().isoformat())
+    ls.add_argument("--hit", action="store_true")
+    ls.add_argument("--miss", action="store_true")
+    ls.add_argument("--applied", action="store_true")
+    ls.add_argument("--active", action="store_true")
+    tr = sub.add_parser("trend", help="워크포워드 추이 + 딥다이브 판정")
+    tr.add_argument("--date", default=_dt.date.today().isoformat())
+    tr.add_argument("--last", type=int, default=10)
+    br = sub.add_parser("brief", help="장전 브리핑 — 활성 레슨·전일 피드백·추이")
+    br.add_argument("--date", default=_dt.date.today().isoformat())
     a = ap.parse_args(argv)
+    if a.cmd in ("evaluate", "feedback", "lesson", "trend", "brief"):
+        return _learn_cmd(a)
     if a.cmd == "gate":
         try:
             from utils.time_utils import is_trading_day
@@ -432,8 +539,11 @@ def main(argv=None):
             with open(a.comment_file, encoding="utf-8") as f:
                 comment = f.read()
         day = a.for_date or a.date
-        rec = record(day, a.phase, a.action, a.dir, a.entry, a.stop, a.target, comment)
-        print("기록 %s %s %s %s · 문서 %s" % (rec["id"], rec["phase"], rec["action"], rec["dir"], _doc_path(day)))
+        lessons = [x.strip() for x in a.lessons.split(",") if x.strip()]
+        rec = record(day, a.phase, a.action, a.dir, a.entry, a.stop, a.target, comment, variant=a.variant, lessons=lessons)
+        print("기록 %s %s %s %s%s%s · 문서 %s" % (rec["id"], rec["phase"], rec["action"], rec["dir"],
+                                                 " [legacy 섀도]" if a.variant == "legacy" else "",
+                                                 (" 레슨 " + ",".join(lessons)) if lessons else "", _doc_path(day)))
         return 0
     st, new, ai = cmd_snapshot(a.date)
     if a.cmd == "score":
