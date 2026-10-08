@@ -500,7 +500,37 @@ def shindong2_ai(day, cs, live):
     latest = log[-1] if log else None
     bars = [list(c) for c in (cs[:-1] if live else cs)]
     sim = M.simulate_ai(day, bars, log, live=live) if (log and bars) else None
-    return dict(latest=latest, log=log, events=ev[-40:], events_n=len(ev), sim=sim, next_plan=_next_plan(M, day))
+    return dict(latest=latest, log=log, events=ev[-40:], events_n=len(ev), sim=sim, next_plan=_next_plan(M, day),
+                learning=_learning(M, d))
+
+
+def _learning(M, d):
+    """[672차] 학습 사이클 — 그날 계획 평가(eval.json)·피드백(feedback.json)·워크포워드 추이(trend.json)·활성 레슨 수.
+    파일이 없으면 키를 비운다(미기록 ≠ 0)."""
+    out = {}
+
+    def _j(p):
+        try:
+            with open(p, encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return None
+    e = _j(os.path.join(d, "eval.json"))
+    if e:
+        out["eval"] = e
+    fb = _j(os.path.join(d, "feedback.json"))
+    if fb:
+        out["feedback"] = dict(ts=fb.get("ts"), applied=fb.get("applied"), hits=fb.get("hits"), misses=fb.get("misses"),
+                               comment=fb.get("comment", ""))
+    t = _j(os.path.join(M.LIVE_DIR, "trend.json"))
+    if t:
+        out["trend"] = dict(generated_at=t.get("generated_at"), verdict=t.get("verdict"), windows=t.get("windows"))
+    learn_dir = os.environ.get("SHINDONG2_LEARN_DIR") or os.path.join(ROOT, "docs", "미륵이고도화3", "신동2", "학습")
+    ls = _j(os.path.join(learn_dir, "lessons.json"))
+    if ls is not None:
+        out["lessons_active"] = sum(1 for l in ls if l.get("status") in ("적용중", "검증"))
+        out["lessons_n"] = len(ls)
+    return out or None
 
 
 def _next_plan(M, day):
@@ -516,7 +546,8 @@ def _next_plan(M, day):
         return None
     for d in later:
         recs = [r for r in M._read_jsonl(os.path.join(M.LIVE_DIR, d, "ai_log.jsonl"))
-                if r.get("phase") == "overnight" and str(r.get("ts", ""))[:10] == day]
+                if r.get("phase") == "overnight" and str(r.get("ts", ""))[:10] == day
+                and (r.get("variant") or "live") == "live"]            # 672차 — legacy 섀도는 패널에 안 올린다
         if recs:
             return dict(for_date="%s-%s-%s" % (d[:4], d[4:6], d[6:]), latest=recs[-1], n=len(recs))
     return None
