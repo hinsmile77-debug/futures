@@ -17,6 +17,34 @@
   let cycle = 0;
   let timer = null;
   let lastOff = 0;
+  let hb = null;
+
+  // 확장을 새로 읽으면(chrome://extensions 새로고침, 업데이트) **이미 열려 있던 탭의**
+  // 이 스크립트는 갈 곳을 잃는다 — 그런데 혼자 계속 살아서 5초마다 메시지를 쏘고
+  // `Extension context invalidated` 를 던진다(2026-10-08 배포 직후 실제로 그랬다).
+  // 기능 장애는 아니지만 오류 목록을 채워 진짜 오류를 덮는다. 고아가 되면 스스로 멈춘다.
+  function alive() {
+    try { return !!(chrome.runtime && chrome.runtime.id); } catch (e) { return false; }
+  }
+
+  function stop() {
+    try { obs.disconnect(); } catch (e) {}
+    if (hb) { clearInterval(hb); hb = null; }
+  }
+
+  // ⚠ 콜백은 **두 번째 인자**로 받는다. 페이로드에 함수를 실으면 구조화 복제가
+  //    DataCloneError 로 죽는다 — sendMessage 는 JSON 으로 옮길 수 있는 값만 받는다.
+  function post(payload, onok) {
+    if (!alive()) { stop(); return; }
+    try {
+      chrome.runtime.sendMessage(payload, function (r) {
+        void chrome.runtime.lastError;      // 응답 없음은 오류가 아니다 — 읽어서 삼킨다
+        if (onok) onok(r);
+      });
+    } catch (e) {
+      stop();                                // 컨텍스트가 끊겼다
+    }
+  }
 
   // 지금 이 페이지가 「우리 검색 결과」인가. 주입 시점이 아니라 **매번** 묻는다.
   function offSearch() {
@@ -58,6 +86,7 @@
   }
 
   function send(force) {
+    if (!alive()) { stop(); return; }
     cycle += 1;
 
     if (offSearch()) {
@@ -65,11 +94,11 @@
       const now = Date.now();
       if (now - lastOff < OFF_REPORT_SEC * 1000) return;
       lastOff = now;
-      chrome.runtime.sendMessage({
+      post({
         type: "peter2_tweets", tweets: [],
         // off_search 는 error 가 아니다 — background 는 물러나는 대신 탭을 되돌린다
         meta: { url: location.href, articles: 0, cycle: cycle, error: null, off_search: true },
-      }, function () {});
+      });
       return;
     }
 
@@ -78,9 +107,8 @@
     const meta = { url: location.href, articles: all.length, cycle: cycle,
                    error: pageError(), off_search: false };
     if (!fresh.length && !force) return;
-    chrome.runtime.sendMessage({ type: "peter2_tweets", tweets: fresh, meta: meta }, (r) => {
-      if (r && r.ok) for (const t of fresh) sent.add(t.id + ":" + t.text.length);
-    });
+    post({ type: "peter2_tweets", tweets: fresh, meta: meta },
+         (r) => { if (r && r.ok) for (const t of fresh) sent.add(t.id + ":" + t.text.length); });
   }
 
   // 「새 게시물 보기」 알약이 뜨면 누른다(새로고침 사이에 들어온 글)
@@ -102,5 +130,5 @@
   window.addEventListener("load", () => send(true));
   if (document.readyState === "complete") send(true);
   // 화면이 보일 때는 5초마다 하트비트(보이지 않으면 Chrome 이 늦추지만 새로고침이 대신한다)
-  setInterval(() => send(true), 5000);
+  hb = setInterval(() => send(true), 5000);
 })();

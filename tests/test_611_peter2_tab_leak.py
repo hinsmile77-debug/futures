@@ -103,3 +103,46 @@ class TestPeter2TabLeak(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestPeter2OrphanedContentScript(unittest.TestCase):
+    """확장을 새로 읽으면 **이미 열려 있던 탭의** content.js 는 갈 곳을 잃는다.
+
+    그런데 혼자 계속 살아 5초마다 메시지를 쏘며 `Extension context invalidated` 를 던졌다
+    (2026-10-08 배포 직후 실측 — chrome://extensions 오류 목록). 기능 장애는 아니지만
+    **진짜 오류를 덮는다.** 고아가 되면 스스로 멈춰야 한다.
+    """
+
+    def setUp(self):
+        self.ct = _read(_EXT, 'content.js')
+
+    def test_10_detects_orphaned_context(self):
+        self.assertIn('chrome.runtime.id', self.ct,
+                      '고아 판별(chrome.runtime.id)이 없다')
+
+    def test_11_stops_itself_when_orphaned(self):
+        """관찰자와 하트비트를 **둘 다** 끊어야 한다 — 하나만 끊으면 계속 깨어난다."""
+        m = re.search(r'function stop\(\)\s*\{(.+?)\n  \}', self.ct, re.S)
+        self.assertIsNotNone(m, 'stop() 이 없다')
+        self.assertIn('obs.disconnect()', m.group(1), 'MutationObserver 를 끊지 않는다')
+        self.assertIn('clearInterval(', m.group(1), '5초 하트비트를 멈추지 않는다')
+        self.assertTrue(re.search(r'hb = setInterval\(', self.ct),
+                        '하트비트 타이머를 붙잡아 두지 않아 멈출 수 없다')
+
+    def test_12_send_is_wrapped(self):
+        """sendMessage 는 한 곳에서만 부르고 try 로 감싼다 — 고아 상태에서 던진다."""
+        self.assertEqual(1, self.ct.count('chrome.runtime.sendMessage('),
+                         'sendMessage 호출이 흩어져 있다 — 감싸지 못한 경로가 생긴다')
+        m = re.search(r'function post\(payload, onok\)\s*\{(.+?)\n  \}', self.ct, re.S)
+        self.assertIsNotNone(m, 'post(payload, onok) 가 없다')
+        self.assertIn('try {', m.group(1), 'sendMessage 를 try 로 감싸지 않았다')
+        self.assertIn('lastError', m.group(1),
+                      'lastError 를 읽지 않으면 Chrome 이 콘솔에 오류를 남긴다')
+
+    def test_13_callback_is_not_in_payload(self):
+        """콜백을 페이로드에 실으면 구조화 복제가 DataCloneError 로 죽는다."""
+        self.assertNotIn('__onok', self.ct,
+                         '직렬화 불가 값(함수)이 메시지 페이로드에 실려 있다')
+        for m in re.finditer(r'post\(\{(.+?)\n(?:      \}|         \})', self.ct, re.S):
+            self.assertNotIn('=>', m.group(1),
+                             'post() 페이로드 안에 함수가 들어 있다')
