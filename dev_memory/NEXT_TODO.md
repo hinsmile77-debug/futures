@@ -2,6 +2,13 @@
 
 > 검증 필요 항목, 예정된 작업, 알려진 잠재 이슈.
 
+### 614-G [MW0602] 런처 GUARD `!=` 수정 후 첫 기동 확인 (2026-10-12 08:40)
+
+- [ ] 런처 로그가 `running-probe count=0` + **`decide=clear`** + `기존 main.py 없음 -- 단일 인스턴스 확인` 인가(종전 매일 `decide=detected`).
+- [ ] `decide=detected` 가 뜨면 그때는 **진짜 잔존 프로세스**다 — `running-probe PID=… started=… cmd=…` 줄로 정체 확인.
+      ⚠ 이제 Y(장전 10초 자동 포함)는 그 프로세스를 **실제로 종료**한다.
+- [ ] 이 결과로 `O-67` 을 닫는다. `O-17`(launcher_guard 100% 발화) 지표는 이날부터 유효해진다 — 앞뒤 직접 비교 금지.
+
 ### 614-SD2 [MW0602] 신동2 학습 사이클 첫 운용 확인 (2026-10-12 첫 거래일)
 
 - [ ] 10/12 장전 `brief` 가 이 PC 레지스트리(L1–L14)·`피드백_MW0602-20261008.md`·10/12 익일계획 live/legacy 2건을 보여주는가.
@@ -53,9 +60,10 @@
 
 ### 597-2 [MW0602] 런처 GUARD `!=` 되살리기 — 대상 한정 선행 완료
 
-- [ ] 597차로 GUARD 대상이 `WORKDIR\main.py` 로 한정됐다(타 프로젝트 오살 방지). 남은 것은
+- [x] 597차로 GUARD 대상이 `WORKDIR\main.py` 로 한정됐다(타 프로젝트 오살 방지). 남은 것은
       아래 **F-1**(500차) `!=` → `not in (os.getpid(),)` 교체 여부 — **사용자 결정 사항**.
-      되살리면 `test_500::test_legacy_guard_lines_still_carry_the_bang_defect` 를 지울 것.
+      되살리면 `test_500::test_legacy_guard_lines_still_carry_the_bang_defect` 를 지울 것. → ✅ **[2026-10-08 MW0602 614차 후속3] 수정 완료** — `not in (os.getpid(),)`, 사용자 결정.
+      잠금 테스트는 `test_legacy_guard_lines_have_no_bang`(수정 잠금)으로 교체했다.
 - [ ] 다음 기동 런처 로그에서 `[GUARD] running-probe skip-not-this-workdir PID=… cmd=python main.py`
       (한량투자) 와 `target=…\futures\main.py` 줄 출현 확인.
 
@@ -18404,7 +18412,7 @@ VIX>28 이진 신호 `macro_risk_off`가 학습기간 σ≈0 → 실거래 z=+22
 - [x] **H2 기각 · 제1부-C 철회** — 종료 명령도 같은 SyntaxError라 `terminate()`가
       **한 번도 실행된 적 없다.** 마흐디·메시아 10개 프로세스 전부 생존 실측(12:25).
       `fuoption` = **메시아(MESSIAH)** 확정 → 관측항목 9 종결.
-- [ ] **F-U-0 (즉효, 장후)** — 4곳의 `!=` 를 **`not (p.pid == os.getpid())`** 로 치환.
+- [x] **F-U-0 (즉효, 장후)** → ✅ **[2026-10-08 MW0602 614차 후속3] 수정 완료** — `not in (os.getpid(),)`, 사용자 결정. — 4곳의 `!=` 를 **`not (p.pid == os.getpid())`** 로 치환.
       ⚠ `^!=` 이스케이프는 권하지 않는다 — 다음 사람이 또 지운다.
 - [ ] **F-U-1 (근본, 장후)** — 프로브를 `scripts/guard_single_instance.py`로 분리해
       **파이썬 소스가 cmd 파서를 통과하지 않게** 한다. `scripts/diag_guard_processes.py`가 원형.
@@ -19203,7 +19211,7 @@ dev_memory/NEXT_TODO.md                                 (이 절)
 
 #### 🔴 신규 발견 — 런처 GUARD 두 명령이 **죽어 있다** (F-3 구현 중 실측)
 
-- [ ] 🔴 **GUARD 명령 `!=` 결함** — `start_mireuk.bat` · `start_mireuk_CREON.bat`
+- [x] 🔴 **GUARD 명령 `!=` 결함** — `start_mireuk.bat` · `start_mireuk_CREON.bat` → ✅ **[2026-10-08 MW0602 614차 후속3] 수정 완료** — `not in (os.getpid(),)`, 사용자 결정.
       `SETLOCAL ENABLEDELAYEDEXPANSION` 아래에서 cmd 가 `!` 를 변수 구분자로 먹어
       `p.pid != os.getpid()` 가 **`p.pid = os.getpid()`** 로 바뀐다 → `SyntaxError` → **RC=1**.
       2026-08-26 실측(별도 .bat 재현, `cmd /c`):
@@ -19289,7 +19297,7 @@ dev_memory/NEXT_TODO.md                                 (이 절)
 
 #### Fix (장후)
 
-- [ ] **F-1** 런처 GUARD `!=` 소실 수정 — **P1 · 단독 커밋**.
+- [x] **F-1** 런처 GUARD `!=` 소실 수정 — **P1 · 단독 커밋**. → ✅ **[2026-10-08 MW0602 614차 후속3] 수정 완료** — `not in (os.getpid(),)`, 사용자 결정.
       `start_mireuk_CREON.bat:377`(탐지)·`:409`(종료), 자매 `start_mireuk.bat` 동일 위치.
       `p.pid != os.getpid()` → **`p.pid not in (me,)`**(`me=os.getpid()` 선언 추가) —
       `:407` 프로브가 이미 쓰는 검증된 형태를 복사. `!` 를 한 글자도 쓰지 않는다.

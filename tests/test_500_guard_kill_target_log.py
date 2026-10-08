@@ -121,7 +121,7 @@ def test_terminate_command_is_untouched():
     (`auto_trader_kiwoom` 「한량투자」, `python main.py`)를 kill-target 으로 잡았다.
     런처는 항상 절대경로 `"!WORKDIR!\\main.py"` 로 띄우므로 cwd 를 못 읽는 권한
     조합(실측: 비관리자 셸에서 두 프로세스 모두 cwd=None)에서도 미륵이는 잡힌다.
-    ⚠ `!=` 결함은 **그대로다**(아래 known-defect lock) — 되살리는 것은 별도 결정이다.
+    [MW0602 614차 후속3] `!=` 결함은 **고쳤다**(사용자 결정 2026-10-08) — 아래 ⑥ 참조.
     """
     expected = ('"!PY32!" -c "import psutil, os; '
                 "tgt=os.path.normcase(os.path.join(os.getcwd(),'main.py')); "
@@ -132,7 +132,7 @@ def test_terminate_command_is_untouched():
                 "[p.terminate() for p in "
                 "psutil.process_iter(['pid','name','cmdline','create_time','cwd']) if 'python' in "
                 "(p.info.get('name') or '').lower() and any('main.py' in (c or '') "
-                "for c in (p.info.get('cmdline') or [])) and own(p) and p.pid != os.getpid()]\" 2>NUL")
+                "for c in (p.info.get('cmdline') or [])) and own(p) and p.pid not in (os.getpid(),)]\" 2>NUL")
     for name in LAUNCHERS:
         hit = [l for l in _lines(name) if TERMINATE_MARK in l]
         assert hit == [expected], "%s: 종료 명령이 바뀌었다\n%r" % (name, hit)
@@ -255,16 +255,29 @@ def test_running_probe_wording_is_identical_across_launchers():
 #
 # 아래는 **결함 잠금(known-defect lock)** 이다. 누군가 고치면 이 테스트가 깨지고,
 # 그때 NEXT_TODO 항목을 닫으라는 신호가 된다. 침묵하는 결함으로 두지 않는다.
-def test_legacy_guard_lines_still_carry_the_bang_defect():
+# 🔴 [MW0602 614차 후속3 / 2026-10-08 사용자 결정] **고쳤다.** 위 결함 잠금을 수정 잠금으로 바꾼다.
+#
+# 계기: 2026-10-08 15:42 장후 기동이 `running-probe count=0` 인데 `decide=detected` 로
+# 분기해 수동 선택 대기에 멈췄고 **main.py 가 시작되지 않아** 일일 마감이 18:21 까지
+# 밀렸다(장전에는 10초 자동 Y 라 드러나지 않았다). 같은 날 세 번의 기동이 전부 같은 지문.
+# 수정: 두 줄의 `p.pid != os.getpid()` → `p.pid not in (os.getpid(),)` (기록 프로브와 같은 꼴).
+# 실측(실제 cmd · EnableDelayedExpansion): 없음 → RC=0 · 더미가 `WORKDIR\main.py` 보유 → RC=1
+# 이고 종료 줄이 더미를 실제로 죽임 · 종료 뒤 재판정 RC=0. 같은 하네스에서 HEAD 의 옛 줄은
+# 없음인데 RC=1 — 결함 재현.
+# ⚠ 귀결: GUARD 가 이제 **실제로** 이 WORKDIR 의 기존 main.py 를 감지·종료한다(대상 선정은
+#   597차 `own(p)` 그대로 — 다른 프로젝트는 건드리지 않는다).
+def test_legacy_guard_lines_have_no_bang():
     for name in LAUNCHERS:
         legacy = [l for l in _lines(name)
                   if l.startswith('"!PY32!"') and "os.getpid()" in l
                   and not any(m in l for m in PROBE_MARKS)]
         assert len(legacy) == 2, "%s: 기존 GUARD 명령이 2줄이 아니다 (%d)" % (name, len(legacy))
         for l in legacy:
-            assert "!=" in l, (
-                "%s: `!=` 가 사라졌다 — 결함이 고쳐졌다면 NEXT_TODO 500차 "
-                "「GUARD 명령 `!=` 결함」 항목을 닫고 이 테스트를 지워라.\n%s" % (name, l))
+            body = l[len('"!PY32!" '):]
+            assert "!" not in body, (
+                "%s: GUARD 명령 본문에 `!` 가 있다 — 지연 확장이 먹어 SyntaxError 로 조용히 죽는다"
+                "(500차 결함 재발).\n%s" % (name, l))
+            assert "p.pid not in (os.getpid(),)" in l, "%s: 자기 PID 제외 조건이 사라졌다\n%s" % (name, l)
 
 
 # ── ⑤ 인코딩·개행 규약 ────────────────────────────────────────────────────────
@@ -312,7 +325,7 @@ if __name__ == "__main__":
                test_running_probe_precedes_the_deciding_probe,
                test_both_branches_record_the_decision,
                test_running_probe_wording_is_identical_across_launchers,
-               test_legacy_guard_lines_still_carry_the_bang_defect,
+               test_legacy_guard_lines_have_no_bang,
                test_probe_line_is_pure_ascii,
                test_launcher_encoding_and_eol_preserved,
                test_probe_has_no_cmd_metacharacters):
