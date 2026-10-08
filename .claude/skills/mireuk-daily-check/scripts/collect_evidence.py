@@ -48,6 +48,25 @@ def now_kst():
     return datetime.now(KST)
 
 
+def kst_day_bound(day_str):
+    """[MW0601 672차 / F-10] git `--since/--until` 용 KST 자정 경계 문자열.
+
+    시간대 없이 `"YYYY-MM-DD 00:00"` 을 넘기면 git 이 수집 환경의 로컬 시간대로
+    해석한다 — UTC 환경에서는 KST 00:00~09:00 커밋이 빠진다(2026-10-08 이상점 1-2).
+    """
+    return "%s 00:00:00 +0900" % day_str
+
+
+def git_tz_note_line():
+    """[672차 / 장전 고도화 2] 「당일 커밋」 판정의 시간대 기준 + 수집 환경 시간대 한 줄."""
+    try:
+        local = time.strftime("%z") or "미확인"
+    except Exception:
+        local = "미확인"
+    return ("(경계 기준: KST +0900 고정 · 수집 환경 로컬 시간대 %s%s)"
+            % (local, "" if local in ("+0900", "미확인") else " — ⚠ KST 아님, 경계는 보정됨"))
+
+
 def ts_kst(epoch):
     if KST is None:
         return datetime.fromtimestamp(epoch)
@@ -2633,10 +2652,16 @@ def build(root, day, phase, cfg, discover_only=False):
             A("… 외 %d건" % (len(dirty) - 40))
         A("```")
     nxt = (day + timedelta(days=1)).strftime("%Y-%m-%d")
+    # [MW0601 672차 / 2026-10-08 F-10] 경계에 `+0900` 을 박는다. 종전에는 시간대가
+    # 없어 git 이 **수집 환경의 로컬 시간대**로 해석했고, UTC 샌드박스에서 돌면
+    # KST 00:00~09:00 커밋이 「당일」에서 빠져 실제보다 적게 나왔다(이상점 1-2).
     todays = run_git(root, ["log", "--oneline", "--no-decorate",
-                            "--since=%s 00:00" % D, "--until=%s 00:00" % nxt])
+                            "--since=%s" % kst_day_bound(D),
+                            "--until=%s" % kst_day_bound(nxt)])
     A("")
     A("**당일(%s) 커밋**" % D)
+    # [672차 / 장전 고도화 2] 수집 환경 시간대를 함께 적어 환경 종속 결함을 바로 의심하게 한다.
+    A(git_tz_note_line())
     A("```")
     if todays.strip():
         A(todays)

@@ -4010,11 +4010,31 @@ def decompose_net_residual(rec: dict, broker_gross_measured: bool) -> dict:
     }
 
 
-def format_net_recon_mismatch(rec: dict, broker_gross_measured: bool) -> str:
+def broker_channel_note() -> str:
+    """[MW0601 672차 / 장후 G-1] 엔진 수수료 요율의 **출처**를 한 줄로.
+
+    2026-10-08 이상점 1-4: 수수료 축이 잔차 100%(배수 5.16)였는데, 그 요율이
+    어느 채널(CYBOS/CREON)·어떤 감지 근거에서 왔는지는 로그에 없어 점검이
+    `trades.db` 를 직접 열어야 했다. 이 줄이 있으면 로그 한 줄로 좁혀진다.
+    문자열만 만든다 — 요율·판정은 건드리지 않는다.
+    ⚠ 조회 실패는 「미확인」으로 적는다(빈 문자열로 숨기지 않는다 — 계측 4원칙 ④).
+    """
+    try:
+        from config import settings as _S
+        return "{} 편도 {:.7f}% (감지 근거: {})".format(
+            _S.BROKER_CHANNEL, _S.FUTURES_COMMISSION_RATE * 100,
+            _S.BROKER_CHANNEL_SOURCE)
+    except Exception as e:
+        return "미확인(설정 조회 실패: %s)" % e
+
+
+def format_net_recon_mismatch(rec: dict, broker_gross_measured: bool,
+                              channel_note: str = None) -> str:
     """[MW0601 507차 후속 / F-14] `[NetRecon]` 불일치 로그 본문 — 축 분해판.
 
     문자열만 만든다. `scripts/commission_rate_recon.py --verify` 의 판정식은
     건드리지 않는다(사전등록 유지).
+    `channel_note` 가 주어지면 엔진 요율 출처 줄을 덧붙인다(672차 G-1).
     """
     d = decompose_net_residual(rec, broker_gross_measured)
     ratio = rec.get("commission_ratio")
@@ -4043,7 +4063,7 @@ def format_net_recon_mismatch(rec: dict, broker_gross_measured: bool) -> str:
                        "실효 요율을 재산출할 것")
         else:
             verdict = "⇒ 잔차 0 — 지배 축 없음"
-    return (
+    msg = (
         "[NetRecon] 🔴 net 불일치 — 엔진 {:+,.0f}원 vs 브로커 {:+,.0f}원 "
         "(잔차 {:+,.0f}원, 허용 ±{:,.0f})\n"
         "           ├ gross 축  : {}\n"
@@ -4052,6 +4072,9 @@ def format_net_recon_mismatch(rec: dict, broker_gross_measured: bool) -> str:
             rec["engine_net"], rec["broker_net"], d["residual"], rec["tolerance"],
             gross_txt, comm_txt, verdict)
     )
+    if channel_note:
+        msg += "\n           · 엔진 요율 출처 : {}".format(channel_note)
+    return msg
 
 
 _TP_STAGES = ("TP1", "TP2", "TP3")

@@ -14411,19 +14411,25 @@ class TradingSystem:
                 #   행을 만들기 때문에 그 값을 브로커로 읽으면 자기참조 대사가 된다
                 #   (498차 F-9). 0이 아니라 미측정으로 적는다.
                 from utils.db_utils import format_net_recon_mismatch as _f14_fmt
+                # [672차 G-1] 엔진 요율 출처(채널·감지 근거)를 같은 로그에 — 2026-10-08
+                #   1-4(CREON 오감지)를 DB 조회 없이 로그 한 줄로 좁히기 위해서다.
+                from utils.db_utils import broker_channel_note as _g1_note
                 log_manager.system(
-                    _f14_fmt(_rec, _f4_broker is not None),
+                    _f14_fmt(_rec, _f4_broker is not None,
+                             channel_note=_g1_note()),
                     "ERROR",
                 )
             else:
                 # [498차 F-9·G-6] 「무엇과 대사했는지」를 문구에 박는다 — 브로커 net이
                 # 실측(live)인지 EOD 스냅샷 보정인지에 따라 이 "일치"의 무게가 다르다.
                 _nr_src = _rec.get("broker_net_source") or "미표기(498차 이전 행)"
+                from utils.db_utils import broker_channel_note as _g1_note
                 log_manager.system(
                     f"[NetRecon] net 대사 일치 — 엔진 net vs 브로커 net"
                     f"[{_nr_src}] : {_rec['engine_net']:+,.0f} vs "
                     f"{_rec['broker_net']:+,.0f}원 (잔차 {_rec['residual']:+,.0f}원). "
-                    f"브로커 실측 수수료 {_rec['broker_commission']:,.0f}원",
+                    f"브로커 실측 수수료 {_rec['broker_commission']:,.0f}원 · "
+                    f"엔진 요율 출처 {_g1_note()}",
                     "INFO",
                 )
         except Exception as _nr_e:
