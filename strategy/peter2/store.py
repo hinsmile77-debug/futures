@@ -260,6 +260,28 @@ def build_live_lv(rows, date):
     return '\n'.join(out)
 
 
+def by_time(rows):
+    """트윗을 **시간 오름차순**으로 정렬한다.
+
+    🔴 X 검색(`f=live`)은 **최신글이 위**다. 수집기가 그 순서 그대로 보내므로, 묶음이
+       한꺼번에 도착하면 follower 가 **새 글 → 옛 글** 순으로 상태기계를 돌린다.
+       2026-10-08 실측 — 수집 4h26m 공백 뒤 13:26 에 16건이 몰려 들어오면서:
+
+           13:02 체결      → ARM
+           13:00 진입지시  → DISARM(13:02) "replaced_by" → ARM
+           12:38 손절      → DISARM(13:00) "peter_exited"   ← 1시간 전 손절이 방금 지시를 죽였다
+
+       시간순이면 12:38 손절 → 13:00 지시 → 13:02 체결이라 **지시가 살아 있어야 한다.**
+       낡은 지시로 **진입**하는 쪽은 대기 만료(`트윗 시각 + 10분`)가 막아 주지만,
+       지연이 몇 분뿐이면 만료가 안 걸려 역전만 남는다.
+
+    `dt` 는 UTC ISO 라 사전식 비교로 충분하다. 같은 초면 트윗 id(스노플레이크)로 가른다.
+    `dt` 가 없는 줄은 뒤로 보낸다 — 순서를 모르는 것을 맨 앞에 두면 안 된다.
+    """
+    return sorted(rows or [],
+                  key=lambda r: ((r.get('dt') or '￿'), str(r.get('id') or '')))
+
+
 # ── 사람이 읽는 한 줄(장중 md) ───────────────────────────────────
 _KO = {'TWEET': '트윗', 'ARM': '대기', 'ENTER': '진입', 'SET_STOP': '손절가', 'SET_TARGET': '청산가',
        'EXIT': '청산주문', 'CLOSED': '청산완료', 'REJECT': '기각', 'DISARM': '대기해제',
@@ -297,7 +319,18 @@ def event_md(e):
         txt = '**%+.2fpt** (%s원) %s' % (float(e.get('pnl_pts') or 0), _f(e.get('pnl_krw')),
                                         e.get('reason') or '')
     elif k == 'FILL_OFFSET':
-        txt = '그의 체결가로 역산한 오프셋 %s (사용 중 %s)' % (_f(e.get('implied')), _f(e.get('used')))
+        # 🔴 implied 는 **지금 가격** 기준이라 트윗이 늦으면 오프셋이 아니라
+        #    「레벨이 현재가에서 얼마나 먼가」가 된다. 숫자를 적으면 사람이 오프셋이
+        #    틀렸다고 읽는다(2026-10-08: -15.52 로 찍혔으나 그 시각 실측은 -5.76).
+        #    미측정을 숫자로 위장하지 않는다 — 계측 4원칙 ②.
+        _age = e.get('age_sec')
+        if e.get('implied') is None:
+            txt = '역산 못 함 — 트윗이 %s 늦게 도착(사용 중 %s 유지)' % (
+                ('%d분' % (int(_age) // 60)) if _age is not None else '얼마나인지 모르게',
+                _f(e.get('used')))
+        else:
+            txt = '그의 체결가로 역산한 오프셋 %s (사용 중 %s)' % (_f(e.get('implied')),
+                                                       _f(e.get('used')))
     else:
         rest = {x: y for x, y in e.items() if x not in ('kind', 'hm', 'facts', 'raw', 'at')}
         txt = ', '.join('%s=%s' % (x, _f(y)) for x, y in rest.items())

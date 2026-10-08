@@ -103,7 +103,8 @@ def ingest(payload):
         d = _kst_date(t.get('dt'))
         if d:
             by_date.setdefault(d, []).append({'id': str(t['id']), 'dt': t.get('dt'),
-                                              'text': t.get('text') or ''})
+                                              'text': t.get('text') or '',
+                                              'kind': t.get('kind') or None})
     n_new = 0
     with _lock:
         for d, tw in by_date.items():

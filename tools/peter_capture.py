@@ -77,6 +77,10 @@ def append(date, tweets, src=None, seen_at=None):
             continue
         rec = {'id': tid, 'dt': t.get('dt'), 'text': t.get('text') or '',
                'seen_at': now}
+        # 본문이 빈 이유 — 'media_only'(이미지뿐이라 못 읽음) vs 없음(진짜 빈 글).
+        # 둘을 같은 모양으로 적으면 이미지로 온 매매 지시가 조용히 사라진다(계측 4원칙 ②).
+        if t.get('kind'):
+            rec['kind'] = str(t.get('kind'))[:16]
         if src:
             rec['src'] = src
         new.append(rec)

@@ -64,7 +64,14 @@
       // 인용·리트윗 안의 남의 글은 빼고 그의 글만 — 링크가 /PeterLeejoa/status/ 여야 한다
       if (!/\/PeterLeejoa\/status\//i.test(h)) continue;
       const x = (a.querySelector('[data-testid="tweetText"]') || {}).innerText || "";
-      out.push({ id: tid, dt: t.getAttribute("datetime"), text: x });
+      // 본문이 비었을 때 **왜** 비었는지를 같이 보낸다. 이미지뿐인 글(리포트 축약본 등)과
+      // 진짜 빈 글은 다르다 — 같은 모양으로 적으면 이미지로 온 지시가 조용히 사라진다.
+      let kind = null;
+      if (!x) {
+        kind = a.querySelector('[data-testid="tweetPhoto"], [data-testid="videoPlayer"], video')
+             ? "media_only" : "empty";
+      }
+      out.push({ id: tid, dt: t.getAttribute("datetime"), text: x, kind: kind });
     }
     return out;
   }

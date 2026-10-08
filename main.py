@@ -3158,7 +3158,7 @@ class TradingSystem:
         fw = Peter2Follower(date, off, src, safe, cfg=cfg)
         fw.restore(peter2_store.load_state(date))
         tail = peter2_store.RawTail(date)
-        rows = tail.read_new()
+        rows = peter2_store.by_time(tail.read_new())   # 시간순 — 수집기는 최신글부터 준다
         eng = self._peter2_engine_state()
         for tw in rows:                      # 재기동 복원 — 주문 의도는 내지 않는다
             fw.ingest(tw, eng, now, replay=True)
@@ -3195,7 +3195,9 @@ class TradingSystem:
         if self._peter2 is None or self._peter2.date != date:
             self._peter2_init(date, now)
         fw = self._peter2
-        new_rows = self._peter2_tail.read_new()
+        # 🔴 시간 오름차순으로 정렬해서 먹인다. X 검색은 최신글이 위라, 묶음이 늦게
+        #    도착하면 낡은 지시가 새 지시를 덮어쓴다(store.by_time 주석에 실측).
+        new_rows = peter2_store.by_time(self._peter2_tail.read_new())
         if new_rows:
             self._peter2_rows.extend(new_rows)
         intents = []
