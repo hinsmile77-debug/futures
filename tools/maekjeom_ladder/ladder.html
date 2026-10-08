@@ -630,7 +630,8 @@ function drawLadder(){
   if (AI && AI.log && AI.log.length && (state.sd2 === 'both' || state.sd2 === 'ai')) {
     const col = css('--sd2ai'), nowT = N ? C[N-1][0] : '15:09';
     const effT = r => { const t = r.ts.slice(11, 16); return (r.ts.slice(0, 10) < D.date || t < '08:45') ? '08:45' : t; };
-    const plans = AI.log.filter(r => r.action === 'plan' || r.action === 'manage' || r.action === 'stand' || r.action === 'exit');
+    // [MW0602 614차 후속2] legacy 섀도는 차트 계획선에서 뺀다 — 섞이면 섀도가 실제 계획처럼 그려지고 live 선도 그 시각에 끊긴다
+    const plans = AI.log.filter(r => (r.variant || 'live') === 'live' && (r.action === 'plan' || r.action === 'manage' || r.action === 'stand' || r.action === 'exit'));
     plans.forEach((r, i) => {
       const t0 = effT(r); const nxt = plans.slice(i + 1).find(q => q.action !== 'manage' || r.action === 'manage'); const t1 = nxt ? effT(nxt) : (nowT > '15:10' ? '15:10' : nowT);
       if (t0 > '15:45' || t1 <= t0) return;
@@ -958,7 +959,7 @@ function drawAI(){
     `<td class="l">${t.open ? '보유 중 (평가)' : t.exit_t + ' ' + t.why}</td><td class="mono ${t.pnl > 0 ? 'win' : t.pnl < 0 ? 'loss' : ''}">${fmt(t.pnl, 2)}</td></tr>`; });
   document.getElementById('aiTbl').innerHTML = q + '</tbody>';
   document.getElementById('aiLogN').textContent = `(${AI.log.length}건)`;
-  document.getElementById('aiLog').innerHTML = AI.log.map(r => `<li><b>${r.ts.slice(11, 16)}</b> ${PH[r.phase] || r.phase} · ${r.action} · ${esc(r.dir)} 진입 ${r.entry ?? '—'} 손절 ${r.stop ?? '—'} 청산 ${r.target ?? '—'} — ${esc((r.comment || '').split('\n')[0].slice(0, 120))}</li>`).join('');
+  document.getElementById('aiLog').innerHTML = AI.log.map(r => `<li><b>${r.ts.slice(11, 16)}</b> ${PH[r.phase] || r.phase} · ${r.action}${r.variant === 'legacy' ? ' 〔기존방식 섀도〕' : ''} · ${esc(r.dir)} 진입 ${r.entry ?? '—'} 손절 ${r.stop ?? '—'} 청산 ${r.target ?? '—'} — ${esc((r.comment || '').split('\n')[0].slice(0, 120))}</li>`).join('');
 }
 
 function drawSD2Table(){

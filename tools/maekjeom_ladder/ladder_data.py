@@ -504,7 +504,10 @@ def shindong2_ai(day, cs, live):
         return None
     log = M._read_jsonl(os.path.join(d, "ai_log.jsonl"))
     ev = M._read_jsonl(os.path.join(d, "events.jsonl"))
-    latest = log[-1] if log else None
+    # [MW0602 614차 후속2] legacy(기존방식 섀도)는 최신 해설이 아니다 — `_next_plan` 과 같은 거름.
+    # 종전 `log[-1]` 은 장후에 섀도를 마지막에 남기면(SKILL 절차대로) 패널이 섀도를 최신으로 띄웠다(10/12 실측).
+    _live = [r for r in log if (r.get("variant") or "live") == "live"]
+    latest = _live[-1] if _live else None
     bars = [list(c) for c in (cs[:-1] if live else cs)]
     sim = M.simulate_ai(day, bars, log, live=live) if (log and bars) else None
     return dict(latest=latest, log=log, events=ev[-40:], events_n=len(ev), sim=sim, next_plan=_next_plan(M, day),
