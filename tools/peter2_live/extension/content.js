@@ -40,15 +40,33 @@
     return null;
   }
 
+  // 확장이 재로드·갱신되면 이 탭에 남은 옛 스크립트는 「고아」가 된다 — chrome.runtime 이 끊겨
+  // sendMessage 가 "Extension context invalidated" 를 던진다(5초 하트비트마다 반복).
+  // 끊긴 것을 알면 관찰자·타이머를 걷고 조용히 물러난다. 다음 탭 새로고침이 새 스크립트를 심는다.
+  let hb = null;
+  function alive() {
+    try { return !!(chrome.runtime && chrome.runtime.id); } catch (e) { return false; }
+  }
+  function teardown() {
+    try { obs.disconnect(); } catch (e) {}
+    if (hb) { clearInterval(hb); hb = null; }
+  }
+
   function send(force) {
+    if (!alive()) { teardown(); return; }
     cycle += 1;
     const all = collect();
     const fresh = all.filter((t) => !sent.has(t.id + ":" + t.text.length));
     const meta = { url: location.href, articles: all.length, cycle: cycle, error: pageError() };
     if (!fresh.length && !force) return;
-    chrome.runtime.sendMessage({ type: "peter2_tweets", tweets: fresh, meta: meta }, (r) => {
-      if (r && r.ok) for (const t of fresh) sent.add(t.id + ":" + t.text.length);
-    });
+    try {
+      chrome.runtime.sendMessage({ type: "peter2_tweets", tweets: fresh, meta: meta }, (r) => {
+        void chrome.runtime.lastError;   // 서비스워커 재기동 틈의 「수신자 없음」은 다음 주기가 메운다
+        if (r && r.ok) for (const t of fresh) sent.add(t.id + ":" + t.text.length);
+      });
+    } catch (e) {
+      teardown();                        // Extension context invalidated
+    }
   }
 
   // 「새 게시물 보기」 알약이 뜨면 누른다(새로고침 사이에 들어온 글)
@@ -69,5 +87,5 @@
   window.addEventListener("load", () => send(true));
   if (document.readyState === "complete") send(true);
   // 화면이 보일 때는 5초마다 하트비트(보이지 않으면 Chrome 이 늦추지만 새로고침이 대신한다)
-  setInterval(() => send(true), 5000);
+  hb = setInterval(() => send(true), 5000);
 })();

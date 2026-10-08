@@ -104,12 +104,16 @@ def ingest(payload):
     n_new = 0
     with _lock:
         for d, tw in by_date.items():
+            # 로그에는 실제로 새로 들어간 글을 적는다 — 종전 `tw[-n:]` 은 받은 묶음의 끝 n개라
+            # 옛 글(예: 09:09 「1070 부근에서 반등」)이 NEW 로 반복 찍혔다(데이터 자체는 정상)
+            have, _ = pc.load(d)
+            fresh = [x for x in tw if x['id'] not in have]
             n, dup, total = pc.append(d, tw, src='live', seen_at=seen_at)
             n_new += n
             if n:
                 _log('NEW %s +%d (누적 %d) %s' % (d, n, total,
-                                                 ' | '.join((x['text'] or '')[:30].replace('\n', ' ')
-                                                            for x in tw[-n:])))
+                                                 ' | '.join((x['text'] or '(이미지)')[:30].replace('\n', ' ')
+                                                            for x in fresh)))
         _stat['posts'] += 1
         _stat['new_total'] += n_new
         _stat['last_post'] = seen_at
