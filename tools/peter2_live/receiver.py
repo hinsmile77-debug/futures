@@ -46,7 +46,7 @@ LIVE_DIR = os.path.join(_ROOT, 'data', 'peter2_live')
 LOG_DIR = os.path.join(_ROOT, 'logs')
 _lock = threading.Lock()
 _stat = {'started': datetime.datetime.now().isoformat(timespec='seconds'),
-         'posts': 0, 'new_total': 0, 'last_post': None}
+         'posts': 0, 'new_total': 0, 'last_post': None, 'off_search': None}
 
 
 def _log(msg):
@@ -78,6 +78,9 @@ def _heartbeat(meta, n_new):
         'articles': meta.get('articles'),
         'error': meta.get('error'),
         'url': (meta.get('url') or '')[:200],
+        # 확장이 검색 페이지를 벗어났는가. 벗어난 채로 들어온 수치는 홈 타임라인 것이라
+        # 장중 전수 보장이 없다 — 「정상 수집」과 같은 모양으로 적으면 안 된다(계측 4원칙 ②).
+        'off_search': bool(meta.get('off_search')),
         'cycle': meta.get('cycle'),
         'posts': _stat['posts'],
         'new_total': _stat['new_total'],
@@ -116,6 +119,11 @@ def ingest(payload):
         _heartbeat(meta, n_new)
     if meta.get('error'):
         _log('PAGE_ERROR %s' % meta.get('error'))
+    off = bool(meta.get('off_search'))
+    if off != _stat.get('off_search'):          # 상태가 바뀔 때만 적는다 — 30초마다 도배하지 않는다
+        _stat['off_search'] = off
+        _log('OFF_SEARCH %s url=%s' % ('진입(검색 이탈 — 수집 중단)' if off else '해소(검색 복귀)',
+                                       (meta.get('url') or '')[:120]))
     return n_new
 
 

@@ -7,6 +7,16 @@
 //   3) content.js 가 모은 트윗을 127.0.0.1:8766/peter 로 보낸다(확장 출처라 CORS 제약이 없다).
 //
 // 하지 않는 일: 글쓰기·좋아요·팔로우 등 어떤 계정 행동도 하지 않는다. 읽기만 한다.
+//
+// 🔴 2026-10-08 — 탭이 무한히 늘어났다. 원인과 대책을 여기 적어둔다.
+//   종전 ourTab() 은 탭을 **URL 로** 찾았다(`tabs.query({url:"https://x.com/search*"})`).
+//   그런데 X 는 SPA 라 **페이지 이동 없이** 주소만 /home 으로 바꿔버리는 일이 있다. 그 순간
+//   탭은 멀쩡히 살아 있는데 질의에 안 잡히므로 ensureTab() 이 「탭이 없다」고 판단해 **새로 만든다.**
+//   새 탭도 같은 일을 겪으므로 틱마다(15~30초) 한 장씩 쌓인다. 닫는 코드는 없었다.
+//   실측 증거: `collector.json` 의 `url` 이 `https://x.com/home` — 즉 수집은 돌고 있었으나
+//   출처가 검색 결과가 아니라 **홈 타임라인**이었다(2026-10-08 13:46 하트비트).
+//   ⇒ ① 탭을 **tabId 로** 추적한다 ② 주소가 밀리면 새로 만들지 말고 **제자리로 되돌린다**
+//      ③ 우리 것이 확실한 여분 탭은 거둬들인다 ④ content.js 가 이탈을 스스로 신고한다.
 
 const RECEIVER = "http://127.0.0.1:8766/peter";
 const HANDLE = "PeterLeejoa";
@@ -36,20 +46,73 @@ function inSession() {
   return k.wd >= 1 && k.wd <= 5 && k.hm >= 830 && k.hm <= 1545;
 }
 
-async function ourTab() {
-  const tabs = await chrome.tabs.query({ url: "https://x.com/search*" });
+// 우리가 만든 탭인지 — 사람이 직접 연 검색 탭과 구분한다.
+// `since_time:` 은 사람이 손으로 치는 값이 아니므로 소유 표식으로 쓸 수 있다.
+function isOurUrl(u) {
+  u = u || "";
+  return u.indexOf("https://x.com/search") === 0
+      && /from(%3A|:)PeterLeejoa/i.test(u)
+      && /since_time(%3A|:)\d+/.test(u);
+}
+
+// 지금 세션의 검색 페이지에 제대로 서 있는가
+function onStation(t) {
   const want = searchUrl();
-  for (const t of tabs) {
-    if ((t.url || "").includes(`since_time%3A${want.since}`)) return t;
+  const u = (t && (t.url || t.pendingUrl)) || "";
+  return isOurUrl(u) && u.indexOf(`since_time%3A${want.since}`) >= 0;
+}
+
+async function getTabId() {
+  const { tabId = null } = await chrome.storage.local.get("tabId");
+  return tabId;
+}
+
+async function setTabId(id) {
+  await chrome.storage.local.set({ tabId: id });
+}
+
+async function ourTab() {
+  // ① 기억해 둔 id 로 먼저 찾는다 — 주소가 밀려도 탭은 그대로다
+  const id = await getTabId();
+  if (id != null) {
+    try {
+      const t = await chrome.tabs.get(id);
+      // 사람이 고정을 풀었다면 그 탭은 사람이 쓰겠다는 뜻이다 — 손대지 않고 놓아준다
+      if (t && t.pinned && (t.url || t.pendingUrl || "").indexOf("https://x.com/") === 0) return t;
+      if (t) await setTabId(null);
+    } catch (e) { await setTabId(null); }   // 사용자가 닫았다
+  }
+  // ② 서비스워커가 재시작돼 id 를 잃었으면 URL 로 한 번 더 찾는다
+  for (const t of await chrome.tabs.query({ url: "https://x.com/search*" })) {
+    if (onStation(t)) { await setTabId(t.id); return t; }
   }
   return null;
 }
 
+// 우리 것이 확실한 여분 탭을 거둔다. 사람이 연 검색 탭(`since_time` 없음)은 건드리지 않는다.
+async function reapStrays() {
+  const keep = await getTabId();
+  for (const t of await chrome.tabs.query({ url: "https://x.com/search*" })) {
+    if (t.id === keep) continue;
+    if (!isOurUrl(t.url || t.pendingUrl || "")) continue;
+    try { await chrome.tabs.remove(t.id); } catch (e) { /* 이미 닫혔다 */ }
+  }
+}
+
 async function ensureTab() {
   if (!inSession()) return null;
+  await reapStrays();
   let t = await ourTab();
   if (!t) {
     t = await chrome.tabs.create({ url: searchUrl().url, active: false, pinned: true });
+    await setTabId(t.id);
+    return null;            // 방금 열었다 — 이번 틱은 새로고침하지 않는다
+  }
+  if (!onStation(t)) {
+    // 🔴 탭은 살아 있는데 주소가 밀렸다(X 의 SPA 이동, 날짜 경계 등).
+    //    새 탭을 만들면 여기서 증식이 시작된다 — 만들지 말고 제자리로 되돌린다.
+    try { await chrome.tabs.update(t.id, { url: searchUrl().url }); } catch (e) { await setTabId(null); }
+    return null;            // 방금 이동시켰다 — 겹쳐서 새로고침하지 않는다
   }
   return t;
 }
@@ -83,7 +146,11 @@ chrome.alarms.onAlarm.addListener((a) => { if (a.name === "peter2") tick(); });
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || msg.type !== "peter2_tweets") return false;
   (async () => {
-    if (msg.meta && msg.meta.error) {
+    // 이탈 신고는 「오류」가 아니다 — 물러나는 게 아니라 **되돌려야** 한다
+    if (msg.meta && msg.meta.off_search) {
+      if (sender && sender.tab && sender.tab.id != null) await setTabId(sender.tab.id);
+      await ensureTab();
+    } else if (msg.meta && msg.meta.error) {
       await chrome.storage.local.set({ backoffUntil: Date.now() + BACKOFF_MIN * 60 * 1000 });
     }
     try {
