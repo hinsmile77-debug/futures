@@ -297,3 +297,32 @@ def test_dashboard_wiring():
     assert '"pt2": "피터2"' in s
     assert 'def refresh_peter_live' in s and 'def minute_chart_refresh_peter' in s
     assert 'def update_peter2_metrics' in s and 'peter2_live_row' in s
+
+
+def _props(path, cls):
+    import ast
+    tree = ast.parse(_src(path))
+    c = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == cls)
+    return {f.name for f in c.body if isinstance(f, ast.FunctionDef)
+            and any(getattr(d, 'id', None) == 'property' for d in f.decorator_list)}
+
+
+def test_property_not_called_in_main():
+    """[668차 후속6] `KillSwitch.is_active` 는 property 다 — `is_active()` 로 부르면
+    'bool' object is not callable. 2026-10-08 피터2 ENTER 4회가 전부 이 예외로 증발했다
+    (지시는 이미 consumed 라 signals.jsonl 에 흔적도 없었다)."""
+    s = _src('main.py')
+    for attr, path, cls in (('kill_switch', 'safety/kill_switch.py', 'KillSwitch'),
+                            ('circuit_breaker', 'safety/circuit_breaker.py', 'CircuitBreaker')):
+        props = _props(path, cls)
+        bad = sorted(set(re.findall(r'self\.%s\.(\w+)\(' % attr, s)) & props)
+        assert not bad, '%s property 를 호출: %s' % (cls, bad)
+
+
+def test_execute_exception_is_recorded_per_intent():
+    """집행 예외가 틱 전체를 날리지 않고 REJECT(exception:…) 으로 남는다."""
+    s = _src('main.py')
+    body = s[s.index('    def _peter2_tick_body(self)'):s.index('    def _peter2_update_button')]
+    loop = body[body.index('for it in intents:'):]
+    assert loop.index('try:') < loop.index('self._peter2_execute(')
+    assert 'why="exception:%s"' in loop

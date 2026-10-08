@@ -3890,7 +3890,15 @@ class TradingSystem:
             intents.extend(fw.ingest(tw, self._peter2_engine_state(), now))
         intents.extend(fw.on_price(self._peter2_engine_state(), now))
         for it in intents:
-            self._peter2_execute(it, mode, date, now)
+            # [668차 후속6] 집행 예외를 의도 단위로 가둔다 — 지시는 on_price 에서 이미 consumed 라
+            #   예외가 틱 전체를 날리면 signals.jsonl 에 흔적 없이 사라진다(2026-10-08 진입 4회 증발).
+            try:
+                self._peter2_execute(it, mode, date, now)
+            except Exception as _xe:
+                logger.exception("[Peter2] %s 집행 예외: %s", it.get("type"), _xe)
+                fw._ev("REJECT", now, sig=it.get("sig"), why="exception:%s" % _xe,
+                       intent=it.get("type"))
+                log_manager.system(f"[Peter2] {it.get('type')} 집행 예외 — {_xe}", "ERROR")
         # 그가 걸어 둔 청산가 — 2초 폴링으로 본다(지정가 대기 주문은 내지 않는다)
         _eng = self._peter2_engine_state()
         if (_eng["price"] and not _eng["pending"]
@@ -3988,7 +3996,7 @@ class TradingSystem:
                 return self._peter2_reject(date, now, it, "engine_busy(%s)" % pos.status)
             if not self.circuit_breaker.is_entry_allowed():
                 return self._peter2_reject(date, now, it, "CB %s" % self.circuit_breaker.state)
-            if self.kill_switch.is_active():
+            if self.kill_switch.is_active:      # property — 668차 `is_active()` 로 진입 전량 증발
                 return self._peter2_reject(date, now, it, "kill_switch")
             if not is_new_entry_allowed():
                 return self._peter2_reject(date, now, it, "time(신규진입 마감)")
