@@ -47837,3 +47837,18 @@ F-1(538-4) 승인 시 다음 장후 세션에서 `strategy/runtime/session_recov
 **How to apply**: 신동2 로그에서 conda ERROR 줄 바로 아래 `(designed rc=…)`가 있으면 이상점이 아니다. 진짜 인코딩 결함이면 그 위에 Traceback이 있다. 점검 세션은 append 전후 marker acquire/release.
 
 **검증**: `tests/test_675_postmarket_autofix.py` 11 pass(py37_32). `test_483_git_lock_guard::test_sibling_copy_matches_canonical[fuoption]` 1 fail — 기존 무관(fuoption 복사본 드리프트). `-DryRun -Phase postmarket` 실행으로 로그 주석 줄 실출력 확인, PS 파서 오류 0.
+
+## 2026-10-09 (MW0601 677차 — 피터2 백필: 실거래 개시 이전 손익을 손익추이·손익추이2 에 올린다)
+
+**결정**: 10/12(피터2 실거래 집계 개시) **이전** 피터2 손익을 1분봉 차트 「거래피터」(`peter_paste.raw_tr`, 원천 A)로 환산해 손익추이·손익추이2 에 올리고, 추종 규칙 재생(`tools/peter2_replay.py`, 원천 B)을 「B 재생」 비교 열로 둔다. 별도 DB `data/db/peter2_backfill.db` — `trades` 에 넣지 않는다(가상). 기록 없는 날(9/28–9/30)은 사용자 결정대로 미측정 장부에 적었다.
+- 계기: 10/8 첫 라이브가 `kill_switch.is_active()` 예외로 진입 4건 증발(668차 후속6) → `trades` PETER2 0건 → 패널 공백.
+- A 규칙: pt=그의 가격 차 · 15:10 이후 청산은 15:10 강제청산 가격으로 재측정(8건) · 14:50 이후 진입 제외 · 슬리피지 0 가정 · 수수료는 탭 요율.
+- 패널: 출처 `pt2bf` — 실거래(자동·수동·미측정)·신동과 배타, 「피터2」(실거래)와 공존. `is_virtual` 로 완전성 분모·브로커 net 경로에서 제외 ⇒ 실거래 화면 값 불변(테스트 고정). 손익추이2 에도 넣는다(사용자 지시 — 실거래 CREON 예정; 신동은 여전히 cf 탭 제외).
+- 결과(8/3–10/8): A 56건 +208.37pt → 라이브 요율 +9,836,012원 / CREON +10,305,688원. B 54건 +187.54pt.
+
+**Why**: 사용자가 피터2 손익 추이를 개시 전후로 이어 보길 원한다. `trades` 에 넣으면 브로커 대사·전환기준 ①·CB②·켈리가 오염된다(신동 628차와 같은 이유). B 는 효율 1.33(원본보다 더 번다)으로 낙관이 실측돼 표의 값으로 쓰지 않는다.
+
+**How to apply**: 백필 값은 「피터 원거래 × 미니 1계약」이지 피터2 실적이 아니다 — 전환기준·사전등록 판정에 쓰지 말 것. 사료를 고치면 `python tools/peter2_backfill.py` 재빌드(장후). 미측정 추가는 `--mark-unmeasured`.
+
+**검증**: `tests/test_677_peter2_backfill.py` 22 pass · `test_628` 갱신 후 pass · `test_668` pass(py37_32). 기존 실패(무관·기존): `test_504` 4건(ui_prefs·배타 필터 전제) · `test_457::test_db_fallback_columns_have_measured_flag`(peter_paste INSERT). 헤드리스 실DB 확인 — 두 탭 배너·B 열·요약 정상, 실거래 화면에 백필 미혼입.
+계획서: `docs/미륵이고도화3/피터2/피터2_백필_손익추이_구현계획_MW0601-20261009.md`

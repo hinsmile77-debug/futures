@@ -89,7 +89,8 @@ def _day_krw(p, day=_DAY):
 # ── 축 ──────────────────────────────────────────────────────────────────
 def test_sd_replaces_gp_origin():
     # [MW0601 668차] "pt2"(피터2 — 실거래) 추가. 신동은 여전히 마지막·단독 배타 키다.
-    assert PnlHistoryPanel._ORIGIN_KEYS == ("auto", "manual", "unknown", "pt2", "sd")
+    # [MW0601 677차] "pt2bf"(피터2 백필 — 가상) 추가.
+    assert PnlHistoryPanel._ORIGIN_KEYS == ("auto", "manual", "unknown", "pt2", "pt2bf", "sd")
     assert PnlHistoryPanel._ORIGIN_LABEL["sd"] == "신동(가상)"
     assert "gp" not in PnlHistoryPanel._ORIGIN_LABEL
     tip = PnlHistoryPanel._ORIGIN_TIP["sd"]
@@ -182,7 +183,9 @@ def test_refresh_pnl_history_does_not_pass_sd_to_cf():
     import inspect
     from dashboard.main_dashboard import LogPanel
     src = inspect.getsource(LogPanel.refresh_pnl_history)
-    assert "self.pnl_history_cf.refresh(rows)" in src
+    # [677차] 반사실 탭은 피터2 백필(bf)은 받는다(사용자 지시) — 신동(sd_*)만 받지 않는다.
+    cf_call = [ln for ln in src.splitlines() if "self.pnl_history_cf.refresh(" in ln]
+    assert cf_call and not any("sd_" in ln for ln in cf_call), cf_call
 
 
 def test_sd_defaults_off_when_unset():

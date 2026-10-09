@@ -15465,8 +15465,17 @@ class TradingSystem:
             except Exception as _sde:
                 # 신동 조회 실패가 실거래 손익 갱신을 막으면 안 된다
                 logger.warning("[Shindong] 손익 추이용 조회 실패 — 실거래만 갱신: %s", _sde)
+            # [MW0601 677차] 피터2 백필(가상) — 실거래 개시(PETER2_BACKFILL_UNTIL) 이전 손익.
+            #   원천 data/db/peter2_backfill.db(tools/peter2_backfill.py 가 만든다). None = 미배선.
+            # 🔴 `trades` 에 섞지 않는다 — 신동과 같은 이유(브로커 대사·전환기준 ①).
+            _bf = None
+            try:
+                from strategy.peter2 import backfill as _p2bf
+                _bf = _p2bf.load_for_pnl(runtime_settings.PETER2_BACKFILL_DB, limit_days=90)
+            except Exception as _bfe:
+                logger.warning("[Peter2BF] 손익 추이용 조회 실패 — 백필 없이 갱신: %s", _bfe)
             self.dashboard.update_pnl_history(
-                rows, sd_positions=_sd_rows, sd_wired=_sd_wired)
+                rows, sd_positions=_sd_rows, sd_wired=_sd_wired, bf=_bf)
         except Exception as e:
             apply_error_policy(
                 system=self,

@@ -6989,9 +6989,11 @@ class PnlHistoryPanel(QWidget):
       실현되지는 않는다. 판정 원천(전환기준 ①)은 언제나 "live" 탭이다.
     """
 
-    _DAILY_HEADERS   = ["날짜",  "거래", "승", "패", "승률", "P/L pt", "P/L 원",   "누적 원"]
-    _WEEKLY_HEADERS  = ["주간",  "거래", "승", "패", "승률", "P/L pt", "P/L 원",   "누적 원", "MDD 원"]
-    _MONTHLY_HEADERS = ["월",    "거래", "승", "패", "승률", "P/L pt", "P/L 원",   "누적 원", "샤프"]
+    # [MW0601 677차] 마지막 열 「B 재생」 — 피터2 백필의 비교 열(원천 B = 추종 규칙 재생).
+    #   「피터2백필」 출처가 켜졌을 때만 보인다(`_sync_b_column`). 다른 화면에서는 숨긴다.
+    _DAILY_HEADERS   = ["날짜",  "거래", "승", "패", "승률", "P/L pt", "P/L 원",   "누적 원", "B 재생"]
+    _WEEKLY_HEADERS  = ["주간",  "거래", "승", "패", "승률", "P/L pt", "P/L 원",   "누적 원", "MDD 원", "B 재생"]
+    _MONTHLY_HEADERS = ["월",    "거래", "승", "패", "승률", "P/L pt", "P/L 원",   "누적 원", "샤프", "B 재생"]
 
     # 반사실 요율 — 하드코딩하지 않는다(495차: 493차가 CYBOS 값을 박았다가
     # MW0602에서 5.16배 틀린 전례). 채널 스펙에서 파생한다.
@@ -7029,9 +7031,15 @@ class PnlHistoryPanel(QWidget):
     # [MW0601 668차] "pt2"(피터2) 추가 — **실거래**다(모의계좌에 주문이 나간다).
     #   신동처럼 단독 배타가 아니다: 같은 계좌의 실거래라 「전부 체크 = 브로커 예탁금 차액」이
     #   그대로 성립해야 한다. 피터2만 보려면 나머지를 끄면 된다.
-    _ORIGIN_KEYS = ("auto", "manual", "unknown", "pt2", "sd")
+    # [MW0601 677차] "pt2bf"(피터2 백필) 추가 — 실거래 개시(PETER2_BACKFILL_UNTIL) **이전**
+    #   피터2 손익을 1분봉 차트 「거래피터」로 환산한 **가상**이다(원천 peter2_backfill.db).
+    #   🔴 실거래(auto/manual/unknown)와 **배타**다 — 섞으면 「전부 체크 = 브로커 예탁금 차액」이
+    #   깨진다. 단 「피터2」(실거래)와는 함께 켤 수 있다: 백필 → 실거래로 이어지는 한 줄 추이가
+    #   이 출처의 목적이다(사용자 지시 2026-10-09). 신동과 달리 **반사실 탭에도 있다**
+    #   (실거래가 CREON 예정이라 그 요율로 보는 것이 사용자 요구다).
+    _ORIGIN_KEYS = ("auto", "manual", "unknown", "pt2", "pt2bf", "sd")
     _ORIGIN_LABEL = {"auto": "자동", "manual": "수동·외부", "unknown": "미측정",
-                     "pt2": "피터2", "sd": "신동(가상)"}
+                     "pt2": "피터2", "pt2bf": "피터2백필", "sd": "신동(가상)"}
     _ORIGIN_TIP = {
         "auto": "미륵이가 스스로 넣고 뺀 거래.\n"
                 "진입 SYSTEM_AUTO + 청산이 TP·스톱·시간 등 시스템 트리거.",
@@ -7052,7 +7060,15 @@ class PnlHistoryPanel(QWidget):
                "· 미륵이 판단이 아니므로 「자동」에 넣지 않는다 — 전환기준 ① 판정은 자동만\n"
                "· 피터2만 보려면 나머지 출처를 끈다\n"
                "규격·판정: docs/미륵이고도화3/피터2/피터2_사전등록_20261007.md",
-        "sd": "신동(神童) — 개인 위클리 옵션 흐름 + 구조·거리맥점 규칙의 **가상거래**(626차).\n"
+        "pt2bf": "피터2 백필(가상) — 실거래 개시 **이전** 피터2 손익(677차).\n"
+                 "· 표의 값 = 원천 A: 1분봉 차트 「거래피터」(peter_paste.raw_tr)를 미니 1계약으로 환산\n"
+                 "  15:10 이후 청산은 15:10 강제청산 가격으로 다시 잼 · 14:50 이후 진입 제외 · 슬리피지 0\n"
+                 "· 「B 재생」 열 = 원천 B: 추종 규칙 재생(tools/peter2_replay.py) — 낙관 편향이 있다\n"
+                 "· 수수료는 이 탭의 요율로 뗀다(손익추이 = 라이브 · 손익추이2 = CREON)\n\n"
+                 "🔴 **가상이다** — 주문이 나간 적 없고 trades 에 없다. 실거래 출처와 배타다.\n"
+                 "  「피터2」(실거래)와는 함께 켜 백필 → 실거래를 한 줄로 본다.\n"
+                 "  **전환기준 ① 판정에 쓰지 말 것.** 원천 재생성: python tools/peter2_backfill.py",
+        "sd":"신동(神童) — 개인 위클리 옵션 흐름 + 구조·거리맥점 규칙의 **가상거래**(626차).\n"
               "원천은 shindong.db(MAIN 본안 · 청산 완료분)이며 trades 테이블과 무관하다.\n"
               "· 주문이 나간 적 없다 — 브로커 예탁금 차액에 들어 있지 않다\n"
               "· 거래당 2계약(1차·최종 분할) · 미니선물 50,000원/pt\n"
@@ -7064,6 +7080,11 @@ class PnlHistoryPanel(QWidget):
     # 진입 출처 중 "사람/외부" 쪽
     #: [628차] 신동 가상거래 출처 키. 원화는 신동이 이미 계산한 순손익(net_krw)을 그대로 쓴다.
     _SD_ORIGIN = "sd"
+    #: [677차] 피터2 백필 출처 키 · 그것과 함께 켤 수 있는 집합(피터2 계열).
+    _BF_ORIGIN = "pt2bf"
+    _PETER_VIEW = frozenset(("pt2", "pt2bf"))
+    #: 피터2 백필과 배타인 실거래 출처 — 이것들이 켜지면 백필이 꺼진다.
+    _BF_EXCLUSIVE = ("auto", "manual", "unknown")
     # [MW0601 555차 후속2 / P2] 정본 레지스트리에서 파생 — 리터럴 사본 금지.
     _MANUAL_SOURCES = MANUAL_ENTRY_SOURCES
     # ── [MW0601 555차 후속] 「자동」 화이트리스트 ────────────────────────────────
@@ -7103,6 +7124,10 @@ class PnlHistoryPanel(QWidget):
         #   refresh() 전 호출이 조용히 "전량 선택"으로 판정된다(계측 4원칙 ④).
         self._day_total_legs: dict = {}
         self._sd_wired: bool = False       # [628차] 미배선 ≠ 0건 (계측 4원칙 ②)
+        # [677차] 피터2 백필. None = 미배선(peter2_backfill.db 없음) — 빈 묶음(0건)과 다르다.
+        self._bf: dict = None
+        self._bf_b: dict = {}              # date → [이 탭 요율 net, …] (원천 B · b_status=OK 인 날만)
+        self._bf_days: dict = {}           # date → bf_days 행
         # [555차 후속] 이번 조회에서 만난 미분류 entry_source 라벨.
         # 🔴 `__init__`에서 명시 초기화한다 — 기본값 폴백으로 읽으면 「아직 판정 전」과
         #   「판정했더니 없다」가 같은 값이 된다(계측 4원칙 ②·④).
@@ -7250,6 +7275,9 @@ class PnlHistoryPanel(QWidget):
                 # 🔴 기본 해제 — 켜지 않으면 이 패널은 종전과 **완전히 같은 값**을 낸다.
                 _cb.setChecked(False if self._is_cf else bool(_saved_org.get(_k, False)))
                 _cb.setVisible(not self._is_cf)
+            elif _k == self._BF_ORIGIN:
+                # [677차] 기본 해제 — 저장값이 없으면 종전 화면과 같다. 반사실 탭에도 보인다.
+                _cb.setChecked(bool(_saved_org.get(_k, False)))
             else:
                 _cb.setChecked(_saved_org.get(_k, True))
             _cb.setStyleSheet(_cb_style)
@@ -7264,6 +7292,13 @@ class PnlHistoryPanel(QWidget):
             f"color:{C['cyan']};background:{C['bg3']};"
             f"border:1px solid {C['cyan']};border-radius:3px;padding:{S.p(3)}px {S.p(6)}px;")
         self._sd_banner.setVisible(False)
+        # [677차] 피터2 백필 배너 — 가상임 · A/B 합계 · 미측정/미판정 일수를 상시 띄운다.
+        self._bf_banner = mk_label("", C['purple'], 9)
+        self._bf_banner.setWordWrap(True)
+        self._bf_banner.setStyleSheet(
+            f"color:{C['purple']};background:{C['bg3']};"
+            f"border:1px solid {C['purple']};border-radius:3px;padding:{S.p(3)}px {S.p(6)}px;")
+        self._bf_banner.setVisible(False)
         _ol.addStretch(1)
         self._approx_note = mk_label("", C['orange'], 9)
         self._approx_note.setToolTip(
@@ -7274,6 +7309,8 @@ class PnlHistoryPanel(QWidget):
         _ol.addWidget(self._approx_note)
         _ol.addWidget(self._sd_banner)
         lay.addWidget(_of)
+        # 백필 배너는 내용이 길다(A·B·미측정) — 출처 행 아래 독립 행으로 둔다.
+        lay.addWidget(self._bf_banner)
 
         lay.addWidget(inner, 1)
 
@@ -7370,12 +7407,64 @@ class PnlHistoryPanel(QWidget):
                 "pos_key": "sd:%s" % (g.get("entry_ts") or ts),
                 "origin": "sd",
                 "is_sd": True,
+                "is_virtual": True,     # [677차] 가상 공통 표식 — 브로커 net 경로에서 뺀다
                 "rule": g.get("rule") or "",
             })
         return out
 
-    def refresh(self, rows, sd_positions=None, sd_wired=False):
-        """trades.db 행 목록으로 전체 갱신. rows: sqlite3.Row list."""
+    @property
+    def _tab_rate(self):
+        """[677차] 이 탭의 편도 수수료 요율 — 손익추이 = 라이브 · 손익추이2 = CREON."""
+        return self._CF_RATE if self._is_cf else _LIVE_COMM_RATE
+
+    def _bf_net(self, t):
+        """백필 거래 1건의 이 탭 요율 net. 엔진과 같은 식: 진입 약정 × 요율 × 2(왕복)."""
+        return float(t["gross_krw"]) - float(t["notional_krw"]) * self._tab_rate * 2
+
+    def _bf_rows_from(self, bf):
+        """[677차] peter2_backfill.db 원천 A → 이 패널의 행 형식. **거래 1건 = 1행.**
+
+        · `pnl_krw` = 이 탭 요율로 뗀 net(1계약). 요율 세대 재환산 대상이 아니다 —
+          `commission_rate_used` 에 이 탭 요율을 그대로 남겨 정규화가 항등이 되게 한다.
+        · 날짜 = 청산 시각(당일 청산이라 진입일과 같다).
+        """
+        self._bf, self._bf_b, self._bf_days = bf, {}, {}
+        if not bf:
+            return []
+        self._bf_days = {d["trade_date"]: d for d in bf.get("days") or []}
+        for t in bf.get("b") or []:
+            self._bf_b.setdefault(t["trade_date"], []).append(self._bf_net(t))
+        out = []
+        for t in bf.get("a") or []:
+            try:
+                net = self._bf_net(t)
+                pts = float(t["pnl_pts"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            comm = float(t["notional_krw"]) * self._tab_rate * 2
+            out.append({
+                "entry_ts": str(t["exit_ts"]),
+                "pnl_pts": pts, "pnl_krw": net,
+                "forward_pnl_pts": pts, "forward_pnl_krw": net,
+                "quantity": int(t.get("qty") or 1),
+                "reverse_entry_enabled": 0,
+                "gross_pnl_krw": float(t["gross_krw"]), "commission_krw": comm,
+                "commission_rate_used": self._tab_rate,
+                "entry_source": "PETER2_BACKFILL",
+                "exit_reason": t.get("exit_reason") or "",
+                "pos_key": "bf:%s" % t["entry_ts"],
+                "origin": self._BF_ORIGIN,
+                "is_bf": True,
+                "is_virtual": True,
+                "clipped": int(t.get("clipped") or 0),
+            })
+        return out
+
+    def refresh(self, rows, sd_positions=None, sd_wired=False, bf=None):
+        """trades.db 행 목록으로 전체 갱신. rows: sqlite3.Row list.
+
+        [677차] `bf` = `strategy.peter2.backfill.load_for_pnl()` 묶음(None = 미배선).
+        """
         try:
             # ── [MW0601 493차 / F-4] 브로커 **net** 축으로 교체 ──────────────
             #
@@ -7444,14 +7533,16 @@ class PnlHistoryPanel(QWidget):
         # 그 함수는 실거래의 entry_source/exit_reason 으로 출처를 판정하며 신동과 무관하다.
         self._sd_wired = bool(sd_wired)
         self._rows.extend(self._sd_rows_from(sd_positions))
+        # [677차] 피터2 백필(가상)도 같은 자리에 붙인다 — 이유는 신동과 같다.
+        self._rows.extend(self._bf_rows_from(bf))
         # 브로커 일단위 값을 쓸 수 있는지 판정할 기준 — 날짜별 **전체** 레그 수.
         # 필터로 일부만 남으면 그 날은 브로커 net을 쓸 수 없다(쪼갤 수 없는 값이다).
-        # 🔴 [553차→628차] 가상(신동)은 세지 않는다. 브로커 net 은 **실거래**의 예탁금 차액이므로
-        #   완전성 판정의 분모에 가상거래가 끼면 모든 날이 「부분」이 되어 실측 net 을
-        #   통째로 못 쓰게 된다(전환기준 ① 판정 원천이 죽는다).
+        # 🔴 [553차→628차→677차] 가상(신동·피터2 백필)은 세지 않는다. 브로커 net 은 **실거래**의
+        #   예탁금 차액이므로 완전성 판정의 분모에 가상거래가 끼면 모든 날이 「부분」이 되어
+        #   실측 net 을 통째로 못 쓰게 된다(전환기준 ① 판정 원천이 죽는다).
         self._day_total_legs = {}
         for r in self._rows:
-            if r.get("is_sd"):
+            if r.get("is_virtual"):
                 continue
             d = r["entry_ts"][:10]
             self._day_total_legs[d] = self._day_total_legs.get(d, 0) + 1
@@ -7459,6 +7550,8 @@ class PnlHistoryPanel(QWidget):
         self._build_weekly()
         self._build_monthly()
         self._build_summary()
+        self._refresh_bf_banner()
+        self._sync_b_column()
 
     # ── 출처 판정 ──────────────────────────────────────────────
 
@@ -7553,6 +7646,9 @@ class PnlHistoryPanel(QWidget):
         # [628차] 신동은 **단독**이다 — 저장된 설정·짝 패널 전파로 섞여 들어와도 신동만 남긴다.
         if self._SD_ORIGIN in on:
             return {self._SD_ORIGIN}
+        # [677차] 피터2 백필은 피터2 계열(백필 + 실거래 피터2)과만 함께 켜진다.
+        if self._BF_ORIGIN in on:
+            return on & self._PETER_VIEW
         return on
 
     def _active_rows(self):
@@ -7628,16 +7724,20 @@ class PnlHistoryPanel(QWidget):
         #   빼므로 여기엔 신동 행만 온다. 그 날 값 = 신동 순손익의 단순 합.
         #   (브로커 net 을 건드리지 않는 것이 요점이다 — 실거래 행이 없는 날
         #    `_day_is_whole()` 이 참이 되어 브로커 net 이 신동 화면에 새어 들어오면 안 된다.)
-        sd_rows = [r for r in day_rows if r.get("is_sd")]
-        real_rows = [r for r in day_rows if not r.get("is_sd")]
+        # [677차] 가상 = 신동 + 피터2 백필. 둘 다 이 탭 요율로 이미 계산된 net 이다
+        #   (백필은 `_bf_rows_from` 이 탭 요율로 뗐다). 실거래 출처와 배타라 정상 경로에서는
+        #   가상만 오거나 실거래만 온다 — 「피터2 + 피터2백필」 화면에서만 두 집합이 같은 날에
+        #   겹칠 수 있는데, 백필 도구가 PETER2 실거래가 있는 날을 건너뛰므로 그것도 없다.
+        sd_rows = [r for r in day_rows if r.get("is_virtual")]
+        real_rows = [r for r in day_rows if not r.get("is_virtual")]
         if sd_rows and not real_rows:
             return sum(r["pnl_krw"] for r in sd_rows)
         sd_krw = sum(r["pnl_krw"] for r in sd_rows)     # 방어 — 정상 경로에서는 0
 
         if self._is_cf:
-            # 반사실 탭은 **실거래의 요율 축**을 묻는 탭이다. 가상거래는 그 질문의
-            # 대상이 아니므로 섞지 않는다(신동 체크박스도 이 탭에는 없다).
-            return self._cf_day_krw(date_str, real_rows)
+            # 반사실 탭은 **실거래의 요율 축**을 묻는 탭이다. 신동은 그 질문의 대상이 아니라
+            # 이 탭에 없다. [677차] 피터2 백필은 있다 — 이미 CREON 요율 net 이라 더한다.
+            return self._cf_day_krw(date_str, real_rows) + sd_krw
         if self._day_is_whole(date_str, real_rows):
             broker_krw = self._broker_pnl.get(date_str)
             if broker_krw is not None:
@@ -7657,7 +7757,7 @@ class PnlHistoryPanel(QWidget):
         """
         # [628차] 신동 가상거래는 이미 현행 비용 모델(CYBOS 요율 + 슬리피지)로
         # 계산된 net 이다. 세대 정규화 대상이 아니므로 그대로 돌려준다.
-        if r.get("is_sd"):
+        if r.get("is_virtual"):         # [677차] 피터2 백필도 — 이미 이 탭 요율 net
             return r["pnl_krw"]
         rate = r.get("commission_rate_used") or _LEGACY_COMM_RATE
         return r["gross_pnl_krw"] - r["commission_krw"] * (_LIVE_COMM_RATE / rate)
@@ -7687,9 +7787,9 @@ class PnlHistoryPanel(QWidget):
 
     def _day_is_approx(self, date_str, day_rows):
         """브로커 실측이 있는데 필터 때문에 못 쓴 날인가 — 표시용."""
-        real_rows = [r for r in day_rows if not r.get("is_sd")]
+        real_rows = [r for r in day_rows if not r.get("is_virtual")]
         if not real_rows:
-            return False            # 신동 단독 화면 — 브로커 대체 표식(≈) 대상이 아니다
+            return False            # 가상 단독 화면 — 브로커 대체 표식(≈) 대상이 아니다
         return (not self._day_is_whole(date_str, real_rows)
                 and self._broker_pnl.get(date_str) is not None)
 
@@ -7876,20 +7976,41 @@ class PnlHistoryPanel(QWidget):
             # [668차] 피터2(pt2) 는 저장값이 없을 때 「신동 단독 보기 중이 아니면」 켠다 —
             #   신동 단독 화면에 새 출처가 켜진 채로 끼어들면 체크 상태와 집계가 어긋난다.
             _sd_on = bool(_p.get("pnl_cb_origin_%s" % self._SD_ORIGIN, False))
-            return {k: bool(_p.get("pnl_cb_origin_%s" % k,
-                                   (not _sd_on) if k == "pt2" else k != self._SD_ORIGIN))
+            # [677차] 피터2백필은 저장값이 없을 때 「피터2 단독 보기 중」이면 켠다 —
+            #   그 화면을 보던 사람이 백필을 찾는 사람이다. 그 외에는 해제(종전 화면 유지).
+            _peter_only = (bool(_p.get("pnl_cb_origin_pt2", False)) and not _sd_on
+                           and not any(_p.get("pnl_cb_origin_%s" % k, True)
+                                       for k in self._BF_EXCLUSIVE))
+
+            def _default(k):
+                if k == "pt2":
+                    return not _sd_on
+                if k == self._BF_ORIGIN:
+                    return _peter_only
+                return k != self._SD_ORIGIN
+            return {k: bool(_p.get("pnl_cb_origin_%s" % k, _default(k)))
                     for k in self._ORIGIN_KEYS}
         except Exception:
             return {}
 
     def _enforce_sd_exclusive(self):
-        """[628차] 신동 ↔ 실거래 출처를 서로 배타로. 방금 켠 쪽이 이긴다."""
+        """[628차] 신동 ↔ 실거래 출처를 서로 배타로. 방금 켠 쪽이 이긴다.
+
+        [677차] 피터2백필 ↔ 실거래(자동·수동·미측정)·신동도 배타. 「피터2」(실거래)만
+        백필과 함께 켤 수 있다 — 백필 → 실거래를 한 줄로 이어 보는 화면이다.
+        """
         snd = self.sender()
         sd_cb = self._cb_origin.get(self._SD_ORIGIN)
+        bf_cb = self._cb_origin.get(self._BF_ORIGIN)
         if sd_cb is None or snd is None or not snd.isChecked():
             return
+        excl = [self._cb_origin[k] for k in self._BF_EXCLUSIVE]
         if snd is sd_cb:
             targets = [cb for k, cb in self._cb_origin.items() if k != self._SD_ORIGIN]
+        elif snd is bf_cb:
+            targets = excl + [sd_cb]
+        elif snd in excl:
+            targets = [sd_cb, bf_cb]
         elif snd in self._cb_origin.values():
             targets = [sd_cb]
         else:
@@ -7923,6 +8044,97 @@ class PnlHistoryPanel(QWidget):
             self._build_summary()
         self._refresh_approx_note()
         self._refresh_sd_banner()
+        self._refresh_bf_banner()
+        self._sync_b_column()
+
+    # ── [677차] 피터2 백필 — 배너 · B 비교 열 ──────────────────────────
+    def _bf_on(self):
+        return self._BF_ORIGIN in self._active_origins()
+
+    def _bf_dates(self, status):
+        return sorted(d for d, r in self._bf_days.items() if r.get("status") == status)
+
+    def _refresh_bf_banner(self):
+        """피터2 백필 화면임을 **상시** 띄운다 — 가상 · A/B 합계 · 미측정/미판정 일수.
+
+        🔴 「미배선」 · 「0건」 · 「미측정」 · 「미판정」을 가른다(계측 4원칙 ②).
+        """
+        try:
+            if not self._bf_on():
+                self._bf_banner.setVisible(False)
+                return
+            if self._bf is None:
+                self._bf_banner.setText(
+                    "피터2 백필 미배선 — peter2_backfill.db 가 없다(0건이 아니다) · "
+                    "python tools/peter2_backfill.py 로 만든다")
+                self._bf_banner.setToolTip("")
+                self._bf_banner.setVisible(True)
+                return
+            a = [r for r in self._rows if r.get("is_bf")]
+            a_net = sum(r["pnl_krw"] for r in a)
+            b_n = sum(len(v) for v in self._bf_b.values())
+            b_net = sum(sum(v) for v in self._bf_b.values())
+            unm = self._bf_dates("UNMEASURED")
+            unr = self._bf_dates("UNRESOLVED")
+            a_days = {r["entry_ts"][:10] for r in a}
+            b_only = sorted(d for d, v in self._bf_b.items() if v and d not in a_days)
+            meta = self._bf.get("meta") or {}
+            rate = "CREON %.4f%%" % (self._CF_RATE * 100) if self._is_cf else \
+                "라이브 %.4f%%" % (_LIVE_COMM_RATE * 100)
+            txt = ("🟣 피터2 백필(가상) %s 이전 · 요율 %s — 표 = A 거래피터 %d건 %s원 · "
+                   "B 재생 %d건 %s원" % (meta.get("until", "?"), rate, len(a),
+                                         format(a_net, "+,.0f"), b_n, format(b_net, "+,.0f")))
+            if unm:
+                txt += " · 미측정 %d일" % len(unm)
+            if unr:
+                txt += " · ⚠미판정 %d일(사용자 기록 대기)" % len(unr)
+            if b_only:
+                txt += " · B만 거래한 날 %d일(표에 행 없음)" % len(b_only)
+            txt += " · 실적 아님 — 전환기준 ① 판정에 쓰지 말 것"
+            self._bf_banner.setText(txt)
+            tip = ["원천 A = peter_paste.raw_tr(1분봉 차트 「거래피터」) → 미니 1계약",
+                   "  15:10 강제청산 재측정 %d건 · 슬리피지 0 가정" % sum(
+                       r.get("clipped", 0) for r in a),
+                   "원천 B = tools/peter2_replay.py(라이브 cfg · 지연 %ss) — 봉 안 순서·"
+                   "슬리피지 0 가정이라 낙관 편향" % meta.get("latency_sec", "?"),
+                   "빌드 %s" % meta.get("built_at", "?")]
+            if unm:
+                tip.append("미측정(사용자 기록): " + ", ".join(unm))
+            if unr:
+                tip.append("미판정(사료·장부 없음): " + ", ".join(unr)
+                           + "\n  → python tools/peter2_backfill.py --mark-unmeasured …")
+            if b_only:
+                tip.append("B만 거래: " + ", ".join(b_only))
+            self._bf_banner.setToolTip("\n".join(tip))
+            self._bf_banner.setVisible(True)
+        except Exception:
+            pass
+
+    def _sync_b_column(self):
+        """B 재생 열은 피터2백필 화면에서만 보인다."""
+        hide = not self._bf_on()
+        for tbl in (self.tbl_daily, self.tbl_weekly, self.tbl_monthly):
+            tbl.setColumnHidden(tbl.columnCount() - 1, hide)
+
+    def _b_text(self, match):
+        """B 재생 셀 — `match(date)` 가 참인 날들의 B net 합 · 건수.
+
+        「—」 = 그 구간에 B 를 잰 날이 없다(트윗 원본 없음·오프셋 없음)이지 0원이 아니다.
+        """
+        days = [d for d, r in self._bf_days.items()
+                if match(d) and r.get("b_status") == "OK"]
+        if not days:
+            return "—", 0.0
+        vals = [v for d in days for v in self._bf_b.get(d, [])]
+        tot = sum(vals)
+        return "%s원 (%d)" % (format(tot, "+,.0f"), len(vals)), tot
+
+    def _b_item(self, match, bg):
+        if not self._bf_on():
+            return self._item("", bg=bg)
+        txt, tot = self._b_text(match)
+        return self._item(txt, fg=self._pcol(tot) if txt != "—" else C['text2'],
+                          bg=bg, align=Qt.AlignRight)
 
     def _refresh_sd_banner(self):
         """[628차] 신동 단독 화면임을 **상시** 띄운다.
@@ -8030,6 +8242,7 @@ class PnlHistoryPanel(QWidget):
                 self._item(self._fmt_single(ppts, decimals=2, suffix="pt"),     fg=pc, bg=bg, align=Qt.AlignRight),
                 self._item(krw_text,                                            fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
                 self._item(self._fmt_single(cum, suffix="원"),                  fg=cc, bg=bg, align=Qt.AlignRight),
+                self._b_item(lambda d, _k=date_str: d == _k, bg),             # [677차] B 재생
             ]
             for c_idx, it in enumerate(cells):
                 tbl.setItem(r_idx, c_idx, it)
@@ -8068,6 +8281,7 @@ class PnlHistoryPanel(QWidget):
                 self._item(self._fmt_single(pkrw, suffix="원") + _apx,          fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
                 self._item(self._fmt_single(cum, suffix="원"),                  fg=cc, bg=bg, align=Qt.AlignRight),
                 self._item(self._fmt_single(mdd, suffix="원"),                  fg=mc, bg=bg, align=Qt.AlignRight),
+                self._b_item(lambda d, _k=wk: self._week_key(d) == _k, bg),   # [677차] B 재생
             ]
             for c_idx, it in enumerate(cells):
                 tbl.setItem(r_idx, c_idx, it)
@@ -8109,6 +8323,7 @@ class PnlHistoryPanel(QWidget):
                 self._item(self._fmt_single(pkrw, suffix="원") + _apx,          fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
                 self._item(self._fmt_single(cum, suffix="원"),                  fg=cc, bg=bg, align=Qt.AlignRight),
                 self._item(self._fmt_single(sharpe, decimals=2),                fg=sc, bg=bg),
+                self._b_item(lambda d, _k=mon: d[:7] == _k, bg),              # [677차] B 재생
             ]
             for c_idx, it in enumerate(cells):
                 tbl.setItem(r_idx, c_idx, it)
@@ -8492,7 +8707,7 @@ class LogPanel(QWidget):
 
         lay.addWidget(self.tabs)
 
-    def refresh_pnl_history(self, rows, sd_positions=None, sd_wired=False):
+    def refresh_pnl_history(self, rows, sd_positions=None, sd_wired=False, bf=None):
         """손익 추이 탭 전체 갱신 (trades.db rows).
 
         실측·반사실 두 패널을 **같은 rows로** 갱신한다 — 원천이 갈리면 두 탭의
@@ -8500,9 +8715,12 @@ class LogPanel(QWidget):
 
         [628차] `sd_positions` 는 shindong.db 의 **가상** 거래다(553차 GP 자리 대체).
         반사실 탭에는 넘기지 않는다 — 그 탭은 실거래의 요율 축을 묻는 곳이다.
+
+        [677차] `bf`(피터2 백필 — 가상)는 **두 탭 모두**에 넘긴다(사용자 지시 2026-10-09:
+        실거래는 CREON 예정이라 그 요율로 보는 것이 목적). 각 탭이 자기 요율로 수수료를 뗀다.
         """
-        self.pnl_history.refresh(rows, sd_positions=sd_positions, sd_wired=sd_wired)
-        self.pnl_history_cf.refresh(rows)
+        self.pnl_history.refresh(rows, sd_positions=sd_positions, sd_wired=sd_wired, bf=bf)
+        self.pnl_history_cf.refresh(rows, bf=bf)
 
     def update_model_cards(self, accuracy: float, sgd_weight: float, is_active: bool):
         """창5 모델 AI 카드 갱신 (정확도·SGD비중·자가학습)."""
@@ -8576,11 +8794,17 @@ class LogPanel(QWidget):
         """피터2 단독 집계 ↔ 전체 출처 토글 — «📊 손익 추이» 로 이동한다."""
         try:
             ph = self.pnl_history
-            _only = ph._active_origins() == {"pt2"}
-            _real = {k for k in ph._ORIGIN_KEYS if k != ph._SD_ORIGIN}
+            # [677차] 피터2 화면 = 실거래 피터2 + 백필(가상) — 개시 전후를 한 줄로 본다.
+            _view = set(ph._PETER_VIEW)
+            _only = bool(ph._active_origins()) and ph._active_origins() <= _view
+            _real = {k for k in ph._ORIGIN_KEYS if k not in (ph._SD_ORIGIN, ph._BF_ORIGIN)}
             ph.apply_filter(ph._cb_forward.isChecked() or _only,
                             ph._cb_reverse.isChecked() or _only,
-                            _real if _only else {"pt2"})
+                            _real if _only else _view)
+            # 짝 패널(손익추이2)도 같은 화면으로 — apply_filter 는 되쏘지 않는다.
+            for _peer in ph._filter_peers:
+                _peer.apply_filter(ph._cb_forward.isChecked(), ph._cb_reverse.isChecked(),
+                                   ph._active_origins())
             ph._save_cb_prefs()
             self.tabs.setCurrentIndex(self.tabs.indexOf(ph))
         except Exception as _e:
@@ -17950,10 +18174,10 @@ class DashboardAdapter:
         """[260704 감사 P0] 창4 최근20건 순EV 타일 갱신"""
         self._win.log_panel.update_recent_ev(cnt, avg_net_pnl_krw, win_rate)
 
-    def update_pnl_history(self, rows, sd_positions=None, sd_wired=False):
-        """📊 손익 추이 탭 갱신 (trades.db rows + 신동 가상거래)."""
+    def update_pnl_history(self, rows, sd_positions=None, sd_wired=False, bf=None):
+        """📊 손익 추이 탭 갱신 (trades.db rows + 신동 가상거래 + [677차] 피터2 백필)."""
         self._win.log_panel.refresh_pnl_history(
-            rows, sd_positions=sd_positions, sd_wired=sd_wired)
+            rows, sd_positions=sd_positions, sd_wired=sd_wired, bf=bf)
 
     def notify_pipeline_ran(self):
         """분봉 파이프라인 완료 시 상태 바 + 헤더 생존 바 동시 리셋.

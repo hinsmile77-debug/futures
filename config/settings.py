@@ -7689,3 +7689,16 @@ PETER2_DAILY_STOP_LIMIT = 0          # 0 = 해제
 PETER2_DAILY_MAX_ENTRIES = 6         # 피터2 일 최대 진입 수
 PETER2_LIVE_DIR = os.path.join(DATA_DIR, "peter2_live")
 PETER2_DOC_DIR = os.path.join(BASE_DIR, "docs", "미륵이고도화3", "피터2")
+
+# ── [MW0601 677차] 피터2 백필 — 실거래 개시(10/12) **이전** 손익추이 ─────────────────
+# 사용자 지시(2026-10-09): 10/12 이전은 차트의 「거래피터」(peter_paste.raw_tr) 로
+#   손익을 산출해 손익추이·손익추이2 에 올린다. 재생(tools/peter2_replay.py)은 비교 열.
+# 🔴 **가상**이다 — `trades` 에 넣지 않는다(브로커 대사·전환기준 ①·CB·켈리 오염 방지).
+#   원천: data/db/peter2_backfill.db  ← tools/peter2_backfill.py (장후·읽기전용 원천)
+# 🔴 UNTIL 은 **배타** 경계다(이 날짜부터는 trades 의 PETER2 실거래가 원천).
+#   백필 도구는 그 이전이라도 trades 에 PETER2 실거래가 있는 날은 건너뛴다(이중계상 방지).
+PETER2_BACKFILL_UNTIL = "2026-10-12"
+PETER2_BACKFILL_DB = os.path.join(DB_DIR, "peter2_backfill.db")
+# 기록 없는 날(피터 사료 미입력)을 사용자가 「미측정」으로 적는 장부. 재빌드해도 지워지지 않는다.
+#   한 줄 = `YYYY-MM-DD<공백>사유` · `#` 주석. 도구 `--mark-unmeasured` 로도 적는다.
+PETER2_BACKFILL_UNMEASURED = os.path.join(DATA_DIR, "peter_feed", "_unmeasured.txt")
