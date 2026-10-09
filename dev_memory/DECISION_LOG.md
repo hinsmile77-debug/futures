@@ -47852,3 +47852,4 @@ F-1(538-4) 승인 시 다음 장후 세션에서 `strategy/runtime/session_recov
 
 **검증**: `tests/test_677_peter2_backfill.py` 22 pass · `test_628` 갱신 후 pass · `test_668` pass(py37_32). 기존 실패(무관·기존): `test_504` 4건(ui_prefs·배타 필터 전제) · `test_457::test_db_fallback_columns_have_measured_flag`(peter_paste INSERT). 헤드리스 실DB 확인 — 두 탭 배너·B 열·요약 정상, 실거래 화면에 백필 미혼입.
 계획서: `docs/미륵이고도화3/피터2/피터2_백필_손익추이_구현계획_MW0601-20261009.md`
+**배포 기록**: v9-dev `bb66c99` → dev **이식** `37b3877`(체리픽 아님 — dev 손익추이 패널이 MW0602 610차 독자 구현이라 충돌). 모듈·도구·설정·모듈 테스트는 그대로, 패널은 dev 구조(「피터2」 옆 「피터2백필」 체크박스 · 패널 자체 적재 · 채널 요율)로 새로 연결. dev 에는 손익추이2 탭이 없다. MW0602 는 PETER2 shadow 모드 · UNTIL 은 MW0601 기준이라 그 PC 가 조정. 검증 dev 패널·피터2 테스트 109 pass. 2026-10-09 푸시 완료.
