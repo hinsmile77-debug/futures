@@ -139,6 +139,8 @@ class FakePanel(object):
         self._mode = mode
         self._cb_forward, self._cb_reverse = _CB(fwd), _CB(rev)
         self._cb_peter2 = _CB(p2)          # [MW0602 610차] 피터2 출처 필터(기본 켜짐 = 종전 화면)
+        self._cb_p2bf = _CB(False)         # [MW0601 677차 이식] 피터2 백필(가상) — 기본 해제
+        self._bf_rows = []
         self._sd_wired, self._sd_loaded, self._sd_open_n = wired, loaded, sd_open
         self._mode_banner = _Banner()
         self._day_total_n = {}
@@ -147,7 +149,7 @@ class FakePanel(object):
         for _n in ("_sd_mode", "_active_rows", "_group", "_stats", "_daily_bucket",
                    "_effective_day_krw", "_day_is_whole", "_effective_day_pt",
                    "_group_effective_krw", "_group_effective_pt", "_mdd", "_mdd_daily",
-                   "_update_mode_banner", "_virtual_mark", "_peter2_mode"):
+                   "_update_mode_banner", "_virtual_mark", "_peter2_mode", "_bf_on"):
             setattr(self, _n, getattr(_P, _n).__get__(self, FakePanel))
 
 

@@ -6845,9 +6845,11 @@ class PnlHistoryPanel(QWidget):
       브로커 예탁금 차액은 계좌 전체라 쪼갤 수 없다(557차 후속2와 같은 관문).
     """
 
-    _DAILY_HEADERS   = ["날짜",  "거래", "승", "패", "승률", "P/L pt", "P/L 원",   "누적 원"]
-    _WEEKLY_HEADERS  = ["주간",  "거래", "승", "패", "승률", "P/L pt", "P/L 원",   "누적 원", "MDD 원"]
-    _MONTHLY_HEADERS = ["월",    "거래", "승", "패", "승률", "P/L pt", "P/L 원",   "누적 원", "샤프"]
+    # [MW0601 677차 이식] 마지막 열 「B 재생」 — 피터2 백필의 비교 열(원천 B = 추종 규칙 재생).
+    #   미륵 화면에서 「피터2백필」이 켜졌을 때만 보인다(`_sync_b_column`).
+    _DAILY_HEADERS   = ["날짜",  "거래", "승", "패", "승률", "P/L pt", "P/L 원",   "누적 원", "B 재생"]
+    _WEEKLY_HEADERS  = ["주간",  "거래", "승", "패", "승률", "P/L pt", "P/L 원",   "누적 원", "MDD 원", "B 재생"]
+    _MONTHLY_HEADERS = ["월",    "거래", "승", "패", "승률", "P/L pt", "P/L 원",   "누적 원", "샤프", "B 재생"]
 
     MODE_MIREUK = "mireuk"
     MODE_SHINDONG = "shindong"
@@ -6870,6 +6872,14 @@ class PnlHistoryPanel(QWidget):
         self._sd_open_n: int = 0          # 오늘 보유 중(미청산) — 손익 합산 대상 아님
         self._sd_wired = None             # None=미조회 / False=DB 없음 / True=있음
         self._sd_loaded = None            # None=미시도 / False=조회 실패 / True=성공
+        # ── [MW0601 677차 이식] 피터2 백필(가상) — 실거래 개시 이전 피터2 손익 ──────
+        # 🔴 `trades` 를 읽지 않는다(원천 peter2_backfill.db ← tools/peter2_backfill.py).
+        #    None = 미배선(DB 없음) — 빈 묶음(0건)과 다르다(계측 4원칙 ②).
+        self._bf = None
+        self._bf_rows: list = []          # 원천 A 행(표의 값)
+        self._bf_b: dict = {}             # date → [net, …] 원천 B(비교 열)
+        self._bf_days: dict = {}          # date → bf_days 행
+        self._bf_loaded = None            # None=미시도 / False=조회 실패 / True=성공
         self._mode = self._load_mode_pref()
         self._build()
 
@@ -6966,6 +6976,20 @@ class PnlHistoryPanel(QWidget):
             "· 순방향·역방향은 미륵 거래에만 적용된다\n"
             "🔴 피터2 는 미륵 판단이 아니다 — 실전 전환 기준 ① 은 미륵(자동)으로 본다.")
         self._cb_peter2.stateChanged.connect(self._on_source_changed)
+        # [MW0601 677차 이식] 피터2 백필(가상) — 순방향·역방향(미륵 실거래)과 배타,
+        #   「피터2」(실거래)와는 함께 켠다: 개시 전 백필 → 개시 후 실거래를 한 줄로 본다.
+        self._cb_p2bf = QCheckBox("피터2백필")
+        self._cb_p2bf.setChecked(self._load_p2bf_pref())
+        self._cb_p2bf.setStyleSheet(_cb_style.replace(C['cyan'], C['purple']))
+        self._cb_p2bf.setToolTip(
+            "피터2 백필(가상) — 실거래 개시 **이전** 피터2 손익(677차).\n"
+            "· 표의 값 = 원천 A: 1분봉 차트 「거래피터」(peter_paste.raw_tr)를 미니 1계약으로 환산\n"
+            "  15:10 이후 청산은 15:10 강제청산 가격으로 재측정 · 14:50 이후 진입 제외 · 슬리피지 0\n"
+            "· 「B 재생」 열 = 원천 B: 추종 규칙 재생(tools/peter2_replay.py) — 낙관 편향이 있다\n"
+            "· 수수료 = 감지 채널 요율(FUTURES_COMMISSION_RATE)\n"
+            "🔴 **가상이다** — 주문이 나간 적 없고 trades 에 없다. 순방향·역방향과 배타.\n"
+            "  실전 전환 기준 ① 판정에 쓰지 말 것. 원천 생성: python tools/peter2_backfill.py")
+        self._cb_p2bf.stateChanged.connect(self._on_source_changed)
 
         def _mode_btn(text, col, tip):
             b = QPushButton(text)
@@ -7009,6 +7033,7 @@ class PnlHistoryPanel(QWidget):
         _cl.addWidget(self._cb_forward)
         _cl.addWidget(self._cb_reverse)
         _cl.addWidget(self._cb_peter2)
+        _cl.addWidget(self._cb_p2bf)
         inner.setCornerWidget(_corner, Qt.TopRightCorner)
 
         lay.addWidget(inner, 1)
@@ -7128,6 +7153,7 @@ class PnlHistoryPanel(QWidget):
             _d = _r["entry_ts"][:10]
             self._day_total_n[_d] = self._day_total_n.get(_d, 0) + 1
         self._load_shindong()
+        self._load_bf()
         self._rebuild_all()
 
     def _rebuild_all(self):
@@ -7136,6 +7162,102 @@ class PnlHistoryPanel(QWidget):
         self._build_monthly()
         self._build_summary()
         self._update_mode_banner()
+        self._sync_b_column()
+
+    # ── [MW0601 677차 이식] 피터2 백필(가상) ─────────────────────
+
+    def _bf_net(self, t):
+        """백필 거래 1건의 net — 엔진과 같은 식: 진입 약정 × 채널 요율 × 2(왕복)."""
+        from config.settings import FUTURES_COMMISSION_RATE as _rate
+        return float(t["gross_krw"]) - float(t["notional_krw"]) * _rate * 2
+
+    def _load_bf(self):
+        """peter2_backfill.db → 원천 A 행(표) · 원천 B(비교 열). 「미배선」·「조회 실패」·「0건」을 가른다."""
+        self._bf, self._bf_rows, self._bf_b, self._bf_days = None, [], {}, {}
+        self._bf_loaded = None
+        try:
+            from config.settings import PETER2_BACKFILL_DB
+            from strategy.peter2 import backfill as _p2bf
+            self._bf = _p2bf.load_for_pnl(PETER2_BACKFILL_DB, limit_days=90)
+            self._bf_loaded = True
+        except Exception as _e:
+            logger.debug("[PnlHistory] 피터2 백필 적재 실패: %s", _e)
+            self._bf_loaded = False
+            return
+        if not self._bf:
+            return
+        self._bf_days = {d["trade_date"]: d for d in self._bf.get("days") or []}
+        for t in self._bf.get("b") or []:
+            self._bf_b.setdefault(t["trade_date"], []).append(self._bf_net(t))
+        for t in self._bf.get("a") or []:
+            try:
+                net, pts = self._bf_net(t), float(t["pnl_pts"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            self._bf_rows.append({
+                "entry_ts": str(t["exit_ts"]),
+                "pnl_pts": pts, "pnl_krw": net,
+                "forward_pnl_pts": pts, "forward_pnl_krw": net,
+                "quantity": int(t.get("qty") or 1),
+                "reverse_entry_enabled": 0,
+                "is_p2": False, "is_bf": True, "is_virtual": True,
+                "clipped": int(t.get("clipped") or 0),
+            })
+
+    def _bf_on(self) -> bool:
+        return (not self._sd_mode()) and self._cb_p2bf.isChecked()
+
+    def _sync_b_column(self):
+        """B 재생 열은 미륵 화면의 피터2백필에서만 보인다."""
+        hide = not self._bf_on()
+        for tbl in (self.tbl_daily, self.tbl_weekly, self.tbl_monthly):
+            tbl.setColumnHidden(tbl.columnCount() - 1, hide)
+
+    def _b_text(self, match):
+        """B 재생 셀 — 「—」 = 그 구간에 B 를 잰 날이 없다(0원이 아니다)."""
+        days = [d for d, r in self._bf_days.items()
+                if match(d) and r.get("b_status") == "OK"]
+        if not days:
+            return "—", 0.0
+        vals = [v for d in days for v in self._bf_b.get(d, [])]
+        tot = sum(vals)
+        return "%s원 (%d)" % (format(tot, "+,.0f"), len(vals)), tot
+
+    def _b_item(self, match, bg):
+        if not self._bf_on():
+            return self._item("", bg=bg)
+        txt, tot = self._b_text(match)
+        return self._item(txt, fg=self._pcol(tot) if txt != "—" else C['text2'],
+                          bg=bg, align=Qt.AlignRight)
+
+    def _bf_banner_text(self):
+        if self._bf_loaded is False:
+            return C['orange'], "⚠ 피터2 백필 — peter2_backfill.db 조회 실패. 미측정이다(0건이 아니다)."
+        if not self._bf:
+            return C['text2'], ("⚪ 피터2 백필 미배선 — peter2_backfill.db 가 없다(0건이 아니다) · "
+                                "python tools/peter2_backfill.py 로 만든다")
+        from config.settings import FUTURES_COMMISSION_RATE as _rate
+        a_net = sum(r["pnl_krw"] for r in self._bf_rows)
+        b_n = sum(len(v) for v in self._bf_b.values())
+        b_net = sum(sum(v) for v in self._bf_b.values())
+        unm = sorted(d for d, r in self._bf_days.items() if r.get("status") == "UNMEASURED")
+        unr = sorted(d for d, r in self._bf_days.items() if r.get("status") == "UNRESOLVED")
+        a_days = {r["entry_ts"][:10] for r in self._bf_rows}
+        b_only = [d for d, v in self._bf_b.items() if v and d not in a_days]
+        meta = self._bf.get("meta") or {}
+        txt = ("🟣 피터2 백필(가상) %s 이전 · 요율 %.4f%% — 표 = A 거래피터 %d건 %s원 · "
+               "B 재생 %d건 %s원" % (meta.get("until", "?"), _rate * 100, len(self._bf_rows),
+                                     format(a_net, "+,.0f"), b_n, format(b_net, "+,.0f")))
+        if unm:
+            txt += " · 미측정 %d일" % len(unm)
+        if unr:
+            txt += " · ⚠미판정 %d일(사용자 기록 대기)" % len(unr)
+        if b_only:
+            txt += " · B만 거래한 날 %d일(표에 행 없음)" % len(b_only)
+        if self._cb_peter2.isChecked():
+            _p2_n = sum(1 for r in self._rows if r.get("is_p2"))
+            txt += " · 피터2 실거래 %d건 이어 붙임" % _p2_n
+        return C['purple'], txt + " · 실적 아님 — 실전 전환 기준 ① 판정에 쓰지 말 것"
 
     # ── [590차] 신동(가상) ─────────────────────────────────────
 
@@ -7174,6 +7296,11 @@ class PnlHistoryPanel(QWidget):
 
     def _update_mode_banner(self):
         """지금 표가 담은 것을 한 줄로. QLabel 은 평문이다 — 마크다운 금지."""
+        if self._bf_on():
+            _col, _txt = self._bf_banner_text()
+            self._mode_banner.setStyleSheet(f"color:{_col};")
+            self._mode_banner.setText(_txt)
+            return
         if not self._sd_mode():
             _fwd, _rev = self._cb_forward.isChecked(), self._cb_reverse.isChecked()
             _p2 = self._cb_peter2.isChecked()
@@ -7242,6 +7369,7 @@ class PnlHistoryPanel(QWidget):
         self._cb_forward.setVisible(_m)
         self._cb_reverse.setVisible(_m)
         self._cb_peter2.setVisible(_m)
+        self._cb_p2bf.setVisible(_m)
 
     def _on_mode_toggled(self, _on=None):
         _new = self.MODE_SHINDONG if self._btn_shindong.isChecked() else self.MODE_MIREUK
@@ -7271,6 +7399,9 @@ class PnlHistoryPanel(QWidget):
                     out.append(r)
             elif (fwd and not r["reverse_entry_enabled"]) or (rev and r["reverse_entry_enabled"]):
                 out.append(r)
+        # [677차 이식] 피터2 백필(가상) — 순/역방향과 배타라 정상 경로에선 미륵 실거래와 안 섞인다
+        if self._cb_p2bf.isChecked():
+            out.extend(self._bf_rows)
         return out
 
     # ── [MW0602 610차] 피터2 출처 ──────────────────────────────
@@ -7298,7 +7429,7 @@ class PnlHistoryPanel(QWidget):
         if self._sd_mode():
             self._btn_mireuk.setChecked(True)        # toggled → _on_mode_toggled
         for cb, on in ((self._cb_forward, not only), (self._cb_reverse, not only),
-                       (self._cb_peter2, True)):
+                       (self._cb_peter2, True), (self._cb_p2bf, only)):   # [677차] 백필 동반
             cb.blockSignals(True)
             cb.setChecked(on)
             cb.blockSignals(False)
@@ -7348,10 +7479,16 @@ class PnlHistoryPanel(QWidget):
         """
         if self._sd_mode():
             return sum(r["pnl_krw"] for r in day_rows)
+        # [677차 이식] 피터2 백필(가상)은 브로커 예탁금 차액에 없다 — 완전성 판정에서도 뺀다.
+        virt = [r for r in day_rows if r.get("is_virtual")]
+        day_rows = [r for r in day_rows if not r.get("is_virtual")]
+        v_krw = sum(r["pnl_krw"] for r in virt)
+        if not day_rows:
+            return v_krw
         broker_krw = self._broker_pnl.get(date_str)
         if broker_krw is not None and self._day_is_whole(date_str, day_rows):
-            return broker_krw
-        return sum(r["pnl_krw"] for r in day_rows)
+            return broker_krw + v_krw
+        return sum(r["pnl_krw"] for r in day_rows) + v_krw
 
     def _day_is_whole(self, date_str, day_rows) -> bool:
         """그 날의 **실거래 전부**가 선택돼 있는가.
@@ -7379,7 +7516,7 @@ class PnlHistoryPanel(QWidget):
 
     def _virtual_mark(self) -> str:
         """🟣 = 이 값은 가상(신동)이다. 탭을 바꿔도 사라지지 않게 모든 값 셀에 단다."""
-        return "🟣 " if self._sd_mode() else ""
+        return "🟣 " if (self._sd_mode() or self._bf_on()) else ""
 
     def _mdd(self, rows, krw_key="pnl_krw"):
         """전체 거래의 날짜별 관문 손익 기준 MDD."""
@@ -7468,6 +7605,10 @@ class PnlHistoryPanel(QWidget):
         """[610차] 피터2 체크 복원. 기본 True — 저장값이 없으면 종전 화면(계좌 전체)과 같다."""
         return bool(self._load_prefs_dict().get("pnl_cb_peter2", True))
 
+    def _load_p2bf_pref(self) -> bool:
+        """[677차 이식] 피터2백필 체크 복원. 🔴 기본 False — 가상을 여는 것은 사용자 행위다."""
+        return bool(self._load_prefs_dict().get("pnl_cb_peter2_bf", False))
+
     def _load_mode_pref(self) -> str:
         """[590차] 주체 선택 복원. 🔴 기본값 **미륵** — 가상을 여는 것은 사용자 행위다."""
         _m = self._load_prefs_dict().get("pnl_mode", self.MODE_MIREUK)
@@ -7481,6 +7622,7 @@ class PnlHistoryPanel(QWidget):
             _p["pnl_cb_forward"] = self._cb_forward.isChecked()
             _p["pnl_cb_reverse"] = self._cb_reverse.isChecked()
             _p["pnl_cb_peter2"] = self._cb_peter2.isChecked()
+            _p["pnl_cb_peter2_bf"] = self._cb_p2bf.isChecked()
             _p["pnl_mode"] = self._mode
             _p.pop("pnl_cb_gp", None)          # 557차 GP 스위치 — 590차에 폐기
             with open(_f, "w", encoding="utf-8") as _fp:
@@ -7489,6 +7631,19 @@ class PnlHistoryPanel(QWidget):
             pass
 
     def _on_source_changed(self):
+        # [677차 이식] 피터2백필 ↔ 순방향·역방향(미륵 실거래) 배타 — 방금 켠 쪽이 이긴다.
+        _snd = self.sender()
+        if _snd is not None and _snd.isChecked():
+            if _snd is self._cb_p2bf:
+                _off = (self._cb_forward, self._cb_reverse)
+            elif _snd in (self._cb_forward, self._cb_reverse):
+                _off = (self._cb_p2bf,)
+            else:
+                _off = ()
+            for _cb in _off:
+                _cb.blockSignals(True)
+                _cb.setChecked(False)
+                _cb.blockSignals(False)
         self._save_cb_prefs()
         self._rebuild_all()
 
@@ -7535,6 +7690,7 @@ class PnlHistoryPanel(QWidget):
                 self._item(pt_text,                                             fg=pc, bg=bg, align=Qt.AlignRight),
                 self._item(krw_text,                                            fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
                 self._item(self._fmt_single(cum, suffix="원"),                  fg=cc, bg=bg, align=Qt.AlignRight),
+                self._b_item(lambda d, _k=date_str: d == _k, bg),             # [677차] B 재생
             ]
             for c_idx, it in enumerate(cells):
                 tbl.setItem(r_idx, c_idx, it)
@@ -7574,6 +7730,7 @@ class PnlHistoryPanel(QWidget):
                 self._item(_v + self._fmt_single(pkrw, suffix="원"),            fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
                 self._item(self._fmt_single(cum, suffix="원"),                  fg=cc, bg=bg, align=Qt.AlignRight),
                 self._item(self._fmt_single(mdd, suffix="원"),                  fg=mc, bg=bg, align=Qt.AlignRight),
+                self._b_item(lambda d, _k=wk: self._week_key(d) == _k, bg),   # [677차] B 재생
             ]
             for c_idx, it in enumerate(cells):
                 tbl.setItem(r_idx, c_idx, it)
@@ -7616,6 +7773,7 @@ class PnlHistoryPanel(QWidget):
                 self._item(_v + self._fmt_single(pkrw, suffix="원"),            fg=pc, bg=bg, align=Qt.AlignRight, bold=True),
                 self._item(self._fmt_single(cum, suffix="원"),                  fg=cc, bg=bg, align=Qt.AlignRight),
                 self._item(self._fmt_single(sharpe, decimals=2),                fg=sc, bg=bg),
+                self._b_item(lambda d, _k=mon: d[:7] == _k, bg),              # [677차] B 재생
             ]
             for c_idx, it in enumerate(cells):
                 tbl.setItem(r_idx, c_idx, it)
