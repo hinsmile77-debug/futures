@@ -70,6 +70,12 @@ function Run-Live([string[]]$liveArgs) {
     $out = & $Conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py @liveArgs 2>&1
     $code = $LASTEXITCODE
     foreach ($l in $out) { Add-Content -Path $log -Value ("    | " + $l) -Encoding UTF8 }
+    # conda run prints "ERROR conda.cli.main_run ... failed" for ANY non-zero exit.
+    # gate=3 (holiday) and poll=10 (new events) are designed codes, not failures
+    # (675 follow-up: 2026-10-09 check misread this line as a cp949 crash).
+    if (($liveArgs[0] -eq 'gate' -and $code -eq 3) -or ($liveArgs[0] -eq 'poll' -and $code -eq 10)) {
+        Add-Content -Path $log -Value ("    | (designed rc={0} for {1} - conda ERROR line above is not a failure)" -f $code, $liveArgs[0]) -Encoding UTF8
+    }
     return $code
 }
 
