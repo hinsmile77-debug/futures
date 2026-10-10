@@ -35,7 +35,10 @@ def _synthetic():
         for prod, sgn in (("mon_call", -1), ("mon_put", 1), ("wk_mon_call", -1), ("wk_mon_put", 1), ("kospi_spot", -1)):
             flow.setdefault((prod, "foreign"), []).append((t, sgn * (m - 525) * 20))
     lv = [dict(stage="0850", start="08:51", kind="구조", price=p, label="x", side="up") for p in (1090.0, 1080.0, 1070.0)]
-    return dict(cs=cs, fut=fut, flow=flow, lv=lv, snaps=[], s9842=[], yymmdd="261006")
+    # [678차 v2] 옵션 콜−풋은 금액(flow_amt), 위클리 = 만기 최근접(wk_prod) — 합성일은 계약수와 같은 값을 금액으로 둔다
+    flow_amt = {k: list(v) for k, v in flow.items() if k[0] != "kospi_spot"}
+    return dict(day="2026-10-06", cs=cs, fut=fut, flow=flow, flow_amt=flow_amt, wk_prod="wk_mon", wk_exp="2026-10-06",
+                wk_why="합성", lv=lv, snaps=[], s9842=[], yymmdd="261006")
 
 
 # ── A. 미래 참조 0 ─────────────────────────────────────────────────────────
@@ -49,8 +52,9 @@ def test_observe_ignores_everything_at_or_after_T(T):
         if R._hm(c[0]) >= lim:
             c[1:] = [9999.0, 9999.5, 9998.5, 9999.0]
     S2["fut"] = [(t, (99999 if R._hm(t) >= lim else f), i, r) for t, f, i, r in S2["fut"]]
-    for k in S2["flow"]:
-        S2["flow"][k] = [(t, (99999 if R._hm(t) >= lim else v)) for t, v in S2["flow"][k]]
+    for src in ("flow", "flow_amt"):
+        for k in S2[src]:
+            S2[src][k] = [(t, (99999 if R._hm(t) >= lim else v)) for t, v in S2[src][k]]
     S2["lv"].append(dict(stage="0930", start=T, kind="구조", price=5000.0, label="미래", side="up"))
     S2["lv"][-1]["start"] = R._fmt(lim + 1)               # T 이후에 생기는 맥점
     assert R.observe(S2, T) == a
@@ -58,7 +62,7 @@ def test_observe_ignores_everything_at_or_after_T(T):
 
 def test_bias_uses_levels_not_deltas():
     """신동2-P 세팅 점수에 Δ10 항이 없다 — 피터 「외인 수급으로 상방 하방 예측 못한다」."""
-    o = dict(px=1100.0, open=1110.0, mon_cp=-1500, fut_for=-500, wk_cp=0,
+    o = dict(px=1100.0, open=1110.0, mon_cp=-2000, fut_for=-500, wk_cp=0,      # v2: mon_cp 는 백만원(O1L 1,850)
              mon_cp_d=+9999, fut_for_d=+9999, wk_cp_d=+9999, spot_d=+9999, dpx=+50)
     b, terms = R.p_bias(o)
     assert b == -3 and set(terms) == {"O1L", "F2", "O2L", "PX"}

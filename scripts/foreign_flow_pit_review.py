@@ -23,8 +23,9 @@
   점수 = Σ 가중 × 부호, 각 항은 T 직전 10분 변화(Δ10) 또는 수준
     F1 선물 외인 Δ10            ×2   (|Δ|<50계약이면 0)
     F2 선물 외인 누계 수준      ×1   (|x|<300 이면 0)
-    O1 먼스리 외인 (콜−풋) Δ10   ×1   (|Δ|<100 이면 0)   콜 매수·풋 매도 = 상방
-    O2 위클리 외인 (콜−풋) Δ10   ×1   (|Δ|<200 이면 0)
+    O1 먼스리 외인 (콜−풋) Δ10   ×1   (|Δ|<130백만원 이면 0)   콜 매수·풋 매도 = 상방
+    O2 위클리 외인 (콜−풋) Δ10   ×1   (|Δ|<150백만원 이면 0)   위클리 = 만기 최근접, 먼스리 만기주는 기권
+       [v2 2026-10-10] 옵션 콜−풋은 금액(백만원). v1 은 계약수(100·200)·`wk_mon` 고정이었다 — DEAD 주석 참조
     S1 현물 외인 Δ10            ×1   (|Δ|<100 이면 0)   7222 kospi_spot
     P1 가격 Δ10                 ×1   (|Δ|<1.0pt 이면 0)
   방향: 점수 ≥ +3 → 매수, ≤ −3 → 매도, 그 외 관망
@@ -61,13 +62,26 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tools", "maekjeom_ladder"))
 
 from utils.analysis_db import guard_intraday   # noqa: E402
+from strategy.shindong.calendar import select_flow_product   # noqa: E402
 import ladder_data as L                          # noqa: E402
 
 DB = os.path.join(ROOT, "data", "db")
 
 # ── 사전 고정 파라미터 ────────────────────────────────────────────────────
+# [v2 · 2026-10-10 개정] 사전등록 개정 문서 `docs/미륵이고도화3/신동2/신동2_개정_v2_수급단위_위클리원천_MW0601-20261010.md`
+#   ① 위클리 원천 = 만기 최근접(`select_flow_product`) — v1 은 `wk_mon` 고정이라 화–목에 거래 1–4% 짜리 상품을 읽었다
+#   ② 먼스리 만기주 위클리 항 기권 — 위클리 = 먼스리라 한 원천이 두 표를 던진다
+#   ③ 옵션 콜−풋 단위 = 금액(백만원) — 계약수는 싼 외가격이 부풀린다(외인 먼스리 풋 분봉 47% 부호 반대)
+#   데드밴드는 **계약수 문턱의 투표 건수를 보존**하는 금액 문턱(9/21–10/8 체크포인트 분위 대응, 손익 미참조)을
+#   가장 가까운 50 단위로 둔 값이다. 선물(F1·F2)·현물(S1)·가격(P1) 항은 무변경.
+#   v1 데드밴드(계약): O1=100, O2=200, O1L=1000, O2L=1000.
+BASE_VER = "SD2B-2026-10-10-v2"
+BASE_VER_PREV = "SD2B-2026-10-06-v1"      # v1 은 버전 문자열 없이 운용됐다 — 이력 식별용으로 소급 명명
+SCORING_START_V2 = "2026-10-12"           # 기본·P·P2·P3 모두 v2 첫 거래일부터 다시 센다(20거래일)
+V1_SCORED_DAYS = ("2026-10-07", "2026-10-08")   # v1 로 채점된 날 — 합산하지 않는다(이력 보존용)
+FLOW_UNIT = "백만원"                       # 옵션 콜−풋 단위
 W = dict(F1=2, F2=1, O1=1, O2=1, S1=1, P1=1)
-DEAD = dict(F1=50, F2=300, O1=100, O2=200, S1=100, P1=1.0)
+DEAD = dict(F1=50, F2=300, O1=130, O2=150, S1=100, P1=1.0)
 SCORE_GO = 3
 LOOK = 10            # Δ 창(분)
 NEAR_ENTRY = 3.0     # 진입 지정가 탐색 폭(pt)
@@ -114,13 +128,16 @@ def load(day, cs=None, fut=None):
         con.close()
 
     con = _ro("option_flow.db")
-    flow = {}
-    for t, p, i, q in con.execute("SELECT bar_time, product, investor, net_qty FROM option_investor_flow"
-                                  " WHERE trade_date=?", (day,)):
+    flow, flow_amt = {}, {}
+    for t, p, i, q, a in con.execute("SELECT bar_time, product, investor, net_qty, net_amt FROM option_investor_flow"
+                                     " WHERE trade_date=?", (day,)):
         flow.setdefault((p, i), []).append((t, q))
+        flow_amt.setdefault((p, i), []).append((t, a))
     con.close()
-    for k in flow:
-        flow[k].sort()
+    for d_ in (flow, flow_amt):
+        for k in d_:
+            d_[k].sort()
+    wk_prod, wk_exp, wk_why = select_flow_product(_dt.date.fromisoformat(day))
 
     lv, _bands = L.levels(day)
 
@@ -167,7 +184,8 @@ def load(day, cs=None, fut=None):
             if mt.date().isoformat() == day:            # 그날 저장된 파일만 시점 정보로 쓴다
                 snaps9842.append((mt.strftime("%H:%M"), f["fn"], p))
     snaps9842.sort()
-    return dict(cs=cs, fut=fut, flow=flow, lv=lv, snaps=snaps, s9842=snaps9842, yymmdd=yymmdd,
+    return dict(day=day, cs=cs, fut=fut, flow=flow, flow_amt=flow_amt, wk_prod=wk_prod, wk_exp=wk_exp.isoformat(),
+                wk_why=wk_why, lv=lv, snaps=snaps, s9842=snaps9842, yymmdd=yymmdd,
                 reg_prev=reg_prev, reg_today=reg_today, off_prev=off_prev, prof_days=rdays)
 
 
@@ -211,14 +229,27 @@ def observe(S, T):
     o["fut_for"], o["fut_for_d"] = _d(fser, T)
     o["fut_ins"] = _last_before([(t, i) for t, _, i, _ in S["fut"]], T)
 
-    def ocd(prod):
-        c, cd = _d(S["flow"].get((prod + "_call", "foreign"), []), T)
-        p, pd = _d(S["flow"].get((prod + "_put", "foreign"), []), T)
+    # [v2 · 2026-10-10] 옵션 콜−풋은 **금액(백만원)** 이다 — 계약수는 싼 외가격이 부풀린다(신동 v1 §2-1과 같은 이유).
+    #   계약수 값은 `*_q` 로 **기록만** 한다(어떤 판단에도 쓰지 않는다).
+    def ocd(prod, src):
+        c, cd = _d(src.get((prod + "_call", "foreign"), []), T)
+        p, pd = _d(src.get((prod + "_put", "foreign"), []), T)
         if c is None or p is None:
             return None, None, None, None
         return c, p, c - p, (cd - pd if cd is not None and pd is not None else None)
-    o["mon_c"], o["mon_p"], o["mon_cp"], o["mon_cp_d"] = ocd("mon")
-    o["wk_c"], o["wk_p"], o["wk_cp"], o["wk_cp_d"] = ocd("wk_mon")
+    fa = S["flow_amt"]
+    o["mon_c"], o["mon_p"], o["mon_cp"], o["mon_cp_d"] = ocd("mon", fa)
+    o["mon_cp_q"] = ocd("mon", S["flow"])[2]
+    # 위클리 = 만기 최근접(strategy/shindong/calendar). 먼스리 만기주에는 그 답이 `mon` 이라 O1 과 **같은 원천**이 된다
+    #   → 한 원천이 두 표를 던지지 않도록 위클리 항은 미측정(None → 기권)으로 둔다.
+    wk = S["wk_prod"]
+    o["wk_src"] = wk
+    if wk == "mon":
+        o["wk_c"] = o["wk_p"] = o["wk_cp"] = o["wk_cp_d"] = o["wk_cp_q"] = None
+        o["wk_skip"] = "먼스리 만기주 — 위클리 = 먼스리(O1 과 같은 원천), 이중계상 방지로 기권"
+    else:
+        o["wk_c"], o["wk_p"], o["wk_cp"], o["wk_cp_d"] = ocd(wk, fa)
+        o["wk_cp_q"] = ocd(wk, S["flow"])[2]
     o["spot"], o["spot_d"] = _d(S["flow"].get(("kospi_spot", "foreign"), []), T)
 
     sn = [s for s in S["snaps"] if _hm(s[0]) <= _hm(T)]
@@ -337,9 +368,9 @@ def grade(S, T, o, r, live=False):
 # 규격 문서: docs/미륵이고도화3/신동2/신동2-P_사전등록_MW0601-20261006.md
 # 근거: 피터 누적 49건(8/4–10/6) — 손실 −3 – −6 고정, 손익비 2.46, 손절 후 같은 방향 재진입 16 대 반대 3.
 # ⚠ 아래 값은 10/6 결과를 본 뒤 정했다 — 10/6 은 드라이런이며 채점에서 제외한다(채점 시작 10/7).
-P_VER = "SD2P-2026-10-06-v1"
+P_VER = "SD2P-2026-10-10-v2"             # v1 SD2P-2026-10-06-v1 → v2: 위클리 원천·금액 단위(BASE_VER 주석)
 P_CHECKS = ("09:05", "09:15", "09:25", "09:35", "09:45", "09:55")   # 세팅 판정 시각(10분)
-P_BIAS = dict(O1L=1000, F2=300, O2L=1000, PX=3.0)                     # 수준 항 데드밴드 — Δ10 은 쓰지 않는다
+P_BIAS = dict(O1L=1850, F2=300, O2L=750, PX=3.0)                      # 수준 항 데드밴드 — Δ10 은 쓰지 않는다. O1L·O2L 은 백만원
 P_BIAS_GO = 2            # |B| ≥ 2 면 세팅
 P_STOP = 4.0             # 고정 손절(pt), 하한 1.5×ATR, 상한 P_STOP_MAX — 보유 중 넓히지 않는다
 P_STOP_MAX = 5.0
@@ -362,7 +393,7 @@ P_DAY_STOP_PT = -12.0    # 누적 −12pt → 당일 종료
 #       10/6 보유 중 최고 1119.60 vs 61.8% 1119.97(정규).
 TOUCH_WIN = 60
 TOUCH_W = 0.5
-P2_VER = "SD2P2-2026-10-06-v1"
+P2_VER = "SD2P2-2026-10-10-v2"           # v2 — P 와 같은 개정
 P2_HT_SPAN = 5.0
 P2_HT_MIN = 6
 P2_FIB = 0.618
@@ -376,7 +407,7 @@ P2_CFG = dict(name="P2", ver=P2_VER, ht=True, fib=True, hvn=False)
 #    근거: 피터 목표가 23건 중 8건이 5일 매물대 봉우리 ±1pt(우연 기대 1.9, z=4.76).
 # E2 매물대 앞길(기록만): 진입가에서 진행 방향으로 다음 두꺼운 구간(최대의 60% 이상)까지 거리와,
 #    그 사이 얇은 구간(최대의 40% 미만) 비율. 어떤 판단에도 쓰지 않는다.
-P3_VER = "SD2P3-2026-10-06-v1"
+P3_VER = "SD2P3-2026-10-10-v2"           # v2 — P 와 같은 개정
 P3_CFG = dict(name="P3", ver=P3_VER, ht=False, fib=False, hvn=True)
 HVN_PEAK = 0.6
 LVN_THIN = 0.4
@@ -687,8 +718,11 @@ def analyze(S, live=False, start="08:55", end="09:55", step=10):
     P2 = run_p(S, live=live, cfg=P2_CFG)
     P3 = run_p(S, live=live, cfg=P3_CFG)
     done = [p["grade"].get("pnl") for p in pts if isinstance(p["grade"].get("pnl"), (int, float))]
-    return dict(ver=P_VER, live=live, last_bar=last, points=pts, p=P, p2=P2, p3=P3,
-                params=dict(W=W, DEAD=DEAD, SCORE_GO=SCORE_GO, LOOK=LOOK, STOP_ATR=STOP_ATR, STOP_MAX=STOP_MAX,
+    return dict(ver=P_VER, base_ver=BASE_VER, base_ver_prev=BASE_VER_PREV, scoring_start=SCORING_START_V2,
+                v1_scored_days=list(V1_SCORED_DAYS), flow_unit=FLOW_UNIT,
+                wk=dict(prod=S.get("wk_prod"), exp=S.get("wk_exp"), why=S.get("wk_why")),
+                live=live, last_bar=last, points=pts, p=P, p2=P2, p3=P3,
+                params=dict(W=W, DEAD=DEAD, P_BIAS=P_BIAS, SCORE_GO=SCORE_GO, LOOK=LOOK, STOP_ATR=STOP_ATR, STOP_MAX=STOP_MAX,
                             RR_MIN=RR_MIN, FILL_WIN=FILL_WIN, P_STOP=P_STOP, P_HALF_R=P_HALF_R),
                 summary=dict(base=round(sum(done), 2), base_n=len(done), p=P["pnl"], p2=P2["pnl"], p3=P3["pnl"]))
 
@@ -715,6 +749,7 @@ def main(argv=None):
     eod = observe(S, "15:46")
     out_eod = dict(obs=eod, rule=decide(eod))
 
+    print("## 신동2 기본 %s · 위클리 원천 %s (%s) · 옵션 콜−풋 단위 %s" % (BASE_VER, S["wk_prod"], S["wk_why"], FLOW_UNIT))
     print("| T | 기준가 | 선물외인(Δ10) | 먼스리 콜−풋(Δ10) | 위클리 콜−풋(Δ10) | 현물외인(Δ10) | 가격Δ10 | 점수 | 방향 | 진입 | 손절 | 청산 | 결과 | 손익pt |")
     print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     f = lambda v: "—" if v is None else ("%+d" % v if isinstance(v, int) else "%+.1f" % v)
@@ -755,7 +790,8 @@ def main(argv=None):
           ("%+.1f" % PT["pnl"]) if PT and PT["measured"] else "미측정"))
     if a.json:
         with open(a.json, "w", encoding="utf-8") as fp:
-            json.dump(dict(date=a.date, params=dict(W=W, DEAD=DEAD, SCORE_GO=SCORE_GO, LOOK=LOOK), points=out, eod=out_eod,
+            json.dump(dict(date=a.date, base_ver=BASE_VER, flow_unit=FLOW_UNIT, wk_prod=S["wk_prod"],
+                           params=dict(W=W, DEAD=DEAD, P_BIAS=P_BIAS, SCORE_GO=SCORE_GO, LOOK=LOOK), points=out, eod=out_eod,
                            shindong2_p=P, shindong2_p2=P2, shindong2_p3=P3, peter=PT, summary=dict(base=round(base, 2), p=P["pnl"], p2=P2["pnl"], p3=P3["pnl"],
                                                                   peter=(PT["pnl"] if PT and PT["measured"] else None))),
                       fp, ensure_ascii=False, indent=1, default=str)

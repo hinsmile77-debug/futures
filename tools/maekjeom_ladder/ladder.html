@@ -13,7 +13,7 @@
   --o-back:#3d434c; --o-break:#eb6834; --o-stay:#9aa1aa; --peter:#8a5cd6;
   --up:#d6453f; --dn:#2a6fd0; --oi:#b9bfc7; --oi-wall:#15181c; --path:#15181c;
   --chip:#eef0f3; --chip-on:#15181c; --chip-on-ink:#ffffff;
-  --i-for:#4a3aa7; --i-ind:#eb6834; --i-ins:#1baf7a; --sd2:#0f8b8d; --sd2p:#b4236b; --sd2q:#8b5e34; --sd2r:#6b7a00; --sd2ai:#0369a1;
+  --i-for:#4a3aa7; --i-ind:#eb6834; --i-ins:#1baf7a; --sd2:#0f8b8d; --sd2p:#b4236b; --sd2q:#8b5e34; --sd2r:#6b7a00; --sd2ai:#0369a1; --dir-buy:#1f66d1; --dir-sell:#d1306f; --dir-flat:#8b939c;
   --sans:"IBM Plex Sans KR",system-ui,-apple-system,"Malgun Gothic",sans-serif;
   --mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
 }
@@ -24,7 +24,7 @@
   --pos:#3987e5; --neg:#e66767; --mid:#383835;
   --o-back:#c9ced5; --o-break:#d95926; --o-stay:#6b727c; --peter:#9d6ff0;
   --up:#e66767; --dn:#5598e7; --oi:#4a5059; --oi-wall:#eef0f2; --path:#eef0f2;
-  --chip:#252a30; --chip-on:#eef0f2; --chip-on-ink:#141619; --i-for:#9085e9; --i-ind:#d95926; --i-ins:#199e70; --sd2:#3cc6c8; --sd2p:#ee6aa7; --sd2q:#d6a77a; --sd2r:#c3d36a; --sd2ai:#7dd3fc; color-scheme:dark}}
+  --chip:#252a30; --chip-on:#eef0f2; --chip-on-ink:#141619; --i-for:#9085e9; --i-ind:#d95926; --i-ins:#199e70; --sd2:#3cc6c8; --sd2p:#ee6aa7; --sd2q:#d6a77a; --sd2r:#c3d36a; --sd2ai:#7dd3fc; --dir-buy:#5b9cf0; --dir-sell:#ef6aa2; --dir-flat:#7d858f; color-scheme:dark}}
 :root[data-theme="dark"]{
   --bg:#141619; --panel:#1b1e22; --ink:#eef0f2; --ink-2:#b4bac2; --ink-3:#848b95; --rule:#2e3339; --grid:#252a30;
   --struct:#e0a526; --struct-line:#c98500; --dist:#3cc391; --dist-line:#199e70;
@@ -32,7 +32,7 @@
   --pos:#3987e5; --neg:#e66767; --mid:#383835;
   --o-back:#c9ced5; --o-break:#d95926; --o-stay:#6b727c; --peter:#9d6ff0;
   --up:#e66767; --dn:#5598e7; --oi:#4a5059; --oi-wall:#eef0f2; --path:#eef0f2;
-  --chip:#252a30; --chip-on:#eef0f2; --chip-on-ink:#141619; --i-for:#9085e9; --i-ind:#d95926; --i-ins:#199e70; --sd2:#3cc6c8; --sd2p:#ee6aa7; --sd2q:#d6a77a; --sd2r:#c3d36a; --sd2ai:#7dd3fc; color-scheme:dark}
+  --chip:#252a30; --chip-on:#eef0f2; --chip-on-ink:#141619; --i-for:#9085e9; --i-ind:#d95926; --i-ins:#199e70; --sd2:#3cc6c8; --sd2p:#ee6aa7; --sd2q:#d6a77a; --sd2r:#c3d36a; --sd2ai:#7dd3fc; --dir-buy:#5b9cf0; --dir-sell:#ef6aa2; --dir-flat:#7d858f; color-scheme:dark}
 body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.55}
 .wrap{max-width:1180px;margin:0 auto;padding-inline:16px;padding-block:24px 48px;display:grid;gap:22px}
 header{display:grid;gap:8px}
@@ -65,6 +65,11 @@ th{font-weight:600;color:var(--ink-2);font-size:11.5px;background:var(--panel);p
 td.l,th.l{text-align:left}
 td.mono{font-family:var(--mono)}
 .k-struct{color:var(--struct);font-weight:600}.k-sd2{color:var(--sd2);font-weight:600}.k-sd2p{color:var(--sd2p);font-weight:600}
+.winrange{font:400 12px/1.3 var(--mono);color:var(--ink-2)}
+#ladder{touch-action:pan-y}#ladMini{cursor:pointer;touch-action:none;display:block}
+.sd2ver{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin:2px 0 10px;font-size:12px;color:var(--ink-2)}
+.sd2ver .vchip{font:500 11.5px/1 var(--mono);padding:4px 7px;border-radius:4px;background:var(--chip);color:var(--ink);border:1px solid var(--rule)}
+.sd2ver .vchip.main{font-weight:700}.sd2ver .vstate{font-weight:600}
 .sd2sum{display:flex;flex-wrap:wrap;gap:8px 18px;font:400 12.5px/1.4 var(--mono);color:var(--ink-2)}.sd2sum b{color:var(--ink);font-weight:600}
 .sd2log{margin:0;padding-left:18px;font:400 12px/1.6 var(--mono);color:var(--ink-2)}
 #sd2Tbl th,#sd2Tbl td,#sd2pTbl th,#sd2pTbl td,#sd2p2Tbl th,#sd2p2Tbl td,#sd2p3Tbl th,#sd2p3Tbl td{padding:6px 5px}.k-sd2q{color:var(--sd2q);font-weight:600}.k-sd2r{color:var(--sd2r);font-weight:600}.k-sd2ai{color:var(--sd2ai);font-weight:600}
@@ -141,8 +146,16 @@ details.ailog summary{cursor:pointer;color:var(--ink-2);font-size:12.5px}
       <div><span class="seg-label">신동2 </span><span class="seg" id="segSd2"></span></div>
       <div><span class="seg-label">옵션층 </span><span class="seg" id="segLayer"></span></div>
     </div>
+    <div class="bar">
+      <div><span class="seg-label">시간 </span><span class="seg" id="segWin"></span></div>
+      <div class="seg" role="group" aria-label="시간 창 이동"><button type="button" id="winPrev" aria-label="앞 시간으로">◀</button><button type="button" id="winNext" aria-label="뒤 시간으로">▶</button><button type="button" id="winLast" aria-pressed="false">최신</button></div>
+      <div><span class="seg-label">방향 영역 </span><span class="seg" id="segDir"></span></div>
+      <span class="winrange" id="winRange"></span>
+    </div>
     <div class="legend" id="legend1"></div>
     <div class="scroll"><svg id="ladder" role="img" aria-label="맥점, 1분봉, 행사가별 옵션 분포를 가격축 하나에 겹친 사다리 차트"></svg></div>
+    <div class="scroll"><svg id="ladMini" role="img" aria-label="하루 전체 개요 — 현재 시간 창 위치"></svg></div>
+    <p class="sub">Ctrl+휠 = 확대·축소(커서 기준) · 드래그 또는 Shift+휠 = 좌우 이동 · 더블클릭 = 전체. 아래 개요 띠의 사각형을 끌면 창이 옮겨지고, 전체 보기에서 개요를 누르면 그 자리의 60분 창이 열린다. 세로축은 창 안 가격에 맞춘다 — 범위 밖 맥점은 위·아래 가장자리에 ▲▼ 로 남긴다. 방향 영역은 「신동2」 선택(전부면 AI → P 순)의 매수·매도·관망이며, 판단 기록이 없는 구간은 칠하지 않는다.</p>
     <p class="sub" id="ladderNote"></p>
   </section>
 
@@ -159,6 +172,7 @@ details.ailog summary{cursor:pointer;color:var(--ink-2);font-size:12.5px}
   </section>
   <section id="sd2Sec">
     <h2>신동2 — 외인 수급 시점별 제안</h2>
+    <div class="sd2ver" id="sd2Ver"></div>
     <p class="sub">08:55–09:55 10분마다 <b>그 시각 이전 데이터만으로</b> 방향·진입·손절·청산을 낸다(기본 규칙). 신동2-P 는 같은 원천으로 아침에 방향을 한 번 정하고, 진입은 가격으로만, 손실은 짧게·이익은 길게 가져가는 섀도 변형이다. P2 는 P 에 피터 1116 딥다이브의 두 가지(고접촉 레벨 · 61.8% 손절)를 더한 섀도다. P3 는 P 에서 최종 목표만 「직전 5일 매물대 봉우리 1pt 앞」으로 바꾼 섀도다(피터 청산가 1095 딥다이브). 위 차트의 청록(기본)·자홍(P)·갈색(P2)·올리브(P3) 표시가 이 표와 같다. 「앞길」은 진입가에서 진행 방향 다음 두꺼운 매물대까지 거리와 그 사이 얇은 구간 비율(기록만). 「접촉」은 진입 레벨을 직전 60분 동안 지난 봉 수(기록만, 판단에 안 씀).</p>
     <div class="sd2sum" id="sd2Sum"></div>
     <div class="caveat" id="sd2Cav"></div>
@@ -174,21 +188,22 @@ details.ailog summary{cursor:pointer;color:var(--ink-2);font-size:12.5px}
     <ol class="sd2log" id="sd2Log3"></ol>
     <div class="notes">
       <div><h3>기본 규칙</h3><ul>
-        <li>점수 = 선물 외인 Δ10 ×2 · 선물 외인 누계 · 먼스리 외인 콜−풋 Δ10 · 위클리 콜−풋 Δ10 · 현물 외인 Δ10 · 가격 Δ10 (각 ±1, 데드밴드 안이면 0)</li>
+        <li>점수 = 선물 외인 Δ10 ×2 · 선물 외인 누계 · 먼스리 외인 콜−풋 Δ10(±130) · 위클리 콜−풋 Δ10(±150) · 현물 외인 Δ10 · 가격 Δ10 (각 ±1, 데드밴드 안이면 0)</li>
+        <li><b>v2(2026-10-10)</b>: 옵션 콜−풋은 <b>금액(백만원)</b>, 위클리 = <b>만기 최근접</b>(먼스리 만기주는 위클리 항 기권) — 사전등록 SD2B-2026-10-10-v2</li>
         <li>+3 이상 매수 · −3 이하 매도 · 그 외 관망</li>
         <li>진입: 유리한 쪽 3pt 안 맥점·벽에 지정가(30분 유효), 없으면 시장가</li>
         <li>손절: 진입 너머 맥점 +1pt (1.5×ATR–8pt) · 청산: 손절거리 ×1.5 이상 떨어진 맥점</li></ul></div>
-      <div><h3>신동2-P (사전등록 SD2P-2026-10-06-v1)</h3><ul>
-        <li>세팅: 수급 <b>수준</b>만(먼스리 콜−풋 ±1,000 · 선물 외인 ±300 · 위클리 ±1,000 · 가격−시가 ±3pt), 합이 처음 ±2 이상인 시점에 고정</li>
+      <div><h3>신동2-P (사전등록 SD2P-2026-10-10-v2)</h3><ul>
+        <li>세팅: 수급 <b>수준</b>만(먼스리 콜−풋 ±1,850 · 선물 외인 ±300계약 · 만기 최근접 위클리 콜−풋 ±750 · 가격−시가 ±3pt), 합이 처음 ±2 이상인 시점에 고정. 콜−풋은 백만원</li>
         <li>진입: 세팅 방향으로만, 되돌림 지정가 또는 맥점 종가 돌파</li>
         <li>손절 4pt 고정(최대 5) — 넓히지 않는다 · 절반 1.5R 청산 후 본전 손절 · 나머지 먼 맥점 또는 15:10</li>
         <li>재진입은 같은 방향·직전 레벨 재돌파만 · 하루 3회 · 손절 3회 또는 −12pt 에서 종료</li></ul></div>
-      <div><h3>신동2-P2 (사전등록 SD2P2-2026-10-06-v1)</h3><ul>
+      <div><h3>신동2-P2 (사전등록 SD2P2-2026-10-10-v2)</h3><ul>
         <li>P 와 같다. 다른 것은 둘뿐</li>
         <li>고접촉 레벨: 기준가 ±5pt 를 0.5pt 격자로 보고 직전 60봉 접촉이 가장 많은 가격(6봉 이상)을 진입 후보에 더함</li>
         <li>61.8% 손절: 그날 고저폭의 61.8% 되돌림이 진입에서 1.5–5pt 안이면 손절을 그 +0.5 에</li>
         <li>근거: 피터 10/6 「1116」 = 반등이 10번 막힌 자리, 보유 중 최고가가 61.8% 바로 아래에서 꺾임</li></ul></div>
-      <div><h3>신동2-P3 (사전등록 SD2P3-2026-10-06-v1)</h3><ul>
+      <div><h3>신동2-P3 (사전등록 SD2P3-2026-10-10-v2)</h3><ul>
         <li>P 와 같다. 다른 것은 최종 목표 하나</li>
         <li>직전 5거래일 정규선물 매물대(1pt) 봉우리 — 최대의 60% 이상인 국소 최대 — 중 진행 방향으로 가장 가까운 것이 3R 이상이면 그 1pt 앞</li>
         <li>정규 → 미니 환산: 당일 그 시각 이전 봉의 (정규 − 미니) 중앙값. 장중(정규 당일봉 적재 전)은 전일값 — 확정은 장후</li>
@@ -202,11 +217,12 @@ details.ailog summary{cursor:pointer;color:var(--ink-2);font-size:12.5px}
 
   <section>
     <h2>행사가 × 시간 미결제약정 증감과 주체 흐름</h2>
-    <p class="sub">맨 위 띠 = 선물(정규 K200) 주체별 누적 순매수(1분, 계약, 7221 — 받지 않은 분은 잇지 않는다). 둘째 띠 = 옵션 상품 단위 주체별 누적 순매수(1분, 계약). 가운데 = 행사가별 미결제약정 첫 스냅샷 대비 증감(5분, 전체 참여자). 오른쪽 열 = 종합이면 행사가별 하루 OI 증감, 주체를 고르면 그 주체의 행사가별 당일 순매수([9842]) — 시점 파일(YYMMDD_HHMM_D)이 2개 이상이면 행사가 × 저장 시각 칸으로 펼쳐 직전 시점 대비 증감을 칠한다. 굵은 선은 선물가를 지수 단위로 환산한 경로.</p>
+    <p class="sub">맨 위 띠 = 선물(정규 K200) 주체별 누적 순매수(1분, 계약, 7221 — 받지 않은 분은 잇지 않는다). 둘째 띠 = 옵션 상품 단위 주체별 누적 순매수(1분, 7222) — 「수급 단위」로 <b>계약수</b>와 <b>금액(백만원)</b>을 바꿔 본다. 신동2 규칙(v2)은 금액으로 판정한다 — 계약수는 만기 근처의 싼 외가격 옵션이 부풀린다. 가운데 = 행사가별 미결제약정 첫 스냅샷 대비 증감(5분, 전체 참여자). 오른쪽 열 = 종합이면 행사가별 하루 OI 증감, 주체를 고르면 그 주체의 행사가별 당일 순매수([9842]) — 시점 파일(YYMMDD_HHMM_D)이 2개 이상이면 행사가 × 저장 시각 칸으로 펼쳐 직전 시점 대비 증감을 칠한다. 굵은 선은 선물가를 지수 단위로 환산한 경로.</p>
     <div class="bar">
       <div><span class="seg-label">상품 </span><span class="seg" id="segBook"></span></div>
       <div><span class="seg-label">구분 </span><span class="seg" id="segCP"></span></div>
       <div><span class="seg-label">주체 </span><span class="seg" id="segInv"></span></div>
+      <div><span class="seg-label">수급 단위 </span><span class="seg" id="segUnit"></span></div>
     </div>
     <div class="legend" id="legend2"></div>
     <div class="scroll"><svg id="heat" role="img" aria-label="행사가별 미결제약정 증감 히트맵과 가격 경로"></svg></div>
@@ -264,7 +280,7 @@ function showTip(ev, html){ tip.innerHTML = html; tip.hidden = false; const w = 
 function hideTip(){ tip.hidden = true; }
 
 let C = [], N = 0, B = 0, tIdx = {}, big = 0, CUR = null, DATES = {}, TODAY = null;
-const state = { stage: 'all', layer: 'mon', book: 'monthly', cp: 'call', inv: 'all', peter: 'on', sd2: 'both' };
+const state = { stage: 'all', layer: 'mon', book: 'monthly', cp: 'call', inv: 'all', peter: 'on', sd2: 'both', unit: 'qty', win: 'all', span: 90, dir: 'on' };
 try { const s = JSON.parse(localStorage.getItem('maekjeom_ladder') || '{}'); Object.assign(state, s); } catch(e) {}
 // 주소창 ?layer=dF&inv=foreign 처럼 화면 상태를 지정할 수 있다(저장값보다 우선)
 new URLSearchParams(location.search).forEach((v, k) => { if (k in state) state[k] = v; });
@@ -296,6 +312,52 @@ function seg(id, key, opts, onChange){
 seg('segStage', 'stage', [['all','둘 다'],['0850','08:50'],['0930','09:30']], drawLadder);
 seg('segPeter', 'peter', [['on','켬'],['off','끔']], () => { drawLadder(); drawTable(); });
 seg('segSd2', 'sd2', [['both','전부'],['base','기본'],['p','P'],['p2','P2'],['p3','P3'],['ai','AI'],['off','끔']], drawLadder);
+seg('segWin', 'win', [['60', '60분'], ['120', '120분'], ['all', '전체']], () => {
+  // 창 크기만 바꿀 때는 지금 보던 창의 가운데를 유지한다
+  if (LV && LV.span < DAY1 - DAY0 && state.win !== 'all') { const sp = +state.win; view.end = Math.round(LV.X0 + LV.span / 2 + sp / 2); } else view.end = null;
+  drawLadder(); });
+seg('segDir', 'dir', [['on', '켬'], ['off', '끔']], drawLadder);
+document.getElementById('winPrev').onclick = () => { if (LV && LV.span < DAY1 - DAY0) setWindow(LV.X0 - LV.span / 2, LV.span); };
+document.getElementById('winNext').onclick = () => { if (LV && LV.span < DAY1 - DAY0) setWindow(LV.X0 + LV.span / 2, LV.span); };
+document.getElementById('winLast').onclick = () => { if (!LV || LV.span >= DAY1 - DAY0) return;
+  if (D && D.live) { view.end = null; syncWinSeg(); redrawLadder(); } else setWindow((N ? tmin(C[N - 1][0]) + 1 : DAY1) - LV.span, LV.span); };
+(() => {
+  const lad = document.getElementById('ladder'), mini = document.getElementById('ladMini');
+  const svgX = (node, ev, W) => { const r = node.getBoundingClientRect(); return (ev.clientX - r.left) * W / r.width; };
+  const inPlot = sx => LV && sx >= LV.plotX && sx <= LV.plotX + LV.plotW;
+  lad.addEventListener('wheel', ev => {
+    if (!LV || !D) return; const sx = svgX(lad, ev, LV.W); if (!inPlot(sx)) return;
+    if (ev.ctrlKey) {                                    // 확대·축소 — 커서 아래 시각을 고정
+      // 배율은 휠 이동량에 비례(마우스 한 칸 ≈ 7%) — 고해상도 휠·터치패드는 한 칸에 이벤트가 여러 번 와서
+      //   이벤트당 고정 배율이면 몇 배씩 튄다. 이벤트 하나의 배율은 ±12% 로 자른다.
+      //   기준 창은 winRange()(상태 즉시 반영)에서 읽는다 — LV 는 다음 프레임에야 갱신돼 같은 프레임 이벤트가 서로 덮는다.
+      ev.preventDefault();
+      const px = ev.deltaMode === 1 ? ev.deltaY * 16 : ev.deltaMode === 2 ? ev.deltaY * 400 : ev.deltaY;
+      const f = Math.min(1.12, Math.max(1 / 1.12, Math.exp(px * ZOOM_K)));
+      const [cx0, cx1] = winRange(), cs = cx1 - cx0, fr = (sx - LV.plotX) / LV.plotW;
+      const tc = cx0 + fr * cs, ns = cs * f; setWindow(tc - fr * ns, ns);
+    } else if (ev.shiftKey || Math.abs(ev.deltaX) > Math.abs(ev.deltaY)) {   // 좌우 이동
+      if (LV.span >= DAY1 - DAY0) return; ev.preventDefault();
+      const d = ev.deltaX || ev.deltaY; setWindow(LV.X0 + Math.sign(d) * Math.max(2, LV.span * 0.1), LV.span);
+    }                                                    // 그냥 휠 = 페이지 스크롤(가로채지 않는다)
+  }, { passive: false });
+  let drag = null;
+  lad.addEventListener('pointerdown', ev => { if (!LV || ev.button !== 0 || LV.span >= DAY1 - DAY0) return; const sx = svgX(lad, ev, LV.W); if (!inPlot(sx)) return;
+    drag = { sx, X0: LV.X0, span: LV.span, moved: false }; lad.setPointerCapture(ev.pointerId); });
+  lad.addEventListener('pointermove', ev => { if (!drag) return; const dx = svgX(lad, ev, LV.W) - drag.sx; if (!drag.moved && Math.abs(dx) < 3) return;
+    drag.moved = true; lad.style.cursor = 'grabbing'; hideTip(); setWindow(drag.X0 - dx / LV.plotW * drag.span, drag.span); });
+  const endDrag = () => { if (drag) { drag = null; lad.style.cursor = LV && LV.span < DAY1 - DAY0 ? 'grab' : ''; } };
+  lad.addEventListener('pointerup', endDrag); lad.addEventListener('pointercancel', endDrag);
+  lad.addEventListener('dblclick', ev => { if (LV && inPlot(svgX(lad, ev, LV.W))) setWindow(DAY0, DAY1 - DAY0); });
+  // 개요 — 사각형 끌기 · 바깥 클릭 = 그 자리로 · 전체 보기에서 클릭 = 그 자리 60분
+  const miniM = ev => DAY0 + (svgX(mini, ev, 1120) - 210) / 600 * (DAY1 - DAY0);
+  let md = null;
+  mini.addEventListener('pointerdown', ev => { if (!LV || !D) return; const m = miniM(ev); if (m < DAY0 - 5 || m > DAY1 + 5) return;
+    if (LV.span >= DAY1 - DAY0) { setWindow(m - 30, 60); return; }
+    md = { off: (m >= LV.X0 && m <= LV.X0 + LV.span) ? m - LV.X0 : LV.span / 2, span: LV.span }; mini.setPointerCapture(ev.pointerId); setWindow(m - md.off, md.span); });
+  mini.addEventListener('pointermove', ev => { if (md) setWindow(miniM(ev) - md.off, md.span); });
+  ['pointerup', 'pointercancel'].forEach(k => mini.addEventListener(k, () => { md = null; }));
+})();
 seg('segLayer', 'layer', [['mon','먼스리 OI'],['wkm','월위클리 OI'],['wkt','목위클리 OI'],['hold','전일 외인 보유'],['flowF','당일 외인'],['flowI','당일 개인'],['dF','외인 증감'],['dI','개인 증감']], drawLadder);
 // 9842 시점 파일 — 직전 시점 대비 증감. 시점이 하나뿐이면 개장(0) 대비
 function snapDelta(who){
@@ -314,6 +376,7 @@ function makeBookSeg(){
 makeBookSeg();
 seg('segCP', 'cp', [['call','콜'],['put','풋']], drawHeat);
 seg('segInv', 'inv', [['all','종합'],['foreign','외인'],['individual','개인'],['institution','기관']], drawHeat);
+seg('segUnit', 'unit', [['qty','계약수'],['amt','금액']], drawHeat);
 
 // ── 예상 규칙 ─────────────────────────────────────────────
 const nearK = p => Math.round((p - B) / 2.5) * 2.5;
@@ -337,43 +400,148 @@ function predict(L){
 const OC = { '되돌림': '--o-back', '돌파': '--o-break', '정거장': '--o-stay', '진행중': '--ink-3' };
 
 // ── 사다리 ────────────────────────────────────────────────
+// ── 시간 창 (678차 후속) — 60·120분·전체·사용자 지정 ─────────────────────
+const DAY0 = 525, DAY1 = 946;                 // 08:45 – 15:46
+const tmin = t => +t.slice(0, 2) * 60 + +t.slice(3, 5);
+const hmOf = m => { m = Math.round(m); return String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0'); };
+const view = { end: null };                   // null = 기본 위치(장중 = 최신 추종 · 장후 = 개장부터)
+let LV = null;                                // 마지막으로 그린 사다리 기하 — 휠·드래그·개요가 쓴다
+function winSpan(){ return state.win === 'all' ? DAY1 - DAY0 : state.win === 'custom' ? (+state.span || 90) : (+state.win || DAY1 - DAY0); }
+function winRange(){
+  const span = Math.min(DAY1 - DAY0, winSpan());
+  if (span >= DAY1 - DAY0) return [DAY0, DAY1];
+  const lastM = N ? tmin(C[N - 1][0]) + 1 : DAY0 + span;
+  let end = view.end != null ? view.end : (D && D.live ? lastM + Math.round(span * 0.08) : DAY0 + span);
+  end = Math.min(DAY1, Math.max(DAY0 + span, end));
+  return [end - span, end];
+}
+// 방향 영역 — 신동2 토글이 고른 주체. 판단 기록이 없는 구간은 칠하지 않는다(미측정 ≠ 관망, 계측 4원칙 ②)
+const DIRC = { '매수': '--dir-buy', '매도': '--dir-sell', '관망': '--dir-flat' };
+// 같은 방향이 이어지는 구간은 하나로 합친다(리본 글자가 기록마다 반복되지 않게) — 첫 근거를 남기고 이어진 기록 수를 붙인다
+const mergeSegs = a => a.reduce((o, sg) => { const l = o[o.length - 1];
+  if (l && l.d === sg.d && Math.abs(l.b - sg.a) < 0.01) { l.b = sg.b; l.n = (l.n || 1) + 1; } else o.push(Object.assign({}, sg)); return o; }, [])
+  .map(sg => sg.n > 1 ? Object.assign(sg, { why: (sg.why || '') + ` 외 ${sg.n - 1}건` }) : sg);
+function dirSegments(){
+  const none = { segs: [], src: null };
+  if (!D || state.dir === 'off' || state.sd2 === 'off') return none;
+  const SD = D.shindong2, AI = D.sd2ai, aiOk = !!(AI && AI.log && AI.log.length);
+  let src = state.sd2;
+  if (src === 'both') src = aiOk ? 'ai' : (SD && SD.p ? 'p' : 'base');
+  const lastM = N ? tmin(C[N - 1][0]) + 1 : DAY0;
+  const endM = D.live ? Math.min(tmin('15:10'), lastM) : tmin('15:10');
+  const out = []; const push = (a, b, d, why) => { if (d && b > a) out.push({ a, b, d, why }); };
+  if (src === 'ai') {
+    if (!aiOk) return none;
+    const effM = r => { const t = r.ts.slice(11, 16); return (r.ts.slice(0, 10) < D.date || t < '08:45') ? DAY0 : tmin(t); };
+    const recs = AI.log.filter(r => (r.variant || 'live') !== 'legacy' && ['plan', 'manage', 'stand', 'exit'].includes(r.action))
+      .map(r => ({ m: effM(r), r })).sort((p, q) => p.m - q.m);
+    let cur = null, why = '', t = DAY0;
+    recs.forEach(({ m, r }) => { if (m > t) { push(t, Math.min(m, endM), cur, why); t = m; }
+      cur = (r.action === 'stand' || r.action === 'exit') ? '관망' : (r.dir || cur); why = `${r.ts.slice(11, 16)} ${r.phase} · ${r.action}`; });
+    push(t, endM, cur, why);
+    return { segs: mergeSegs(out), src: '신동2-AI' };
+  }
+  if (src === 'base') {
+    (SD && SD.points || []).forEach(p => { const m = tmin(p.obs.T); push(m, Math.min(m + 10, endM), p.rule.dir, `${p.obs.T} 점수 ${p.rule.score > 0 ? '+' : ''}${p.rule.score}`); });
+    return { segs: mergeSegs(out), src: '신동2 기본' };
+  }
+  const X = SD && SD[src]; if (!X) return none;
+  let cur = '관망', why = '세팅 전 — 수준 점수 |B| < 2', t = tmin('09:05');
+  (X.log || []).map(l => l.match(/^(\d\d:\d\d) 세팅 (?:변경 → )?(매수|매도)/)).filter(Boolean).forEach(mm => {
+    const m = tmin(mm[1]); push(t, Math.min(m, endM), cur, why); t = m; cur = mm[2]; why = mm[0]; });
+  push(t, endM, cur, why);
+  return { segs: mergeSegs(out), src: { p: '신동2-P', p2: '신동2-P2', p3: '신동2-P3' }[src] };
+}
+function syncWinSeg(){
+  document.querySelectorAll('#segWin button').forEach(b => b.setAttribute('aria-pressed', String(b.id === 'segWin-' + state.win)));
+  const wl = document.getElementById('winLast'); if (wl) wl.setAttribute('aria-pressed', String(!!(D && D.live && view.end == null && state.win !== 'all')));
+}
+const ZOOM_K = Math.log(1.07) / 100;          // Ctrl+휠 감도 — deltaY 100(마우스 한 칸) 당 7%
+let rafId = 0; const redrawLadder = () => { if (!rafId) rafId = requestAnimationFrame(() => { rafId = 0; drawLadder(); }); };
+function setWindow(x0, span){
+  span = Math.max(20, Math.min(DAY1 - DAY0, span));
+  if (span >= DAY1 - DAY0 - 0.5) { state.win = 'all'; view.end = null; }
+  else { const r = Math.round(span); state.win = (r === 60 || r === 120) ? String(r) : 'custom'; state.span = r;
+    x0 = Math.max(DAY0, Math.min(DAY1 - span, x0)); view.end = Math.round(x0 + span); }
+  save(); syncWinSeg(); redrawLadder();
+}
+function drawMini(DS, X0, X1){
+  const svg = document.getElementById('ladMini'); svg.innerHTML = ''; if (!D) return;
+  const W = 1120, H = 58, plotX = 210, plotW = 600, mT = 4, mB = 16, full = X1 - X0 >= DAY1 - DAY0;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.style.width = '100%'; svg.style.minWidth = '900px'; svg.style.height = 'auto';
+  const xm = m => plotX + (m - DAY0) / (DAY1 - DAY0) * plotW, ih = H - mT - mB;
+  el('rect', { x: plotX, y: mT, width: plotW, height: ih, fill: css('--chip'), rx: 3 }, svg);
+  el('text', { x: plotX - 8, y: mT + ih / 2 + 4, 'text-anchor': 'end', 'font-size': 11, fill: css('--ink-3') }, svg, '하루 전체');
+  DS.segs.forEach(s => el('rect', { x: xm(s.a), y: mT + ih - 5, width: Math.max(0, xm(s.b) - xm(s.a)), height: 5, fill: css(DIRC[s.d]), 'fill-opacity': .85 }, svg));
+  if (N) { const lo = Math.min(...C.map(c => c[3])), hi = Math.max(...C.map(c => c[2])); const yy = p => mT + 3 + (hi - p) / Math.max(1e-9, hi - lo) * (ih - 11);
+    el('polyline', { points: C.map(c => `${xm(tmin(c[0]) + 0.5)},${yy(c[4])}`).join(' '), fill: 'none', stroke: css('--ink-2'), 'stroke-width': 1.2, 'stroke-linejoin': 'round' }, svg); }
+  ['09:00', '10:00', '11:00', '12:00', '13:00', '14:00', '15:00'].forEach(t => el('text', { x: xm(tmin(t)), y: H - 3, 'text-anchor': 'middle', 'font-size': 10, fill: css('--ink-3'), class: 'num' }, svg, t));
+  if (!full) {
+    el('rect', { x: plotX, y: mT, width: Math.max(0, xm(X0) - plotX), height: ih, fill: css('--panel'), 'fill-opacity': .6 }, svg);
+    el('rect', { x: xm(X1), y: mT, width: Math.max(0, plotX + plotW - xm(X1)), height: ih, fill: css('--panel'), 'fill-opacity': .6 }, svg);
+    el('rect', { x: xm(X0), y: mT + .75, width: xm(X1) - xm(X0), height: ih - 1.5, fill: 'none', stroke: css('--ink'), 'stroke-width': 1.5, rx: 2 }, svg);
+  }
+}
+
 function drawLadder(){
   const svg = document.getElementById('ladder'); svg.innerHTML = '';
-  const W = 1120, H = 600, mT = 18, mB = 34, labW = 210, plotX = labW, plotW = 600, gap = 18, profX = plotX + plotW + gap, profW = W - profX - 8;
+  const W = 1120, H = 640, mT = 34, mB = 52, labW = 210, plotX = labW, plotW = 600, gap = 18, profX = plotX + plotW + gap, profW = W - profX - 8;
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`); svg.style.width = '100%'; svg.style.minWidth = '900px'; svg.style.height = 'auto';
-  const levels = D.levels.filter(L => L.kind === '피터' ? state.peter === 'on' : (state.stage === 'all' || L.stage === state.stage));
-  // y 범위 — 그날 가격 ±여유, 가격에서 12pt 안의 맥점은 포함
-  let lo = N ? Math.min(...C.map(c => c[3])) : null, hi = N ? Math.max(...C.map(c => c[2])) : null;
-  if (lo === null) { const ps = levels.map(L => L.price); if (!ps.length) { el('text', { x: W/2, y: H/2, 'text-anchor': 'middle', 'font-size': 14, fill: css('--ink-2') }, svg, '이 날 1분봉·맥점이 아직 없다'); return; } lo = Math.min(...ps); hi = Math.max(...ps); }
-  levels.forEach(L => { if (L.price >= lo - 12 && L.price <= hi + 12) { lo = Math.min(lo, L.price); hi = Math.max(hi, L.price); } });
-  const yMin = Math.floor((lo - 3) / 2) * 2, yMax = Math.ceil((hi + 3) / 2) * 2;
-  const y = p => mT + (yMax - p) / (yMax - yMin) * (H - mT - mB);
-  const tm = t => +t.slice(0, 2) * 60 + +t.slice(3, 5); const X0 = tm('08:45'), X1 = tm('15:46'), slot = plotW / (X1 - X0);
+  // 시간 창 — 세로축은 **창 안 캔들**에 맞춘다(시인성의 핵심 — 가로만 늘리면 캔들이 넓어질 뿐 위아래는 납작하다)
+  const tm = tmin; const [X0, X1] = winRange(); const span = X1 - X0, slot = plotW / span, full = span >= DAY1 - DAY0;
   const xT = t => plotX + (tm(t) - X0 + 0.5) * slot;
   const x = i => xT(C[i][0]);
+  const visC = C.filter(c => { const m = tm(c[0]); return m >= X0 && m < X1; });
+  const allLv = D.levels.filter(L => L.kind === '피터' ? state.peter === 'on' : (state.stage === 'all' || L.stage === state.stage));
+  // y 범위 — 창 안 가격 ±여유, 가격에서 near pt 안의 맥점은 포함(전체 12pt · 창 3pt)
+  const near = full ? 12 : 3, pad = full ? 3 : 1.5, baseC = visC.length ? visC : C;
+  let lo = baseC.length ? Math.min(...baseC.map(c => c[3])) : null, hi = baseC.length ? Math.max(...baseC.map(c => c[2])) : null;
+  if (lo === null) { const ps = allLv.map(L => L.price); if (!ps.length) { el('text', { x: W/2, y: H/2, 'text-anchor': 'middle', 'font-size': 14, fill: css('--ink-2') }, svg, '이 날 1분봉·맥점이 아직 없다'); LV = null; drawMini({ segs: [] }, DAY0, DAY1); return; } lo = Math.min(...ps); hi = Math.max(...ps); }
+  allLv.forEach(L => { if (L.price >= lo - near && L.price <= hi + near) { lo = Math.min(lo, L.price); hi = Math.max(hi, L.price); } });
+  const yMin = Math.floor((lo - pad) / 2) * 2, yMax = Math.ceil((hi + pad) / 2) * 2;
+  const levels = allLv.filter(L => L.price >= yMin && L.price <= yMax);
+  const offUp = allLv.filter(L => L.price > yMax).sort((a, b) => a.price - b.price), offDn = allLv.filter(L => L.price < yMin).sort((a, b) => b.price - a.price);
+  const y = p => mT + (yMax - p) / (yMax - yMin) * (H - mT - mB);
+  // 플롯 영역 클립 — 창 밖 캔들·선·표식을 자른다(왼쪽 라벨 열·오른쪽 분포는 자르지 않는다)
+  const cpath = el('clipPath', { id: 'ladClip' }, el('defs', {}, svg)); el('rect', { x: plotX, y: mT, width: plotW, height: H - mT - mB }, cpath);
+  const clipG = () => el('g', { 'clip-path': 'url(#ladClip)' }, svg);
   // grid
-  const gstep = (yMax - yMin) > 60 ? 10 : (yMax - yMin) > 30 ? 4 : 2;
-  for (let p = yMin; p <= yMax; p += 2) { const major = p % 10 === 0;
+  const rng = yMax - yMin, minor = rng > 40 ? 2 : 1, gstep = rng > 60 ? 10 : rng > 30 ? 4 : rng > 14 ? 2 : 1;
+  for (let p = yMin; p <= yMax; p += minor) { const major = p % 10 === 0;
     el('line', { x1: plotX, x2: profX + profW, y1: y(p), y2: y(p), stroke: css(major ? '--rule' : '--grid'), 'stroke-width': 1 }, svg);
     if (p % gstep === 0) el('text', { x: plotX - 6, y: y(p) + 4, 'text-anchor': 'end', 'font-size': 11, fill: css('--ink-3'), class: 'num' }, svg, p); }
-  ['09:00','10:00','11:00','12:00','13:00','14:00','15:00','15:10'].forEach(t => {
+  const tstep = span <= 45 ? 5 : span <= 90 ? 10 : span <= 180 ? 15 : 60;
+  const ticks = []; for (let m = Math.ceil(X0 / tstep) * tstep; m < X1; m += tstep) ticks.push(hmOf(m));
+  if (!ticks.includes('15:10') && tm('15:10') >= X0 && tm('15:10') < X1) ticks.push('15:10');
+  ticks.forEach(t => {
     el('line', { x1: xT(t), x2: xT(t), y1: mT, y2: H - mB, stroke: css(t === '15:10' ? '--neg' : '--grid'), 'stroke-dasharray': t === '15:10' ? '3 3' : '' }, svg);
-    if (t !== '15:10') el('text', { x: xT(t), y: H - mB + 16, 'text-anchor': 'middle', 'font-size': 11, fill: css('--ink-3'), class: 'num' }, svg, t); });
-  if (D.live && N) { const xn = x(N - 1); el('line', { x1: xn, x2: xn, y1: mT, y2: H - mB, stroke: css('--o-break'), 'stroke-width': 1, opacity: .6 }, svg);
-    el('text', { x: xn + 4, y: mT + 10, 'font-size': 10.5, fill: css('--o-break'), class: 'num' }, svg, '지금 ' + C[N-1][0]); }
+    if (t !== '15:10' || tstep < 15) el('text', { x: xT(t), y: H - mB + 16, 'text-anchor': 'middle', 'font-size': 11, fill: css('--ink-3'), class: 'num' }, svg, t); });
+  // 방향 영역 — 매수(청)·매도(홍)·관망(회). 전면은 옅게, 바닥 리본은 진하게 + 글자(색만으로 읽지 않게)
+  const DS = dirSegments();
+  { const dg = clipG(); const xm = m => plotX + (m - X0) * slot;
+    DS.segs.forEach(sg => { const xa = xm(sg.a), xb = xm(sg.b); if (xb <= plotX || xa >= plotX + plotW) return; const c = css(DIRC[sg.d]);
+      el('rect', { x: xa, y: mT, width: xb - xa, height: H - mT - mB, fill: c, 'fill-opacity': sg.d === '관망' ? 0.045 : 0.055 }, dg);
+      const rb = el('rect', { x: xa, y: H - mB - 8, width: xb - xa, height: 8, fill: c, 'fill-opacity': 0.85 }, dg);
+      const vx0 = Math.max(xa, plotX), vx1 = Math.min(xb, plotX + plotW);
+      if (vx1 - vx0 > 30) el('text', { x: vx0 + 3, y: H - mB - 12, 'font-size': 10.5, 'font-weight': 700, fill: c }, dg, sg.d);
+      rb.addEventListener('mousemove', ev => showTip(ev, `<b>${DS.src} ${sg.d}</b><br>${hmOf(sg.a)}–${hmOf(sg.b)}${sg.why ? '<br><span class="muted">' + sg.why + '</span>' : ''}`)); rb.addEventListener('mouseleave', hideTip); });
+  }
+  if (D.live && N) { const ng = clipG(); const xn = x(N - 1); el('line', { x1: xn, x2: xn, y1: mT, y2: H - mB, stroke: css('--o-break'), 'stroke-width': 1, opacity: .6 }, ng);
+    el('text', { x: xn - 4, y: mT + 10, 'text-anchor': 'end', 'font-size': 10.5, fill: css('--o-break'), class: 'num' }, ng, '지금 ' + C[N-1][0]); }
   // bands
+  const bandG = clipG();
   D.bands.filter(b => state.stage === 'all' ? b.stage === '0850' : b.stage === state.stage).forEach(b => {
-    const st = b.stage === '0850' ? '08:51' : '09:31';
-    el('rect', { x: xT(st), width: plotX + plotW - xT(st), y: y(b.hi), height: y(b.lo) - y(b.hi), fill: css(b.name.startsWith('high') ? '--band-hi' : '--band-lo') }, svg);
+    const st = b.stage === '0850' ? '08:51' : '09:31'; const xb0 = Math.max(plotX, xT(st));
+    el('rect', { x: xb0, width: Math.max(0, plotX + plotW - xb0), y: y(b.hi), height: y(b.lo) - y(b.hi), fill: css(b.name.startsWith('high') ? '--band-hi' : '--band-lo') }, bandG);
   });
-  // candles
-  const cg = el('g', {}, svg); const bw = Math.max(1, slot * 0.7);
-  C.forEach((c, i) => { const up = c[4] >= c[1]; const col = css(up ? '--up' : '--dn');
+  // candles — 창 안(±1분)만
+  const cg = clipG(); const bw = Math.min(9, Math.max(1, slot * 0.7));
+  C.forEach((c, i) => { const m = tm(c[0]); if (m < X0 - 1 || m > X1) return; const up = c[4] >= c[1]; const col = css(up ? '--up' : '--dn');
     el('line', { x1: x(i), x2: x(i), y1: y(c[2]), y2: y(c[3]), stroke: col, 'stroke-width': 1 }, cg);
     el('rect', { x: x(i) - bw/2, width: bw, y: y(Math.max(c[1], c[4])), height: Math.max(0.8, Math.abs(y(c[1]) - y(c[4]))), fill: col }, cg); });
   // crosshair layer
   const hv = el('line', { y1: mT, y2: H - mB, stroke: css('--ink-3'), 'stroke-dasharray': '2 3', visibility: 'hidden' }, svg);
-  el('rect', { x: plotX, y: mT, width: plotW, height: H - mT - mB, fill: 'transparent' }, svg).addEventListener('mousemove', ev => {
+  el('rect', { x: plotX, y: mT, width: plotW, height: H - mT - mB - 9, fill: 'transparent' }, svg).addEventListener('mousemove', ev => {
     if (!N) return; const r = svg.getBoundingClientRect(); const sx = (ev.clientX - r.left) * W / r.width; const tq = X0 + Math.floor((sx - plotX) / slot);
     let i = 0; for (let k = 0; k < N; k++) if (tm(C[k][0]) <= tq) i = k;
     hv.setAttribute('x1', x(i)); hv.setAttribute('x2', x(i)); hv.setAttribute('visibility', 'visible'); const c = C[i];
@@ -385,7 +553,7 @@ function drawLadder(){
   for (let k = 1; k < lab.length; k++) if (lab[k].yy - lab[k-1].yy < 14) lab[k].yy = lab[k-1].yy + 14;
   lab.forEach(({ L, yy }) => {
     const isS = L.kind === '구조', isP = L.kind === '피터'; const col = css(isP ? '--peter' : isS ? '--struct-line' : '--dist-line'); const ink = css(isP ? '--peter' : isS ? '--struct' : '--dist');
-    const xs0 = xT(L.start); const yl = y(L.price);
+    const xs0 = Math.min(plotX + plotW, Math.max(plotX, xT(L.start))); const yl = y(L.price);
     const ln = el('line', { x1: xs0, x2: profX + profW, y1: yl, y2: yl, stroke: col, 'stroke-width': L.merge ? 2.5 : 1.5, 'stroke-dasharray': isP ? '2 3' : isS ? '' : '5 4', opacity: isP && !L.parsed ? .5 : (L.stage === '0930' && state.stage === 'all' ? .75 : 1) }, svg);
     el('line', { x1: plotX - 2, x2: xs0, y1: yl, y2: yl, stroke: col, 'stroke-width': 1, 'stroke-dasharray': '1 3' }, svg);
     el('path', { d: `M${labW - 30} ${yy} L${plotX - 32} ${yl}`, stroke: css('--rule'), fill: 'none' }, svg);
@@ -397,23 +565,31 @@ function drawLadder(){
     hit.addEventListener('mouseleave', hideTip);
     // touch marker
     if (L.touch) { const xi = xT(L.touch); const oc = css(OC[L.outcome] || '--ink-3');
-      const g = el('g', {}, svg);
+      const g = clipG();
       if (L.outcome === '돌파') el('path', { d: `M${xi} ${yl-8} L${xi+7} ${yl+5} L${xi-7} ${yl+5} Z`, fill: oc, stroke: css('--panel'), 'stroke-width': 2, transform: L.approach === '▼' ? `rotate(180 ${xi} ${yl})` : '' }, g);
       else if (L.outcome === '되돌림') el('circle', { cx: xi, cy: yl, r: 6.5, fill: oc, stroke: css('--panel'), 'stroke-width': 2 }, g);
       else el('rect', { x: xi - 6, y: yl - 6, width: 12, height: 12, fill: oc, stroke: css('--panel'), 'stroke-width': 2 }, g);
       el('text', { x: xi + 10, y: yl + (L.approach === '▲' ? 15 : -8), 'font-size': 11, 'font-weight': 600, fill: css('--ink') }, g, L.outcome);
     }
   });
+  // 창 밖 맥점 — 세로 범위 밖이라 그리지 않은 맥점을 위·아래 가장자리에 남긴다(「안 보임 ≠ 없음」, 계측 4원칙 ③)
+  const lvName = L => L.kind === '피터' ? '피터 ' + (L.pkind || '') : L.kind === '거리' ? L.label : L.label.split(' · ')[0].replace(/\(.*\)/, '');
+  [[offUp, true], [offDn, false]].forEach(([arr, top]) => { if (!arr.length) return;
+    const show = arr.slice(0, 3), rest = arr.length - show.length;
+    const tx = el('text', { x: plotX + 2, y: top ? mT - 12 : H - mB + 36, 'font-size': 11, fill: css('--ink-2') }, svg,
+      (top ? '▲ 위 ' : '▼ 아래 ') + show.map(L => `${L.price.toFixed(L.kind === '거리' ? 1 : 0)} ${lvName(L)}`).join(' · ') + (rest > 0 ? ` 외 ${rest}개` : ''));
+    el('title', {}, tx, arr.map(L => `${L.price} ${lvName(L)}`).join('\n')); });
+  const gx = clipG();
   // 피터 거래(체결 → 청산)
   if (state.peter === 'on') (D.peter.trades || []).forEach(tr => {
     if (!tr.entry_hm || tr.entry_price == null) return; const pc = css('--peter'); const open = !tr.exit_hm || tr.exit_price == null;
     const ex = open ? (N ? C[N-1] : null) : null; if (open && !ex) return;
     const x0 = xT(tr.entry_hm), y0 = y(tr.entry_price), x1 = open ? xT(ex[0]) : xT(tr.exit_hm > '15:45' ? '15:45' : tr.exit_hm), y1 = y(open ? ex[4] : tr.exit_price); const sgn = tr.direction === 'SHORT' ? 1 : -1;
     const pnl = sgn * (tr.entry_price - (open ? ex[4] : tr.exit_price));
-    el('line', { x1: x0, y1: y0, x2: x1, y2: y1, stroke: pc, 'stroke-width': 1.2, 'stroke-dasharray': '1 3' }, svg);
-    el('path', { d: sgn > 0 ? `M${x0-7} ${y0-6} L${x0+7} ${y0-6} L${x0} ${y0+6} Z` : `M${x0-7} ${y0+6} L${x0+7} ${y0+6} L${x0} ${y0-6} Z`, fill: pc, stroke: css('--panel'), 'stroke-width': 1.5 }, svg);
-    el('path', { d: `M${x1-5} ${y1-5} L${x1+5} ${y1+5} M${x1+5} ${y1-5} L${x1-5} ${y1+5}`, stroke: pc, 'stroke-width': 2.4 }, svg);
-    const hb = el('rect', { x: Math.min(x0, x1) - 8, y: Math.min(y0, y1) - 8, width: Math.abs(x1 - x0) + 16, height: Math.abs(y1 - y0) + 16, fill: 'transparent' }, svg);
+    el('line', { x1: x0, y1: y0, x2: x1, y2: y1, stroke: pc, 'stroke-width': 1.2, 'stroke-dasharray': '1 3' }, gx);
+    el('path', { d: sgn > 0 ? `M${x0-7} ${y0-6} L${x0+7} ${y0-6} L${x0} ${y0+6} Z` : `M${x0-7} ${y0+6} L${x0+7} ${y0+6} L${x0} ${y0-6} Z`, fill: pc, stroke: css('--panel'), 'stroke-width': 1.5 }, gx);
+    el('path', { d: `M${x1-5} ${y1-5} L${x1+5} ${y1+5} M${x1+5} ${y1-5} L${x1-5} ${y1+5}`, stroke: pc, 'stroke-width': 2.4 }, gx);
+    const hb = el('rect', { x: Math.min(x0, x1) - 8, y: Math.min(y0, y1) - 8, width: Math.abs(x1 - x0) + 16, height: Math.abs(y1 - y0) + 16, fill: 'transparent' }, gx);
     hb.addEventListener('mousemove', ev => showTip(ev, `<b>피터 ${tr.direction === 'SHORT' ? '매도' : '매수'}</b> ${tr.entry_hm} ${tr.entry_price.toFixed(2)}<br>→ ${open ? '보유 중 (' + ex[0] + ' 평가)' : tr.exit_hm + ' ' + tr.exit_price.toFixed(2) + ' ' + tr.why}<br>${fmt(pnl, 2)}pt (미니 환산)`));
     hb.addEventListener('mouseleave', hideTip);
   });
@@ -422,11 +598,11 @@ function drawLadder(){
   if (SD && state.sd2 !== 'off') {
     const xc = t => xT(!t ? (N ? C[N-1][0] : '15:09') : (t > '15:45' ? '15:45' : t));
     const tri = (xx, yy, buy, col, hollow) => el('path', { d: buy ? `M${xx-6} ${yy+9} L${xx+6} ${yy+9} L${xx} ${yy+1} Z` : `M${xx-6} ${yy-9} L${xx+6} ${yy-9} L${xx} ${yy-1} Z`,
-      fill: hollow ? css('--panel') : col, stroke: col, 'stroke-width': 1.6, opacity: hollow ? .75 : 1 }, svg);
-    const cross = (xx, yy, col) => el('path', { d: `M${xx-5} ${yy-5} L${xx+5} ${yy+5} M${xx+5} ${yy-5} L${xx-5} ${yy+5}`, stroke: col, 'stroke-width': 2.4 }, svg);
-    const seg_ = (t0, t1, p, col, dash) => { if (p == null) return; el('line', { x1: xc(t0), x2: xc(t1), y1: y(p), y2: y(p), stroke: col, 'stroke-width': 1.4, 'stroke-dasharray': dash, opacity: .9 }, svg); };
+      fill: hollow ? css('--panel') : col, stroke: col, 'stroke-width': 1.6, opacity: hollow ? .75 : 1 }, gx);
+    const cross = (xx, yy, col) => el('path', { d: `M${xx-5} ${yy-5} L${xx+5} ${yy+5} M${xx+5} ${yy-5} L${xx-5} ${yy+5}`, stroke: col, 'stroke-width': 2.4 }, gx);
+    const seg_ = (t0, t1, p, col, dash) => { if (p == null) return; el('line', { x1: xc(t0), x2: xc(t1), y1: y(p), y2: y(p), stroke: col, 'stroke-width': 1.4, 'stroke-dasharray': dash, opacity: .9 }, gx); };
     const hitbox = (t0, t1, ps, html) => { const xs = [xc(t0), xc(t1)], ys = ps.filter(v => v != null).map(y);
-      const hb = el('rect', { x: Math.min(...xs) - 8, y: Math.min(...ys) - 8, width: Math.abs(xs[1] - xs[0]) + 16, height: Math.max(...ys) - Math.min(...ys) + 16, fill: 'transparent' }, svg);
+      const hb = el('rect', { x: Math.min(...xs) - 8, y: Math.min(...ys) - 8, width: Math.abs(xs[1] - xs[0]) + 16, height: Math.max(...ys) - Math.min(...ys) + 16, fill: 'transparent' }, gx);
       hb.addEventListener('mousemove', ev => showTip(ev, html)); hb.addEventListener('mouseleave', hideTip); };
     if (state.sd2 === 'both' || state.sd2 === 'base') (SD.points || []).forEach(pt => {
       const r = pt.rule, g = pt.grade, T = pt.obs.T; if (!r || r.dir === '관망') return;
@@ -434,7 +610,7 @@ function drawLadder(){
       const t0 = filled ? g.fill_t : T, t1 = g.exit_t || (N ? C[N-1][0] : T);
       seg_(t0, t1, r.stop, css('--neg'), '4 3'); seg_(t0, t1, r.target, col, '');
       tri(xc(t0), y(filled ? g.fill : r.entry), buy, col, !filled);
-      if (g.exit_t) { el('line', { x1: xc(t0), y1: y(g.fill), x2: xc(g.exit_t), y2: y(g.exit), stroke: col, 'stroke-width': 1, 'stroke-dasharray': '1 3' }, svg); cross(xc(g.exit_t), y(g.exit), col); }
+      if (g.exit_t) { el('line', { x1: xc(t0), y1: y(g.fill), x2: xc(g.exit_t), y2: y(g.exit), stroke: col, 'stroke-width': 1, 'stroke-dasharray': '1 3' }, gx); cross(xc(g.exit_t), y(g.exit), col); }
       hitbox(t0, t1, [r.entry, r.stop, r.target, g.exit], `<b style="color:var(--sd2)">신동2 기본 ${T} ${r.dir}</b> (점수 ${r.score > 0 ? '+' : ''}${r.score})<br>진입 ${r.entry} ${r.entry_type}${filled ? ' → 체결 ' + g.fill_t : ''}<br>손절 ${r.stop} · 청산 ${r.target}<br>${g.result}${g.pnl != null ? ' ' + fmt(g.pnl, 2) + 'pt' : ''}`);
     });
     [['p', SD.p, '--sd2p', '신동2-P'], ['p2', SD.p2, '--sd2q', '신동2-P2'], ['p3', SD.p3, '--sd2r', '신동2-P3']].forEach(([key, X, cv, nm]) => {
@@ -443,8 +619,8 @@ function drawLadder(){
         const col = css(cv), buy = tr.side === '매수', t1 = tr.exit_t || (N ? C[N-1][0] : tr.entry_t);
         seg_(tr.entry_t, t1, tr.stop, css('--neg'), '4 3'); seg_(tr.entry_t, t1, tr.half, col, '2 2'); if (tr.far != null) seg_(tr.entry_t, t1, tr.far, col, '');
         tri(xc(tr.entry_t), y(tr.fill), buy, col, false);
-        tr.legs.filter(l => l[1] === '절반 청산').forEach(l => el('circle', { cx: xc(l[2]), cy: y(tr.half), r: 4.5, fill: col, stroke: css('--panel'), 'stroke-width': 1.5 }, svg));
-        if (tr.exit_t) { el('line', { x1: xc(tr.entry_t), y1: y(tr.fill), x2: xc(tr.exit_t), y2: y(tr.exit_px), stroke: col, 'stroke-width': 1.2, 'stroke-dasharray': '1 3' }, svg); cross(xc(tr.exit_t), y(tr.exit_px), col); }
+        tr.legs.filter(l => l[1] === '절반 청산').forEach(l => el('circle', { cx: xc(l[2]), cy: y(tr.half), r: 4.5, fill: col, stroke: css('--panel'), 'stroke-width': 1.5 }, gx));
+        if (tr.exit_t) { el('line', { x1: xc(tr.entry_t), y1: y(tr.fill), x2: xc(tr.exit_t), y2: y(tr.exit_px), stroke: col, 'stroke-width': 1.2, 'stroke-dasharray': '1 3' }, gx); cross(xc(tr.exit_t), y(tr.exit_px), col); }
         hitbox(tr.entry_t, t1, [tr.fill, tr.stop, tr.half, tr.exit_px], `<b style="color:var(${cv})">${nm} ${tr.side}</b> ${tr.entry_t} @${tr.fill.toFixed(2)} (${tr.how})<br>레벨 접촉 ${tr.touch60 != null ? tr.touch60 + '봉' : '—'} · 손절 ${tr.stop} (${tr.stop_src || '고정'})<br>절반 ${tr.half}${tr.far != null ? ' · 최종 ' + tr.far : ''}${tr.hvn && tr.hvn.peak_reg != null ? ' (5일 매물대 봉우리 정규 ' + tr.hvn.peak_reg + ' 1pt 앞)' : ''}<br>${tr.thin ? '앞길: 두꺼운 구간까지 ' + (tr.thin.to_hvn != null ? tr.thin.to_hvn + 'pt' : '40pt 밖') + ' · 얇은 ' + Math.round((tr.thin.thin_pct || 0) * 100) + '%<br>' : ''}${tr.open ? '보유 중 — 평가' : tr.exit_t + ' ' + tr.why} ${fmt(tr.pnl, 2)}pt`);
       });
     });
@@ -459,23 +635,23 @@ function drawLadder(){
       const t0 = effT(r); const nxt = plans.slice(i + 1).find(q => q.action !== 'manage' || r.action === 'manage'); const t1 = nxt ? effT(nxt) : (nowT > '15:10' ? '15:10' : nowT);
       if (t0 > '15:45' || t1 <= t0) return;
       const x0 = xT(t0), x1 = xT(t1 > '15:45' ? '15:45' : t1);
-      const line = (pv, stroke, dash, w) => { if (pv == null) return; el('line', { x1: x0, x2: x1, y1: y(pv), y2: y(pv), stroke, 'stroke-dasharray': dash, 'stroke-width': w, opacity: .95 }, svg); };
+      const line = (pv, stroke, dash, w) => { if (pv == null) return; el('line', { x1: x0, x2: x1, y1: y(pv), y2: y(pv), stroke, 'stroke-dasharray': dash, 'stroke-width': w, opacity: .95 }, gx); };
       line(r.entry, col, '1 3', 2); line(r.stop, css('--neg'), '6 3', 1.4); line(r.target, col, '', 1.6);
       if (r.entry != null || r.stop != null || r.target != null) {
         const yy = y(r.entry != null ? r.entry : (r.target != null ? r.target : r.stop));
-        el('text', { x: x0 + 3, y: yy - 4, 'font-size': 10, 'font-weight': 700, fill: col }, svg, 'AI ' + (r.dir || ''));
+        el('text', { x: x0 + 3, y: yy - 4, 'font-size': 10, 'font-weight': 700, fill: col }, gx, 'AI ' + (r.dir || ''));
         const hb = el('rect', { x: x0, y: Math.min(...[r.entry, r.stop, r.target].filter(v => v != null).map(y)) - 6, width: Math.max(4, x1 - x0),
-          height: Math.max(...[r.entry, r.stop, r.target].filter(v => v != null).map(y)) - Math.min(...[r.entry, r.stop, r.target].filter(v => v != null).map(y)) + 12, fill: 'transparent' }, svg);
+          height: Math.max(...[r.entry, r.stop, r.target].filter(v => v != null).map(y)) - Math.min(...[r.entry, r.stop, r.target].filter(v => v != null).map(y)) + 12, fill: 'transparent' }, gx);
         hb.addEventListener('mousemove', ev => showTip(ev, `<b style="color:var(--sd2ai)">신동2-AI ${r.ts.slice(11, 16)} ${r.phase} · ${r.action}</b><br>${r.dir || ''} 진입 ${r.entry ?? '시장가'} · 손절 ${r.stop ?? '—'} · 청산 ${r.target ?? '—'}`));
         hb.addEventListener('mouseleave', hideTip);
       }
     });
     ((AI.sim && AI.sim.trades) || []).forEach(tr => {
       const xx = xT(tr.entry_t), yy = y(tr.fill);
-      el('path', { d: `M${xx} ${yy-7} L${xx+7} ${yy} L${xx} ${yy+7} L${xx-7} ${yy} Z`, fill: col, stroke: css('--panel'), 'stroke-width': 1.5 }, svg);
+      el('path', { d: `M${xx} ${yy-7} L${xx+7} ${yy} L${xx} ${yy+7} L${xx-7} ${yy} Z`, fill: col, stroke: css('--panel'), 'stroke-width': 1.5 }, gx);
       if (tr.exit_t) { const x1 = xT(tr.exit_t > '15:45' ? '15:45' : tr.exit_t), y1 = y(tr.exit_px);
-        el('line', { x1: xx, y1: yy, x2: x1, y2: y1, stroke: col, 'stroke-width': 1.2, 'stroke-dasharray': '1 3' }, svg);
-        el('path', { d: `M${x1-5} ${y1-5} L${x1+5} ${y1+5} M${x1+5} ${y1-5} L${x1-5} ${y1+5}`, stroke: col, 'stroke-width': 2.4 }, svg); }
+        el('line', { x1: xx, y1: yy, x2: x1, y2: y1, stroke: col, 'stroke-width': 1.2, 'stroke-dasharray': '1 3' }, gx);
+        el('path', { d: `M${x1-5} ${y1-5} L${x1+5} ${y1+5} M${x1+5} ${y1-5} L${x1-5} ${y1+5}`, stroke: col, 'stroke-width': 2.4 }, gx); }
     });
   }
   // profile
@@ -508,7 +684,7 @@ function drawLadder(){
   const vis = rows.filter(r => { const yc = y(r.k + B); return yc >= mT && yc <= H - mB; });
   const vmax = Math.max(1e-9, ...vis.map(r => Math.max(Math.abs(r.L), Math.abs(r.R), r.L0 || 0, r.R0 || 0,
     Math.abs(r.HL || 0), Math.abs(r.HR || 0), shadow && shadow.sum ? Math.abs((r.HL || 0) + r.L) : 0, shadow && shadow.sum ? Math.abs((r.HR || 0) + r.R) : 0)));
-  const bh = Math.max(3, (y(0) - y(2.5)) * 0.72);
+  const bh = Math.min(16, Math.max(3, (y(0) - y(2.5)) * 0.72));
   el('text', { x: profX + profW/2, y: mT - 4, 'text-anchor': 'middle', 'font-size': 11.5, 'font-weight': 600, fill: css('--ink-2') }, svg, title);
   el('text', { x: profX + 2, y: H - mB + 16, 'font-size': 11, fill: css('--ink-3') }, svg, '◀ 풋');
   el('text', { x: profX + profW - 2, y: H - mB + 16, 'font-size': 11, 'text-anchor': 'end', fill: css('--ink-3') }, svg, '콜 ▶');
@@ -551,6 +727,11 @@ function drawLadder(){
       (shadow ? `<span><i class="sw-box" style="background:color-mix(in srgb, var(--pos) 16%, transparent);border:1px dashed var(--pos)"></i>그림자 = 전일 보유</span>` +
         (shadow.sum ? `<span><i class="sw-line" style="width:2px;height:12px;border:0;background:var(--ink)"></i>눈금 = 전일 보유 + 당일 = 현재 보유</span>` : `<span class="muted">보유 파일이 직전 거래일이 아니어서 현재 보유 눈금 생략</span>`) : '') +
       (shadowWhy ? `<span class="muted">${shadowWhy}</span>` : '') : `<span><i class="sw-box" style="background:var(--oi)"></i>OI 최신</span><span><i class="sw-line" style="width:2px;height:12px;border:0;background:var(--ink)"></i>첫 스냅샷 위치</span>`);
+  if (DS.segs.length) lg.insertAdjacentHTML('beforeend', `<span><i class="sw-box" style="background:var(--dir-buy)"></i>매수</span><span><i class="sw-box" style="background:var(--dir-sell)"></i>매도</span><span><i class="sw-box" style="background:var(--dir-flat)"></i>관망 <span class="muted">— 방향 영역 = ${DS.src}</span></span>`);
+  LV = { W, plotX, plotW, X0, span };
+  svg.style.cursor = full ? '' : 'grab';
+  document.getElementById('winRange').textContent = `${hmOf(X0)}–${hmOf(X1)} · 세로 ${yMin}–${yMax}${offUp.length + offDn.length ? ' · 창 밖 맥점 ' + (offUp.length + offDn.length) + '개' : ''}`;
+  syncWinSeg(); drawMini(DS, X0, X1);
   document.getElementById('ladderNote').textContent = `행사가는 베이시스 ${fmt(B,2)}pt를 더해 선물가 위치에 그렸다. 08:50 맥점은 08:51부터, 09:30 맥점은 09:31부터, 피터맥점은 트윗 다음 분부터 판정한다. ${D.peter.available ? '피터 가격은 정규선물 기준이라 보정값 ' + D.peter.offset + 'pt를 더해 미니로 옮겼다.' : '이 날 피터 원문 없음.'} 밴드는 ${state.stage === '0930' ? '09:30' : '08:50'} 기준.`;
 }
 
@@ -608,8 +789,10 @@ function drawHeat(){
     D.fut || {}, '이 날 선물 투자자 순매수가 없다 — 미륵이 미실행이거나 수집 전 날짜');
 
   // ── 둘째 띠: 상품 단위 주체별 누적 순매수 (7222) ──
-  strip(mT + futH + gapF, stripH, `${{ monthly: '먼스리', weekly_mon: '월위클리', weekly_thu: '목위클리' }[state.book]} ${state.cp === 'call' ? '콜' : '풋'} — 주체별 누적 순매수 (계약, 상품 합계)`,
-    D.flow1m[prodKey] || {}, '이 날 이 상품의 주체 흐름이 없다 — 상장 없음');
+  const amtU = state.unit === 'amt';
+  const fsrc = amtU ? D.flow1m_amt : D.flow1m;
+  strip(mT + futH + gapF, stripH, `${{ monthly: '먼스리', weekly_mon: '월위클리', weekly_thu: '목위클리' }[state.book]} ${state.cp === 'call' ? '콜' : '풋'} — 주체별 누적 순매수 (${amtU ? '금액 백만원' : '계약수'}, 상품 합계)`,
+    (fsrc || {})[prodKey] || {}, fsrc ? '이 날 이 상품의 주체 흐름이 없다 — 상장 없음' : '금액 시계열이 없다 — 사다리 서버를 재기동하면 나온다');
 
   // ── 가운데: 행사가 × 시간 OI 증감 ──
   el('text', { x: mL, y: hy0 - 8, 'font-size': 11.5, 'font-weight': 600, fill: css('--ink-2') }, svg,
@@ -790,8 +973,20 @@ function drawSD2Table(){
     if (_eb && D && D.pc) _eb.textContent = '미륵이 · ' + D.pc + ' · 실시간 · 일별 복기'; }
   document.getElementById('sd2Sum').innerHTML = `<span>기본 <b>${fmt(SD.summary.base, 2)}pt</b> (${SD.summary.base_n}건)</span><span>신동2-P <b>${fmt(SD.summary.p, 2)}pt</b></span><span>신동2-P2 <b>${SD.summary.p2 != null ? fmt(SD.summary.p2, 2) + 'pt' : '—'}</b></span><span>신동2-P3 <b>${SD.summary.p3 != null ? fmt(SD.summary.p3, 2) + 'pt' : '—'}</b></span><span>피터 <b>${pt}</b></span>` +
     `<span>${SD.live ? '장중 — 완결 봉 ' + (SD.last_bar || '—') + '까지' : '확정'}</span>`;
-  document.getElementById('sd2Cav').innerHTML = `<b>사전등록 채점 중.</b> 2026-10-07부터 20거래일 동안 규칙을 바꾸지 않고 기본·P·P2·P3·피터를 나란히 채점한 뒤 판정한다. 10/6 이전 날짜는 참고용 재계산이다(P 는 그 기간 피터 기록을 보고 만들었다). 손익은 1계약 환산 pt, 수수료·슬리피지 제외.`;
-  let h = '<thead><tr><th class="l">시각</th><th>기준가</th><th>선물외인 (Δ10)</th><th>먼스리 C−P (Δ10)</th><th>위클리 C−P (Δ10)</th><th>현물외인 (Δ10)</th><th>가격Δ10</th><th>점수</th><th class="l">방향</th><th>진입</th><th>접촉</th><th>앞길</th><th>손절</th><th>청산</th><th class="l">결과</th><th>손익pt</th></tr></thead><tbody>';
+  { const vd = document.getElementById('sd2Ver'), st = SD.scoring_start, v1 = SD.v1_scored_days || [];
+    const tag = (SD.base_ver || '').split('-').pop() || '—';
+    const stt = !st ? ['버전 정보 없음 — 서버 재기동 필요', '--ink-3']
+      : v1.includes(D.date) ? [`이 날짜는 v1 으로 채점됐다(${SD.base_ver_prev || 'v1'}) — 화면은 ${tag} 재계산, 합산 제외`, '--o-break']
+      : D.date < st ? [`개시 전 날짜 — ${tag} 규칙으로 재계산한 참고값(채점 아님)`, '--ink-3']
+      : [`${tag} 채점 대상일`, '--sd2'];
+    vd.innerHTML = `<span class="vchip main">규칙 ${tag}</span><span class="vchip">개시 ${st || '—'}</span>` +
+      `<span class="vchip">기본 ${SD.base_ver || '—'}</span>` +
+      [['P', SD.p], ['P2', SD.p2], ['P3', SD.p3]].map(([n, X]) => `<span class="vchip">${n} ${X ? X.ver : '—'}</span>`).join('') +
+      `<span class="vchip">위클리 ${SD.wk ? (SD.wk.prod === 'mon' ? '기권(먼스리 만기주)' : SD.wk.prod) : '—'}</span><span class="vchip">옵션 단위 ${SD.flow_unit || '—'}</span>` +
+      `<span class="vstate" style="color:var(${stt[1]})">${stt[0]}</span>`; }
+  document.getElementById('sd2Cav').innerHTML = `<b>사전등록 채점 중 (v2).</b> ${SD.scoring_start || '2026-10-12'}부터 20거래일 동안 규칙을 바꾸지 않고 기본·P·P2·P3·피터를 나란히 채점한 뒤 판정한다. v1 채점일(10/7·10/8)은 합산하지 않는다 — 이 화면은 모든 날짜를 <b>v2 규칙으로 재계산</b>해 보여 준다. 그 이전 날짜는 참고용이다(P 는 그 기간 피터 기록을 보고 만들었다). ` +
+    `위클리 원천 <b>${SD.wk ? (SD.wk.prod === 'mon' ? '기권(먼스리 만기주)' : SD.wk.prod) : '—'}</b> · 옵션 콜−풋 단위 <b>${SD.flow_unit || '—'}</b>. 손익은 1계약 환산 pt, 수수료·슬리피지 제외.`;
+  let h = '<thead><tr><th class="l">시각</th><th>기준가</th><th>선물외인 (Δ10)</th><th>먼스리 C−P 백만원 (Δ10)</th><th>위클리 C−P 백만원 (Δ10)</th><th>현물외인 (Δ10)</th><th>가격Δ10</th><th>점수</th><th class="l">방향</th><th>진입</th><th>접촉</th><th>앞길</th><th>손절</th><th>청산</th><th class="l">결과</th><th>손익pt</th></tr></thead><tbody>';
   (SD.points || []).forEach(p => { const o = p.obs, r = p.rule, g = p.grade, go = r.dir !== '관망';
     h += `<tr><td class="l mono">${o.T}</td><td class="mono">${o.px != null ? o.px.toFixed(2) : '—'}</td>` +
       `<td class="mono">${n2(o.fut_for)} (${n2(o.fut_for_d)})</td><td class="mono">${n2(o.mon_cp)} (${n2(o.mon_cp_d)})</td><td class="mono">${n2(o.wk_cp)} (${n2(o.wk_cp_d)})</td><td class="mono">${n2(o.spot)} (${n2(o.spot_d)})</td>` +
@@ -803,7 +998,7 @@ function drawSD2Table(){
   [[SD.p, 'sd2pVer', 'sd2pTbl', 'sd2Log', 'k-sd2p'], [SD.p2, 'sd2p2Ver', 'sd2p2Tbl', 'sd2Log2', 'k-sd2q'], [SD.p3, 'sd2p3Ver', 'sd2p3Tbl', 'sd2Log3', 'k-sd2r']].forEach(([P, vid, tid, lid, kc]) => {
     const tb = document.getElementById(tid), lg = document.getElementById(lid), vr = document.getElementById(vid);
     if (!P) { vr.textContent = '— 없음'; tb.innerHTML = ''; lg.innerHTML = ''; return; }
-    vr.textContent = `${P.ver} · 세팅 ${P.set_t || '—'} ${P.side}`;
+    vr.textContent = `${P.ver} · 개시 ${SD.scoring_start || '—'} · 세팅 ${P.set_t || '—'} ${P.side}`;
     let q = '<thead><tr><th class="l">진입</th><th class="l">방향</th><th>체결</th><th class="l">방식</th><th>접촉</th><th>앞길</th><th>손절</th><th class="l">손절 근거</th><th>절반</th><th>최종 목표</th><th class="l">청산</th><th>손익pt</th></tr></thead><tbody>';
     if (!P.trades.length) q += `<tr><td class="l muted" colspan="12">${P.side === '관망' ? '세팅 없음 — 수준 점수가 ±2에 못 미쳤다' : '체결 없음'}</td></tr>`;
     P.trades.forEach(t => { q += `<tr><td class="l mono">${t.entry_t}</td><td class="l ${kc}">${t.side}</td><td class="mono">${t.fill.toFixed(2)}</td><td class="l">${t.how}</td>` +
@@ -849,6 +1044,7 @@ function schedule(){
   nextAt = Date.now() + wait * 1000; pollTimer = setTimeout(() => load(CUR, true), wait * 1000);
 }
 async function load(day, quiet){
+  if (day !== CUR) view.end = null;
   CUR = day; try { history.replaceState(null, '', '?date=' + day); } catch(e) {}
   $('dateBtn').textContent = day; if (!quiet) setChip('', '불러오는 중…');
   try { const d = await getJSON('/api/day?date=' + day); if (d.date !== CUR) return; lastOk = new Date(); setData(d); }
