@@ -129,6 +129,28 @@ def _spot_foreign(day, t):
         return None
 
 
+def _opt_amt(day, prod, t):
+    """[v2 · 2026-10-10] 7222 외인 콜·풋 누계 **금액(백만원)** — t 이전(포함) 마지막 값. 없으면 None(미측정).
+    규칙 엔진(foreign_flow_pit_review.observe)과 같은 단위·같은 상품을 보여 주려고 직접 읽는다 —
+    사다리 flow1m 은 계약수(net_qty)라 그대로 쓰면 규칙과 다른 값을 해설하게 된다."""
+    import sqlite3
+    if not prod:
+        return None, None
+    p = os.path.join(ROOT, "data", "db", "option_flow.db").replace("\\", "/")
+    out = []
+    try:
+        con = sqlite3.connect("file:%s?mode=ro" % p, uri=True, timeout=5.0)
+        for leg in ("call", "put"):
+            r = con.execute("SELECT net_amt FROM option_investor_flow WHERE trade_date=? AND product=? AND investor='foreign'"
+                            " AND bar_time<=? AND net_amt IS NOT NULL ORDER BY bar_time DESC LIMIT 1",
+                            (day, prod + "_" + leg, t)).fetchone()
+            out.append(r[0] if r else None)
+        con.close()
+    except Exception:
+        return None, None
+    return tuple(out)
+
+
 def build_state(day, now=None):
     """사다리 데이터 계층으로 지금 상태를 만든다. 장중이면 완결 봉까지만 의미가 있다."""
     import ladder_data as L
@@ -162,16 +184,19 @@ def build_state(day, now=None):
         return None
     t0, t10 = last[0], _fmt(_hm(last[0]) - 10)
     fut = d.get("fut") or {}
+    # [v2 · 2026-10-10] 옵션은 금액(백만원) · 위클리 = 만기 최근접(먼스리 만기주는 기권) — 신동2 사전등록 v2
+    from strategy.shindong.calendar import select_flow_product
+    wk, _wk_exp, wk_why = select_flow_product(_dt.date.fromisoformat(day))
+    mc, mp = _opt_amt(day, "mon", t0)
+    mc10, mp10 = _opt_amt(day, "mon", t10)
+    wc, wp = _opt_amt(day, wk, t0) if wk != "mon" else (None, None)
     st["flow"] = dict(
         fut_foreign=at(fut.get("foreign"), t0), fut_foreign_10=at(fut.get("foreign"), t10),
         fut_inst=at(fut.get("institution"), t0),
-        mon_call=at((d["flow1m"].get("mon_call") or {}).get("foreign"), t0),
-        mon_put=at((d["flow1m"].get("mon_put") or {}).get("foreign"), t0),
-        wk_call=at((d["flow1m"].get("wk_mon_call") or {}).get("foreign"), t0),
-        wk_put=at((d["flow1m"].get("wk_mon_put") or {}).get("foreign"), t0),
+        unit="백만원", wk_prod=wk, wk_why=wk_why if wk != "mon" else wk_why + " — 위클리 항 기권(O1 과 같은 원천)",
+        mon_call=mc, mon_put=mp, wk_call=wc, wk_put=wp,
         spot=_spot_foreign(day, t0),
-        mon_call_10=at((d["flow1m"].get("mon_call") or {}).get("foreign"), t10),
-        mon_put_10=at((d["flow1m"].get("mon_put") or {}).get("foreign"), t10))
+        mon_call_10=mc10, mon_put_10=mp10)
     # 맥점 — 지금 보이는 것만(생성 시각 이후)
     lv = [x for x in d.get("levels", []) if x.get("kind") != "피터" and _hm(x["start"]) <= _hm(last[0]) + 1]
     above = sorted({round(x["price"], 2) for x in lv if x["price"] > last[4]})[:4]
@@ -371,9 +396,10 @@ def _summary(st, new, ai):
         L.append("전일(%s) 고 %.2f · 저 %.2f · 종 %.2f" % (p["date"], p["high"], p["low"], p["close"]))
     L.append("선물 외인 %s (Δ10 %s) · 기관 %s" % (f["fut_foreign"], d10(f["fut_foreign"], f["fut_foreign_10"]), f["fut_inst"]))
     cp = lambda a, b: None if a is None or b is None else a - b
-    L.append("먼스리 외인 콜 %s 풋 %s (콜−풋 %s, Δ10 %s) · 위클리 콜 %s 풋 %s · 현물 외인 %s" % (
-        f["mon_call"], f["mon_put"], cp(f["mon_call"], f["mon_put"]),
-        d10(cp(f["mon_call"], f["mon_put"]), cp(f["mon_call_10"], f["mon_put_10"])), f["wk_call"], f["wk_put"], f["spot"]))
+    L.append("옵션 외인(%s) — 먼스리 콜 %s 풋 %s (콜−풋 %s, Δ10 %s) · 위클리[%s] 콜 %s 풋 %s (콜−풋 %s) · 현물 외인 %s" % (
+        f.get("unit", "—"), f["mon_call"], f["mon_put"], cp(f["mon_call"], f["mon_put"]),
+        d10(cp(f["mon_call"], f["mon_put"]), cp(f["mon_call_10"], f["mon_put_10"])),
+        f.get("wk_why", "—"), f["wk_call"], f["wk_put"], cp(f["wk_call"], f["wk_put"]), f["spot"]))
     L.append("맥점 위 %s · 아래 %s · 벽 %s" % (st["levels"]["above"], st["levels"]["below"], st["walls"]))
     sm = st["sd2"]["summary"] or {}
     L.append("규칙 손익 — 기본 %s · P %s · P2 %s · P3 %s" % (sm.get("base"), sm.get("p"), sm.get("p2"), sm.get("p3")))

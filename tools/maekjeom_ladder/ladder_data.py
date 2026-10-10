@@ -384,33 +384,40 @@ FLOW_PRODUCTS = ("mon_call", "mon_put", "wk_mon_call", "wk_mon_put", "wk_thu_cal
 
 
 def flow1m(day):
+    """7222 주체별 누적 순매수 — (mins, 계약수, 마지막 바, 금액).
+    [678차 후속] 금액(`net_amt`, 백만원)도 함께 낸다 — 화면 옵션 수급 띠의 계약수/금액 토글용.
+    신동2 v2 규칙은 금액으로 판정하므로, 계약수만 보이면 화면과 규칙이 다른 값을 보게 된다."""
     mins = ["%02d:%02d" % (h, m) for h in range(8, 17) for m in range(60)]
     mins = [m for m in mins if "08:45" <= m <= "16:10"]
     con = _ro("option_flow.db")
     try:
-        rows = con.execute("SELECT bar_time, product, investor, net_qty FROM option_investor_flow WHERE trade_date=?",
+        rows = con.execute("SELECT bar_time, product, investor, net_qty, net_amt FROM option_investor_flow WHERE trade_date=?",
                            (day,)).fetchall()
     finally:
         con.close()
-    g = {}
-    for t, p, i, q in rows:
-        g.setdefault((p, i), {})[t] = q
-    out = {}
-    for p in FLOW_PRODUCTS:
-        out[p] = {}
-        for i in ("foreign", "individual", "institution"):
-            d = g.get((p, i))
-            if not d:
-                out[p][i] = None
-                continue
-            last, arr = None, []
-            for m in mins:
-                if m in d:
-                    last = d[m]
-                arr.append(last)
-            out[p][i] = arr
-    last_bar = max((t for t, *_ in rows), default=None)
-    return mins, out, last_bar
+    gq, ga = {}, {}
+    for t, p, i, q, a in rows:
+        gq.setdefault((p, i), {})[t] = q
+        ga.setdefault((p, i), {})[t] = a
+
+    def series(g):
+        out = {}
+        for p in FLOW_PRODUCTS:
+            out[p] = {}
+            for i in ("foreign", "individual", "institution"):
+                d = g.get((p, i))
+                if not d:
+                    out[p][i] = None
+                    continue
+                last, arr = None, []
+                for m in mins:
+                    if m in d:
+                        last = d[m]
+                    arr.append(last)
+                out[p][i] = arr if any(v is not None for v in arr) else None   # 전부 결측 = 미측정(0 아님)
+        return out
+    last_bar = max((r[0] for r in rows), default=None)
+    return mins, series(gq), last_bar, series(ga)
 
 
 # ── 선물 투자자 순매수 (7221, raw_investor_futures) ─────────────────────────
@@ -849,9 +856,9 @@ def build_day(day, now=None):
         bk, times, basis = {}, [], None
         warn.append("행사가 OI 읽기 실패: %s" % e)
     try:
-        mins, f1m, flow_last = flow1m(day)
+        mins, f1m, flow_last, f1m_amt = flow1m(day)
     except Exception as e:
-        mins, f1m, flow_last = [], {}, None
+        mins, f1m, flow_last, f1m_amt = [], {}, None, {}
         warn.append("7222 흐름 읽기 실패: %s" % e)
     try:
         fut, fut_last, fut_src = futflow(day, mins)
@@ -875,7 +882,7 @@ def build_day(day, now=None):
     actual = dict(high=max((c[2] for c in cs), default=None), low=min((c[3] for c in cs), default=None))
     return dict(date=day, live=live, generated_at=now.isoformat(timespec="seconds"),
                 candles=cs, candle_src=csrc, levels=lv, bands=bands, basis=basis if basis is not None else 0.0,
-                basis_measured=basis is not None, times=times, books=bk, mins=mins, flow1m=f1m, flow_last=flow_last,
+                basis_measured=basis is not None, times=times, books=bk, mins=mins, flow1m=f1m, flow1m_amt=f1m_amt, flow_last=flow_last,
                 fut=fut, fut_last=fut_last, fut_src=fut_src, shindong2=sd2, sd2ai=sd2ai,
                 hold=h["hold"], flow=h["flow"], hold_src=h["hold_src"], flow_src=h["flow_src"],
                 hold_unit=h["hold_unit"], flow_unit=h["flow_unit"],
