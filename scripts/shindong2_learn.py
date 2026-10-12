@@ -33,6 +33,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 import shindong2_live as SL  # noqa: E402
+import shindong2_scenario as SC  # noqa: E402  (683차 — 확률 시나리오 채점·보정)
 
 ROOT = SL.ROOT
 PC = SL.PC                  # [MW0602 613차] 파일명·머리글의 PC — 하드코딩 MW0601 제거
@@ -203,6 +204,11 @@ def evaluate_day(day, now=None, bars=None, st=None, log=None, save=True):
                             trades=[dict(entry_t=t["entry_t"], side=t["side"], fill=t["fill"], exit_t=t.get("exit_t"),
                                          why=t.get("why"), pnl=t["pnl"]) for t in ai["trades"]]),
                rules=((st or {}).get("sd2") or {}).get("summary"), lessons_applied=applied)
+    # 683차 — 확률 시나리오 채점(장중이면 결말 난 세트만 점수). 예측결과 → 반성의 입력.
+    sets = SC.evaluate_sets([r for r in log if (r.get("variant") or "live") == "live" and r.get("scenarios")],
+                            bars, lambda r: effective_time(r, day), final=not live)
+    out["scenarios"] = sets
+    out["scen_summary"] = SC.day_summary(sets)
     if save:
         SL._atomic_json(os.path.join(SL.day_dir(day), "eval.json"), out)
     return out
@@ -262,6 +268,7 @@ def render_eval(out):
         L.append("- 익일계획 개선 − 기존 = **%s pt**" % _fmtp(on["live"]["sim"]["pnl"] - on["legacy"]["sim"]["pnl"]))
     if "live" in pm and "legacy" in pm:
         L.append("- 장전계획 개선 − 기존 = **%s pt**" % _fmtp(pm["live"]["sim"]["pnl"] - pm["legacy"]["sim"]["pnl"]))
+    L.extend(SC.render_eval(out.get("scenarios") or []))
     L.append("")
     L.append("타점 품질: 포착률 = 손익 ÷ 당일 고저폭 · 진입품질 = 1 − (진입가와 그 방향 최악 극단의 거리 ÷ 고저폭). "
              "목표/손절 여유는 eval.json 의 target_margin / stop_margin.")
@@ -485,7 +492,8 @@ def trend_rows(today=None, now=None):
                          ai_pnl=ev["live_ai"]["pnl"], ai_n=ev["live_ai"]["n"],
                          rules_base=(ev.get("rules") or {}).get("base"), rules_p=(ev.get("rules") or {}).get("p"),
                          lessons=ev.get("lessons_applied") or (fb or {}).get("applied") or [], feedback=bool(fb),
-                         fb_hits=(fb or {}).get("hits") or [], fb_misses=(fb or {}).get("misses") or []))
+                         fb_hits=(fb or {}).get("hits") or [], fb_misses=(fb or {}).get("misses") or [],
+                         scen=ev.get("scen_summary") or {"n": 0}))
     return rows
 
 
@@ -518,8 +526,22 @@ def trend_windows(rows):
                       improve_on=(imp_on, n_on), improve_pm=(imp_pm, n_pm),
                       ai_pnl=round(sum(r["ai_pnl"] or 0 for r in sub), 2), ai_days_pos=sum(1 for r in sub if (r["ai_pnl"] or 0) > 0),
                       rules_base=round(sum(r["rules_base"] or 0 for r in sub), 2),
-                      lessons_days=sum(1 for r in sub if r["lessons"]), feedback_days=sum(1 for r in sub if r["feedback"]))
+                      lessons_days=sum(1 for r in sub if r["lessons"]), feedback_days=sum(1 for r in sub if r["feedback"]),
+                      **_scen_window(sub))
     return out
+
+
+def _scen_window(sub):
+    """683차 — 창 안의 시나리오 채점: 평균 brier/BSS · 기본 시나리오 적중 · 익일계획 세트 · 보정표."""
+    sc = [r.get("scen") or {} for r in sub]
+    days = [x for x in sc if x.get("n")]
+    pairs = [tuple(p) for x in days for p in x.get("pairs", [])]
+    on = [x for x in days if x.get("on_brier") is not None]
+    return dict(scen_days=len(days), scen_brier=_mean([x["brier"] for x in days]), scen_bss=_mean([x.get("bss") for x in days]),
+                scen_top_hit=_mean([x["top_hit"] for x in days]),
+                on_scen_brier=_mean([x["on_brier"] for x in on]), on_scen_bss=_mean([x.get("on_bss") for x in on]),
+                on_scen_top=_rate([x.get("on_top_hit") for x in on]),
+                calibration=SC.calibration(pairs))
 
 
 def trend_verdict(rows, win):
@@ -560,6 +582,18 @@ def trend_verdict(rows, win):
     if streak >= 3:
         flag = "deepdive"
         msgs.append("🔴 익일계획 개선−기존 ≤ 0 이 %d일 연속." % streak)
+    # 683차 — 확률 판단의 건강: 균등 확률보다 나은가(BSS > 0), 보정이 맞는가
+    if w5:
+        bss, bn = w5.get("scen_bss") or (None, 0)
+        if bn < 3:
+            msgs.append("시나리오 확률 판단 미측정 — 채점된 날 %d일(최소 3). 장전·장중·익일 기록에 `--scenarios` 를 빠짐없이." % bn)
+        elif bss is not None and bss <= 0:
+            flag = "deepdive"                            # 확률 판단은 legacy 짝과 무관하게 독립 측정된다
+            msgs.append("🔴 시나리오 BSS %+.2f(n=%d일) ≤ 0 — 균등 확률보다 못하다. 확률 근거(외인 동향 해석·레벨 선택) 딥다이브." % (bss, bn))
+        elif bss is not None:
+            msgs.append("✅ 시나리오 BSS %+.2f(n=%d일) — 균등 확률보다 낫다." % (bss, bn))
+        for a in SC.calibration_advice((win.get(20) or w5).get("calibration") or []):
+            msgs.append("⚠ 보정 " + a)
     return dict(flag=flag, messages=msgs, streak_nonimprove=streak)
 
 
@@ -593,6 +627,22 @@ def render_trend(rows, win, verdict):
             w, v["first"], v["last"], v["n"], r(v["on_hit"]), r(v["pm_hit"]), m(v["on_pnl"]), m(v["on_legacy_pnl"]),
             m(v["pm_pnl"]), m(v["pm_legacy_pnl"]), m(v["improve_on"]), m(v["improve_pm"]), _fmtp(v["ai_pnl"]), _fmtp(v["rules_base"]),
             v["lessons_days"], v["feedback_days"]))
+    L += ["", "## 시나리오 확률 판단 (683차)", "",
+          "> brier 낮을수록 좋다 · BSS = 1 − brier/균등확률brier (>0 이면 균등보다 낫다) · 기본 = 최고 확률 시나리오 실현율.", "",
+          "| 창 | 채점일 | 평균 brier | 평균 BSS | 기본 적중 | 익일계획 brier | 익일계획 BSS | 익일계획 기본 적중 |",
+          "|---|---|---|---|---|---|---|---|"]
+    for w in WINDOWS:
+        v = win.get(w)
+        if not v:
+            continue
+        mm = lambda t, f="%.3f": "—" if t[0] is None else (f % t[0]) + " (n=%d)" % t[1]
+        L.append("| 최근 %d일 | %d | %s | %s | %s | %s | %s | %s |" % (
+            w, v["scen_days"], mm(v["scen_brier"]), mm(v["scen_bss"], "%+.2f"), mm(v["scen_top_hit"], "%.2f"),
+            mm(v["on_scen_brier"]), mm(v["on_scen_bss"], "%+.2f"),
+            "—" if v["on_scen_top"][0] is None else "%.0f%% (n=%d)" % (v["on_scen_top"][0] * 100, v["on_scen_top"][1])))
+    cal = (win.get(20) or win.get(10) or win.get(5) or {}).get("calibration") or []
+    L += ["", "보정표(최근 최대 20일 — 준 확률 대비 실제 실현율):", "", "| 확률 구간 | n | 평균 준 확률 | 실현율 |", "|---|---|---|---|"]
+    L += ["| %s | %d | %.0f%% | %.0f%% |" % (c["bin"], c["n"], c["mean_p"], c["rate"]) for c in cal] or ["| (표본 없음) | | | |"]
     L += ["", "## 날짜별", "",
           "| 날짜 | 실제 | 폭 | 익일계획 개선 | 익일계획 기존 | 장전 개선 | 장전 기존 | 재량 실현 | 규칙 기본 | 규칙 P | 적용 레슨 | 레슨 적중/실패 |",
           "|---|---|---|---|---|---|---|---|---|---|---|---|"]
@@ -625,6 +675,11 @@ def trend_text(out, last=5):
         if r.get("error"):
             L.append("  %s 평가 실패 %s" % (r["date"], r["error"][:60]))
             continue
+        sc = r.get("scen") or {}
+        if sc.get("n"):
+            L.append("  %s 시나리오 brier %.3f · BSS %s · 기본 적중 %.0f%% · 익일계획 brier %s" % (
+                r["date"], sc["brier"], "—" if sc.get("bss") is None else "%+.2f" % sc["bss"], sc["top_hit"] * 100,
+                "—" if sc.get("on_brier") is None else "%.3f" % sc["on_brier"]))
         L.append("  %s 실제 %s · 익일계획 %s / 기존 %s · 장전 %s / 기존 %s · 재량 %s · 기본 %s · 레슨 %s" % (
             r["date"], r["actual"], _cell(r["on_live"]), _cell(r["on_legacy"]), _cell(r["pm_live"]), _cell(r["pm_legacy"]),
             _ai(r), _fmtp(r["rules_base"]), ",".join(r["lessons"]) or "—"))
@@ -648,10 +703,27 @@ def brief(day, now=None):
         with open(p, encoding="utf-8") as f:
             t = json.load(f)
         L.append(trend_text(t))
+        # 683차 — 학습 → 다음 예측 반영: 보정 지침을 오늘 확률에 그대로 적용하라고 명시한다
+        w = t.get("windows") or {}
+        cal = (w.get("20") or w.get("10") or w.get("5") or {}).get("calibration") or []
+        adv = SC.calibration_advice(cal)
+        L += ["", "## 오늘 확률에 반영할 보정 지침(최근 최대 20일 보정표)"]
+        L += ["- " + a for a in adv] or ["- 지침 없음 — 구간별 표본 5 미만이거나 보정 편차 15%p 이내"]
     else:
         L.append("## 워크포워드 추이 — 아직 없음(`trend` 미실행)")
     # 오늘 익일계획(전날 장후 작성) 변형
-    on = _last_per_variant([r for r in SL.load_ai_log(day) if r.get("phase") == "overnight" and r.get("action") in ("plan", "stand")])
+    log = SL.load_ai_log(day)
+    on = _last_per_variant([r for r in log if r.get("phase") == "overnight" and r.get("action") in ("plan", "stand")])
+    # 683차 — 계획을 바꾸지 않고 시나리오만 덧붙인 익일 note 도 장전에 보여야 확률을 옮길 수 있다
+    sn = [r for r in log if r.get("phase") == "overnight" and (r.get("variant") or "live") == "live" and r.get("scenarios")
+          and r.get("action") not in ("plan", "stand")]
+    if sn:
+        r = sn[-1]
+        L += ["", "## 오늘 익일 시나리오(전날 장후 %s 기록 — 장전에 확률을 어떻게 옮겼는지 적을 것)" % r["ts"][5:16],
+              "- " + " · ".join("%s %s %d%% (목표 %s · 무효 %s%s)" % (i["key"], i["name"], i["prob"], i["target"], i["invalid"],
+                                                                (" · 이후 %s" % i["then"]) if i.get("then") is not None else "")
+                                for i in r["scenarios"]["items"]),
+              "- 명세: %s" % r["scenarios"]["spec"]]
     if on:
         L += ["", "## 오늘 익일계획(전날 장후 작성)"]
         for v in VARIANTS:
@@ -660,4 +732,10 @@ def brief(day, now=None):
                 L.append("- %s: %s %s 진입 %s 손절 %s 청산 %s · 레슨 %s" % (
                     "개선(live)" if v == "live" else "기존(legacy)", r["action"], r["dir"], r.get("entry") or "시장가",
                     r.get("stop"), r.get("target"), ",".join(r.get("lessons") or []) or "—"))
+                if r.get("scenarios"):
+                    L.append("  시나리오(장전에 확률을 어떻게 옮겼는지 적을 것): " + " · ".join(
+                        "%s %s %d%% (목표 %s · 무효 %s%s)" % (i["key"], i["name"], i["prob"], i["target"], i["invalid"],
+                                                          (" · 이후 %s" % i["then"]) if i.get("then") is not None else "")
+                        for i in r["scenarios"]["items"]))
+                    L.append("  명세: %s" % r["scenarios"]["spec"])
     return "\n".join(L)

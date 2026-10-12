@@ -42,6 +42,8 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tools", "maekjeom_ladder"))
+if os.path.dirname(os.path.abspath(__file__)) not in sys.path:     # 683차 — shindong2_scenario · shindong2_learn
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # 환경변수로 바꿀 수 있다 — 시험·화면 확인용 샌드박스(실제 기록을 오염시키지 않기 위해)
 LIVE_DIR = os.environ.get("SHINDONG2_LIVE_DIR") or os.path.join(ROOT, "data", "shindong2_live")
@@ -173,6 +175,156 @@ def _opt_amt(day, prod, t):
     return tuple(out)
 
 
+FLOW_ANCHORS = ("09:02", "09:30", "10:00", "10:30", "11:00", "12:00", "13:00", "14:00", "14:30", "15:00", "15:20")
+
+
+def _foreign_profile(day, t_cut, prev_days=3):
+    """[MW0601 683차] 외인 동향 블록 — 「무엇이 · 언제 · 누구 반대편으로」 움직였나.
+
+    2026-10-12 장후 수동 분석 형식을 도구로 옮겼다. 그날 화면만 보면 「외인 수급 변화 거의 없음」으로
+    읽혔지만 실측은 14:47–15:34 +1,863계약 급반전이었다 — 누계 한 점이 아니라 **경로**를 봐야 한다.
+      · 선물(7221 정규 K200, 계약 누계) 외인·기관·개인 시간대 경로 + 미결제약정 변화
+      · 직전 거래일 3일 외인 선물 마감 누계(누적 포지션 맥락)
+      · 먼스리 콜·풋 외인 **수량 대 금액** — 수량 ≈ 0 인데 금액만 크게 움직이면 행사가 교체(이익실현·롤)
+      · 현물 외인·기관 — 선물↑·현물↓ 이면 방향 베팅이 아니라 현선 교체·헤지일 수 있다
+    전부 당일 ts 범위(PK) 조회 — 장중에도 사다리와 같은 무게다(456차). 값이 없으면 None(미측정 ≠ 0).
+    t_cut: 'HH:MM' 이하만 본다(장중 = 완결 봉). None 이면 마감 누계까지(15:34 적재분 포함)."""
+    import sqlite3
+    out = dict(t_cut=t_cut)
+    p = os.path.join(ROOT, "data", "db", "raw_data.db").replace("\\", "/")
+    hi = "%s %s:59" % (day, t_cut) if t_cut else "%s 23:59:59" % day
+    try:
+        con = sqlite3.connect("file:%s?mode=ro" % p, uri=True, timeout=5.0)
+        rows = con.execute("SELECT ts, fields FROM raw_investor_futures WHERE ts >= ? AND ts <= ? ORDER BY ts",
+                           (day + " 00:00:00", hi)).fetchall()
+        prev, cur = [], day
+        for _ in range(prev_days):
+            r = con.execute("SELECT ts, fields FROM raw_investor_futures WHERE ts < ? ORDER BY ts DESC LIMIT 1",
+                            (cur + " 00:00:00",)).fetchone()
+            if not r:
+                break
+            f = json.loads(r[1])
+            prev.append(dict(date=r[0][:10], last=r[0][11:16], foreign=f.get("foreign_net_qty"),
+                             inst=f.get("institution_net_qty"), oi=f.get("open_interest")))
+            cur = r[0][:10]
+        con.close()
+    except Exception as e:
+        out["error"] = "선물 투자자 읽기 실패: %s" % e
+        rows, prev = [], []
+    out["prev"] = prev
+    pts = [(r[0][11:16], json.loads(r[1])) for r in rows]
+    if pts:
+        def g(f, k):
+            return f.get(k)
+        path = []
+        for a in FLOW_ANCHORS:
+            hit = [x for x in pts if x[0] <= a]
+            if hit and hit[-1][0] >= pts[0][0] and (not path or path[-1]["t"] != hit[-1][0]):
+                path.append(dict(t=hit[-1][0], foreign=g(hit[-1][1], "foreign_net_qty"),
+                                 inst=g(hit[-1][1], "institution_net_qty"), retail=g(hit[-1][1], "retail_net_qty"),
+                                 oi=g(hit[-1][1], "open_interest")))
+        last = pts[-1]
+        if path[-1]["t"] != last[0]:
+            path.append(dict(t=last[0], foreign=g(last[1], "foreign_net_qty"), inst=g(last[1], "institution_net_qty"),
+                             retail=g(last[1], "retail_net_qty"), oi=g(last[1], "open_interest")))
+        out["fut_path"] = path
+        fv = [(t, f.get("foreign_net_qty")) for t, f in pts if f.get("foreign_net_qty") is not None]
+        if fv:
+            lo = min(fv, key=lambda x: x[1])
+            hi_ = max(fv, key=lambda x: x[1])
+            out["fut_extreme"] = dict(min_t=lo[0], min=lo[1], max_t=hi_[0], max=hi_[1])
+            # 최근 45분 변화 — 막판 급반전 감지(10/12: 14:47→15:34 +1,863)
+            tl = _hm(fv[-1][0])
+            base = [x for x in fv if _hm(x[0]) <= tl - 45]
+            if base:
+                out["fut_last45"] = dict(t0=base[-1][0], d=fv[-1][1] - base[-1][1])
+        out["fut_amt"] = dict(foreign=last[1].get("foreign_amt_mn"), inst=last[1].get("institution_amt_mn"))
+    # 옵션·현물 — 수량과 금액을 함께(7222)
+    p2 = os.path.join(ROOT, "data", "db", "option_flow.db").replace("\\", "/")
+    bt = t_cut or "23:59"
+    try:
+        con = sqlite3.connect("file:%s?mode=ro" % p2, uri=True, timeout=5.0)
+        for prod in ("mon_call", "mon_put", "kospi_spot"):
+            for inv in ("foreign", "institution"):
+                r = con.execute("SELECT bar_time, net_qty, net_amt FROM option_investor_flow WHERE trade_date=? AND product=?"
+                                " AND investor=? AND bar_time<=? ORDER BY bar_time DESC LIMIT 1", (day, prod, inv, bt)).fetchone()
+                out["%s_%s" % (prod, inv)] = dict(t=r[0], qty=r[1], amt=r[2]) if r else None
+        con.close()
+    except Exception as e:
+        out["error2"] = "옵션·현물 읽기 실패: %s" % e
+    # 해석 플래그 — 판정이 아니라 「확인할 것」 목록. 근거 수치를 함께 남긴다.
+    flags = []
+    fp = out.get("fut_path") or []
+    sf, si = out.get("kospi_spot_foreign"), out.get("kospi_spot_institution")
+    if fp and sf and fp[-1]["foreign"] is not None and sf["qty"] is not None:
+        ff = fp[-1]["foreign"]
+        if ff > 0 > sf["qty"]:
+            flags.append("선물 외인 매수(%+d) · 현물 외인 매도(%+d) — 방향 베팅보다 현선 교체·헤지 가능성" % (ff, sf["qty"]))
+        elif ff < 0 < sf["qty"]:
+            flags.append("선물 외인 매도(%+d) · 현물 외인 매수(%+d) — 현물 헤지 매도 가능성" % (ff, sf["qty"]))
+        if si and si["qty"] is not None and fp[-1]["inst"] is not None and (fp[-1]["inst"] > 0) != (si["qty"] > 0) \
+                and (fp[-1]["inst"] > 0) != (ff > 0):
+            flags.append("기관 선물(%+d)·현물(%+d) 반대 — 외인 선물의 반대편이 차익거래일 수 있다" % (fp[-1]["inst"], si["qty"]))
+    if len(fp) >= 2 and fp[0]["oi"] and fp[-1]["oi"]:
+        d_oi = fp[-1]["oi"] - fp[0]["oi"]
+        flags.append("미결제 %+d (%+.0f%%) — %s" % (d_oi, d_oi * 100.0 / fp[0]["oi"],
+                                                 "신규 포지션 유입" if d_oi > 0 else "포지션 청산(커버·정리)"))
+    if out.get("fut_last45") and abs(out["fut_last45"]["d"]) >= 1000:
+        flags.append("최근 45분 외인 선물 %+d (%s 이후) — 급변. 막판 한 구간으로 방향을 단정하지 말 것"
+                     % (out["fut_last45"]["d"], out["fut_last45"]["t0"]))
+    for leg, ko in (("mon_call", "콜"), ("mon_put", "풋")):
+        x = out.get("%s_foreign" % leg)
+        if not (x and x["qty"] is not None and x["amt"] is not None and abs(x["amt"]) >= 3000):
+            continue
+        # 평균 프리미엄(pt) = 금액(백만원)×1e6 ÷ (수량×승수 25만) = 금액×4÷수량. 부호가 어긋나거나 30pt 를 넘으면
+        # 한 방향 매매로는 설명이 안 된다 — 비싼 행사가와 싼 행사가를 반대로 거래한 것(교체·이익실현·롤).
+        prem = (x["amt"] * 4.0 / x["qty"]) if x["qty"] else None
+        if prem is None or prem < 0 or prem > 30:
+            flags.append("먼스리 %s 외인 수량 %+d · 금액 %+d백만(평균 프리미엄 %s) — 비싼 행사가 %s · 싼 행사가 %s(교체·이익실현 의심)"
+                         % (ko, x["qty"], x["amt"], "산출불가" if prem is None else "%.0fpt" % prem,
+                            "매도" if x["amt"] < 0 else "매수", "매수" if x["amt"] < 0 else "매도"))
+    if prev and all(p_["foreign"] is not None for p_ in prev):
+        s = sum(p_["foreign"] for p_ in prev)
+        flags.append("직전 %d거래일 외인 선물 합 %+d — 오늘 값은 이 누적 포지션 위의 증감이다" % (len(prev), s))
+    out["flags"] = flags
+    return out
+
+
+def _render_foreign(fp):
+    """_foreign_profile 출력 → 해설에 그대로 옮길 수 있는 표 형식 줄."""
+    if not fp:
+        return []
+    L = ["", "### 외인 동향 (%s)" % ("마감 누계" if not fp.get("t_cut") else "~" + fp["t_cut"])]
+    for k in ("error", "error2"):
+        if fp.get(k):
+            L.append("⚠ " + fp[k])
+    if fp.get("prev"):
+        L.append("직전 거래일 외인 선물 마감: " + " · ".join("%s %s" % (p["date"][5:], "%+d" % p["foreign"] if p["foreign"] is not None else "미측정")
+                                                    for p in reversed(fp["prev"])))
+    if fp.get("fut_path"):
+        L.append("| 시각 | 외인 | 기관 | 개인 | 미결제 |")
+        L.append("|---|---|---|---|---|")
+        sg = lambda v: "—" if v is None else "%+d" % v
+        for r in fp["fut_path"]:
+            L.append("| %s | %s | %s | %s | %s |" % (r["t"], sg(r["foreign"]), sg(r["inst"]), sg(r["retail"]),
+                                                     "—" if r["oi"] is None else r["oi"]))
+        ex = fp.get("fut_extreme")
+        if ex:
+            L.append("외인 선물 저점 %s %+d · 고점 %s %+d" % (ex["min_t"], ex["min"], ex["max_t"], ex["max"]))
+    else:
+        L.append("선물 투자자 경로 미측정")
+    cells = []
+    for prod, ko in (("mon_call", "먼스리 콜"), ("mon_put", "먼스리 풋"), ("kospi_spot", "현물")):
+        for inv, iko in (("foreign", "외인"), ("institution", "기관")):
+            x = fp.get("%s_%s" % (prod, inv))
+            cells.append("%s %s %s" % (ko, iko, ("수량 %+d · 금액 %+d백만" % (x["qty"], x["amt"])) if x and x["qty"] is not None and x["amt"] is not None else "미측정"))
+    L.append("옵션·현물: " + " / ".join(cells))
+    if fp.get("flags"):
+        L.append("확인할 것:")
+        L.extend("  · " + f for f in fp["flags"])
+    return L
+
+
 def build_state(day, now=None):
     """사다리 데이터 계층으로 지금 상태를 만든다. 장중이면 완결 봉까지만 의미가 있다."""
     import ladder_data as L
@@ -233,6 +385,7 @@ def build_state(day, now=None):
                      variants={k: dict(set_t=(sd2.get(k) or {}).get("set_t"), side=(sd2.get(k) or {}).get("side"),
                                        trades=(sd2.get(k) or {}).get("trades", []), pnl=(sd2.get(k) or {}).get("pnl"))
                                for k in ("p", "p2", "p3") if sd2.get(k)})
+    st["foreign"] = _foreign_profile(day, last[0] if live else None)   # 683차 — 외인 동향(경로·현선·옵션 수량/금액)
     st["peter"] = dict(trades=(d.get("peter") or {}).get("trades", []), available=(d.get("peter") or {}).get("available"))
     st["bars_n"] = len(bars)
     return st, d
@@ -375,7 +528,11 @@ def _doc_path(day):
     return os.path.join(DOC_DIR, "신동2_해설_%s-%s.md" % (PC, day.replace("-", "")))
 
 
-def record(day, phase, action, direction, entry, stop, target, comment, now=None, variant="live", lessons=None):
+SCEN_REQUIRED_PHASES = ("premarket", "intraday", "overnight")   # 683차 — 전망이 있는 단계는 확률 시나리오 필수
+SCEN_REQUIRED_ACTIONS = ("plan", "stand", "note")
+
+
+def record(day, phase, action, direction, entry, stop, target, comment, now=None, variant="live", lessons=None, scenarios=None):
     now = now or _dt.datetime.now()
     if phase not in PHASES or action not in ACTIONS:
         raise SystemExit("phase/action 이 잘못됐다: %s / %s" % (phase, action))
@@ -389,6 +546,9 @@ def record(day, phase, action, direction, entry, stop, target, comment, now=None
     rid = "%s-%02d" % (now.strftime("%H%M%S"), len(log) + 1)
     rec = dict(id=rid, ts=now.isoformat(timespec="seconds"), date=day, phase=phase, action=action, dir=direction,
                entry=entry, stop=stop, target=target, comment=comment, variant=variant, lessons=sorted(set(lessons or [])))
+    if scenarios:                                        # 683차 — 확률·경로 시나리오(채점 대상). 명세 검증은 parse_spec
+        import shindong2_scenario as SC
+        rec["scenarios"] = dict(spec=scenarios, horizon=SC.HORIZON, items=SC.parse_spec(scenarios))
     _append_jsonl(os.path.join(day_dir(day), "ai_log.jsonl"), rec)
     if variant == "live":                                # 섀도는 패널 최신 해설을 덮지 않는다
         _atomic_json(os.path.join(day_dir(day), "ai_latest.json"), rec)
@@ -401,7 +561,13 @@ def record(day, phase, action, direction, entry, stop, target, comment, now=None
             plan = " · **%s** 진입 %s · 손절 %s · 청산 %s" % (direction or "—", entry if entry is not None else "시장가", stop, target)
         tag = " 〔기존방식 섀도 — 채점 비교용〕" if variant == "legacy" else ""
         les = (" · 레슨 " + ", ".join(rec["lessons"])) if rec["lessons"] else ""
-        f.write("## %s %s — %s%s%s%s\n\n%s\n\n" % (now.strftime("%H:%M"), PHASE_KO[phase], action, plan, les, tag, (comment or "").strip()))
+        sc = ""
+        if rec.get("scenarios"):
+            sc = "\n\n> 채점용 시나리오: " + " · ".join("%s %s %d%% (목표 %s · 무효 %s%s)" % (
+                i["key"], i["name"], i["prob"], i["target"], i["invalid"], (" · 이후 %s" % i["then"]) if i.get("then") is not None else "")
+                for i in rec["scenarios"]["items"])
+        f.write("## %s %s — %s%s%s%s\n\n%s%s\n\n" % (now.strftime("%H:%M"), PHASE_KO[phase], action, plan, les, tag,
+                                                    (comment or "").strip(), sc))
     return rec
 
 
@@ -422,6 +588,8 @@ def _summary(st, new, ai):
         f.get("unit", "—"), f["mon_call"], f["mon_put"], cp(f["mon_call"], f["mon_put"]),
         d10(cp(f["mon_call"], f["mon_put"]), cp(f["mon_call_10"], f["mon_put_10"])),
         f.get("wk_why", "—"), f["wk_call"], f["wk_put"], cp(f["wk_call"], f["wk_put"]), f["spot"]))
+    L.extend(_render_foreign(st.get("foreign")))
+    L.append("")
     L.append("맥점 위 %s · 아래 %s · 벽 %s" % (st["levels"]["above"], st["levels"]["below"], st["walls"]))
     sm = st["sd2"]["summary"] or {}
     L.append("규칙 손익 — 기본 %s · P %s · P2 %s · P3 %s" % (sm.get("base"), sm.get("p"), sm.get("p2"), sm.get("p3")))
@@ -435,6 +603,10 @@ def _summary(st, new, ai):
                                             ai["pending"]["stop"], ai["pending"]["target"])) if ai.get("pending") else "없음"))
         for t in ai["trades"]:
             L.append("  AI %s %s @%.2f → %s %s %+.2f" % (t["entry_t"], t["side"], t["fill"], t.get("exit_t") or "보유 중", t.get("why", "평가"), t["pnl"]))
+    if "scen" in st:
+        import shindong2_scenario as SC
+        L.extend(SC.render_status(st["scen"]))
+        L.append("")
     L.append("새 이벤트 %d건" % len(new))
     for e in new:
         L.append("  · [%s] %s" % (e["kind"], e["text"]))
@@ -443,14 +615,25 @@ def _summary(st, new, ai):
     return "\n".join(L)
 
 
+def scenario_sets(day, bars, log, final):
+    """683차 — 그날 live 기록 중 시나리오가 달린 것을 채점(장중이면 잠정)."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import shindong2_scenario as SC
+    import shindong2_learn as LN
+    recs = [r for r in log if (r.get("variant") or "live") == "live" and r.get("scenarios")]
+    return SC.evaluate_sets(recs, bars, lambda r: LN.effective_time(r, day), final)
+
+
 def cmd_snapshot(day, now=None):
     now = now or _dt.datetime.now()
     st, d = build_state(day, now)
     ai = None
     if not st.get("empty"):
         bars = d["candles"][:-1] if st["live"] else d["candles"]
-        ai = simulate_ai(day, bars, load_ai_log(day), live=st["live"])
+        log = load_ai_log(day)
+        ai = simulate_ai(day, bars, log, live=st["live"])
         st["ai"] = ai
+        st["scen"] = scenario_sets(day, bars, log, final=not st["live"])   # 683차 — 직전 예측 → 지금까지 결과
     new = save_new_events(day, detect_events(st, ai["trades"] if ai else None), now)
     _atomic_json(os.path.join(day_dir(day), "state.json"), st)
     return st, new, ai
@@ -535,6 +718,7 @@ def main(argv=None):
     r.add_argument("--comment-file")
     r.add_argument("--variant", default="live", choices=VARIANTS, help="legacy = 기존방식 섀도(채점 비교용)")
     r.add_argument("--lessons", default="", help="이 계획에 적용한 레슨 ID, 쉼표 구분(예: L1,L9)")
+    r.add_argument("--scenarios", default="", help="확률 시나리오 '키|이름|확률|목표|무효[|이후] ; …' (합 100, 5%% 단위)")
     # ── 672차 학습 사이클 ──
     e = sub.add_parser("evaluate", help="그날 계획(익일계획·장전계획 live/legacy) 단독 시뮬 평가")
     e.add_argument("--date", default=_dt.date.today().isoformat())
@@ -588,10 +772,21 @@ def main(argv=None):
                 comment = f.read()
         day = a.for_date or a.date
         lessons = [x.strip() for x in a.lessons.split(",") if x.strip()]
-        rec = record(day, a.phase, a.action, a.dir, a.entry, a.stop, a.target, comment, variant=a.variant, lessons=lessons)
-        print("기록 %s %s %s %s%s%s · 문서 %s" % (rec["id"], rec["phase"], rec["action"], rec["dir"],
-                                                 " [legacy 섀도]" if a.variant == "legacy" else "",
-                                                 (" 레슨 " + ",".join(lessons)) if lessons else "", _doc_path(day)))
+        if not a.scenarios.strip():                  # 본문(heredoc) 안 「시나리오명세: …」 한 줄 — 명령행에 | ; 를 쓰지 않는 경로
+            for line in (comment or "").splitlines():
+                if line.strip().startswith("시나리오명세:"):
+                    a.scenarios = line.strip()[len("시나리오명세:"):].strip()
+        if (a.variant == "live" and a.phase in SCEN_REQUIRED_PHASES and a.action in SCEN_REQUIRED_ACTIONS
+                and not a.scenarios.strip()):
+            raise SystemExit("%s %s 기록에는 --scenarios 가 필수다(확률·경로 시나리오 — 채점·보정 학습의 입력). "
+                             "형식 '키|이름|확률|목표|무효[|이후] ; …', 합 100. 확률이 그대로면 직전 명세를 다시 넘길 것." % (a.phase, a.action))
+        rec = record(day, a.phase, a.action, a.dir, a.entry, a.stop, a.target, comment, variant=a.variant, lessons=lessons,
+                     scenarios=a.scenarios.strip() or None)
+        print("기록 %s %s %s %s%s%s%s · 문서 %s" % (rec["id"], rec["phase"], rec["action"], rec["dir"],
+                                                   " [legacy 섀도]" if a.variant == "legacy" else "",
+                                                   (" 레슨 " + ",".join(lessons)) if lessons else "",
+                                                   (" 시나리오 " + "/".join("%s%d" % (i["key"], i["prob"]) for i in rec["scenarios"]["items"]))
+                                                   if rec.get("scenarios") else "", _doc_path(day)))
         return 0
     st, new, ai = cmd_snapshot(a.date)
     if a.cmd == "score":
