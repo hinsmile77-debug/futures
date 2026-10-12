@@ -399,6 +399,7 @@ def flow1m(day):
     for t, p, i, q, a in rows:
         gq.setdefault((p, i), {})[t] = q
         ga.setdefault((p, i), {})[t] = a
+    last_bar = max((r[0] for r in rows), default=None)
 
     def series(g):
         out = {}
@@ -409,14 +410,15 @@ def flow1m(day):
                 if not d:
                     out[p][i] = None
                     continue
+                # 누적값이라 수신 사이 빈 분은 앞 값을 잇는다. 단 그날 마지막 수신분(last_bar) 뒤는
+                # 받지 않은 미래다 — 이어 붙이면 장중 띠가 16:10 까지 평평하게 뻗는다(계측 4원칙 ④).
                 last, arr = None, []
                 for m in mins:
                     if m in d:
                         last = d[m]
-                    arr.append(last)
+                    arr.append(last if last_bar is not None and m <= last_bar else None)
                 out[p][i] = arr if any(v is not None for v in arr) else None   # 전부 결측 = 미측정(0 아님)
         return out
-    last_bar = max((r[0] for r in rows), default=None)
     return mins, series(gq), last_bar, series(ga)
 
 
