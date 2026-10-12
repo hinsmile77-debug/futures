@@ -79,6 +79,13 @@ def test_self_source_refused():
     assert S.is_self_source(r"\\desktop-mw0601.local\option_hts", hostname="DeskTop-MW0601")
     assert not S.is_self_source(r"\\DeskTop-MW0601\option_hts", hostname="DeskTop-MW0602")
     assert not S.is_self_source(r"C:\some\local\dir", hostname="DeskTop-MW0602")
+    assert S.is_self_source(r"\\127.0.0.1\option_hts", hostname="DeskTop-MW0602")
+
+
+def test_self_source_refused_by_own_ip(monkeypatch):
+    monkeypatch.setattr(S.socket, "gethostbyname_ex", lambda h: (h, [], ["192.168.0.70"]))
+    assert S.is_self_source(r"\\192.168.0.70\option_hts")
+    assert not S.is_self_source(r"\\192.168.0.12\option_hts")
 
 
 def test_unreachable_source_returns_3(tmp_path):
