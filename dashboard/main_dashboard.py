@@ -7414,9 +7414,14 @@ class PnlHistoryPanel(QWidget):
 
     @staticmethod
     def _peter2_mode() -> str:
+        """[MW0602 615차] 오늘의 **실효** 모드 — 엔진 폴링과 같은 함수(개시일 이전 live 는 shadow)."""
         try:
+            import datetime as _d
             import config.settings as _rs
-            return str(getattr(_rs, "PETER2_FOLLOW_MODE", "off") or "off").lower()
+            from strategy.peter2.store import effective_mode
+            return effective_mode(getattr(_rs, "PETER2_FOLLOW_MODE", "off"),
+                                  _d.date.today().isoformat(),
+                                  getattr(_rs, "PETER2_LIVE_START", None))
         except Exception:
             return "?"
 

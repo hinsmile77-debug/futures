@@ -7763,7 +7763,16 @@ SHINDONG_REPORT_MAIL_ENABLED = True
 #   "live" 로 올린다. 올릴 때 DECISION_LOG 에 날짜를 남길 것(사전등록 표본 경계).
 # ⚠ live 전환 시 피터2 손익은 **같은 계좌**라 브로커 예탁금 차액(`broker_net_krw`, 전환기준 ①
 #   원천)에 섞인다 — trades.entry_source='PETER2' 로 따로 떼어 볼 것.
-PETER2_FOLLOW_MODE = "shadow"        # "off" | "shadow"(해석·기록만) | "live"(모의 주문)
+# 🔴 [2026-10-09 MW0602 615차 사용자 결정] **2026-10-12 부터 live**(모의계좌 주문).
+#   10/8 shadow 1일 확인 뒤 사용자가 개시일을 정했다. 「live」 를 지금 넣고 날짜 관문
+#   `PETER2_LIVE_START` 가 그 전날까지는 shadow 로 돌린다(strategy/peter2/store.py:effective_mode).
+#   사전등록 표본 경계 = 2026-10-12. 같은 날짜가 백필 끝(PETER2_BACKFILL_UNTIL)이다.
+#   ⚠ 개시 전 필수 수정 2건을 함께 넣었다 — kill_switch property 호출(진입 전량 증발) ·
+#     수집기 X 검색 한도(45초·120초 비연장). 계획서: docs/미륵이고도화3/피터2/
+#     피터2_실거래전환_백필_구현계획_MW0602-20261009.md
+#   장중에 멈추려면 이 값을 "shadow"/"off" 로(핫리로드 — 보유 포지션 관리는 계속).
+PETER2_FOLLOW_MODE = "live"          # "off" | "shadow"(해석·기록만) | "live"(모의 주문)
+PETER2_LIVE_START = "2026-10-12"     # 이 날짜 **이전**의 live 는 shadow 로 돈다(None = 관문 없음)
 PETER2_QTY = 1                       # 고정 1계약 — MAX_CONTRACTS 와 무관
 PETER2_POLL_MS = 2000                # main.py 폴링 주기
 PETER2_RECEIVER_PORT = 8766          # 수신기(127.0.0.1 전용)
@@ -7788,12 +7797,13 @@ PETER2_DOC_DIR = os.path.join(BASE_DIR, "docs", "미륵이고도화3", "피터2"
 #   손익을 산출해 손익추이·손익추이2 에 올린다. 재생(tools/peter2_replay.py)은 비교 열.
 #   [dev 이식] dev 에는 손익추이2 탭이 없다 — 손익추이 「피터2백필」 체크박스로 보이며,
 #   수수료는 감지 채널 요율(FUTURES_COMMISSION_RATE — MW0602 CREON)로 뗀다.
-#   ⚠ UNTIL 은 MW0601 기준값이다. 이 PC 의 피터2 실거래 개시일이 다르면 바꿀 것.
+#   [MW0602 615차] UNTIL = PETER2_LIVE_START — 백필 끝과 실거래 시작이 갈라질 수 없게 한 값에 묶었다
+#     (이 PC 개시일도 MW0601 과 같은 2026-10-12 — 사용자 결정 2026-10-09).
 # 🔴 **가상**이다 — `trades` 에 넣지 않는다(브로커 대사·전환기준 ①·CB·켈리 오염 방지).
 #   원천: data/db/peter2_backfill.db  ← tools/peter2_backfill.py (장후·읽기전용 원천)
 # 🔴 UNTIL 은 **배타** 경계다(이 날짜부터는 trades 의 PETER2 실거래가 원천).
 #   백필 도구는 그 이전이라도 trades 에 PETER2 실거래가 있는 날은 건너뛴다(이중계상 방지).
-PETER2_BACKFILL_UNTIL = "2026-10-12"
+PETER2_BACKFILL_UNTIL = PETER2_LIVE_START
 PETER2_BACKFILL_DB = os.path.join(DB_DIR, "peter2_backfill.db")
 # 기록 없는 날(피터 사료 미입력)을 사용자가 「미측정」으로 적는 장부. 재빌드해도 지워지지 않는다.
 #   한 줄 = `YYYY-MM-DD<공백>사유` · `#` 주석. 도구 `--mark-unmeasured` 로도 적는다.

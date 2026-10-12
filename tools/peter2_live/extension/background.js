@@ -20,9 +20,13 @@
 
 const RECEIVER = "http://127.0.0.1:8766/peter";
 const HANDLE = "PeterLeejoa";
-const RELOAD_SEC_FAST = 15;      // 평시
-const RELOAD_SEC_SLOW = 30;      // X 가 오류·제한 화면을 띄우면 15분간 물러난다
-const BACKOFF_MIN = 15;
+// [MW0602 615차 — MW0601 668차 후속5 `4b94f9f` 이식] 종전 15초(오류 시 30초)는 X 검색 한도를
+// 15분마다 소진했다. 이 PC 2026-10-08 수신기 로그 실측: PAGE_ERROR 259건이 :00–:05 · :20–:25 ·
+// :50–:55 에 몰렸다(15분 창 한도 패턴 — MW0601 은 791건). 게다가 오류 하트비트(5초)가 백오프를
+// 매번 15분 **재연장**해 한 번 걸리면 저속 모드가 풀리지 않았다. 한도 아래로 일정하게 도는 쪽이 낫다.
+// ⚠ 45초는 MW0601 10/8 패턴에서 역산한 추정치 — 실거래 첫날(10/12) PAGE_ERROR 분포로 확인한다.
+const RELOAD_SEC = 45;           // 평시 — 15분에 20회
+const BACKOFF_SEC = 120;         // 오류 화면이면 새로고침을 멈추고 기다린다(창이 풀릴 시간)
 
 function kstNow() {
   const d = new Date(Date.now() + 9 * 3600 * 1000);
@@ -127,20 +131,15 @@ async function reloadOnce() {
 
 async function tick() {
   const { backoffUntil = 0 } = await chrome.storage.local.get("backoffUntil");
-  const slow = Date.now() < backoffUntil;
+  if (Date.now() < backoffUntil) return;   // 오류 화면 — 새로고침도 한도를 먹는다
   await reloadOnce();
-  if (!slow) {
-    // 서비스워커는 이벤트 뒤 약 30초 산다 — 그 안에서 한 번 더 돌려 15초 주기를 만든다
-    setTimeout(reloadOnce, RELOAD_SEC_FAST * 1000);
-  }
 }
 
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.alarms.create("peter2", { periodInMinutes: RELOAD_SEC_SLOW / 60 });
-});
-chrome.runtime.onStartup.addListener(() => {
-  chrome.alarms.create("peter2", { periodInMinutes: RELOAD_SEC_SLOW / 60 });
-});
+function arm() {
+  chrome.alarms.create("peter2", { periodInMinutes: RELOAD_SEC / 60 });
+}
+chrome.runtime.onInstalled.addListener(arm);
+chrome.runtime.onStartup.addListener(arm);
 chrome.alarms.onAlarm.addListener((a) => { if (a.name === "peter2") tick(); });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -151,7 +150,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       if (sender && sender.tab && sender.tab.id != null) await setTabId(sender.tab.id);
       await ensureTab();
     } else if (msg.meta && msg.meta.error) {
-      await chrome.storage.local.set({ backoffUntil: Date.now() + BACKOFF_MIN * 60 * 1000 });
+      // 이미 물러나 있으면 연장하지 않는다 — 오류 화면은 5초마다 하트비트를 보내므로,
+      // 연장하면 새로고침이 영영 재개되지 않는다(종전 코드가 저속 모드에 갇힌 이유).
+      const { backoffUntil = 0 } = await chrome.storage.local.get("backoffUntil");
+      if (Date.now() >= backoffUntil) {
+        await chrome.storage.local.set({ backoffUntil: Date.now() + BACKOFF_SEC * 1000 });
+      }
     }
     try {
       const r = await fetch(RECEIVER, {

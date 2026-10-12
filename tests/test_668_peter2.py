@@ -315,6 +315,7 @@ def test_dashboard_wiring():
     assert 'def update_peter2_metrics' in s and 'peter2_live_row' in s
 
 
+# ── [MW0601 668차 후속6 / MW0602 615차 이식] ────────────────────────────────
 def _props(path, cls):
     import ast
     tree = ast.parse(_src(path))
@@ -324,9 +325,9 @@ def _props(path, cls):
 
 
 def test_property_not_called_in_main():
-    """[668차 후속6] `KillSwitch.is_active` 는 property 다 — `is_active()` 로 부르면
-    'bool' object is not callable. 2026-10-08 피터2 ENTER 4회가 전부 이 예외로 증발했다
-    (지시는 이미 consumed 라 signals.jsonl 에 흔적도 없었다)."""
+    """`KillSwitch.is_active` 는 property 다 — `is_active()` 로 부르면 'bool' object is not
+    callable. MW0601 2026-10-08 첫 라이브에서 피터2 ENTER 4회가 전부 이 예외로 증발했다
+    (지시는 이미 consumed 라 signals.jsonl 에 흔적도 없었다). property 집합은 자동 식별한다."""
     s = _src('main.py')
     for attr, path, cls in (('kill_switch', 'safety/kill_switch.py', 'KillSwitch'),
                             ('circuit_breaker', 'safety/circuit_breaker.py', 'CircuitBreaker')):

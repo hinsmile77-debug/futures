@@ -54,6 +54,21 @@ def doc_live_path(date):
     return os.path.join(d, '피터2_실시간_%s-%s.md' % (_pc(), date.replace('-', '')))
 
 
+# ── 실효 모드 ──────────────────────────────────────────────────
+def effective_mode(mode, date, live_start=None):
+    """[MW0602 615차] 설정 모드 → 그 날짜의 실효 모드.
+
+    `live` 라도 `date < live_start` 면 `shadow` 다 — 실거래 개시일 하나가
+    「주문 시작」과 「백필 끝(PETER2_BACKFILL_UNTIL)」 두 경계를 함께 쥔다.
+    `live_start` 가 없으면(None·빈 값) 날짜 관문 없이 설정 모드 그대로.
+    date 는 'YYYY-MM-DD' 문자열(사전순 = 시간순).
+    """
+    m = str(mode or 'off').lower()
+    if m == 'live' and live_start and str(date) < str(live_start):
+        return 'shadow'
+    return m
+
+
 def tweet_kst(dt_iso):
     """X 의 UTC ISO → KST datetime(naive). 실패 시 None."""
     try:

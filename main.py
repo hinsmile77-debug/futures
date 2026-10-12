@@ -3200,7 +3200,11 @@ class TradingSystem:
         self._peter2_write_feed(date)
 
     def _peter2_tick_body(self) -> None:
-        mode = str(getattr(runtime_settings, "PETER2_FOLLOW_MODE", "off") or "off").lower()
+        # [MW0602 615차] 실효 모드 — live 라도 PETER2_LIVE_START(2026-10-12) 이전 날짜는 shadow
+        mode = peter2_store.effective_mode(
+            getattr(runtime_settings, "PETER2_FOLLOW_MODE", "off"),
+            datetime.date.today().isoformat(),
+            getattr(runtime_settings, "PETER2_LIVE_START", None))
         if mode != self._peter2_last_mode:
             log_manager.system(f"[Peter2] 모드={mode}", "INFO")
             self._peter2_last_mode = mode
@@ -3227,8 +3231,9 @@ class TradingSystem:
             intents.extend(fw.ingest(tw, self._peter2_engine_state(), now))
         intents.extend(fw.on_price(self._peter2_engine_state(), now))
         for it in intents:
-            # [668차 후속6] 집행 예외를 의도 단위로 가둔다 — 지시는 on_price 에서 이미 consumed 라
-            #   예외가 틱 전체를 날리면 signals.jsonl 에 흔적 없이 사라진다(2026-10-08 진입 4회 증발).
+            # [MW0601 668차 후속6 / MW0602 615차 이식] 집행 예외를 의도 단위로 가둔다 — 지시는
+            #   on_price 에서 이미 consumed 라 예외가 틱 전체를 날리면 signals.jsonl 에 흔적 없이
+            #   사라진다(MW0601 2026-10-08 첫 라이브 진입 4회 증발).
             try:
                 self._peter2_execute(it, mode, date, now)
             except Exception as _xe:
@@ -3339,7 +3344,7 @@ class TradingSystem:
                 return self._peter2_reject(date, now, it, "engine_busy(%s)" % pos.status)
             if not self.circuit_breaker.is_entry_allowed():
                 return self._peter2_reject(date, now, it, "CB %s" % self.circuit_breaker.state)
-            if self.kill_switch.is_active:      # property — 668차 `is_active()` 로 진입 전량 증발
+            if self.kill_switch.is_active:      # property — `is_active()` 면 진입 전량 증발(668차 후속6)
                 return self._peter2_reject(date, now, it, "kill_switch")
             if not is_new_entry_allowed():
                 return self._peter2_reject(date, now, it, "time(신규진입 마감)")
