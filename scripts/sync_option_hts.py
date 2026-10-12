@@ -77,7 +77,19 @@ def is_self_source(src, hostname=None):
     if not h:
         return False
     me = (hostname or socket.gethostname()).split(".")[0].lower()
-    return h.split(".")[0].lower() in (me, "localhost", "127.0.0.1")
+    if h.split(".")[0].lower() in (me, "localhost"):
+        return True
+    # IP 로 가리켜도 자기 자신이면 거부 — 놓치면 원본 폴더에 _MIRROR_OF_ 표식이 생겨
+    # 원본 PC 의 derive_9842_daily 가 막힌다(686차 e2e 실측에서 발견)
+    if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", h):
+        if h.startswith("127."):
+            return True
+        if hostname is None:
+            try:
+                return h in socket.gethostbyname_ex(socket.gethostname())[2]
+            except (socket.error, OSError):
+                return False
+    return False
 
 
 def _load_json(path):
