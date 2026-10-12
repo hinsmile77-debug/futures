@@ -1134,6 +1134,10 @@ class TradingSystem:
         self._peter2_last_mode = None          # 모드 전환 로그용
         self._peter2_stale_logged = False      # 수집기 정지 경보 1회 제한
         self._peter2_override_mtime = None     # 당일 수동 오프셋 파일 mtime(668차 후속7)
+        # [MW0602 615차 후속2] 오프셋 장중 자동 실측 — 스케줄러 틱이 재고 폴링 틱이 반영한다.
+        self._peter2_live_offset_mtime = None  # offset_live.json mtime(반영 여부 판단)
+        self._peter2_offset_next_at = None     # 다음 실측 시각. None = 오늘 아직 안 쟀다
+        self._peter2_offset_date = None        # 실측 스케줄의 날짜(날짜가 바뀌면 리셋)
         # [MW0602 425차] qty=1 손절1차 — **위 세 형제와 달리 elif 체인 밖의 독립 경로**다.
         # 섀도(계측)일 때는 액션이 없어 상호배타가 필요 없고, 오히려 elif에 넣으면
         # "같은 틱이 tier1과 풀스톱을 함께 뚫은" 사건을 또 놓친다 — 그게 지금 이
@@ -3855,7 +3859,9 @@ class TradingSystem:
         self._peter2_stale_logged = False
         _ov = peter2_store.load_offset_override(date)
         self._peter2_override_mtime = _ov[2] if _ov else None
-        msg = ("[Peter2] 기동 date=%s offset=%s src=%s safe=%s 복원트윗=%d 집행이력=%d 손절=%d%s"
+        _lv = peter2_store.load_offset_live(date)   # load_offset 이 이미 반영했다(615차 후속2)
+        self._peter2_live_offset_mtime = _lv[3] if _lv else None
+        msg =("[Peter2] 기동 date=%s offset=%s src=%s safe=%s 복원트윗=%d 집행이력=%d 손절=%d%s"
                % (date, off, src, safe, len(rows), len(fw.consumed), fw.losses,
                   (" 대기=%s" % fw.armed["sig"]) if fw.armed else ""))
         log_manager.system(msg, "INFO" if (off is not None and safe) else "WARNING")
@@ -3886,6 +3892,96 @@ class TradingSystem:
                            % (old[0], old[1], old[2], ov[0], ov[1]), "WARNING")
         self._peter2_write_feed(date)
 
+    def _peter2_apply_live_offset(self, date: str, now) -> None:
+        """[MW0602 615차 후속2] 장중 자동 실측(offset_live.json)을 재기동 없이 반영한다.
+
+        우선순위는 `store.load_offset()` 하나가 쥔다(수동 > 자동 safe > 직전일). 여기서는
+        파일이 바뀌었을 때 그 결과를 다시 읽어, 값이 허용폭 이상 바뀌었거나 safe 가 바뀌었을
+        때만 갈아끼운다 — 5분마다 0.01pt 흔들림으로 대기 지시를 버리지 않기 위해서다.
+        """
+        lv = peter2_store.load_offset_live(date)
+        mt = lv[3] if lv else None
+        if mt is None or mt == self._peter2_live_offset_mtime:
+            return
+        self._peter2_live_offset_mtime = mt
+        fw = self._peter2
+        off, src, safe = peter2_store.load_offset(date)
+        old = (fw.offset, fw.offset_src, fw.offset_safe)
+        tol = float(getattr(runtime_settings, "PETER2_OFFSET_TOL_PT", 0.2))
+        moved = (off is None) != (old[0] is None) or (
+            off is not None and old[0] is not None and abs(off - old[0]) >= tol)
+        if not moved and bool(safe) == bool(old[2]):
+            fw.offset_src = src              # 출처 표기만 갱신(값은 그대로)
+            return
+        fw.offset, fw.offset_src, fw.offset_safe = off, src, bool(safe)
+        if fw.armed and moved:              # 옛 오프셋으로 잡은 미니가 — 버린다
+            fw._ev("DISARM", now, sig=fw.armed["sig"], why="offset_live")
+            fw.armed = None
+        fw._ev("OFFSET_LIVE", now, old=old[0], old_src=old[1], old_safe=old[2],
+               new=off, src=src, safe=bool(safe))
+        log_manager.system("[Peter2] 오프셋 자동 적용 %s(%s, safe=%s) → %s(%s, safe=%s)%s"
+                           % (old[0], old[1], old[2], off, src, safe,
+                              " — 진입 허용" if safe and not old[2] else ""),
+                           "WARNING")
+        self._peter2_write_feed(date)
+
+    def _peter2_measure_offset(self, now) -> None:
+        """[MW0602 615차 후속2] 스케줄러 틱 — 정규 10100·내 미니를 차트 TR 로 받아 오프셋을 잰다.
+
+        08:47부터 11:30까지 5분마다, 이후 15:10까지 30분마다. 결과는 offset_live.json 에만
+        쓴다 — regular_candles.db 는 장후 수집기가 정본이라 장중 부분 데이터를 섞지 않는다.
+        BlockRequest 는 스케줄러 틱(COM 콜백 밖, §4) — 597차 LEVELS 보충과 같은 경로다.
+        """
+        # v9-dev 이식: 이 브랜치에는 store.effective_mode(MW0602 615차 개시일 관문)가 없다 —
+        #   `_peter2_tick_body` 와 같은 방식으로 설정 모드를 그대로 읽는다.
+        mode = str(getattr(runtime_settings, "PETER2_FOLLOW_MODE", "off") or "off").lower()
+        if mode == "off" or not is_trading_day(now):
+            return
+        if not (datetime.time(8, 47) <= now.time() < datetime.time(15, 10)):
+            return
+        if self.broker is None or not self.broker.is_connected:
+            return
+        date = now.date().isoformat()
+        if self._peter2_offset_date != date:
+            self._peter2_offset_date, self._peter2_offset_next_at = date, None
+        if self._peter2_offset_next_at is not None and now < self._peter2_offset_next_at:
+            return
+        step = 5 if now.time() < datetime.time(11, 30) else 30
+        self._peter2_offset_next_at = now + datetime.timedelta(minutes=step)
+        from collection.cybos.chart_backfill import request_futopt_minute_bars, mini_code_for_date
+        from strategy.peter2.offset_live import measure as _ol_measure
+        # _futures_code 는 심볼 확정 시 동적으로 붙는다(주변 코드와 같이 getattr). 없으면 근월물
+        # 규칙으로 폴백 — 어느 코드로 쟀는지는 로그·파일의 `code` 에 그대로 남는다(계측 4원칙 ④).
+        code = getattr(self, "_futures_code", "") or mini_code_for_date(now.date())
+        _t0 = time.time()
+        try:
+            mini_rows = request_futopt_minute_bars(code, now.date(), now.date(), timeout_sec=10.0)
+            reg_rows = request_futopt_minute_bars("10100", now.date(), now.date(), timeout_sec=10.0)
+        except Exception as _e:
+            log_manager.system("[Peter2Offset] 차트 TR 실패 code=%s: %s — %d분 뒤 재시도"
+                               % (code, _e, step), "WARNING")
+            return
+        m = _ol_measure(mini_rows, reg_rows, int(now.strftime("%Y%m%d")), int(now.strftime("%H%M")))
+        prev = peter2_store.load_prev_day_offset(date)
+        rec = dict(m, measured_at=now.strftime("%H:%M:%S"), code=code, reg_code="10100",
+                   prev_day=prev[0], prev_src=prev[1], prev_safe=prev[2],
+                   ms=int((time.time() - _t0) * 1000))
+        try:
+            peter2_store.write_offset_live(date, rec)
+        except Exception as _we:
+            log_manager.system("[Peter2Offset] 기록 실패: %s" % (_we,), "WARNING")
+            return
+        gap = (round(m["value"] - prev[0], 2)
+               if m["value"] is not None and prev[0] is not None else None)
+        # 직전일 값과 1pt 이상 다른데 만기를 넘지 않았다면(prev_safe) 롤·수집 이상 의심
+        warn = (not m["safe"]) or (gap is not None and abs(gap) >= 1.0 and prev[2])
+        log_manager.system(
+            "[Peter2Offset] %s 실측=%s n=%d spread=%s safe=%s(%s) 창=%s~%s 전일정=%s "
+            "| 직전일=%s(%s, safe=%s) 차=%s | %dms"
+            % (code, m["value"], m["n"], m["spread"], m["safe"], m["reason"],
+               m["first"], m["last"], m["full"], prev[0], prev[1], prev[2], gap, rec["ms"]),
+            "WARNING" if warn else "INFO")
+
     def _peter2_tick_body(self) -> None:
         mode = str(getattr(runtime_settings, "PETER2_FOLLOW_MODE", "off") or "off").lower()
         if mode != self._peter2_last_mode:
@@ -3904,6 +4000,7 @@ class TradingSystem:
             self._peter2_init(date, now)
         fw = self._peter2
         self._peter2_apply_override(date, now)
+        self._peter2_apply_live_offset(date, now)
         # 🔴 시간 오름차순으로 정렬해서 먹인다. X 검색은 최신글이 위라, 묶음이 늦게
         #    도착하면 낡은 지시가 새 지시를 덮어쓴다(store.by_time 주석에 실측).
         new_rows = peter2_store.by_time(self._peter2_tail.read_new())
@@ -16065,6 +16162,14 @@ class TradingSystem:
                     self._compute_premarket_levels("0930")
         except Exception as _lcs_o:
             logger.warning("[LEVELS] 차트 보충 블록 예외 (무해): %s", _lcs_o)
+
+        # ── [MW0602 615차 후속2] 피터2 오프셋 장중 자동 실측 ─────────────────
+        # 만기 다음 날 직전 실측(safe=False)으로 하루 종일 진입이 막히던 것을 푼다
+        # (2026-10-12: 사용 −4.88 vs 실제 −2.2). 평일에도 당일 값이 우선한다.
+        try:
+            self._peter2_measure_offset(now)
+        except Exception as _po_e:
+            logger.warning("[Peter2Offset] 블록 예외 (무해): %s", _po_e, exc_info=True)
 
         # ── [MW0601 550차] 마감 뒤 마지막 봉 시간 기준 플러시 ──────────────────
         # 15:35 마감 단일가부터 체결틱이 없어 15:34 봉이 다음 분 롤오버를 영원히
