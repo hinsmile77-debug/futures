@@ -342,3 +342,29 @@ def test_execute_exception_is_recorded_per_intent():
     loop = body[body.index('for it in intents:'):]
     assert loop.index('try:') < loop.index('self._peter2_execute(')
     assert 'why="exception:%s"' in loop
+
+
+def test_offset_override_wins_and_is_safe(tmp_path, monkeypatch):
+    """[668차 후속7] 만기 다음 날 — 당일 수동 오프셋이 직전 실측(safe=False)을 이긴다."""
+    import json as _json
+    from strategy.peter2 import store
+    monkeypatch.setattr(store, 'LIVE_DIR', str(tmp_path))
+    assert store.load_offset_override('2026-10-12') is None
+    d = tmp_path / '2026-10-12'
+    d.mkdir()
+    (d / 'offset_override.json').write_text(_json.dumps({'offset': -2.29, 'src': 'broker_chart'}),
+                                            encoding='utf-8')
+    off, src, safe = store.load_offset('2026-10-12')
+    assert (off, src, safe) == (-2.29, 'override:broker_chart', True)
+    (d / 'offset_override.json').write_text('{broken', encoding='utf-8')
+    assert store.load_offset_override('2026-10-12') is None
+
+
+def test_offset_override_hot_applied_in_tick():
+    s = _src('main.py')
+    body = s[s.index('    def _peter2_tick_body(self)'):s.index('    def _peter2_update_button')]
+    assert body.index('self._peter2_apply_override(date, now)') < body.index('read_new()')
+    ap = s[s.index('    def _peter2_apply_override'):s.index('    def _peter2_tick_body')]
+    assert 'fw.offset_safe = ' in ap and 'fw.armed = None' in ap
+    assert 'self._peter2_override_mtime = None' in s     # __init__ 명시 초기화(계측 4원칙 ④)
+
