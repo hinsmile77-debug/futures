@@ -153,6 +153,7 @@ class FreezeWatchdog(object):
         ts_heartbeat=True,
         heartbeat_path=None,
         name="FreezeWatchdog",
+        extra_fn=None,
     ):
         self._beat_fn = beat_fn
         self._active_fn = active_fn
@@ -166,6 +167,9 @@ class FreezeWatchdog(object):
         self._fault_log_path = fault_log_path
         self._ts_heartbeat = bool(ts_heartbeat)
         self._heartbeat_path = heartbeat_path      # [480차 G-1] None이면 미출력
+        # [MW0602 609차 후속 / G-1] 하트비트 JSON 에 덧붙일 부가 필드 공급자
+        # (() -> dict). 판정(`evaluate`)에는 관여하지 않는다 — 파일 노출 전용.
+        self._extra_fn = extra_fn
         self._name = name
 
         self._strikes = 0
@@ -318,6 +322,16 @@ class FreezeWatchdog(object):
                 "window": list(self._window),
                 "fired": bool(self.fired),
             }
+            # [609차 후속 / G-1] 부가 필드 — 기존 키는 덮지 않는다(생존 판정 키 보호).
+            # 공급자 실패는 하트비트를 막지 않고 사실만 남긴다(계측 4원칙 ④).
+            if self._extra_fn is not None:
+                try:
+                    extra = self._extra_fn() or {}
+                    for k, v in dict(extra).items():
+                        if k not in payload:
+                            payload[k] = v
+                except Exception as exc:
+                    payload["extra_error"] = str(exc)[:200]
             tmp = self._heartbeat_path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False)

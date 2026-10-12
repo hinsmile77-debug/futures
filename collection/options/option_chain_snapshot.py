@@ -69,6 +69,12 @@ class OptionChainSnapshot:
         # [MW0601 612차] 체인 **코드 목록**이 언제 수집된 것인가. 피처 신선도
         # (`_last_refresh`, 5분)와는 별개 축이다 — 아래 chain_reload_due() 참조.
         self._chain_saved_at: Optional[str] = None
+        # [MW0602 609차 후속 / G-1] 마지막 **성공** 수집 시각. `_last_refresh` 는
+        # 워커 **기동** 시각이라 워커가 응답 없이 멈추면 신선도를 말해주지 못한다
+        # (2026-10-07 10:33:38 이후 5시간 무복구 — 예외 0건이라 아무 계측에도
+        # 안 걸렸다). 미성공은 0 이 아니라 None 이다(계측 4원칙 ②).
+        self._last_success_mono: Optional[float] = None
+        self._last_success_wall: Optional[str] = None
 
     # ── 기동 시 1회 ────────────────────────────────────────────────
 
@@ -186,6 +192,9 @@ class OptionChainSnapshot:
         if feats:
             self._last_features = feats
             avail = bool(feats.get("opt_chain_available"))
+            if avail:
+                self._last_success_mono = time.monotonic()
+                self._last_success_wall = _dt.datetime.now().isoformat(timespec="seconds")
             if not avail:
                 system_logger.warning(
                     "[OptionChain] 데이터 수집 실패 (opt_chain_available=0) — 이전 피처 유지",
@@ -198,11 +207,39 @@ class OptionChainSnapshot:
     def get_features(self) -> Dict[str, float]:
         return dict(self._last_features)
 
+    # ── [609차 후속 / G-1] 성공 기준 신선도 — 계측 전용 ──────────────
+
+    def seconds_since_success(self) -> Optional[float]:
+        """마지막 성공 수집(`opt_chain_available=1`) 이후 경과(초).
+
+        오늘 한 번도 성공하지 않았으면 **None**(미측정 — 0 도 inf 도 아니다).
+        판정·게이트에 쓰지 않는다 — 로그·하트비트 노출 전용이다.
+        """
+        if self._last_success_mono is None:
+            return None
+        return max(0.0, time.monotonic() - self._last_success_mono)
+
+    def heartbeat_fields(self) -> Dict[str, object]:
+        """하트비트 JSON 에 덧붙일 필드(FreezeWatchdog `extra_fn`).
+
+        다른 스레드(워치독)에서 읽힌다 — 원자적 속성 읽기만 하고 아무것도 바꾸지 않는다.
+        """
+        stale = self.seconds_since_success()
+        return {
+            "option_chain_last_success_ts": self._last_success_wall,
+            "option_chain_stale_sec": None if stale is None else round(stale, 1),
+            "option_chain_stale_measured": stale is not None,
+        }
+
     # ── 일일 리셋 ─────────────────────────────────────────────────
 
     def reset_daily(self) -> None:
         self._last_refresh = 0.0
         self._last_features = self._empty()
+        # [609차 후속 / G-1] 피처를 비우는 것과 같은 이유로 성공 시각도 비운다 —
+        # 어제 성공을 오늘 신선도로 읽으면 안 된다.
+        self._last_success_mono = None
+        self._last_success_wall = None
         logger.info("[OptionChain] 일일 리셋")
 
     # ── 내부 ───────────────────────────────────────────────────────

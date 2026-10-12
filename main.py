@@ -5167,9 +5167,25 @@ class TradingSystem:
         if _prev is not None:
             try:
                 if _prev.isRunning():
+                    # [MW0602 609차 후속 / G-1] 얼마나 멈춰 있는지를 같은 줄에 남긴다.
+                    # 2026-10-07 이 로그가 69건 떴지만 「워커가 5시간째 안 끝났다」는
+                    # 사실은 줄마다 시각을 빼서 추론해야 했다. 판단·분기 무변경.
+                    #   ⚠ QTimer 슬롯이라 예외가 새면 PyQt5 가 프로세스를 끊는다 — 감싼다.
+                    try:
+                        _run_s = self.option_chain_snap.seconds_since_refresh()
+                        _ok_s = self.option_chain_snap.seconds_since_success()
+                        _stale_txt = "워커경과=%s 마지막성공이후=%s(%s)" % (
+                            "N/A" if _run_s == float("inf") else "%.0fs" % _run_s,
+                            "N/A" if _ok_s is None else "%.0fs" % _ok_s,
+                            self.option_chain_snap.heartbeat_fields().get(
+                                "option_chain_last_success_ts") or "오늘 성공 없음",
+                        )
+                    except Exception as _st_e:
+                        _stale_txt = "경과 계측 실패: %s" % (_st_e,)
                     logger.warning(
-                        "[OptionChain] 이전 워커 실행 중 — 스킵 spot=%.1f "
-                        "(정상이면 1.5초에 끝난다 — 이 로그가 보이면 지연 조사)", spot,
+                        "[OptionChain] 이전 워커 실행 중 — 스킵 spot=%.1f %s "
+                        "(정상이면 1.5초에 끝난다 — 이 로그가 보이면 지연 조사)",
+                        spot, _stale_txt,
                     )
                     return
             except RuntimeError:
@@ -15249,6 +15265,9 @@ class TradingSystem:
                 fault_log_path=os.path.join("logs", "crash_fault.log"),
                 ts_heartbeat=FREEZE_WATCHDOG_TS_HEARTBEAT,
                 heartbeat_path=_hb_path,
+                # [MW0602 609차 후속 / G-1] 옵션체인 성공 기준 신선도를 하트비트에 노출.
+                # 판정 무관 — 실패는 워치독이 삼키고 `extra_error` 로 남긴다.
+                extra_fn=lambda: self.option_chain_snap.heartbeat_fields(),
             )
             self._freeze_watchdog.start()
             log_manager.system(
