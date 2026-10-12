@@ -48165,3 +48165,7 @@ dev의 사다리(`tools/maekjeom_ladder/ladder_data.py`)는 같은 상대경로�
 - **체리픽 기록**: 원 커밋 `3e72af1`(v9-dev) · 원 PC **MW0601** → dev `54026a3`(push 완료).
   이유: 미러를 **받는 쪽이 MW0602(dev)** 라 스크립트·bat·derive 가드가 dev에 있어야 실행된다.
   체리픽 전 `derive_9842_daily.py`는 dev·v9-dev 동일(diff 0) → 충돌 없음, dev 트리에서 테스트 7건 통과.
+- **[686차 후속2] e2e 실측 + 자기 IP 거부**: MW0601 공유 생성(사용자 실행, Everyone Read) 후
+  `\192.168.0.70\option_hts` → 임시 폴더 동기화 91건 · mtime 불일치 0 · 재실행 unchanged=91.
+  그 과정에서 IP 경로는 원본 PC 거부를 통과함을 발견 → 127.*·자기 IP 거부 추가.
+  체리픽: 원 `997d9c0`(v9-dev, MW0601) → dev `93ab6ec`. 이유: 미러 실행 주체가 MW0602(dev).

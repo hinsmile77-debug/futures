@@ -22700,7 +22700,7 @@ docs/정기점검/매일점검/evidence_MW0601-20260826_post.md
 
 ## 2026-10-12 (MW0601 686차 — option_hts MW0602 미러)
 
-- [ ] **686-1 (사용자, MW0601 관리자 PowerShell)** 읽기전용 공유 생성:
+- [x] **686-1 (사용자, MW0601 관리자 PowerShell — 2026-10-12 완료, Everyone Read 확인)** 읽기전용 공유 생성:
   `New-SmbShare -Name option_hts -Path "C:\Users\82108\PycharmProjects\futures\data\db\option_hts" -ReadAccess Everyone`
 - [ ] **686-2 (사용자, MW0602)** `git pull`(dev `54026a3` 포함) → 자격증명 저장 `cmdkey /add:DeskTop-MW0601 /user:DeskTop-MW0601\mw0601 /pass`
   → 1회 리허설 `python scripts\sync_option_hts.py` → 상시 `OPTION_HTS_SYNC.bat`(또는 작업 스케줄러에 08:40 등록).
