@@ -399,6 +399,7 @@ def flow1m(day):
     for t, p, i, q, a in rows:
         gq.setdefault((p, i), {})[t] = q
         ga.setdefault((p, i), {})[t] = a
+    last_bar = max((r[0] for r in rows), default=None)
 
     def series(g):
         out = {}
@@ -409,14 +410,15 @@ def flow1m(day):
                 if not d:
                     out[p][i] = None
                     continue
+                # 누적값이라 수신 사이 빈 분은 앞 값을 잇는다. 단 그날 마지막 수신분(last_bar) 뒤는
+                # 받지 않은 미래다 — 이어 붙이면 장중 띠가 16:10 까지 평평하게 뻗는다(계측 4원칙 ④).
                 last, arr = None, []
                 for m in mins:
                     if m in d:
                         last = d[m]
-                    arr.append(last)
+                    arr.append(last if last_bar is not None and m <= last_bar else None)
                 out[p][i] = arr if any(v is not None for v in arr) else None   # 전부 결측 = 미측정(0 아님)
         return out
-    last_bar = max((r[0] for r in rows), default=None)
     return mins, series(gq), last_bar, series(ga)
 
 
@@ -504,7 +506,8 @@ def shindong2_ai(day, cs, live):
         return None
     log = M._read_jsonl(os.path.join(d, "ai_log.jsonl"))
     ev = M._read_jsonl(os.path.join(d, "events.jsonl"))
-    latest = log[-1] if log else None
+    # 672차 — legacy 섀도는 패널에 안 올린다. live 기록 뒤에 legacy 가 몇 초 늦게 붙으므로 log[-1] 은 legacy 일 수 있다.
+    latest = next((r for r in reversed(log) if (r.get("variant") or "live") == "live"), None)
     bars = [list(c) for c in (cs[:-1] if live else cs)]
     sim = M.simulate_ai(day, bars, log, live=live) if (log and bars) else None
     return dict(latest=latest, log=log, events=ev[-40:], events_n=len(ev), sim=sim, next_plan=_next_plan(M, day),
