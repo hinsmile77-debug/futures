@@ -14,7 +14,11 @@
 
     Guards
       - Non-trading day (KRX calendar via shindong2_live.py gate) -> skip.
-      - Lock file data/shindong2_live/run.lock (younger than 12 min) -> skip, never overlap.
+      - Lock file data/shindong2_live/run.lock (younger than 12 min), created atomically (CreateNew).
+        poll -> skip when locked. Other phases WAIT for the lock (every 3 s, up to 5 min), because
+        their triggers coincide with poll at :00/:30 and a skip lost 43% of the 30-min intraday runs
+        (2026-10-07..10-12, 9/21). A stale lock (>= 12 min) is taken over.
+      - Log writes are serialized by a named mutex (two runs append to the same file; lines were lost).
       - Claude runs with a restricted tool set: Read/Glob/Grep + ONLY
         "conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py ..." .
         No Edit/Write/Web. No orders (absolute rule 6). Commentary goes in via stdin.
@@ -46,9 +50,35 @@ New-Item -ItemType Directory -Force -Path $liveDir | Out-Null
 $lock = Join-Path $liveDir 'run.lock'
 $lastClaude = Join-Path $liveDir 'last_claude.txt'
 
+function Append-Log([string[]]$lines) {
+    # Two runs (intraday + poll) append to the same file at the same second. Add-Content opens
+    # the file exclusively, so the loser fails and the line vanishes silently - 2026-10-07 13:30
+    # lost both the [poll] start line and the intraday outcome. Retrying is not enough (writers
+    # starve each other), so serialize writers with a named mutex. Fallback: stderr.
+    $m = New-Object System.Threading.Mutex($false, 'Local\Mireuk_Shindong2_Log')
+    $own = $false
+    try {
+        try { $own = $m.WaitOne(10000) } catch [System.Threading.AbandonedMutexException] { $own = $true }
+        if (-not $own) { throw 'log mutex timeout' }
+        $text = ($lines -join "`r`n") + "`r`n"
+        [System.IO.File]::AppendAllText($log, $text, (New-Object System.Text.UTF8Encoding($true)))
+    }
+    catch { [Console]::Error.WriteLine(("[shindong2_run] log write failed ({0}): {1}" -f $_, ($lines -join ' / '))) }
+    finally { if ($own) { $m.ReleaseMutex() }; $m.Dispose() }
+}
+
 function Log([string]$msg) {
-    $line = "{0} [{1}] {2}" -f (Get-Date -Format 'HH:mm:ss'), $Phase, $msg
-    Add-Content -Path $log -Value $line -Encoding UTF8
+    Append-Log @(("{0} [{1}] {2}" -f (Get-Date -Format 'HH:mm:ss'), $Phase, $msg))
+}
+
+function Try-Lock {
+    # Atomic: CreateNew fails if the file exists, so two runs can never both get the lock.
+    try {
+        $fs = [System.IO.File]::Open($lock, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        $b = [System.Text.Encoding]::ASCII.GetBytes((Get-Date -Format 'o') + ' ' + $Phase)
+        $fs.Write($b, 0, $b.Length); $fs.Close()
+        return $true
+    } catch [System.IO.IOException] { return $false }
 }
 
 function Find-Conda {
@@ -69,12 +99,12 @@ function Run-Live([string[]]$liveArgs) {
     # conda run MUST use --no-capture-output (else cp949 re-print crashes on U+2212)
     $out = & $Conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py @liveArgs 2>&1
     $code = $LASTEXITCODE
-    foreach ($l in $out) { Add-Content -Path $log -Value ("    | " + $l) -Encoding UTF8 }
+    if ($out) { Append-Log @($out | ForEach-Object { "    | " + $_ }) }
     # conda run prints "ERROR conda.cli.main_run ... failed" for ANY non-zero exit.
     # gate=3 (holiday) and poll=10 (new events) are designed codes, not failures
     # (675 follow-up: 2026-10-09 check misread this line as a cp949 crash).
     if (($liveArgs[0] -eq 'gate' -and $code -eq 3) -or ($liveArgs[0] -eq 'poll' -and $code -eq 10)) {
-        Add-Content -Path $log -Value ("    | (designed rc={0} for {1} - conda ERROR line above is not a failure)" -f $code, $liveArgs[0]) -Encoding UTF8
+        Append-Log @(("    | (designed rc={0} for {1} - conda ERROR line above is not a failure)" -f $code, $liveArgs[0]))
     }
     return $code
 }
@@ -95,13 +125,25 @@ $g = Run-Live @('gate')
 if ($g -eq 3) { Log 'holiday -> skip'; exit 0 }
 if ($g -ne 0) { Log ("gate failed rc={0} -> skip" -f $g); exit 1 }
 
-# 2) lock
-if (Test-Path $lock) {
-    $age = (New-TimeSpan -Start (Get-Item $lock).LastWriteTime -End (Get-Date)).TotalMinutes
-    if ($age -lt 12) { Log ("another run in progress ({0:N1} min) -> skip" -f $age); exit 0 }
-    Log ("stale lock ({0:N1} min) -> take over" -f $age)
+# 2) lock - poll skips, every other phase waits (see Guards)
+$waitMax = 300
+$t0 = Get-Date
+while (-not (Try-Lock)) {
+    $waited = ((Get-Date) - $t0).TotalSeconds
+    if ($waited -ge $waitMax) { Log ("another run in progress - waited {0:N0}s, giving up -> skip" -f $waited); exit 0 }
+    $age = $null
+    try { $age = (New-TimeSpan -Start (Get-Item $lock -ErrorAction Stop).LastWriteTime -End (Get-Date)).TotalMinutes }
+    catch { Start-Sleep -Milliseconds 200; continue }      # lock vanished between the two calls - retry
+    if ($age -ge 12) {
+        Log ("stale lock ({0:N1} min) -> take over" -f $age)
+        Remove-Item -Path $lock -Force -ErrorAction SilentlyContinue
+        continue
+    }
+    if ($Phase -eq 'poll') { Log ("another run in progress ({0:N1} min) -> skip" -f $age); exit 0 }
+    Start-Sleep -Seconds 3
 }
-Set-Content -Path $lock -Value (Get-Date -Format 'o') -Encoding ASCII
+$waited = ((Get-Date) - $t0).TotalSeconds
+if ($waited -ge 1) { Log ("lock acquired after waiting {0:N0}s" -f $waited) }
 
 try {
     # 3) phase -> skill argument
@@ -128,7 +170,7 @@ try {
     if ($DryRun) { Log 'dry run -> claude not called'; exit 0 }
     $out = & $claude -p $prompt --allowedTools @allowed --disallowedTools @denied --output-format text 2>&1
     $rc = $LASTEXITCODE
-    foreach ($l in $out) { Add-Content -Path $log -Value ("    > " + $l) -Encoding UTF8 }
+    if ($out) { Append-Log @($out | ForEach-Object { "    > " + $_ }) }
     Set-Content -Path $lastClaude -Value (Get-Date -Format 'o') -Encoding ASCII
     Log ("claude rc={0}" -f $rc)
     exit $rc
