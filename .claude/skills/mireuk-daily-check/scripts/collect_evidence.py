@@ -128,6 +128,11 @@ DEFAULT_CONFIG = {
         "전략 상태 경보", "판정  :",
         "[Shutdown]", "자동 종료", "기동 복원",
         "PSI",
+        # [MW0602 599차 / 0929 G-4] 부가 리포트(신동) 실패 — WARNING 1줄뿐이라 로그를
+        # 전수로 훑은 세션만 발견했다(0929 1-6: 09:00봉 결손 KeyError, 598차 후속:
+        # py37_32 markdown 부재로 자동 메일이 도입 이래 한 번도 안 나감).
+        # 매매 무관 — 그래서 더더욱 아무도 안 본다. §11 에 표본으로 올린다.
+        "[ShindongReport] 일일 리포트 생성 실패", "[ShindongMail] PDF·메일 실패",
     ],
     # 거래일 요약 — 이름있는 그룹으로 뽑는다. 로그 문구가 바뀌면 여기만 고치면 된다.
     "day_summary_patterns": {
@@ -2318,6 +2323,17 @@ _SESSION_HEAD_RE = re.compile(r"^##\s+(?P<d>20\d\d-\d\d-\d\d)\b")
 _PENDING_DEF_RE = re.compile(
     r"^\s*-\s*\[(?P<mark>[ xX])\]\s*\**\s*`?(?P<id>[OP]-\d+)`?\s*(?:\([^)]{0,24}\))?\s*\**"
 )
+# [MW0602 608차 후속2 / 장후 자동조치 G-609] 체크박스가 **아닌** 머리 라벨 줄.
+# `- O-93(…): ✅ 해소 — …` 처럼 세션 요약 목록에 결론만 쓰고 원 체크박스는 `[ ]`
+# 로 남는 일이 있다(0930~1006 O-93: 606차가 해소를 적었는데 4거래일 「미판정」
+# 재포착). 체크박스 상태는 이미 보고 있었다 — 빠진 것은 **본문 결론**이다.
+_PENDING_PROSE_RE = re.compile(
+    r"^\s*-\s+(?!\[)\**\s*`?(?P<id>[OP]-\d+)`?(?![\d])"
+)
+# 해소 표지 — `✅` 와 결론 낱말이 **같은 줄**에 있어야 한다. `미해소`·`예정`이 든
+# 줄은 결론이 아니다(그쪽으로 틀리면 진짜 미판정 항목이 조용히 사라진다).
+_PROSE_RESOLVED_RE = re.compile(u"(?<!미)해소|판정 종결|완료")
+_PROSE_RESOLVED_VETO = (u"미해소", u"예정")  # 미해소 · 예정
 _BACKTICK_SPAN_RE = re.compile(r"`([^`]{1,300})`")
 # 로그 태그: `[Retrain]` · `[SchedForceExit]` 처럼 대괄호로 감싼 영숫자 토큰.
 # 한글·공백이 든 대괄호(`[진입체크]`·`[56] 채널`)는 제외한다 — 문구 변형이 잦아
@@ -2389,6 +2405,9 @@ def scan_pending_observations(root, cfg, day):
          "weak": int,              # 태그만 맞은 항목 수 — 참고이지 「충족」이 아니다
          "skipped_no_tag": int,     # 태그를 못 뽑은 미판정 항목 수
          "skipped_recurring": int,  # 세션이 스스로 「매 장전/상시」라 적은 반복 관측
+         "prose_resolved": [{"id","date","line","checkbox_line"}…],
+                                    # [608차 G-609] 체크박스 `[ ]` 뒤에 본문 해소 줄이
+                                    # 있는 항목 — 판정 대조에서 빼고 따로 올린다
          "scanned_sessions": int, "open_items": int,
          "measured": bool, "path": str, "error": str(optional)}
 
@@ -2449,12 +2468,19 @@ def scan_pending_observations(root, cfg, day):
     #   머리줄만 읽으면 이 기능은 만든 날부터 0건을 낸다. 이어지는 **빈 줄 또는 들여쓴
     #   줄**까지를 한 항목으로 본다 — 다음 최상위 `- [ ]` 나 `##` 에서 끊긴다.
     first_date, last = {}, {}
+    prose = {}          # 라벨 → 마지막 「본문 해소」 줄 {"idx","line","date"}
     for k, (start, hdate) in enumerate(keep):
         end = keep[k + 1][0] if k + 1 < len(keep) else len(lines)
         i = start
         while i < end:
             m = _PENDING_DEF_RE.match(lines[i])
             if not m:
+                mp = _PENDING_PROSE_RE.match(lines[i])
+                if mp and u"✅" in lines[i] \
+                        and _PROSE_RESOLVED_RE.search(lines[i]) \
+                        and not any(v in lines[i] for v in _PROSE_RESOLVED_VETO):
+                    prose[mp.group("id")] = {"idx": i, "line": lines[i].strip(),
+                                             "date": hdate}
                 i += 1
                 continue
             body = [lines[i].strip()]
@@ -2470,11 +2496,25 @@ def scan_pending_observations(root, cfg, day):
             oid = m.group("id")
             first_date.setdefault(oid, hdate)
             last[oid] = {"mark": m.group("mark"), "line": lines[i].strip(),
-                         "body": " ".join(x for x in body if x), "date": hdate}
+                         "body": " ".join(x for x in body if x), "date": hdate,
+                         "idx": i}
             i = j
 
     open_items = dict((k, v) for k, v in last.items() if v["mark"] == " ")
     out["open_items"] = len(open_items)
+
+    # [608차 후속2 / G-609] 체크박스는 `[ ]` 인데 **그 뒤에** 본문 해소 줄이 있는 항목.
+    # 조용히 빼지 않는다 — 「체크박스를 닫을 것」으로 **따로** 올린다(계측 4원칙 ③).
+    # 판정 조건 대조(아래 ②)에서는 제외한다: 이미 결론이 난 것을 「오늘 판정 가능」으로
+    # 다시 올리는 것이 O-93 재포착의 정확한 경로였다.
+    out["prose_resolved"] = sorted(
+        ({"id": oid, "date": prose[oid]["date"], "line": prose[oid]["line"],
+          "checkbox_line": rec["line"]}
+         for oid, rec in open_items.items()
+         if oid in prose and prose[oid]["idx"] > rec["idx"]),
+        key=lambda r: r["id"])
+    for r in out["prose_resolved"]:
+        open_items.pop(r["id"], None)
 
     # ── ② 오늘 자 로그에서 태그 리터럴을 찾는다 ───────────────────────────────
     today_files = by_day.get(today_tok) or []
@@ -2758,6 +2798,19 @@ def scan_derived_indicators(root, cfg, day):
     _restart_rx = re.compile(
         r"^(?P<d>\d{4}-\d{2}-\d{2}) (?P<h>\d{2}):(?P<mi>\d{2}):(?P<se>\d{2})"
         r".*\[Session\] 재기동 #\d+(?:\s*\|\s*cause=(?P<c>\w+))?")
+    # [MW0602 599차 / 0929 G-3] 재기동 직전 포지션 축.
+    # `[BrokerSync] startup sync begin … before=X` 의 X 는 새 인스턴스가 저장 상태에서
+    # 복원한 포지션 = **재기동을 가로질러 들고 간 포지션**이다(main.py
+    # `_ts_get_position_snapshot` — `FLAT` 또는 `LONG 2계약 @ …`). 실측상 재기동 줄보다
+    # 0~2초 **먼저** 찍힌다(0910·0929). 장외에는 스킵돼 안 찍히므로 짝이 없을 수 있다.
+    _sync_rx = re.compile(
+        r"^(?P<d>\d{4}-\d{2}-\d{2}) (?P<h>\d{2}):(?P<mi>\d{2}):(?P<se>\d{2})"
+        r".*\[BrokerSync\] startup sync begin .*?before=(?P<b>\S+)")
+    # 재기동 줄 기준 [-60s, +5s] 안의 가장 가까운 sync 줄을 짝으로 본다.
+    _SYNC_PAIR_BEFORE_S, _SYNC_PAIR_AFTER_S = 60, 5
+    # 🔴 **값(`N건(장중M)`)에는 섞지 않는다** — 분포·판정(고착/변동)과 기존 적신호
+    #   정규식이 그 문자열에 걸려 있다. 당일 부가정보로만 들고 나가 적신호 문구에 붙인다.
+    _today_detail = {}
 
     def _kind_session_restart_intraday(d, paths, spec):
         # 🔴 `_lines` 기본 상한은 8MB 인데 `_SYSTEM` 로그는 20MB 를 넘는 날이 있다
@@ -2765,8 +2818,15 @@ def scan_derived_indicators(root, cfg, day):
         #   되는데, 재기동이 잦은 날이 곧 바쁜 날이라 하필 보고 싶은 날을 놓친다.
         _mb = int(spec.get("max_file_mb", 64))
         seen = set()
+        syncs = {}
         for ln in _lines(paths, [f.lower() for f in (spec.get("files") or [])], max_mb=_mb):
             # 정규식 앞에 값싼 부분문자열 관문 — 20MB 전수 스캔의 비용은 여기서 갈린다.
+            if "startup sync begin" in ln:
+                ms = _sync_rx.match(ln)
+                if ms and ms.group("d").replace("-", "") == d:
+                    syncs[int(ms.group("h")) * 3600 + int(ms.group("mi")) * 60
+                          + int(ms.group("se"))] = ms.group("b")
+                continue
             if "[Session] 재기동 #" not in ln:
                 continue
             m = _restart_rx.match(ln)
@@ -2784,6 +2844,22 @@ def scan_derived_indicators(root, cfg, day):
             return "0(무재기동)"
         intra = sum(1 for t, _ in after if t < 15 * 3600 + 10 * 60)
         unint = sum(1 for _, c in after if c == "AUTO_DISCONNECT")
+        # [599차 G-3] 장중 재기동별 직전 포지션 — 보유 / 무보유 / 미상(짝 없음).
+        # ⚠ 짝이 없는 것은 `무보유`가 아니라 **미상**이다(계측 4원칙 ②).
+        held = flat = unk = 0
+        for t, _ in after:
+            if t >= 15 * 3600 + 10 * 60:
+                continue
+            cand = [(abs(ts - t), b) for ts, b in syncs.items()
+                    if t - _SYNC_PAIR_BEFORE_S <= ts <= t + _SYNC_PAIR_AFTER_S]
+            if not cand:
+                unk += 1
+            elif min(cand)[1].upper() == "FLAT":
+                flat += 1
+            else:
+                held += 1
+        if intra:
+            _today_detail[(spec.get("kind"), d)] = "직전 포지션: 보유 %d · 무보유 %d · 미상 %d" % (held, flat, unk)
         return "%d건(장중%d)%s" % (len(after), intra,
                                    "·의도외%d" % unint if unint else "")
 
@@ -2853,11 +2929,16 @@ def scan_derived_indicators(root, cfg, day):
                       % (name, today_val,
                          "` / `".join(str(b) for b in (spec.get("benign") or [])) or "—",
                          spec.get("alert_hint", "")))
+        # [599차 G-3] 당일 부가정보(값·판정 무영향) — 재기동 직전 포지션 등.
+        _detail = _today_detail.get((spec.get("kind"), today_tok)) if today_val is not None else None
+        if _alert and _detail:
+            _alert += " — **%s**" % _detail
         rows.append({"name": name, "why": spec.get("why", ""), "days": len(hit_days),
                      "n": n, "dist": dist, "verdict": verdict, "note": note,
                      "ratio": None, "expected": None, "scanned_days": len(p_days),
                      "measured_since": spec.get("measured_since"), "source": "파생",
-                     "today": today_val, "today_alert": _alert})
+                     "today": today_val, "today_alert": _alert,
+                     "today_detail": _detail})
     return rows
 
 
@@ -4808,7 +4889,9 @@ def build(root, day, phase, cfg, discover_only=False):
 
     for dg in digests:
         for pat in ("[Brier] 과신", "degraded=ON", "level=CRITICAL", "축퇴",
-                    "WeightCollapse", "ConstOut"):
+                    "WeightCollapse", "ConstOut",
+                    # [MW0602 599차 / 0929 G-4] 신동 리포트·메일 실패
+                    "[ShindongReport] 일일 리포트 생성 실패", "[ShindongMail] PDF·메일 실패"):
             if pat in dg.quoted:
                 flags.append("`%s`: **%s** %d건(표본)" % (dg.rel, pat, len(dg.quoted[pat])))
 
@@ -4865,6 +4948,17 @@ def build(root, day, phase, cfg, discover_only=False):
         flags.append("미판정 관측 **… 외 %d건** — 같은 조건(판정 기준 로그가 오늘 자에 "
                      "등장)인 항목이 더 있다. `pending_observations.max_rows`(%d) 로 잘렸다"
                      % (len(_pend_rows) - _pend_max, _pend_max))
+    # [608차 후속2 / G-609] 결론은 났는데 체크박스만 열린 항목 — 판정이 아니라 **위생**이다.
+    # 새로 조사하지 말고 원 체크박스 줄을 `[x]` + `→ 결론` 으로 닫으면 된다.
+    _pr = _pend.get("prose_resolved") or []
+    for r in _pr[:_pend_max]:
+        flags.append("관측 **`%s`** — 본문에 해소 기록이 있는데 원 체크박스가 `[ ]` 로 "
+                     "남아 있다(608차 G-609). **재조사 불요** — 원 줄을 `[x]` + `→ 결론` "
+                     "으로 닫을 것. 해소 기록: %s — %s"
+                     % (r["id"], r["date"], truncate(r["line"], 110)))
+    if len(_pr) > _pend_max:
+        flags.append("체크박스 미갱신 관측 **… 외 %d건** — `pending_observations.max_rows`(%d) "
+                     "로 잘렸다" % (len(_pr) - _pend_max, _pend_max))
     if _pend.get("error"):
         flags.append("미판정 관측 스캔 **미측정** — %s (526차 G-1). "
                      "「해당 없음」이 아니라 재지 못한 것이다(계측 4원칙 ②)"
@@ -4983,11 +5077,13 @@ def build(root, day, phase, cfg, discover_only=False):
           "맞은 것이 **%d건**, **태그만** 맞은 것(참고 — 충족 아님)이 **%d건**이다. "
           "제외: 판정 태그를 뽑을 수 없는 항목 **%d건**(백틱 안 `[Tag]` 없음 — 기계가 "
           "판정 조건을 읽을 수 없다) · 세션이 스스로 「매 장전/상시」로 적은 반복 관측 "
+          "**%d건** · 본문에 해소 기록이 있어 판정 대조에서 뺀 항목(체크박스 미갱신) "
           "**%d건**. 판정 자체는 사람이 한다."
           % (_pend.get("scanned_sessions", 0), _pend.get("open_items", 0),
              _pend.get("strong", 0), _pend.get("weak", 0),
              _pend.get("skipped_no_tag", 0),
-             _pend.get("skipped_recurring", 0)))
+             _pend.get("skipped_recurring", 0),
+             len(_pend.get("prose_resolved") or [])))
     if suppressed:
         A("")
         A("**🗓 휴장(정상)으로 강등된 적신호 %d건** — %s(%s)이라 당일 데이터가 없는 것이 "
