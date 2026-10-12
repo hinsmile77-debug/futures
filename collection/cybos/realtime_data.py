@@ -61,6 +61,27 @@ def decode_trade_side(raw):
     return _TRADE_SIDE_MAP.get(text)
 
 
+def match_limit_stage(base, upper):
+    # type: (float, float) -> Optional[int]
+    """[MW0602 606차 후속 / F-605-1] 상한 스냅샷이 몇 단계 상한인가 — 1-기반, 불일치면 None.
+
+    허용오차는 종전 3단계 단독 검사와 같다(`max(0.05, 기대값×0.1%)`) — 호가단위
+    절사분을 흡수하되 단계 간 간격(기준가의 7%p 이상)과는 섞이지 않는다.
+    🔴 진단 전용 — 반환값은 로그 문구에만 쓰인다.
+    """
+    try:
+        base, upper = float(base), float(upper)
+    except (TypeError, ValueError):
+        return None
+    if base <= 0 or upper <= 0:
+        return None
+    for n, r in enumerate(PRICE_LIMIT_STAGES, start=1):
+        expect = base * (1.0 + r)
+        if abs(upper - expect) <= max(0.05, expect * 0.001):
+            return n
+    return None
+
+
 class CybosRealtimeData:
     def __init__(
         self,
@@ -321,15 +342,23 @@ class CybosRealtimeData:
                 "(scripts/probe_cybos_limit_price.py)", _up, _dn, _px)
         # 기준가격은 상·하한과 독립적으로 채택한다 — 실제 판정은 이 값에서 단계를
         # 유도하므로, 상·하한 스냅샷이 모순이어도 기준가격만 있으면 게이트가 동작한다.
-        # 교차검증: 상한 스냅샷이 있으면 기준가×1.20과 일치해야 한다(규정 3단계 상한).
+        # 교차검증: 상한 스냅샷이 규정 단계(±8/15/20%) 중 **하나**와 일치해야 한다.
+        # [MW0602 606차 후속 / F-605-1] 종전엔 3단계(×1.20)와만 비교해 **매일** 헛경고가
+        #   떴다(최소 09-23~10-01 5거래일, 실측 10-01: 기준가 1086.44 → 스냅샷 1173.34
+        #   = ×1.080 = 1단계). 브로커는 「지금 유효한」 단계 상한을 준다 — 장중 단계가
+        #   확대되기 전이면 1단계가 정상이다(`effective_price_limits` 와 같은 모델).
+        #   어느 단계와도 안 맞을 때만 경고한다. **로그만** — 채택 값·게이트 무변경.
         if _base > 0:
             self._base_price = _base
             if _up > 0:
-                _expect = _base * (1.0 + PRICE_LIMIT_STAGES[-1])
-                if abs(_up - _expect) > max(0.05, _expect * 0.001):
+                _stage = match_limit_stage(_base, _up)
+                if _stage is None:
                     logger.warning(
-                        "[DailyLimit] 기준가(%.2f)×1.20=%.2f 인데 상한 스냅샷은 %.2f "
-                        "— 인덱스 매핑 재확인 필요", _base, _expect, _up)
+                        "[DailyLimit] 기준가(%.2f) 대비 상한 스냅샷 %.2f(×%.4f)가 규정 단계 "
+                        "어느 것과도 불일치 — 인덱스 매핑 재확인 필요", _base, _up, _up / _base)
+                else:
+                    logger.info("[DailyLimit] 상한 스냅샷 %.2f = 기준가×%.2f (%d단계) — 교차검증 일치",
+                                _up, 1.0 + PRICE_LIMIT_STAGES[_stage - 1], _stage)
             logger.info("[DailyLimit] 기준가=%.2f → 1단계 %.2f~%.2f / 3단계 %.2f~%.2f",
                         _base, _base * 0.92, _base * 1.08, _base * 0.80, _base * 1.20)
 

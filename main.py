@@ -521,10 +521,16 @@ class TradingSystem:
         # 없음」과 「검사 죽음」을 구분해주지 않는다(계측 4원칙 ④).
         # ⚠ `session_bars` 로 대조하지 않는다 — 이 시점엔 거기에도 그 봉이 없다
         #   (차트 TR 보충은 당일 15:46 / 익일 08:41). 분 그리드가 정본이다.
+        # [MW0602 606차 후속 / F-606-1] 기동 검사 시각을 남긴다 — 위 검사는
+        #   `now − 1분` 까지만 보므로 **기동한 그 분**은 빠진다. 첫 봉 마감 때
+        #   `_on_candle_closed` 가 `[RestartBarGap]` 으로 그 경계를 1회 판정한다.
+        #   검사와 같은 `now` 를 써야 두 판정 창이 빈틈·겹침 없이 맞물린다.
+        self._restart_boundary_started_at = datetime.datetime.now()
+        self._restart_boundary_pending = True
         try:
             from utils.bar_gap import startup_line as _bg_start
             from config.settings import RAW_DATA_DB as _bg_db
-            _bg = _bg_start(_bg_db)
+            _bg = _bg_start(_bg_db, now=self._restart_boundary_started_at)
             if _bg is not None:
                 log_manager.system(_bg[0], _bg[1])
         except Exception as _bg_e:
@@ -5918,6 +5924,20 @@ class TradingSystem:
                 log_manager.system(_bgt[0], _bgt[1])
         except Exception as _bgt_e:
             logger.debug("[BarGapTiming] 진단 실패 (무해): %s", _bgt_e)
+
+        # ── [MW0602 606차 후속 / F-606-1] 재기동 경계 결손 — 첫 봉에서 1회 ──────
+        # 기동 검사(`[BarGap] 기동 시점`)가 못 보는 「기동한 그 분」을 첫 봉 마감 때
+        # 판정한다. 2026-10-01 15:02 결손이 장후 15:46 에야 드러난 것을 실시간으로
+        # 당긴다. **로그만** — 분기·저장·판단 무변경, 가드보다 앞(장외에도 1회 기록).
+        if self._restart_boundary_pending:
+            self._restart_boundary_pending = False
+            try:
+                from utils.bar_gap import restart_boundary_line as _rbg_line
+                _rbg = _rbg_line(self._restart_boundary_started_at, candle.get("ts"))
+                if _rbg is not None:
+                    log_manager.system(_rbg[0], _rbg[1])
+            except Exception as _rbg_e:
+                logger.debug("[RestartBarGap] 진단 실패 (무해): %s", _rbg_e)
 
         # ── 프리장 처리 경로 (08:45~09:00) ──────────────────────────
         # 진입 없이 scaler warmup · 피처 검증 · GapOffset 사전 설정만 수행

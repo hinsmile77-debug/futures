@@ -166,6 +166,54 @@ def startup_line(db_path, now=None):
         head, _fmt_list(g["missing"])), "WARNING")
 
 
+def restart_boundary_line(started_at, first_bar_ts):
+    """[MW0602 606차 후속 / F-606-1] 재기동 **경계** 결손 — 기동 후 첫 봉 마감 때 1회.
+
+    왜 필요한가
+    -----------
+    `startup_line` 은 `now − 1분` 까지만 본다(비행 중인 봉을 결손으로 세면 매 기동
+    거짓양성). 그래서 **기동한 그 분**의 봉은 기동 검사에서 원천적으로 빠지고,
+    15:46 `confirm_line` 에서야 처음 드러났다. 실측 2026-10-01: 15:02:42 재기동 →
+    기동 검사 「결손 0봉 / 검사창 08:45~15:01」 → 첫 봉 ts=15:03 → 15:02 봉 결손이
+    **장후 43분 뒤**에 「결손 1봉 (15:02)」로 처음 찍혔다(2026-09-21 581차와 동형).
+
+    판정 — 분 그리드에서 `[기동 분, 첫 봉 ts)` 구간:
+      · 구간에 그리드 분이 있으면 **결손** (WARNING)
+      · 첫 봉 ts == 기동 분이면 결손은 0 이지만 그 봉은 기동 이후 틱만 담은
+        **부분 포착** 봉이다 (WARNING — 거래량·체결 피처가 과소)
+      · 그 외 결손 0 (INFO) — 침묵하지 않는다(계측 4원칙 ④)
+
+    🔴 **로그만 만든다.** 메우지 않고(533차) 가드·저장·판단 경로는 이 값을 읽지 않는다.
+    반환: (메시지, 레벨). 인자가 datetime 이 아니면 `None`.
+    """
+    if not hasattr(started_at, "strftime") or not hasattr(first_bar_ts, "time"):
+        return None
+    start_min = started_at.replace(second=0, microsecond=0)
+    bar_min = datetime.datetime.combine(
+        started_at.date(), first_bar_ts.time()).replace(second=0, microsecond=0)
+    s_hm = start_min.strftime("%H:%M")
+    b_hm = bar_min.strftime("%H:%M")
+    head = "[RestartBarGap] 기동 %s · 첫 봉 ts=%s" % (started_at.strftime("%H:%M:%S"), b_hm)
+
+    if bar_min < start_min:
+        # 기동 이전 분의 봉이 첫 봉으로 왔다 — 경계를 정의할 수 없다(미측정, 0 아님).
+        return ("%s | 첫 봉이 기동 분(%s)보다 이르다 — 경계 결손 **미측정**" % (head, s_hm),
+                "WARNING")
+    if bar_min == start_min:
+        if s_hm not in expected_raw_candle_minutes():
+            return ("%s | 재기동 경계 결손 0봉 (검사창 밖)" % head, "INFO")
+        return ("%s | 재기동 경계 결손 0봉 — 단 ts=%s 봉은 기동 이후 틱만 담은 "
+                "**부분 포착** 봉(거래량·체결 과소)" % (head, b_hm), "WARNING")
+
+    upto = (bar_min - datetime.timedelta(minutes=1)).time()
+    missing = sorted(m for m in expected_raw_candle_minutes(upto) if m >= s_hm)
+    if not missing:
+        return ("%s | 재기동 경계 결손 0봉" % head, "INFO")
+    return ("%s | 재기동 경계 결손 %d봉 (%s) — 백필 안 함(533차), session_bars 보존 "
+            "여부는 15:46 [BarGap] 당일 확정에서" % (head, len(missing), _fmt_list(missing)),
+            "WARNING")
+
+
 def confirm_line(db_path, day):
     """15:46 차트 TR 보충 직후의 **당일 확정** 한 줄.
 
