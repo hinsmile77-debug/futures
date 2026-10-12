@@ -9,8 +9,11 @@
     data/peter2_live/<날짜>/feed.json           당일 1분봉 차트용 실시간 사료(① 지시 원문 · ② 거래줄)
     docs/미륵이고도화3/피터2/live/피터2_실시간_<PC>-<YYYYMMDD>.md   사람이 읽는 장중 기록
 
+    data/peter2_live/<날짜>/offset_live.json    장중 오프셋 자동 실측(615차 후속2 — main 이 쓴다)
+
 🔴 offset 은 「내 미니 계약 − 그의 일반선물」이라 **이 PC 의 속성**이다(596차).
-   peter_levels.db 의 가장 최근 실측일 값을 쓴다 — 장중엔 정규 10100 이 없어서 그날 것을 못 잰다.
+   [615차 후속2] 장중에 정규 10100 을 차트 TR 로 받아 당일 값을 잰다(offset_live.json).
+   그 전·실패 시에는 peter_levels.db 의 가장 최근 실측일 값을 쓴다(load_offset 우선순위).
 """
 import datetime
 import io
@@ -144,16 +147,59 @@ def load_offset_override(date):
         return None
 
 
-def load_offset(date_str):
-    """(offset, src, safe). 장중에는 그날 실측이 없으므로 **직전 실측일** 값을 쓴다.
+def live_offset_path(date):
+    return os.path.join(LIVE_DIR, date, 'offset_live.json')
 
-    safe=False — 직전 실측일이 만기(둘째 목요일) 이전이다. 그 사이에 미니 월물 또는 정규
-    분기물이 바뀌어 오프셋이 약 2pt 점프한다. 그 날은 진입을 막는다(섀도만).
-    당일 수동 오프셋(`load_offset_override`)이 있으면 그것이 이긴다(safe=True).
+
+def write_offset_live(date, rec):
+    """[615차 후속2] 장중 자동 실측 결과를 원자적으로 쓴다(`_atomic_json` — tmp → replace).
+    ⚠ dev 에는 668차 후속11 교체 재시도가 붙어 있다. 이 브랜치에 그것이 들어오면 함께 혜택을 본다."""
+    day_dir(date)
+    _atomic_json(live_offset_path(date), rec)
+
+
+def load_offset_live(date):
+    """[615차 후속2] 당일 자동 실측 → (offset, src, safe, mtime). 없거나 깨졌거나 값이 없으면 None.
+
+    `safe` 는 실측기가 판정한 값 그대로다(표본·안정성 — strategy/peter2/offset_live.py).
+    """
+    p = live_offset_path(date)
+    try:
+        mt = os.path.getmtime(p)
+        with io.open(p, 'r', encoding='utf-8') as f:
+            d = json.load(f)
+        if d.get('value') is None:
+            return None
+        return float(d['value']), 'live:%s' % (d.get('measured_at') or '?'), bool(d.get('safe')), mt
+    except (OSError, IOError, ValueError, KeyError, TypeError):
+        return None
+
+
+def load_offset(date_str):
+    """(offset, src, safe). 우선순위(615차 후속2):
+
+    1. 당일 수동 오프셋(`load_offset_override`) — 사람이 이긴다(safe=True).
+    2. **당일 자동 실측**(`load_offset_live`)이 safe 면 그것 — 평일에도 직전일보다 우선한다
+       (사용자 결정 2026-10-12, 596차 일중 드리프트 0.3~0.6pt 근거).
+    3. 직전 실측일(`load_prev_day_offset`). 만기를 넘었으면 safe=False — 진입을 막는다.
+
+    자동 실측이 있으나 safe 가 아니면(표본 부족·불안정) 3 으로 간다.
     """
     ov = load_offset_override(date_str)
     if ov is not None:
         return ov[0], ov[1], True
+    lv = load_offset_live(date_str)
+    if lv is not None and lv[2]:
+        return lv[0], lv[1], True
+    return load_prev_day_offset(date_str)
+
+
+def load_prev_day_offset(date_str):
+    """(offset, src, safe) — peter_levels.db 의 직전 실측일 값.
+
+    safe=False — 직전 실측일이 만기(둘째 목요일) 이전이다. 그 사이에 미니 월물 또는 정규
+    분기물이 바뀌어 오프셋이 약 2pt 점프한다.
+    """
     try:
         if not os.path.exists(PETER_DB):
             return None, 'no_db', False
