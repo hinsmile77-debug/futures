@@ -693,6 +693,10 @@ class TradingSystem:
             refresh_interval_min=5,
             atm_window_pt=30.0,
         )
+        # [MW0602 619차 / F-3] 정체로 버린 옵션체인 워커. 참조를 놓으면 실행 중인
+        # QThread 가 GC 되며 프로세스가 죽으므로 끝날 때까지(또는 영영) 보관한다.
+        self._option_chain_abandoned = []
+        self._option_chain_abandon_cap_logged = False
         self.macro_transformer = MacroFeatureTransformer()
         self.option_feat_calc  = OptionFeatureCalculator()
         self.daily_consolidator = DailyConsolidator()
@@ -5187,7 +5191,9 @@ class TradingSystem:
                         "(정상이면 1.5초에 끝난다 — 이 로그가 보이면 지연 조사)",
                         spot, _stale_txt,
                     )
-                    return
+                    # [MW0602 619차 / F-3] 정체면 버리고 아래에서 새 워커를 띄운다.
+                    if not self._abandon_stalled_option_chain_worker(_prev):
+                        return
             except RuntimeError:
                 # deleteLater()로 C++ 객체가 이미 소멸됐지만 Python wrapper는 살아있는 경우
                 self._option_chain_worker = None
@@ -5220,6 +5226,45 @@ class TradingSystem:
         _worker.finished.connect(_worker.deleteLater)   # Qt C++ 객체 정리
         self._option_chain_worker = _worker             # GC 방지용 참조 보관
         _worker.start()
+
+    def _abandon_stalled_option_chain_worker(self, prev) -> bool:
+        """[MW0602 619차 / F-3] 정체한 옵션체인 워커를 버린다 → 새 워커를 띄워도 되면 True.
+
+        「버린다」= 신호 연결을 끊고(늦게 끝나도 결과가 반영되지 않게) 참조만 보관한다.
+        `terminate()` 는 쓰지 않는다 — settings `OPTION_CHAIN_WORKER_STALL_SEC` 주석 참조.
+        QTimer 슬롯 안이므로 예외를 밖으로 내지 않는다(실패하면 종전처럼 스킵).
+        """
+        try:
+            stall_s = self.option_chain_snap.seconds_since_refresh()
+            limit = float(runtime_settings.OPTION_CHAIN_WORKER_STALL_SEC)
+            cap = int(runtime_settings.OPTION_CHAIN_WORKER_ABANDON_MAX)
+            if stall_s == float("inf") or stall_s < limit:
+                return False
+            if len(self._option_chain_abandoned) >= cap:
+                if not self._option_chain_abandon_cap_logged:
+                    self._option_chain_abandon_cap_logged = True
+                    logger.error(
+                        "[OptionChain][Watchdog] 워커 정체 %.0fs — 버린 워커가 상한 %d개에 "
+                        "도달해 더 버리지 않는다. 새 워커도 멈췄다면 Cybos 전역 문제다 — "
+                        "재시작 필요", stall_s, cap,
+                    )
+                return False
+            for sig in (prev.result_ready, prev.book_ready):
+                try:
+                    sig.disconnect()
+                except (TypeError, RuntimeError):
+                    pass
+            self._option_chain_abandoned.append(prev)
+            self._option_chain_worker = None
+            logger.error(
+                "[OptionChain][Watchdog] 워커 정체 %.0fs ≥ %.0fs — 버리고 새 워커 기동 "
+                "(버린 워커 %d/%d · 강제종료 안 함)",
+                stall_s, limit, len(self._option_chain_abandoned), cap,
+            )
+            return True
+        except Exception as exc:
+            logger.warning("[OptionChain][Watchdog] 판정 실패 — 종전처럼 스킵: %s", exc)
+            return False
 
     def _on_option_chain_done(self, feats: dict, chain_raw: list) -> None:
         """OptionChainWorker.result_ready 수신 — 메인 스레드."""
