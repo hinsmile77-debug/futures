@@ -326,7 +326,16 @@ class Peter2Follower(object):
                 # 지시 트윗 없이 체결만 왔다 — 체결가를 지정가로 대기
                 pseudo = {'side': side, 'level': lvl, 'lo': lvl, 'hi': lvl, 'mode': 'limit'}
                 if self._plausible(lvl, price):
-                    self._arm(pseudo, tt, tid, price, now)
+                    a = self._arm(pseudo, tt, tid, price, now)
+                    # [668차 후속9] 그가 앞서 지시한 손절·목표를 잇는다 — 지시 대기가 먼저 해제
+                    #   (stop_before_entry 등)된 뒤 체결만 오면 기본 손절로 열렸다
+                    #   (2026-10-12 10:02 「1026 매수체결」: 그의 손절 1023→미니 1020.71 대신 1019.72).
+                    pz = self.peter if (self.peter and self.peter.get('side') == side) else None
+                    if a is not None and pz is not None:
+                        if pz.get('stop') is not None:
+                            a['stop_m'], a['stop_src'] = self._m(pz['stop']), 'peter(이전 지시)'
+                        if pz.get('target') is not None:
+                            a['target_m'] = self._m(pz['target'])
             return out
 
         if t == 'stop':

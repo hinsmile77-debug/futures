@@ -405,3 +405,26 @@ def test_receiver_writes_last_ok():
     hb = s[s.index('def _heartbeat'):s.index('def ingest')]
     assert "if not meta.get('error'):" in hb and "'last_ok': _stat['last_ok']" in hb
     assert "_stat['last_ok'] = _prev_last_ok()" in s
+
+
+def test_fill_after_disarm_inherits_peter_stop():
+    """[668차 후속9] 2026-10-12 실측 재현 — 09:54 「1026 상방돌파시 매수. 손절가 1023」 대기가
+    10:00 stop_before_entry 로 해제된 뒤 10:02 「1026 매수체결」 → 그의 손절(미니 1020.72)을 잇는다."""
+    fw = Peter2Follower('2026-10-12', -2.29, 'override:broker_chart', True)
+    flat = lambda px: {'status': 'FLAT', 'source': None, 'pending': False, 'price': px}
+    t = lambda h, m, s=10: datetime.datetime(2026, 10, 12, h, m, s)
+    fw.ingest(_tw(1, '2026-10-12T00:54:40', '1026 상방돌파시 매수. 손절가 1023'), flat(1022.0), t(9, 55))
+    assert fw.on_price(flat(1022.0), t(9, 56)) == []
+    assert fw.on_price(flat(1020.42), t(10, 0, 30)) == [] and fw.armed is None
+    out = fw.ingest(_tw(2, '2026-10-12T01:02:20', '1026 매수체결'), flat(1023.66), t(10, 2, 40))
+    out += fw.on_price(flat(1023.66), t(10, 2, 40))
+    ent = [x for x in out if x['type'] == 'ENTER']
+    assert len(ent) == 1 and ent[0]['stop'] == 1020.72 and ent[0]['stop_src'].startswith('peter')
+
+
+def test_closed_event_reads_exit_reason():
+    """[668차 후속9] 청산 결과 dict 의 사유 키는 exit_reason — 10-12 CLOSED 이벤트 reason=null."""
+    s = _src('main.py')
+    i = s.index('self._peter2._ev("CLOSED"')
+    assert 'result.get("exit_reason")' in s[i:i + 300]
+    assert '"exit_reason":' in _src('strategy/position/position_tracker.py')
