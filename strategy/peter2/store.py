@@ -123,12 +123,37 @@ def last_expiry_before(date_str):
     return None
 
 
+def override_path(date):
+    return os.path.join(LIVE_DIR, date, 'offset_override.json')
+
+
+def load_offset_override(date):
+    """[668차 후속7] 당일 수동 오프셋 — `data/peter2_live/<날짜>/offset_override.json`.
+
+    {"offset": -2.29, "src": "broker_chart", "note": "..."} → (offset, src, mtime). 없거나
+    깨졌으면 None. 만기 다음 날처럼 직전 실측을 못 쓰는 날, 운영자가 브로커 차트에서
+    「미니 근월물 − 일반 분기물」을 읽어 적는다. 그날 장후 실측(peter_paste)이 정본이다.
+    """
+    p = override_path(date)
+    try:
+        mt = os.path.getmtime(p)
+        with io.open(p, 'r', encoding='utf-8-sig') as f:   # 메모장·PowerShell BOM 허용
+            d = json.load(f)
+        return float(d['offset']), 'override:%s' % (d.get('src') or 'manual'), mt
+    except (OSError, IOError, ValueError, KeyError, TypeError):
+        return None
+
+
 def load_offset(date_str):
     """(offset, src, safe). 장중에는 그날 실측이 없으므로 **직전 실측일** 값을 쓴다.
 
     safe=False — 직전 실측일이 만기(둘째 목요일) 이전이다. 그 사이에 미니 월물 또는 정규
     분기물이 바뀌어 오프셋이 약 2pt 점프한다. 그 날은 진입을 막는다(섀도만).
+    당일 수동 오프셋(`load_offset_override`)이 있으면 그것이 이긴다(safe=True).
     """
+    ov = load_offset_override(date_str)
+    if ov is not None:
+        return ov[0], ov[1], True
     try:
         if not os.path.exists(PETER_DB):
             return None, 'no_db', False

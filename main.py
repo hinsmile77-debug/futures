@@ -1133,6 +1133,7 @@ class TradingSystem:
         self._peter2_rows: list = []           # 오늘 받은 트윗 원본(차트 사료용)
         self._peter2_last_mode = None          # 모드 전환 로그용
         self._peter2_stale_logged = False      # 수집기 정지 경보 1회 제한
+        self._peter2_override_mtime = None     # 당일 수동 오프셋 파일 mtime(668차 후속7)
         # [MW0602 425차] qty=1 손절1차 — **위 세 형제와 달리 elif 체인 밖의 독립 경로**다.
         # 섀도(계측)일 때는 액션이 없어 상호배타가 필요 없고, 오히려 elif에 넣으면
         # "같은 틱이 tier1과 풀스톱을 함께 뚫은" 사건을 또 놓친다 — 그게 지금 이
@@ -3852,6 +3853,8 @@ class TradingSystem:
         fw.events = []
         self._peter2, self._peter2_tail, self._peter2_rows = fw, tail, list(rows)
         self._peter2_stale_logged = False
+        _ov = peter2_store.load_offset_override(date)
+        self._peter2_override_mtime = _ov[2] if _ov else None
         msg = ("[Peter2] 기동 date=%s offset=%s src=%s safe=%s 복원트윗=%d 집행이력=%d 손절=%d%s"
                % (date, off, src, safe, len(rows), len(fw.consumed), fw.losses,
                   (" 대기=%s" % fw.armed["sig"]) if fw.armed else ""))
@@ -3863,6 +3866,24 @@ class TradingSystem:
         peter2_store.append_signal(date, {"kind": "INIT", "offset": off, "offset_src": src,
                                           "safe": safe, "replayed": len(rows),
                                           "consumed": sorted(fw.consumed)})
+        self._peter2_write_feed(date)
+
+    def _peter2_apply_override(self, date: str, now) -> None:
+        """[668차 후속7] 장중에 놓인 당일 수동 오프셋을 재기동 없이 반영한다(파일 mtime 변화 시)."""
+        ov = peter2_store.load_offset_override(date)
+        if ov is None or ov[2] == self._peter2_override_mtime:
+            return
+        self._peter2_override_mtime = ov[2]
+        fw = self._peter2
+        old = (fw.offset, fw.offset_src, fw.offset_safe)
+        fw.offset, fw.offset_src, fw.offset_safe = ov[0], ov[1], True
+        if fw.armed:                        # 옛 오프셋으로 잡은 미니가 — 버린다
+            fw._ev("DISARM", now, sig=fw.armed["sig"], why="offset_override")
+            fw.armed = None
+        fw._ev("OFFSET_OVERRIDE", now, old=old[0], old_src=old[1], old_safe=old[2],
+               new=ov[0], src=ov[1])
+        log_manager.system("[Peter2] 오프셋 수동 적용 %s(%s, safe=%s) → %s(%s) — 진입 허용"
+                           % (old[0], old[1], old[2], ov[0], ov[1]), "WARNING")
         self._peter2_write_feed(date)
 
     def _peter2_tick_body(self) -> None:
@@ -3882,6 +3903,7 @@ class TradingSystem:
         if self._peter2 is None or self._peter2.date != date:
             self._peter2_init(date, now)
         fw = self._peter2
+        self._peter2_apply_override(date, now)
         new_rows = self._peter2_tail.read_new()
         if new_rows:
             self._peter2_rows.extend(new_rows)
