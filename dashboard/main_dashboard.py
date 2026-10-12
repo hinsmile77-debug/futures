@@ -16427,7 +16427,7 @@ class MireukDashboard(QMainWindow):
         self._principal = _tp.current()          # main 이 첫 2초 안에 실제 상태로 덮는다
         self._principal_locked = False
         self._principal_btns = {}
-        # [v9-dev 이식] 이 브랜치의 신동 규격은 실집행 미지원 — 버튼을 영구 비활성으로 둔다
+        # [v9-dev 이식] PRINCIPAL_SHINDONG_ENABLED=False 면 신동 버튼을 비활성으로 둔다(685차부터 기본 True)
         try:
             import config.settings as _rs
             self._principal_disabled = (set() if getattr(_rs, "PRINCIPAL_SHINDONG_ENABLED", True)

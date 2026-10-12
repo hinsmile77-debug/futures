@@ -48127,3 +48127,18 @@ _arm 손절 승계 일반화 · collector/state/feed.json os.replace WinError 5(
 - F-16: trades.db 소급 정정 — 사용자 결정 대기(DB 직접 수정, 자동조치 대상 아님).
 - F-1(538-4)·F-2·663-1(F-5)·663-2(F-7): 기존 승인 대기, 변화 없음.
 - 제5부: 신규 방안 없음.
+
+## 2026-10-12 (MW0601 685차 — 거래주체 [신동] 실집행: v9 규격 레그 분할 실행기)
+
+- **계기(사용자 지시)**: 616차 이식본(`768afed`, MW0602)은 v9-dev 신동을 비활성으로 두었다(dev 실행기 = FLOWC 두 레그 동시 청산 전제). 「v9-dev 신동(R2/R3 레그 분할) 체계에 맞게 [신동]에 붙여 미륵·피터와 같이 거래할 수 있게」.
+- **결정**: dev `live_exec.manage` 는 쓰지 않고 v9 전용 순수 모듈 `strategy/shindong/live_legs.py` 신설. 규격 `engine.run_trade(e2=False)` 그대로 — MAIN 재생의 신규 OPEN(라이브 탐지·진입봉 끝 2분 이내, `pick_new_entry` 공유)을 **2계약** 진입(`SHINDONG_LIVE_QTY=2`=spec.LEGS) → 1차 목표에서 1계약(`EXIT_MANUAL_PARTIAL`) → 공통 손절 **본전(규칙 진입가)** → 최종 목표 전량 / 15:05 시간청산.
+  - 손절 = 트래커 외부 손절(틱 하드스톱). 1차·최종 = 피터2 2초 슬롯 안 `_shindong_target_poll`(새 QTimer 없음 — 617차). 재생 대조 = 매분 `_shindong_exec_step`(폴링이 놓친 꼬리를 재생이 잡으면 미러 청산, 재생 손절이 유리하면 따라 조임). RETRACTED 는 청산 사유 아님(dev 와 동일).
+  - 진입 게이트: FLAT·대기주문 없음·CB·킬스위치·신규진입 시각·15:10 아님 + 손절 이미 돌파/1차 이미 통과면 기각.
+  - 집행 기록 `data/principal/<날짜>/shindong_exec.json`(재기동 생존) + `shindong_exec.jsonl`(이벤트). 기록 유실 시 같은 방향 최신 OPEN 재생 거래로 복원(`_shindong_adopt`).
+  - 보유 신동 포지션 관리는 주체 판정보다 앞 — 주체를 바꿔도(FLAT 일 때만 바뀌지만) 끝까지 관리.
+  - `_ts_record_nonfinal_exit` 켈리 격리(`_is_ext`) 추가 — 신동 1차 레그가 이 경로로 온다.
+  - `PRINCIPAL_SHINDONG_ENABLED = True`. 기본 주체는 여전히 미륵 — 신동은 **선택한 날만** 실주문.
+- **함께 고침**: 616 이식본 `_ts_refresh_principal_views` 가 v9-dev 에 없는 `_peter2_last_price()` 를 불러, 포지션 보유 중 「거래 현황」 갱신이 매번 debug 로 조용히 실패하던 것 — 메서드 보충.
+- **규격과 다른 점(의도)**: 진입가는 규칙가(진입봉 종가)가 아니라 알아챈 시점 시장가. 본전은 규격대로 규칙 진입가(실체결가 아님). 재생 미러 1차 청산은 시장가라 t1 보다 불리할 수 있다.
+- **검증**: `tests/test_685_shindong_live_legs.py` 11건 + 616·518·668·617·598 통과. 회귀 42파일 기준선과 동일 실패 2건(457 `peter_paste`·554 묶음실행 의존 — 변경 없는 상태에서도 동일). 실제 `TradingSystem` 메서드 스모크(가짜 엔진): 진입 2 → 1차 1 + 손절 1000.00 → 최종 FLAT, 15:05 시간청산, 재진입 없음, 미륵 주체 시 진입 없음. **라이브 미검증** — 첫 신동 선택일에 `[ShindongExec]` 진입·1차·본전 로그 확인.
+- **How to apply**: 신동을 실거래하려면 FLAT 에서 대시보드 [신동]. 판정·채점(shindong.db 가상거래)은 그대로이며 실거래 손익은 trades.db `entry_source='SHINDONG'`.

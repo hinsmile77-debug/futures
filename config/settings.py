@@ -7663,7 +7663,14 @@ SHINDONG_REPORT_MAIL_ENABLED = True
 # 🔴 이 브랜치의 신동(SD-2026-09-29-v2 — R2/R3, 1차·최종 레그 분할 + 1차 뒤 본전 손절)은
 #   dev 의 신동 V2(FLOWC, 두 레그 동시 청산)와 다른 전략이라 dev 실행기를 쓸 수 없다.
 #   신동 버튼은 비활성이며 신동은 지금처럼 가상거래만 남는다(사용자 결정 2026-10-12).
-PRINCIPAL_SHINDONG_ENABLED = False
+# [MW0601 685차 / 사용자 지시 2026-10-12] v9 규격 전용 실행기를 붙여 신동도 실거래 주체로 연다.
+#   `strategy/shindong/live_legs.py` — MAIN 재생의 R2/R3 진입을 2계약으로 받아
+#   1차 목표에서 1계약 청산 → 공통 손절 본전 → 최종 목표(또는 15:05 시간청산). 손절은 트래커 하드스톱.
+#   dev 실행기(FLOWC `live_exec.manage`)는 쓰지 않는다 — 신규 진입 선별(`pick_new_entry`)만 공유.
+#   ⚠ 신동은 **선택했을 때만** 실주문이다. 기본 주체는 여전히 미륵.
+PRINCIPAL_SHINDONG_ENABLED = True
+SHINDONG_LIVE_QTY = 2           # = spec.LEGS (1차 1계약 · 최종 1계약). 바꾸면 규격과 달라진다
+SHINDONG_LIVE_MAX_AGE_MIN = 2   # 진입봉이 끝난 뒤 이 분 안에 알아챈 신호만 쫓는다(재기동·지연분은 건너뜀)
 
 # ── [MW0601 668차] 피터2 — 피터리 트윗 실시간 추종 매매 ─────────────────────────
 # 장중 피터리(@PeterLeejoa) 트윗을 Chrome 확장 → 로컬 수신기(127.0.0.1)로 받아

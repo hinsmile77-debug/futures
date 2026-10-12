@@ -23,6 +23,9 @@ from strategy.runtime import trade_principal as TP   # noqa: E402
 # 브랜치 판별 — dev 에는 신동 V2(FLOWC, families.py)와 그 실행기가 있고, v9-dev 에는 없다
 #   (v9-dev 신동은 R2/R3 레그 분할 규격이라 실집행 미지원 · PRINCIPAL_SHINDONG_ENABLED=False).
 HAS_FLOWC = os.path.exists(os.path.join(ROOT, 'strategy', 'shindong', 'families.py'))
+# [MW0601 685차] v9-dev 는 자기 규격 전용 실행기(`live_legs.py`)를 붙였다 — 신동 실집행 활성.
+#   그 배선은 `tests/test_685_shindong_live_legs.py` 가 본다.
+HAS_V9_LEGS = os.path.exists(os.path.join(ROOT, 'strategy', 'shindong', 'live_legs.py'))
 
 
 @pytest.fixture
@@ -275,8 +278,8 @@ def test_peter_live_only_when_selected():
 
 def test_shindong_disabled_on_branch_without_flowc():
     """v9-dev — 신동 실집행을 붙이지 않고, 버튼·전환 처리기가 신동을 거부한다."""
-    if HAS_FLOWC:
-        pytest.skip('dev — 신동 실행기 있음')
+    if HAS_FLOWC or HAS_V9_LEGS:
+        pytest.skip('신동 실행기 있음(dev FLOWC 또는 v9 685차 live_legs)')
     import config.settings as S
     assert S.PRINCIPAL_SHINDONG_ENABLED is False
     s = _src('main.py')
@@ -307,7 +310,9 @@ def test_shindong_exec_wired():
 def test_isolation_and_cooldown_cover_shindong():
     s = _src('main.py')
     # dev 는 부분청산 2곳 + 최종청산 1곳, v9-dev 는 최종청산 1곳(부분청산은 원래 피터2 도 격리 안 함)
-    assert s.count('_is_ext = (result.get("pos_entry_src") in EXTERNAL_ENTRY_SOURCES)') == (3 if HAS_FLOWC else 1)
+    #   [685차] v9 신동 1차 레그가 EXIT_MANUAL_PARTIAL(_ts_record_nonfinal_exit)로 오므로 그곳도 격리 → 2곳
+    _n = 3 if HAS_FLOWC else (2 if HAS_V9_LEGS else 1)
+    assert s.count('_is_ext = (result.get("pos_entry_src") in EXTERNAL_ENTRY_SOURCES)') == _n
     assert 'and not _is_ext:' in s                         # 앙상블 학습 격리
     assert 'if entry_source in EXTERNAL_ENTRY_SOURCES:\n        cooldown_active = False' in s
 

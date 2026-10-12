@@ -279,8 +279,10 @@ def test_main_retracted_behavior(monkeypatch):
                 {"trades": [], "horizon": "09:50", "last_close": 1084.2},
                 {"trades": [], "horizon": "09:51", "last_close": 1084.0}]
     monkeypatch.setattr(sd_runner, "run_and_store", lambda *a_, **k: payloads.pop(0))
+    # [MW0601 685차] `_run_shindong` 이 재생 직후 `_shindong_exec_step` 을 부른다 — 여기서는 재생 로그만 본다.
     me = types.SimpleNamespace(_sd_day=None, _sd_seen={}, _sd_last={}, _sd_warned=False, dashboard=None,
-                               _refresh_pnl_history=lambda: None)
+                               _refresh_pnl_history=lambda: None,
+                               _shindong_exec_step=lambda payload, now: None)
     for m in (49, 50, 51):
         run(me, dt.datetime(2026, 9, 29, 9, m, 47))
     assert not [x for x in msgs if x.startswith("WARN")], msgs

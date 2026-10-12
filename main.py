@@ -118,7 +118,7 @@ from config.constants import MINI_FUTURES_PT_VALUE, get_contract_spec, CB_STATE_
 # [MW0601 668차] 피터2 — 피터리 트윗 실시간 추종(모의 1계약). 설계: docs/미륵이고도화3/피터2/
 from config.constants import PETER2_ENTRY_SOURCE, SHINDONG_ENTRY_SOURCE, EXTERNAL_ENTRY_SOURCES
 # [MW0602 거래주체분리 / v9-dev 이식] 계좌에서 실거래하는 주체(미륵·신동·피터) 하나 — 나머지는 섀도.
-#   ⚠ 이 브랜치의 신동(SD-2026-09-29-v2, R2/R3 레그 분할)은 실집행 미지원 — PRINCIPAL_SHINDONG_ENABLED=False.
+#   신동(SD-2026-09-29-v2, R2/R3 레그 분할)은 685차부터 v9 전용 실행기(`_shindong_exec_step`·`live_legs`)로 실집행.
 from strategy.runtime import trade_principal as principal_mod
 from strategy.peter2.follower import Peter2Follower
 from strategy.peter2 import store as peter2_store
@@ -869,6 +869,12 @@ class TradingSystem:
         # [MW0602 거래주체분리] 현재 거래주체 — 파일(data/trade_principal.json)이 정본이고 이것은 캐시다.
         #   전환은 `_on_principal_change_requested` 한 곳에서만 일어나며 그때 둘을 함께 바꾼다.
         self._principal_state = principal_mod.load()
+        # [MW0601 685차] 신동 실집행 기록 {trade_key: rec} — data/principal/<날짜>/shindong_exec.json 이
+        #   정본이고 이것은 캐시다. 날짜가 바뀌면 `_sd_exec_load` 가 다시 읽는다.
+        self._sd_exec = {}
+        self._sd_exec_day = None
+        self._sd_exec_skipped = set()      # 늦어서·조건 미달로 건너뛴 신호 — 한 번만 알린다
+        self._sd_exec_orphan_warned = False
         # 잔고 스트립 「전일손익」 주체 실적 캐시 (오늘, 직전 거래일, 그날 요약, 주체). None = 아직 안 셈
         self._principal_prev_cache = None
         # [MW0601 612차 후속5] 수급 첫 호출 실패 시 조기 재시도 — 세션당 1회.
@@ -3838,7 +3844,7 @@ class TradingSystem:
         ok, why = principal_mod.can_switch(self.position.status, self._has_pending_order())
         if ok and principal == principal_mod.SHINDONG and not getattr(
                 runtime_settings, "PRINCIPAL_SHINDONG_ENABLED", True):
-            ok, why = False, "이 브랜치의 신동 규격은 실집행 미지원(PRINCIPAL_SHINDONG_ENABLED=False)"
+            ok, why = False, "신동 실집행 꺼짐(PRINCIPAL_SHINDONG_ENABLED=False)"
         if not ok:
             log_manager.system("[Principal] 전환 거부 %s → %s — %s"
                                % (principal_mod.label(cur), principal_mod.label(principal), why),
@@ -3934,6 +3940,26 @@ class TradingSystem:
                 log_manager.system(f"[Peter2] 폴링 예외: {_e}", "ERROR")
             except Exception:
                 pass
+        # [MW0601 685차] 신동 1차·최종 목표 — 같은 2초 슬롯(새 타이머 없음 — 617차). 피터2 와 예외를 섞지 않는다.
+        try:
+            self._shindong_target_poll()
+        except Exception as _e:
+            logger.exception("[ShindongExec] 폴링 예외 — 이번 주기 건너뜀: %s", _e)
+            try:
+                log_manager.system(f"[ShindongExec] 폴링 예외: {_e}", "ERROR")
+            except Exception:
+                pass
+
+    def _peter2_last_price(self):
+        """최신 체결가(틱마다 갱신되는 `_last_pipeline_price`). 없으면 None.
+
+        [MW0601 685차] 616차 이식본 `_ts_refresh_principal_views` 가 이 메서드를 부르는데 v9-dev 에는
+        정의가 없어, 포지션 보유 중 「거래 현황」 갱신이 매번 AttributeError 로 조용히(debug) 실패했다.
+        """
+        try:
+            return float(self._last_pipeline_price or 0.0) or None
+        except Exception:
+            return None
 
     def _peter2_engine_state(self) -> dict:
         pos = self.position
@@ -5493,6 +5519,13 @@ class TradingSystem:
                     str(_t["entry_ts"])[11:16], _t["status"],
                     ("%.2f" % payload["last_close"]) if payload.get("last_close") is not None else "-",
                     payload.get("horizon") or "-")
+            # [MW0601 685차] 거래주체가 신동이면 재생을 실포지션에 옮긴다(아니면 아무것도 안 한다).
+            #   재생 기록과 예외를 섞지 않는다 — 집행 실패는 매번 ERROR 로 남긴다(억제하지 않는다).
+            try:
+                self._shindong_exec_step(payload, now)
+            except Exception as _xe:
+                logger.exception("[ShindongExec] 집행 단계 예외: %s", _xe)
+                log_manager.system("[ShindongExec] 집행 단계 예외: %s" % (_xe,), "ERROR")
             if self.dashboard is not None and hasattr(self.dashboard, "update_shindong"):
                 self.dashboard.update_shindong(payload)
             # [628차] 신동 청산 → 손익 추이 패널 갱신. 555차 GP 와 같은 이유다 — 실거래 이벤트만
@@ -5506,6 +5539,246 @@ class TradingSystem:
                 self._sd_warned = True
                 logger.warning("[Shindong] 가상거래 재생 실패(이후 로그 억제): %s", e,
                                exc_info=True)
+
+    # ── [MW0601 685차] 신동 실집행 — v9 규격(SD-2026-09-29-v2) 레그 분할 ─────────────────
+    #   판단은 `strategy/shindong/live_legs.py`(순수 함수), 여기는 주문·기록만 한다.
+    #   🔴 손절은 트래커 외부 손절(틱 하드스톱)이 집행한다. 15:10 강제청산·CB·킬스위치는 그대로다.
+    def _sd_exec_load(self, day: str) -> None:
+        if self._sd_exec_day == day:
+            return
+        self._sd_exec_day = day
+        self._sd_exec_skipped = set()
+        self._sd_exec_orphan_warned = False
+        d = principal_mod.read_json(day, "shindong_exec.json", default=None)
+        self._sd_exec = dict(d) if isinstance(d, dict) else {}
+
+    def _sd_exec_save(self, day: str) -> None:
+        try:
+            principal_mod.write_json(day, "shindong_exec.json", self._sd_exec)
+        except Exception as _e:
+            log_manager.system("[ShindongExec] 집행 기록 저장 실패 — 재기동 시 레그 상태 유실 위험: %s"
+                               % (_e,), "ERROR")
+
+    def _sd_exec_event(self, day: str, kind: str, **kw) -> None:
+        rec = dict(kw, kind=kind, ts=datetime.datetime.now().isoformat(timespec="seconds"))
+        try:
+            principal_mod.append_shadow(day, "shindong_exec.jsonl", rec)
+        except Exception as _e:
+            logger.warning("[ShindongExec] 이벤트 기록 실패: %s", _e)
+
+    def _sd_exec_active(self):
+        """지금 들고 있는 신동 포지션의 집행 기록(없으면 None)."""
+        if not self.position.is_external_of(SHINDONG_ENTRY_SOURCE):
+            return None
+        live = [r for r in self._sd_exec.values() if not r.get("done")]
+        return live[-1] if live else None
+
+    def _shindong_entry_block_reason(self, rec: dict, price) -> str:
+        """신규 진입을 막는 사유('' = 진입 가능). 피터2 진입 게이트와 같은 순서."""
+        pos = self.position
+        if pos.status != "FLAT" or self._has_pending_order():
+            return "engine_busy(%s)" % pos.status
+        if not self.circuit_breaker.is_entry_allowed():
+            return "CB %s" % self.circuit_breaker.state
+        if self.kill_switch.is_active:
+            return "kill_switch"
+        if not is_new_entry_allowed():
+            return "time(신규진입 마감)"
+        if is_force_exit_time():
+            return "force_exit_time"
+        from strategy.shindong import live_legs as _ll
+        return _ll.entry_check(rec, price) or ""
+
+    def _shindong_exec_step(self, payload: dict, now: datetime.datetime) -> None:
+        """매분(재생 직후). 거래주체가 신동일 때만 — 신규 진입 · 보유 중 재생 대조."""
+        from strategy.shindong import live_exec as _lx, live_legs as _ll
+        day = now.date().isoformat()
+        self._sd_exec_load(day)
+        trades = payload.get("trades") or []
+        by_key = {t["trade_key"]: t for t in trades}
+        pos = self.position
+        # ① 보유 중 — 재생 대조(주체가 바뀌었어도 들고 있는 신동 포지션은 끝까지 관리한다)
+        if pos.is_external_of(SHINDONG_ENTRY_SOURCE):
+            rec = self._sd_exec_active()
+            if rec is None:
+                rec = self._shindong_adopt(trades, day)
+            if rec is not None:
+                for act in _ll.sync(rec, by_key.get(rec["trade_key"]), now):
+                    self._shindong_apply(rec, act, day, now, src="replay")
+            return
+        # 포지션이 사라졌는데 기록이 열려 있으면 닫는다(손절·15:10·수동 청산 등 다른 경로)
+        _closed_any = False
+        for r in self._sd_exec.values():
+            if not r.get("done") and r.get("filled") and pos.status == "FLAT" \
+                    and not self._has_pending_order():
+                r["done"] = True
+                _closed_any = True
+                self._sd_exec_event(day, "CLOSED_ELSEWHERE", trade_key=r["trade_key"])
+        if _closed_any:
+            self._sd_exec_save(day)
+        # ② 신규 진입 — 신동이 선택된 경우만
+        if self._principal_state["principal"] != principal_mod.SHINDONG:
+            return
+        if not getattr(runtime_settings, "PRINCIPAL_SHINDONG_ENABLED", False):
+            return
+        max_age = float(getattr(runtime_settings, "SHINDONG_LIVE_MAX_AGE_MIN", 2))
+        pick, stale = _lx.pick_new_entry(trades, self._sd_exec, now, max_age)
+        for t in stale:
+            if t.get("status") == "OPEN" and t["trade_key"] not in self._sd_exec_skipped:
+                self._sd_exec_skipped.add(t["trade_key"])
+                log_manager.system("[ShindongExec] %s %s 진입 %s — 늦게 알아챔(>%g분), 쫓지 않음"
+                                   % (t["rule"], "매수" if t["side"] > 0 else "매도",
+                                      str(t["entry_ts"])[11:16], max_age), "INFO")
+                self._sd_exec_event(day, "SKIP_STALE", trade_key=t["trade_key"])
+        if pick is None:
+            return
+        rec = _ll.make_rec(pick)
+        try:
+            price = float(self._last_pipeline_price or 0.0) or None
+        except Exception:
+            price = None
+        why = self._shindong_entry_block_reason(rec, price)
+        if why:
+            if pick["trade_key"] not in self._sd_exec_skipped:
+                self._sd_exec_skipped.add(pick["trade_key"])
+                log_manager.system("[ShindongExec] %s 진입 기각 — %s" % (pick["trade_key"], why), "WARNING")
+                self._sd_exec_event(day, "REJECT", trade_key=pick["trade_key"], why=why)
+            return
+        qty = int(getattr(runtime_settings, "SHINDONG_LIVE_QTY", 2) or 2)
+        direction = "LONG" if rec["side"] > 0 else "SHORT"
+        _ctx = self._manual_entry_ctx or {}
+        atr = float(_ctx.get("atr") or 0.0) or 1.0
+        # FLAT 에서 먼저 건다 — 체결 경로가 어디든 open_position 끝에서 외부 주체일 때만 적용된다.
+        pos.set_external_levels(stop=rec["stop"], target=rec["t2"], src="shindong",
+                                clear_target=True)
+        log_manager.trade(
+            "[ShindongExec] 진입 %s %s %d계약 @%.2f(규칙가 %.2f) 손절 %.2f 1차 %s 최종 %s — %s" % (
+                rec["rule"], direction, qty, price, rec["entry_px"], rec["stop"],
+                ("%.2f" % rec["t1"]) if rec["t1"] is not None else "-",
+                ("%.2f" % rec["t2"]) if rec["t2"] is not None else "-", rec["trade_key"]))
+        self._execute_entry(direction, price, qty, atr, "S", entry_source=SHINDONG_ENTRY_SOURCE)
+        _sent = (self._has_pending_order()
+                 and str((self._pending_order or {}).get("kind", "")) == "ENTRY") \
+            or (pos.status != "FLAT" and pos.entry_source == SHINDONG_ENTRY_SOURCE)
+        if not _sent:
+            if pos.status == "FLAT":
+                pos.clear_external_levels()
+            self._sd_exec_skipped.add(pick["trade_key"])
+            log_manager.system("[ShindongExec] %s 진입 주문 막힘(로그 [EntryBlock] 참조)"
+                               % pick["trade_key"], "WARNING")
+            self._sd_exec_event(day, "REJECT", trade_key=pick["trade_key"], why="execute_entry_blocked")
+            return
+        rec["filled"] = True
+        rec["entered_at"] = now.isoformat(timespec="seconds")
+        rec["entry_hint"] = price
+        self._sd_exec[rec["trade_key"]] = rec
+        self._sd_exec_save(day)
+        self._sd_exec_event(day, "ENTER", **rec)
+
+    def _shindong_adopt(self, trades: list, day: str):
+        """기록 없이 신동 포지션을 들고 있다(기록 파일 유실 등) — 같은 방향 최신 OPEN 재생 거래로 복원."""
+        pos = self.position
+        side = 1 if pos.status == "LONG" else -1
+        cands = [t for t in trades if t.get("status") == "OPEN" and int(t.get("side") or 0) == side]
+        if not cands:
+            if not self._sd_exec_orphan_warned:
+                self._sd_exec_orphan_warned = True
+                log_manager.system("[ShindongExec] 신동 포지션의 집행 기록·재생 거래가 없다 — 1차·최종 목표 "
+                                   "관리 불가, 손절(%.2f)·15:10 강제청산만 남는다" % pos.stop_price, "WARNING")
+            return None
+        from strategy.shindong import live_legs as _ll
+        t = sorted(cands, key=lambda x: str(x.get("entry_ts")))[-1]
+        rec = _ll.make_rec(t)
+        rec["filled"] = True
+        rec["leg1_done"] = int(pos.quantity or 0) < int(getattr(runtime_settings, "SHINDONG_LIVE_QTY", 2) or 2)
+        rec["adopted"] = True
+        self._sd_exec[rec["trade_key"]] = rec
+        self._sd_exec_save(day)
+        self._sd_exec_event(day, "ADOPT", **rec)
+        log_manager.system("[ShindongExec] 집행 기록 복원 %s (1차 %s)"
+                           % (rec["trade_key"], "완료" if rec["leg1_done"] else "대기"), "WARNING")
+        return rec
+
+    def _shindong_target_poll(self) -> None:
+        """2초 폴링(피터2 슬롯 안) — 신동 포지션의 1차·최종 목표·시간청산."""
+        if not self.position.is_external_of(SHINDONG_ENTRY_SOURCE):
+            return
+        if self._has_pending_order():
+            return
+        now = datetime.datetime.now()
+        day = now.date().isoformat()
+        self._sd_exec_load(day)
+        rec = self._sd_exec_active()
+        if rec is None:
+            return              # 매분 단계가 복원한다(_shindong_adopt)
+        try:
+            price = float(self._last_pipeline_price or 0.0) or None
+        except Exception:
+            price = None
+        if price is None:
+            return
+        from strategy.shindong import live_legs as _ll
+        for act in _ll.poll(rec, price, now):
+            self._shindong_apply(rec, act, day, now, src="poll", price=price)
+
+    def _shindong_apply(self, rec: dict, act: tuple, day: str, now, src: str, price=None) -> None:
+        from strategy.shindong import live_legs as _ll
+        pos = self.position
+        kind = act[0]
+        if kind == "retracted":
+            rec["retracted"] = True
+            self._sd_exec_save(day)
+            self._sd_exec_event(day, "RETRACTED", trade_key=rec["trade_key"])
+            log_manager.system("[ShindongExec] %s 재생에서 철회 — 청산 사유 아님, 손절 %.2f·목표로 계속 관리"
+                               % (rec["trade_key"], rec.get("stop") or 0.0), "WARNING")
+            return
+        if kind == "set_stop":
+            old = rec.get("stop")
+            rec["stop"] = act[1]
+            pos.set_external_levels(stop=act[1], src="shindong(%s)" % src)
+            self._sd_exec_save(day)
+            self._sd_exec_event(day, "SET_STOP", trade_key=rec["trade_key"], old=old, new=act[1], src=src)
+            log_manager.trade("[ShindongExec] 손절 %s → %.2f (%s)" % (old, act[1], src))
+            return
+        if self._has_pending_order() or not pos.is_external_of(SHINDONG_ENTRY_SOURCE):
+            return
+        qty_all = int(pos.quantity or 0)
+        if qty_all <= 0:
+            return
+        leg1 = (kind == "exit_leg1" and qty_all >= 2)
+        send_qty = 1 if leg1 else qty_all
+        price_hint = float(price or self._last_pipeline_price or pos.entry_price or 0.0)
+        reason = act[1]
+        if leg1:
+            self._set_pending_order(
+                kind="EXIT_MANUAL_PARTIAL", direction=pos.status, qty=send_qty,
+                price_hint=round(price_hint, 2), reason=reason,
+                stage=pos.resolve_stage_for_exit_qty(send_qty, full_close=False) or None)
+        else:
+            self._set_pending_order(
+                kind="EXIT_FULL", direction=pos.status, qty=send_qty,
+                price_hint=round(price_hint, 2), reason=reason,
+                stage=pos.resolve_stage_for_exit_qty(send_qty, full_close=True) or None)
+        ret = self._send_broker_exit_order(send_qty, throttle=False)
+        if ret != 0:
+            self._clear_pending_order()
+            log_manager.system(f"[ShindongExec] 청산 주문 실패 ret={ret} reason={reason}", "ERROR")
+            _ts_on_exit_order_reject(self, kind="신동청산", direction=pos.status, qty=send_qty, ret=ret)
+            self._sd_exec_event(day, "EXIT_FAIL", trade_key=rec["trade_key"], ret=ret, reason=reason)
+            return
+        if leg1:
+            be = _ll.after_leg1(rec)
+            if be is not None:
+                # 1차 청산 주문 뒤 공통 손절 본전(규격 run_trade e2=False). 가격은 1차 목표 근처라 즉시 걸리지 않는다.
+                pos.set_external_levels(stop=be, src="shindong(BE)")
+        else:
+            rec["done"] = True
+        self._sd_exec_save(day)
+        self._sd_exec_event(day, "EXIT_LEG1" if leg1 else "EXIT_ALL", trade_key=rec["trade_key"],
+                            reason=reason, qty=send_qty, price=round(price_hint, 2), src=src,
+                            stop=rec.get("stop"))
+        log_manager.trade(f"[주문요청] {reason} {pos.status} {send_qty}계약 @ {price_hint:.2f} 체결대기 "
+                          f"({src}{' · 손절→본전 %.2f' % rec['stop'] if leg1 else ''})")
 
     def _save_program_trade_raw(self, now: datetime.datetime) -> None:
         """[MW0601 451차 Phase 1-1] CpSvr8111 원천 56필드를 `raw_program_trade`에 보존.
@@ -18193,14 +18466,18 @@ def _ts_record_nonfinal_exit(self, result: dict, reason_label: str) -> None:
 
     pnl = result["pnl_pts"]
     qty = result["quantity"]
+    # [MW0601 685차] 신동 1차 레그가 이 경로(EXIT_MANUAL_PARTIAL)로 온다 — 외부 주체는 켈리에 넣지 않는다.
+    _is_ext = (result.get("pos_entry_src") in EXTERNAL_ENTRY_SOURCES)
 
     if pnl > 0:
         self.circuit_breaker.record_win()
-        self.kelly.record(win=True, pnl_pts=pnl)
+        if not _is_ext:
+            self.kelly.record(win=True, pnl_pts=pnl)
     else:
         # [MW0601 489차 / A-1] 포지션 단위 카운트 (위 주석과 동일 취지)
         self.circuit_breaker.record_stop_loss(result.get("entry_ts"))
-        self.kelly.record(win=False, pnl_pts=pnl)
+        if not _is_ext:
+            self.kelly.record(win=False, pnl_pts=pnl)
 
     log_manager.trade(
         f"[체결청산-부분] {result['direction']} {qty}계약 @ {result['exit_price']:.2f} "
