@@ -17,6 +17,7 @@ import datetime as _dt
 import json
 import logging
 import os
+import threading
 import time
 from typing import Any, Dict, List, Tuple
 
@@ -51,6 +52,43 @@ _GREEK_PCT = 100.0
 
 _OPTION_MULTIPLIER = 250_000
 _GEX_BN = 1e9
+
+# ── [MW0602 612차 후속 / F-1008-1] 워커 완료시간 추이 — **로그 전용** ──────────
+# 2026-10-08 옵션체인 정체 2건 모두 직전 4회 완료시간이 정상치(1.5초)의 약 11배였다
+# (O-98 「선행 신호 인정 — 표본 2건, 확정 결론 금지」). 그 추이를 사람이 줄마다 빼서
+# 보지 않도록 완료 로그에 이동평균·배수를 병기하고, 배수가 기준 이상이면 WARNING 을
+# 한 줄 더 남긴다. **판단·분기·재시작·차단 무변경** — 워커는 매 폴링마다 새로 만들어지므로
+# 이력은 모듈 수준에 둔다.
+# ⚠ 기준값은 O-98 등록 시점에 고정된 사전등록 값이다(정상치 1.5초 · 5배 · 직전 4~8회).
+#   관측을 보고 바꾸지 말 것.
+_ELAPSED_NORMAL_MS = 1500.0
+_ELAPSED_WARN_RATIO = 5.0
+_ELAPSED_MIN_SAMPLES = 4
+_ELAPSED_WINDOW = 8
+_elapsed_hist: List[float] = []
+_elapsed_lock = threading.Lock()
+
+
+def _record_elapsed(elapsed_ms: float) -> Tuple[int, Any, Any]:
+    """완료시간 1건을 이력에 넣고 (표본수, 이동평균ms, 정상치 대비 배수)를 돌려준다.
+
+    표본이 `_ELAPSED_MIN_SAMPLES` 미만이면 평균·배수는 None — 「미측정」이지
+    「정상(배수 1.0)」이 아니다(계측 4원칙 ②).
+    """
+    with _elapsed_lock:
+        _elapsed_hist.append(float(elapsed_ms))
+        del _elapsed_hist[:-_ELAPSED_WINDOW]
+        n = len(_elapsed_hist)
+        if n < _ELAPSED_MIN_SAMPLES:
+            return n, None, None
+        avg = sum(_elapsed_hist) / n
+    return n, avg, avg / _ELAPSED_NORMAL_MS
+
+
+def _elapsed_trend_text(n: int, avg: Any, ratio: Any) -> str:
+    if avg is None:
+        return "최근추이=미측정(표본 %d/%d)" % (n, _ELAPSED_MIN_SAMPLES)
+    return "최근%d회평균=%.0fms(정상치 x%.1f)" % (n, avg, ratio)
 
 
 # ── 타입 헬퍼 ──────────────────────────────────────────────────────
@@ -426,14 +464,28 @@ class OptionChainWorker(QThread):
                 "ts": _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
         elapsed = (time.perf_counter() - t0) * 1000
+        # [F-1008-1] 추이 계측 실패가 피처 경로를 막지 않게 감싼다(로그 전용).
+        try:
+            _n, _avg, _ratio = _record_elapsed(elapsed)
+            _trend = _elapsed_trend_text(_n, _avg, _ratio)
+        except Exception as exc:
+            _n, _avg, _ratio = 0, None, None
+            _trend = "최근추이=계측실패(%s)" % (exc,)
         system_logger.info(
             "[OptionChain][Worker] 완료 %.0fms | target=%d valid=%d "
-            "PCR=%.3f ATM_PCR=%.3f GEX=%.2fB",
+            "PCR=%.3f ATM_PCR=%.3f GEX=%.2fB | %s",
             elapsed, len(target), len(valid),
             feats.get("opt_chain_pcr", 0),
             feats.get("opt_atm_pcr", 0),
             feats.get("opt_gex_bn", 0),
+            _trend,
         )
+        if _ratio is not None and _ratio >= _ELAPSED_WARN_RATIO:
+            system_logger.warning(
+                "[OptionChain][Worker] 완료시간 지연 추이 %s ≥ 기준 x%.1f — "
+                "정체 선행 신호 후보(O-98, 표본 2건·확정 아님). 판단 무변경",
+                _trend, _ELAPSED_WARN_RATIO,
+            )
         return feats, chain_raw
 
     def _collect_snapshots(self, mst_obj: Any, target: List[Dict]) -> List[Dict]:
