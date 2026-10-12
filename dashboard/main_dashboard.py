@@ -17081,11 +17081,22 @@ class MireukDashboard(QMainWindow):
             if _root not in _sys.path:
                 _sys.path.insert(0, _root)
             from utils.exit_flags import write_exit_flags as _wef
+            # [MW0601 684차 / F-18 재진단] 로그 경로를 **명시**한다.
+            #   `write_exit_flags` 의 모듈 로거(`utils.exit_flags`)는 어떤 파일 핸들러에도
+            #   연결돼 있지 않다 — 618차 이래 SYSTEM 로그의 `intent=user_*` 는 **0건**이었고
+            #   (`daily_close`·`auto_shutdown` 은 `log_fn` 을 넘겨 10건씩 남았다), 2026-10-12
+            #   09:33·11:22 재기동이 그 때문에 「원인불명」으로 남았다. test_618 은 caplog 로
+            #   모듈 로거를 직접 잡아서 이 결손을 못 봤다(죽은 계측 계열).
+            try:
+                from logging_system.log_manager import log_manager as _lm
+                _log_fn = _lm.system
+            except Exception:
+                _log_fn = None
             if _clicked == _btn_full:
-                _wef("user_close", keep_alive=False, root=_root)
+                _wef("user_close", keep_alive=False, root=_root, log_fn=_log_fn)
             else:
                 # 재시작: 파일을 쓰지 않는다 → 런처가 10초 후 AUTO-RESTART.
-                _wef("user_restart", keep_alive=True, root=_root)
+                _wef("user_restart", keep_alive=True, root=_root, log_fn=_log_fn)
         except Exception:
             # 폴백 — 헬퍼를 못 불러도 완전 종료 계약(플래그 파일)은 지킨다.
             if _clicked == _btn_full:

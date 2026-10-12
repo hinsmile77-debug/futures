@@ -2249,6 +2249,131 @@ def bar_gap_section(root, cfg, day, out, upto_min=None):
     A("")
 
 
+# ------------------------------------------------------------------ 재기동 귀속 대사
+#: [MW0601 684차 / G-5] 커밋은 재기동 시각 ±이 분 안만 「설명 후보」로 본다.
+#: 2026-10-12 장후가 같은 날 15:30대 커밋을 09:33 재기동의 원인처럼 다룰 뻔했다
+#: (682차 §3 G-5 보완 조건). 창 밖 커밋은 개수만 센다 — 계측 4원칙 ③.
+RESTART_COMMIT_WINDOW_MIN = 5
+#: `[Shutdown] intent=` 는 종료 **직전**에 찍히고, 런처의 `시각=HHMM` 은 종료 **직후**다.
+RESTART_INTENT_BEFORE_MIN = 3
+RESTART_INTENT_AFTER_MIN = 1
+
+_RE_SHUTDOWN_INTENT = re.compile(
+    r"^\d{4}-\d{2}-\d{2} (\d{2}):(\d{2}):\d{2} .*\[Shutdown\] intent=(\w+)")
+
+
+def _hm_to_min(hm):
+    try:
+        h, m = hm.split(":")[:2]
+        return int(h) * 60 + int(m)
+    except Exception:
+        return None
+
+
+def read_shutdown_intents(root, day):
+    """그날 SYSTEM 로그의 `[Shutdown] intent=` 줄 → ([{"min","hm","intent"}], 사유).
+
+    파일이 없으면 `(None, 사유)` — 「의도 로그 0건」과 구분한다(계측 4원칙 ②).
+    """
+    p = os.path.join(root, "logs", "%s_SYSTEM.log" % day.strftime("%Y%m%d"))
+    if not os.path.exists(p):
+        return None, "logs/%s_SYSTEM.log 없음" % day.strftime("%Y%m%d")
+    rows = []
+    try:
+        with io.open(p, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if "[Shutdown] intent=" not in line:
+                    continue
+                m = _RE_SHUTDOWN_INTENT.search(line)
+                if m:
+                    rows.append({"min": int(m.group(1)) * 60 + int(m.group(2)),
+                                 "hm": "%s:%s" % (m.group(1), m.group(2)),
+                                 "intent": m.group(3)})
+    except Exception as e:
+        return None, "SYSTEM 로그 읽기 실패: %s" % e
+    return rows, ""
+
+
+def read_day_commits(root, day):
+    """그날(KST) HEAD 이력 커밋 → ([{"min","hm","sha","subj"}], 사유). git 실패면 None."""
+    d = day.strftime("%Y-%m-%d")
+    raw = run_git(root, ["log", "--since=" + kst_day_bound(d),
+                         "--until=%s 23:59:59 +0900" % d,
+                         "--no-decorate", "--format=%ct|%h|%s"])
+    if raw.startswith("(git"):
+        return None, raw
+    rows = []
+    for line in raw.splitlines():
+        parts = line.split("|", 2)
+        if len(parts) != 3:
+            continue
+        try:
+            t = ts_kst(int(parts[0]))
+        except Exception:
+            continue
+        rows.append({"min": t.hour * 60 + t.minute, "hm": t.strftime("%H:%M"),
+                     "sha": parts[1], "subj": parts[2]})
+    return rows, ""
+
+
+def restart_attribution(restarts, intents, commits,
+                        window_min=RESTART_COMMIT_WINDOW_MIN,
+                        intent_before=RESTART_INTENT_BEFORE_MIN,
+                        intent_after=RESTART_INTENT_AFTER_MIN):
+    """[684차 / G-5] 재시작마다 「종료 의도 로그」와 「±창 이내 커밋」을 붙인다(순수 함수).
+
+    intents/commits 가 None 이면 그 칸도 None(미측정) — 빈 목록(0건)과 구분한다.
+    반환 원소: {"at","kind","intents","near","far"}
+    """
+    out = []
+    for r in restarts or []:
+        at = _hm_to_min(r.get("at", ""))
+        row = {"at": r.get("at"), "kind": r.get("kind"),
+               "intents": None, "near": None, "far": None}
+        if at is not None and intents is not None:
+            row["intents"] = [x for x in intents
+                              if at - intent_before <= x["min"] <= at + intent_after]
+        if at is not None and commits is not None:
+            row["near"] = [c for c in commits if abs(c["min"] - at) <= window_min]
+            row["far"] = len(commits) - len(row["near"])
+        out.append(row)
+    return out
+
+
+def restart_attribution_lines(rows, intents_reason="", commits_reason=""):
+    """`restart_attribution()` 결과를 표로. 판정은 하지 않는다 — 후보만 보인다."""
+    if not rows:
+        return []
+    L = ["#### 재기동 귀속 대사 (684차 G-5)", "",
+         "| 재시작 | 런처 분류 | 종료 의도 로그(−%d~+%d분) | ±%d분 이내 커밋(설명 후보) | 창 밖 당일 커밋 |"
+         % (RESTART_INTENT_BEFORE_MIN, RESTART_INTENT_AFTER_MIN, RESTART_COMMIT_WINDOW_MIN),
+         "|---|---|---|---|---|"]
+    for r in rows:
+        if r["intents"] is None:
+            it = "**미측정** — %s" % (intents_reason or "사유 미상")
+        elif r["intents"]:
+            it = ", ".join("%s `%s`" % (x["hm"], x["intent"]) for x in r["intents"])
+        else:
+            it = "**없음**"
+        if r["near"] is None:
+            nr, fr = "**미측정** — %s" % truncate(commits_reason or "사유 미상", 80), "—"
+        else:
+            nr = (", ".join("%s `%s` %s" % (c["hm"], c["sha"], truncate(c["subj"], 50))
+                            for c in r["near"][:4])
+                  + ((" … 외 %d건" % (len(r["near"]) - 4)) if len(r["near"]) > 4 else "")
+                  ) if r["near"] else "없음"
+            fr = "%d건(시각 불일치 — 후보 아님)" % r["far"]
+        L.append("| %s | %s | %s | %s | %s |" % (r["at"], r["kind"], it, nr, fr))
+    L.append("")
+    L.append("- 🔴 커밋은 **인과가 아니라 후보**다. 창 밖 커밋을 원인으로 적지 말 것.")
+    L.append("- 「종료 의도 로그 **없음**」 + `[CLEAN EXIT]` 있음 = 의도 경로를 거치지 않은 정상 종료다. "
+             "⚠ **684차 이전**의 X 버튼 종료(`user_close`/`user_restart`)는 로그 파일에 "
+             "남지 않았다(모듈 로거가 파일 핸들러에 안 붙어 있었다) — 그 시기의 「없음」은 "
+             "X 버튼 재시작을 배제하지 못한다.")
+    L.append("")
+    return L
+
+
 def wer_crash_section(root, cfg, day, out):
     """[MW0601 620차] 프로세스 종료 3축 대사 — 런처 분류 × `crash_fault.log` × Windows WER.
 
@@ -2376,6 +2501,14 @@ def wer_crash_section(root, cfg, day, out):
               "미륵이 프로세스는 아니지만 시세 공급 경로다. 그 시각의 "
               "`[FutureCurOnly]`·수신 공백과 대조할 것(실측 2026-09-17 `c0000005` 3건).")
     A("")
+    # [MW0601 684차 / G-5] 재시작마다 종료 의도 로그 + ±5분 커밋을 붙인다.
+    # WER 축과 무관하게 돈다 — 런처 축만 있으면 된다.
+    if lau["restarts"]:
+        _its, _its_why = read_shutdown_intents(root, day)
+        _cms, _cms_why = read_day_commits(root, day)
+        for _line in restart_attribution_lines(
+                restart_attribution(lau["restarts"], _its, _cms), _its_why, _cms_why):
+            A(_line)
     A("> 🔴 **「WER 기록 없음」을 「크래시가 아니다」로 읽지 말 것.** 참인 것은 "
       "**「미처리 네이티브 예외는 아니었다」까지**다 — `sys.exit`·창 닫기·"
       "`TerminateProcess`(하드킬)는 전부 이벤트를 안 남긴다. 종료 *의도*는 "
