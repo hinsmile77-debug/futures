@@ -55,8 +55,9 @@ def _log(msg):
     # 예약작업은 stdout 을 남기지 않으므로 logs/<YYYYMMDD>_OPTION_HTS_SYNC.log 에도 쓴다
     now = _dt.datetime.now()
     line = "%s [OptHtsSync] %s" % (now.strftime("%H:%M:%S"), msg)
-    print(line)
-    sys.stdout.flush()
+    if sys.stdout is not None:                      # pythonw(예약작업)는 stdout 이 None 이다
+        print(line)
+        sys.stdout.flush()
     try:
         d = os.path.join(ROOT, "logs")
         os.makedirs(d, exist_ok=True)
