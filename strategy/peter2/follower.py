@@ -43,6 +43,11 @@ def _hm(t):
     return t.strftime('%H:%M') if t else '--:--'
 
 
+# 체결 트윗으로 오프셋을 역산할 수 있는 최대 지연. 이보다 늦으면 지금 가격과
+# 그때 가격이 달라 역산이 성립하지 않는다(2026-10-08 실측 근거는 _follow_apply 주석).
+_FILL_OFFSET_MAX_AGE_SEC = 120
+
+
 class Peter2Follower(object):
 
     def __init__(self, date, offset, offset_src='', offset_safe=True, cfg=None):
@@ -64,7 +69,7 @@ class Peter2Follower(object):
         self.realized_krw = 0.0
         self.halted = None           # 당일 추종 정지 사유
         self.events = []             # 이번 호출에서 생긴 이벤트(호출부가 비운다)
-        self.last_fill_offset = None  # 그의 체결가로 역산한 오프셋(모니터링)
+        self.last_fill_offset = None  # 그의 체결가로 역산한 오프셋(모니터링 — 신선할 때만)
 
     # ── 상태 저장/복원 ────────────────────────────────────────
     def snapshot(self):
@@ -139,6 +144,11 @@ class Peter2Follower(object):
         if tt is None or tt.date().isoformat() != self.date:
             return intents
         res = parse_tweet(tweet.get('text') or '')
+        # 🔴 「글이 없다」와 「이미지라 못 읽는다」를 같은 사유로 적지 않는다(계측 4원칙 ②).
+        #    오늘(2026-10-08) 8건은 전부 리포트 이미지라 무해했지만, 매매 지시가 이미지로
+        #    오면 'empty' 로 묻혀 조용히 사라진다. 수집기가 붙여 준 kind 로 가른다.
+        if res.get('ignore') == 'empty' and tweet.get('kind') == 'media_only':
+            res['ignore'] = 'media_only'
         if res.get('ignore') or not res['facts']:
             if res.get('ignore') and not replay:
                 self._ev('IGNORE', tt, sig=tid, why=res['ignore'],
@@ -277,9 +287,24 @@ class Peter2Follower(object):
         if t == 'fill':
             lvl = f.get('level')
             if lvl is not None and price is not None and self.offset is not None and not replay:
-                self.last_fill_offset = round(price - lvl, 2)
-                self._ev('FILL_OFFSET', tt, sig=tid, implied=self.last_fill_offset,
-                         used=self.offset)
+                # 🔴 `price - lvl` 은 **지금 가격** 기준이다. 트윗이 늦게 도착하면 이것은
+                #    오프셋이 아니라 「레벨이 현재가에서 얼마나 먼가」일 뿐이다.
+                #    2026-10-08: 4시간 늦은 체결트윗에 -15.52/-17.52 가 찍혔으나, 그 시각
+                #    실측 오프셋은 -5.76/-4.74 로 **사용 중이던 -5.40 이 정확했다.**
+                #    어디에서도 소비되진 않지만 사람이 읽고 엉뚱한 보정에 들어갈 수 있다.
+                #    모르는 것은 숫자로 적지 않는다 — 계측 4원칙 ②.
+                try:
+                    age = (now - tt).total_seconds()
+                except Exception:
+                    age = None
+                if age is not None and age <= _FILL_OFFSET_MAX_AGE_SEC:
+                    self.last_fill_offset = round(price - lvl, 2)
+                    self._ev('FILL_OFFSET', tt, sig=tid, implied=self.last_fill_offset,
+                             used=self.offset, age_sec=int(age))
+                else:
+                    # 직전 값을 덮어쓰지 않는다 — 쓰레기로 갱신하느니 모르는 채로 둔다
+                    self._ev('FILL_OFFSET', tt, sig=tid, implied=None, used=self.offset,
+                             age_sec=(int(age) if age is not None else None))
             if holding:
                 tgt = engine.get('target')
                 stp = engine.get('stop')

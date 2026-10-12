@@ -3,13 +3,54 @@
 // 페이지 타이머는 백그라운드 탭에서 분당 1회로 묶이므로 쓰지 않는다. 대신 DOM 변화(MutationObserver)를
 // 보고, 트윗 article 이 나타나면 그때 모아서 보낸다. 새로고침 주기는 background.js 가 쥔다.
 // 수집 규칙은 peter-daily 스킬의 window.C() 와 같다 — id·시각(datetime)·본문.
+//
+// 🔴 2026-10-08 — 자격 검사는 **주입 시점 1회뿐**이었다.
+//   X 는 SPA 라 페이지를 새로 읽지 않고 주소만 /home 으로 바꾸는 일이 있다. 그러면 이 스크립트는
+//   계속 살아서 **홈 타임라인을 검색 결과인 양** 보냈다(그날 하트비트 `url=https://x.com/home`).
+//   홈은 알고리즘 정렬이라 장중 구간의 **전수 보장이 없다** — 조용히 표본이 비는 길이다.
+//   ⇒ 보낼 때마다 자격을 다시 보고, 벗어났으면 **수집 대신 이탈을 신고**한다(계측 4원칙 ②·④).
 
 (function () {
-  if (!/from(%3A|:)PeterLeejoa/i.test(location.href)) return;
+  const OFF_REPORT_SEC = 30;        // 이탈 신고는 30초에 한 번 — 되돌리는 건 background 가 한다
 
   const sent = new Set();
   let cycle = 0;
   let timer = null;
+  let lastOff = 0;
+  let hb = null;
+
+  // 확장을 새로 읽으면(chrome://extensions 새로고침, 업데이트) **이미 열려 있던 탭의**
+  // 이 스크립트는 갈 곳을 잃는다 — 그런데 혼자 계속 살아서 5초마다 메시지를 쏘고
+  // `Extension context invalidated` 를 던진다(2026-10-08 배포 직후 실제로 그랬다).
+  // 기능 장애는 아니지만 오류 목록을 채워 진짜 오류를 덮는다. 고아가 되면 스스로 멈춘다.
+  function alive() {
+    try { return !!(chrome.runtime && chrome.runtime.id); } catch (e) { return false; }
+  }
+
+  function stop() {
+    try { obs.disconnect(); } catch (e) {}
+    if (hb) { clearInterval(hb); hb = null; }
+  }
+
+  // ⚠ 콜백은 **두 번째 인자**로 받는다. 페이로드에 함수를 실으면 구조화 복제가
+  //    DataCloneError 로 죽는다 — sendMessage 는 JSON 으로 옮길 수 있는 값만 받는다.
+  function post(payload, onok) {
+    if (!alive()) { stop(); return; }
+    try {
+      chrome.runtime.sendMessage(payload, function (r) {
+        void chrome.runtime.lastError;      // 응답 없음은 오류가 아니다 — 읽어서 삼킨다
+        if (onok) onok(r);
+      });
+    } catch (e) {
+      stop();                                // 컨텍스트가 끊겼다
+    }
+  }
+
+  // 지금 이 페이지가 「우리 검색 결과」인가. 주입 시점이 아니라 **매번** 묻는다.
+  function offSearch() {
+    return location.pathname.indexOf("/search") !== 0
+        || !/from(%3A|:)PeterLeejoa/i.test(location.href);
+  }
 
   function collect() {
     const out = [];
@@ -23,54 +64,63 @@
       // 인용·리트윗 안의 남의 글은 빼고 그의 글만 — 링크가 /PeterLeejoa/status/ 여야 한다
       if (!/\/PeterLeejoa\/status\//i.test(h)) continue;
       const x = (a.querySelector('[data-testid="tweetText"]') || {}).innerText || "";
-      out.push({ id: tid, dt: t.getAttribute("datetime"), text: x });
+      // 본문이 비었을 때 **왜** 비었는지를 같이 보낸다. 이미지뿐인 글(리포트 축약본 등)과
+      // 진짜 빈 글은 다르다 — 같은 모양으로 적으면 이미지로 온 지시가 조용히 사라진다.
+      let kind = null;
+      if (!x) {
+        kind = a.querySelector('[data-testid="tweetPhoto"], [data-testid="videoPlayer"], video')
+             ? "media_only" : "empty";
+      }
+      out.push({ id: tid, dt: t.getAttribute("datetime"), text: x, kind: kind });
     }
     return out;
   }
 
   function pageError() {
-    const body = (document.body && document.body.innerText) || "";
+    // 🔴 종전에는 document.body 전체를 봤다. 오른쪽 트렌드 패널이 제 사정으로 띄우는
+    //    「문제가 발생했습니다 … 다시 시도」가 걸려 **멀쩡한 페이지를 오류로 신고**했고,
+    //    background 가 15분 물러났다(2026-10-08 PAGE_ERROR 다발). 본문 칸만 본다.
+    const main = document.querySelector('[data-testid="primaryColumn"]') || document.body;
+    const body = (main && main.innerText) || "";
     if (/Something went wrong|다시 시도|문제가 발생|Rate limit|속도 제한/i.test(body)
-        && !document.querySelector("article")) {
+        && !main.querySelector("article")) {
       return body.slice(0, 80);
     }
-    if (/로그인|Log in|Sign in/i.test(body) && !document.querySelector("article")) {
+    if (/로그인|Log in|Sign in/i.test(body) && !main.querySelector("article")) {
       return "login_required";
     }
     return null;
   }
 
-  // 확장이 재로드·갱신되면 이 탭에 남은 옛 스크립트는 「고아」가 된다 — chrome.runtime 이 끊겨
-  // sendMessage 가 "Extension context invalidated" 를 던진다(5초 하트비트마다 반복).
-  // 끊긴 것을 알면 관찰자·타이머를 걷고 조용히 물러난다. 다음 탭 새로고침이 새 스크립트를 심는다.
-  let hb = null;
-  function alive() {
-    try { return !!(chrome.runtime && chrome.runtime.id); } catch (e) { return false; }
-  }
-  function teardown() {
-    try { obs.disconnect(); } catch (e) {}
-    if (hb) { clearInterval(hb); hb = null; }
-  }
-
   function send(force) {
-    if (!alive()) { teardown(); return; }
+    if (!alive()) { stop(); return; }
     cycle += 1;
+
+    if (offSearch()) {
+      // 자격을 잃었다 — 홈 타임라인을 긁어 보내지 않는다. 사실만 알린다.
+      const now = Date.now();
+      if (now - lastOff < OFF_REPORT_SEC * 1000) return;
+      lastOff = now;
+      post({
+        type: "peter2_tweets", tweets: [],
+        // off_search 는 error 가 아니다 — background 는 물러나는 대신 탭을 되돌린다
+        meta: { url: location.href, articles: 0, cycle: cycle, error: null, off_search: true },
+      });
+      return;
+    }
+
     const all = collect();
     const fresh = all.filter((t) => !sent.has(t.id + ":" + t.text.length));
-    const meta = { url: location.href, articles: all.length, cycle: cycle, error: pageError() };
+    const meta = { url: location.href, articles: all.length, cycle: cycle,
+                   error: pageError(), off_search: false };
     if (!fresh.length && !force) return;
-    try {
-      chrome.runtime.sendMessage({ type: "peter2_tweets", tweets: fresh, meta: meta }, (r) => {
-        void chrome.runtime.lastError;   // 서비스워커 재기동 틈의 「수신자 없음」은 다음 주기가 메운다
-        if (r && r.ok) for (const t of fresh) sent.add(t.id + ":" + t.text.length);
-      });
-    } catch (e) {
-      teardown();                        // Extension context invalidated
-    }
+    post({ type: "peter2_tweets", tweets: fresh, meta: meta },
+         (r) => { if (r && r.ok) for (const t of fresh) sent.add(t.id + ":" + t.text.length); });
   }
 
   // 「새 게시물 보기」 알약이 뜨면 누른다(새로고침 사이에 들어온 글)
   function clickPill() {
+    if (offSearch()) return;
     const pill = document.querySelector('[data-testid="pillLabel"]');
     if (pill) { try { pill.click(); } catch (e) {} }
   }
