@@ -12842,7 +12842,8 @@ class TradingSystem:
                 _now = datetime.datetime.now()
                 self._peter2.on_peter2_closed(pnl, _now, pnl_krw=result.get("pnl_krw"))
                 self._peter2._ev("CLOSED", _now, pnl_pts=round(float(pnl), 2),
-                                 pnl_krw=result.get("pnl_krw"), reason=result.get("reason"))
+                                 pnl_krw=result.get("pnl_krw"),
+                                 reason=result.get("exit_reason"))   # 키는 exit_reason(후속9 — 종전 "reason" 은 늘 None)
                 self._peter2_flush(self._peter2.date)
                 peter2_store.save_state(self._peter2.date, self._peter2.snapshot())
             except Exception as _p2e:
