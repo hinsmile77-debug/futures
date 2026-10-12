@@ -3938,10 +3938,14 @@ class TradingSystem:
             stale = age is None or age > float(getattr(runtime_settings, "PETER2_HEARTBEAT_STALE_SEC", 90))
             if stale and not self._peter2_stale_logged:
                 self._peter2_stale_logged = True
+                _perr = (_info or {}).get("page_error")
                 log_manager.system(
-                    "[Peter2] 수집기 하트비트 없음/지연(%s) — 신규 추종 진입 정지. "
+                    "[Peter2] 수집기 하트비트 없음/지연(%s%s) — 신규 추종 진입 정지. "
                     "Chrome 확장·수신기(tools/peter2_live) 확인" % (
-                        "미기동" if age is None else "%.0f초" % age), "WARNING")
+                        ("미기동" if _info is None else "오늘 정상수집 없음") if age is None
+                        else "정상수집 %.0f초 전" % age,
+                        (" · X 페이지 오류: %s" % str(_perr).splitlines()[0][:40]) if _perr else ""),
+                    "WARNING")
             elif not stale and self._peter2_stale_logged:
                 self._peter2_stale_logged = False
                 log_manager.system("[Peter2] 수집기 하트비트 회복", "INFO")

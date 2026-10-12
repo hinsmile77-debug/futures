@@ -175,8 +175,18 @@ def load_offset(date_str):
 
 
 # ── 하트비트 ──────────────────────────────────────────────────
+_OK_SEEN = {}     # date → 엔진이 관측한 마지막 정상 게시(구 수신기 폴백용)
+
+
 def collector_heartbeat(date):
-    """(age_sec, info). 파일이 없으면 (None, None) — 「수집기 미기동」이지 「0초」가 아니다."""
+    """(age_sec, info). 파일이 없으면 (None, None) — 「수집기 미기동」이지 「0초」가 아니다.
+
+    [668차 후속8] age 는 **마지막 정상 게시**(페이지 오류 없음) 기준이다. 확장이 5초마다 보내도
+    X 페이지가 오류(「Something went wrong」·로그인 요구)면 트윗을 못 읽는다 — 그 동안은
+    게시가 신선해도 수집은 멈춘 것이다(2026-10-12 09:13–09:30 PAGE_ERROR 39회, 하트비트는 「신선」).
+    수신기가 `last_ok` 를 쓰면 그것을, 구 수신기면 엔진이 본 마지막 무오류 게시를 쓴다.
+    info['page_error'] = 현재 페이지 오류 문자열(없으면 None), info['age_src'] = 기준.
+    """
     p = os.path.join(LIVE_DIR, date, 'collector.json')
     if not os.path.exists(p):
         return None, None
@@ -184,7 +194,22 @@ def collector_heartbeat(date):
         with io.open(p, encoding='utf-8') as f:
             info = json.load(f)
         last = datetime.datetime.fromisoformat(info.get('last_post', '')[:19])
-        return (datetime.datetime.now() - last).total_seconds(), info
+        err = info.get('error') or None
+        if not err:
+            _OK_SEEN[date] = last
+        if 'last_ok' in info:
+            ok = info.get('last_ok')
+            ref = datetime.datetime.fromisoformat(ok[:19]) if ok else None
+            src = 'last_ok'
+        elif date in _OK_SEEN:
+            ref, src = _OK_SEEN[date], 'engine_seen_ok'
+        else:
+            ref, src = last, 'last_post(오류 지속 시간 미상)'
+        info['page_error'] = err
+        info['age_src'] = src
+        if ref is None:          # 수신기가 오늘 한 번도 정상 게시를 못 받았다
+            return None, info
+        return (datetime.datetime.now() - ref).total_seconds(), info
     except Exception:
         return None, None
 
