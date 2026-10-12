@@ -153,7 +153,7 @@ def live_offset_path(date):
 
 def write_offset_live(date, rec):
     """[615차 후속2] 장중 자동 실측 결과를 원자적으로 쓴다(`_atomic_json` — tmp → replace).
-    ⚠ dev 에는 668차 후속11 교체 재시도가 붙어 있다. 이 브랜치에 그것이 들어오면 함께 혜택을 본다."""
+    `_atomic_json` 이 668차 후속11 교체 재시도(`_replace_retry`)를 거친다 — v9-dev 도 2ad034b 로 반영."""
     day_dir(date)
     _atomic_json(live_offset_path(date), rec)
 
