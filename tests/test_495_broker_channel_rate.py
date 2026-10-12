@@ -65,7 +65,7 @@ def test_detection_source_is_visible():
     from config import settings as S
     assert S.BROKER_CHANNEL_SOURCE, "감지 근거가 비어 있다"
     assert (S.BROKER_CHANNEL_SOURCE in ("env", "fallback")
-            or S.BROKER_CHANNEL_SOURCE.startswith("starter_log:")), \
+            or S.BROKER_CHANNEL_SOURCE.startswith(("starter_log:", "pc_pin:"))), \
         "알 수 없는 감지 근거: %r" % S.BROKER_CHANNEL_SOURCE
 
 
@@ -172,3 +172,20 @@ def test_rate_is_not_hardcoded_anymore():
         assert not isinstance(node.value, (ast.Num, ast.Constant)), (
             "FUTURES_COMMISSION_RATE 가 다시 리터럴로 박혔다(%s행) — "
             "채널 스펙에서 파생해야 한다" % node.lineno)
+
+
+def test_pc_pin_beats_starter_log(monkeypatch):
+    """[668차 후속12] 10-12 MW0601 — CREON 스타터가 나중에 열려 감지가 CREON 으로 뒤집혔다.
+    PC 고정이 스타터 로그보다 우선하고, env 강제는 그보다도 우선한다."""
+    import config.constants as C
+    monkeypatch.delenv("MIREUK_BROKER_CHANNEL", raising=False)
+    monkeypatch.setattr(C, "_pc_tag", lambda: "MW0601")
+    assert C.detect_broker_channel() == ("CYBOS", "pc_pin:MW0601")
+    monkeypatch.setattr(C, "_pc_tag", lambda: "MW0602")
+    assert C.detect_broker_channel() == ("CREON", "pc_pin:MW0602")
+    monkeypatch.setenv("MIREUK_BROKER_CHANNEL", "CREON")
+    monkeypatch.setattr(C, "_pc_tag", lambda: "MW0601")
+    assert C.detect_broker_channel() == ("CREON", "env")
+    monkeypatch.delenv("MIREUK_BROKER_CHANNEL")
+    monkeypatch.setattr(C, "_pc_tag", lambda: "DESKTOP-XYZ")
+    assert not C.detect_broker_channel()[1].startswith("pc_pin")    # 목록 밖 PC 는 종전 감지

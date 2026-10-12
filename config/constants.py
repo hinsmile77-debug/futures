@@ -153,11 +153,34 @@ _STARTER_LOG_CANDIDATES = (
 )
 
 
+# [MW0601 668차 후속12] PC별 과금 채널 고정 — 스타터 로그 mtime 감지보다 우선한다.
+# 🔴 2026-10-12 MW0601: CREON 스타터가 08:42 에 따로 실행돼(CYBOS 08:35 뒤) 감지가 CREON 으로
+#   뒤집혔다 → 그날 엔진 수수료가 실제(CYBOS 0.0098104%)의 1/5.16 로 잡히고, «손익 추이2»
+#   반사실 배수가 1.000 이 됐다. 495차가 경고한 그대로다(「CREON 을 한 번 열면 뒤집힌다」).
+#   계좌의 과금 채널은 PC 에 묶인 사실이다(MW0601=CYBOS 39거래일 · MW0602=CREON 33거래일 역산 일치).
+#   그날 어느 스타터를 나중에 열었는지로 정하지 않는다(사용자 지시 2026-10-12:
+#   «손익 추이» = CYBOS 0.0098% · «손익 추이2» = 0.0019%).
+#   목록에 없는 PC 는 종전대로 스타터 로그로 감지한다. env 강제는 이보다도 우선한다.
+_PC_CHANNEL_PIN = {"MW0601": "CYBOS", "MW0602": "CREON"}
+
+
+def _pc_tag():
+    """호스트명에서 `MW####` — utils.db_utils.pc_id 와 같은 규칙(순환 import 회피로 여기 둔다)."""
+    try:
+        import platform
+        import re
+        m = re.search(r"(MW\d{4})", platform.node() or "", re.IGNORECASE)
+        return m.group(1).upper() if m else None
+    except Exception:
+        return None
+
+
 def detect_broker_channel():
     """로그인 채널 감지 → (channel, source). 폴백은 호출부가 결정한다.
 
     반환 source (계측 4원칙 ④ — 어떤 근거로 정해졌는지 항상 드러낸다):
       "env"              — 환경변수 MIREUK_BROKER_CHANNEL 명시 (테스트/비상용)
+      "pc_pin:<PC>"      — `_PC_CHANNEL_PIN` 고정(668차 후속12) — 스타터 로그보다 우선
       "starter_log:<경로>" — 가장 최근 사인온한 스타터 로그의 채널
       "none"             — 감지 실패 (channel=None). 호출부가 폴백 + 경고 책임.
 
@@ -169,6 +192,9 @@ def detect_broker_channel():
     env = os.environ.get("MIREUK_BROKER_CHANNEL", "").strip().upper()
     if env in BROKER_CHANNEL_SPECS:
         return env, "env"
+    pc = _pc_tag()
+    if pc in _PC_CHANNEL_PIN:
+        return _PC_CHANNEL_PIN[pc], "pc_pin:%s" % pc
     found = []
     for ch, path in _STARTER_LOG_CANDIDATES:
         try:
