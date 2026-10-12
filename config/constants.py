@@ -267,6 +267,9 @@ ENTRY_SOURCE_UNKNOWN  = "unknown"
 ENTRY_SOURCE_EXTERNAL = "external"
 #: 피터2 — 피터리 트윗 지시를 실시간 추종한 진입(`strategy/peter2/`).
 PETER2_ENTRY_SOURCE = "PETER2"
+#: [MW0602 거래주체분리 / v9-dev 이식] 신동 실집행 진입. 이 브랜치에서는 실집행 미지원
+#: (PRINCIPAL_SHINDONG_ENABLED=False) — 거래주체 모듈이 출처→주체 매핑에 쓰므로 등록만 한다.
+SHINDONG_ENTRY_SOURCE = "SHINDONG"
 
 ENTRY_SOURCE_REGISTRY = {
     # 시스템 자동 진입 — 성과 축의 유일한 구성원
@@ -285,6 +288,7 @@ ENTRY_SOURCE_REGISTRY = {
     "SIGNAL":                 ENTRY_SOURCE_VIRTUAL,  # 사전등록 채널의 신호 단위 표기
     # 외부 지시 대리 집행 — 실거래이나 미륵이 판단이 아니다(668차)
     PETER2_ENTRY_SOURCE:      ENTRY_SOURCE_EXTERNAL, # 피터리 트윗 실시간 추종(피터2)
+    SHINDONG_ENTRY_SOURCE:    ENTRY_SOURCE_EXTERNAL, # [거래주체분리] 신동 실집행(이 브랜치 비활성)
 }
 
 SYSTEM_ENTRY_SOURCES = tuple(

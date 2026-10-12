@@ -98,7 +98,11 @@ def test_f3_manual_path_still_overrides_after_call(main_src):
     F-3 이 퍼널 안에서 SYSTEM_AUTO 를 세우므로, 수동 경로가 그 뒤에 덮어쓰지
     않으면 수동 진입이 시스템 진입으로 둔갑한다.
     """
-    call = main_src.index("self._execute_entry(direction, price, qty, atr, grade)")
+    # [MW0602 거래주체분리] 수동 진입은 이제 entry_source 를 명시해 넘긴다(거래주체 관문에 막히지 않게).
+    #   호출 뒤 덮어쓰기는 그대로 유지한다 — 관문·게이트에서 막혀 라벨이 안 바뀐 경우에도 수동 시도로 남긴다.
+    _new = 'self._execute_entry(direction, price, qty, atr, grade, entry_source="OPERATOR_MANUAL")'
+    call = main_src.index(_new) if _new in main_src else \
+        main_src.index("self._execute_entry(direction, price, qty, atr, grade)")
     tail = main_src[call:call + 400]
     assert 'self._entry_source = "OPERATOR_MANUAL"' in tail, (
         "수동 진입 경로가 _execute_entry() 호출 뒤 OPERATOR_MANUAL 덮어쓰기를 잃었다"
