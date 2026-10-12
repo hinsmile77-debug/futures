@@ -46,7 +46,21 @@ LIVE_DIR = os.path.join(_ROOT, 'data', 'peter2_live')
 LOG_DIR = os.path.join(_ROOT, 'logs')
 _lock = threading.Lock()
 _stat = {'started': datetime.datetime.now().isoformat(timespec='seconds'),
-         'posts': 0, 'new_total': 0, 'last_post': None, 'off_search': None}
+         'posts': 0, 'new_total': 0, 'last_post': None, 'off_search': None,
+         'last_ok': None}
+
+
+def _prev_last_ok():
+    """재기동해도 오늘의 마지막 정상 게시를 잇는다 — 오류 중 재기동이 「정상」으로 둔갑하지 않게."""
+    try:
+        p = os.path.join(LIVE_DIR, datetime.date.today().isoformat(), 'collector.json')
+        with io.open(p, encoding='utf-8') as f:
+            return json.load(f).get('last_ok')
+    except Exception:
+        return None
+
+
+_stat['last_ok'] = _prev_last_ok()
 
 
 def _log(msg):
@@ -73,8 +87,14 @@ def _heartbeat(meta, n_new):
     d = os.path.join(LIVE_DIR, today)
     if not os.path.isdir(d):
         os.makedirs(d)
+    now = datetime.datetime.now().isoformat(timespec='seconds')
+    if (_stat.get('last_ok') or '')[:10] != today:
+        _stat['last_ok'] = None              # 날짜가 바뀌었다 — 어제 값은 오늘의 정상이 아니다
+    if not meta.get('error'):
+        _stat['last_ok'] = now               # [668차 후속8] 페이지 오류 없는 게시 = 정상 수집
     info = {
-        'last_post': datetime.datetime.now().isoformat(timespec='seconds'),
+        'last_post': now,
+        'last_ok': _stat['last_ok'],
         'articles': meta.get('articles'),
         'error': meta.get('error'),
         'url': (meta.get('url') or '')[:200],

@@ -368,3 +368,40 @@ def test_offset_override_hot_applied_in_tick():
     assert 'fw.offset_safe = ' in ap and 'fw.armed = None' in ap
     assert 'self._peter2_override_mtime = None' in s     # __init__ 명시 초기화(계측 4원칙 ④)
 
+
+def _write_collector(d, **kw):
+    import json as _json
+    d.mkdir(exist_ok=True)
+    (d / 'collector.json').write_text(_json.dumps(kw), encoding='utf-8')
+
+
+def test_heartbeat_counts_page_error_as_stale(tmp_path, monkeypatch):
+    """[668차 후속8] 게시는 신선해도 페이지 오류가 이어지면 age 는 마지막 정상 게시 기준이다
+    (2026-10-12 09:13–09:30 PAGE_ERROR 39회 동안 하트비트가 「신선」했다)."""
+    from strategy.peter2 import store
+    monkeypatch.setattr(store, 'LIVE_DIR', str(tmp_path))
+    monkeypatch.setattr(store, '_OK_SEEN', {})
+    now = datetime.datetime.now()
+    iso = lambda s: (now - datetime.timedelta(seconds=s)).isoformat(timespec='seconds')
+    d = tmp_path / 'D'
+    # 신 수신기: last_ok 우선
+    _write_collector(d, last_post=iso(2), last_ok=iso(300), error='Something went wrong')
+    age, info = store.collector_heartbeat('D')
+    assert 290 < age < 320 and info['page_error'] and info['age_src'] == 'last_ok'
+    _write_collector(d, last_post=iso(2), last_ok=None, error='login_required')
+    assert store.collector_heartbeat('D')[0] is None          # 오늘 정상 게시 없음
+    # 구 수신기(last_ok 없음): 엔진이 본 마지막 무오류 게시
+    _write_collector(d, last_post=iso(200), error=None)
+    store.collector_heartbeat('D')
+    _write_collector(d, last_post=iso(1), error='Something went wrong')
+    age, info = store.collector_heartbeat('D')
+    assert 190 < age < 220 and info['age_src'] == 'engine_seen_ok'
+    _write_collector(d, last_post=iso(1), error=None)
+    assert store.collector_heartbeat('D')[0] < 10
+
+
+def test_receiver_writes_last_ok():
+    s = _src('tools/peter2_live/receiver.py')
+    hb = s[s.index('def _heartbeat'):s.index('def ingest')]
+    assert "if not meta.get('error'):" in hb and "'last_ok': _stat['last_ok']" in hb
+    assert "_stat['last_ok'] = _prev_last_ok()" in s
