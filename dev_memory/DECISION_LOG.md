@@ -47914,3 +47914,25 @@ CDP 실측(421분에서): 한 칸 337 → **393분** · 다섯 칸 138 → **300
 - 검증(10/10 토): 실작업 → `gate rc=3 휴장일 → skip` · 임시 시험작업(-NoGate, 검증 후 삭제) → 작업 종료(rc=0) 뒤 서버 생존·HTTP 200 · 재실행 시 기존 서버/콘솔 종료 후 재기동 확인.
 - ⚠ 「다음 실행 08:44:44」 표시는 스케줄러 표시 특이점 — StartBoundary 는 `08:44:00`(신동2 08:52:52 와 같은 현상).
 - ⚠ 다른 PC(MW0602)는 각자 등록해야 한다(예약작업은 PC 로컬).
+
+## 2026-10-12 (MW0601 668차 후속6–8 — 피터2 집행·오프셋·하트비트 + dev 배포)
+
+**[후속6 `780b2de`] 진입 전량 증발.** 10-08 피터2 ENTER 7회(지시 4건)가 전부 `self.kill_switch.is_active()` 에서
+`'bool' object is not callable` — `is_active` 는 property 다. 지시는 `on_price` 에서 이미 consumed 라 REJECT 도 안 남아
+손익 추이 탭이 빈 채로 보였다. 수정 + 의도 단위 try(예외 → `REJECT why=exception:…`).
+⚠ **dev 에도 같은 결함이 있었다**(`dev:main.py:3308`) — MW0602 피터2 도 진입이 같은 방식으로 증발했을 것. 그 PC 로그에서
+`[Peter2] 폴링 예외 … 'bool' object is not callable` 확인 권장.
+
+**[후속7 `c81fa27`] 당일 수동 오프셋.** 10-08 만기(미니 월물 10→11월) 다음 날 10-12, 직전 실측 −4.88 이 safe=False 라
+섀도 고정. 사용자 지시로 브로커 차트 호가 중간값 **−2.29**(09:18 미니 F 2611 1034.74 − 코스피 F 2612 1037.025;
+최근가 차이 −2.15)를 `data/peter2_live/<날짜>/offset_override.json` 으로 적용 — 2초 폴링이 mtime 을 보고 재기동 없이 반영.
+09:34 재기동으로 `src=override:broker_chart safe=True` 확인. 09:06 「1035 돌파 매수」는 복원 즉시 EXPIRE(10분 경과) — 늦은 추격 없음.
+
+**[후속8 `4631654`] 하트비트 = 마지막 정상 게시.** 10-12 09:13–09:30 X 페이지 오류 39회(articles=0)·09:41– 지속 오류 동안
+확장 게시는 계속 와서 하트비트가 「신선」 — 수집이 멈춰도 진입이 안 막혔다(계측 4원칙 ④). 수신기 `last_ok` + 엔진 폴백.
+
+**배포 기록**: v9-dev `780b2de`·`c81fa27`·`4631654` → dev **체리픽** `f1d9000`·`fcdeca8`·`b44dbd6`(origin/dev `eae152b` 위).
+충돌 2건 — `_peter2_tick_body`(dev 612차 `by_time` 정렬 유지 + override 호출 추가) · `receiver._stat`(dev `off_search` 유지 + `last_ok` 추가).
+임시 워크트리에서 작업. dev 위 `test_668_peter2.py` 25 passed · py_compile 통과. 2026-10-12 푸시 완료.
+⚠ dev 의 `last_ok` 는 페이지 오류만 본다 — `off_search`(홈 타임라인, 전수 보장 없음)도 비정상으로 볼지는 MW0602 판단.
+⚠ MW0602 는 미륵이·수신기 재기동 후 반영.
