@@ -510,8 +510,15 @@ def shindong2_ai(day, cs, live):
     latest = next((r for r in reversed(log) if (r.get("variant") or "live") == "live"), None)
     bars = [list(c) for c in (cs[:-1] if live else cs)]
     sim = M.simulate_ai(day, bars, log, live=live) if (log and bars) else None
+    # [683차] 확률 시나리오 — 그날 live 기록에 달린 세트의 실현·무효·진행(장중 잠정). 실패해도 패널은 그린다.
+    scen, scen_err = [], None
+    if log and bars and hasattr(M, "scenario_sets"):
+        try:
+            scen = M.scenario_sets(day, bars, log, final=not live)
+        except Exception as e:                       # 미측정 ≠ 0 — 사유를 남긴다
+            scen_err = str(e)[:200]
     return dict(latest=latest, log=log, events=ev[-40:], events_n=len(ev), sim=sim, next_plan=_next_plan(M, day),
-                learning=_learning(M, d))
+                learning=_learning(M, d), scen=scen, scen_err=scen_err)
 
 
 def _learning(M, d):
@@ -559,7 +566,11 @@ def _next_plan(M, day):
                 if r.get("phase") == "overnight" and str(r.get("ts", ""))[:10] == day
                 and (r.get("variant") or "live") == "live"]            # 672차 — legacy 섀도는 패널에 안 올린다
         if recs:
-            return dict(for_date="%s-%s-%s" % (d[:4], d[4:6], d[6:]), latest=recs[-1], n=len(recs))
+            # [683차] 계획 칸은 마지막 plan/stand 를 보여 준다 — 뒤에 붙은 시나리오 note 가 계획을 「관망」으로 가리지 않게.
+            plans = [r for r in recs if r.get("action") in ("plan", "stand")]
+            sc = [r for r in recs if r.get("scenarios")]
+            return dict(for_date="%s-%s-%s" % (d[:4], d[4:6], d[6:]), latest=(plans or recs)[-1], n=len(recs),
+                        scen=sc[-1] if sc else None)
     return None
 
 

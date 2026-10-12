@@ -78,6 +78,9 @@ td.mono{font-family:var(--mono)}
 .aibox .plan{display:flex;flex-wrap:wrap;gap:6px 14px;font:500 13px/1.4 var(--mono)}
 .aibox .body{font-size:13.5px;line-height:1.65;white-space:normal}
 .aibox .body p{margin:0 0 6px}
+.aibox .body table{border-collapse:collapse;margin:4px 0 8px;font-size:12.5px}.aibox .body th,.aibox .body td{border:1px solid var(--line,#ddd);padding:3px 7px;text-align:left}
+.aibox .scen{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}.aibox .scen span{border:1px solid var(--line,#ddd);border-radius:6px;padding:2px 8px;font:500 12.5px/1.5 var(--mono)}
+.aibox .scen .s-ok{border-color:var(--sd2,#2a7);font-weight:700}.aibox .scen .s-no{opacity:.55;text-decoration:line-through}.aibox .scen .s-go{border-style:dashed}
 .evlist{margin:0;padding-left:0;list-style:none;display:grid;gap:3px;font:400 12.5px/1.5 var(--mono);color:var(--ink-2)}
 .evlist b{color:var(--ink);font-weight:600}
 details.ailog summary{cursor:pointer;color:var(--ink-2);font-size:12.5px}
@@ -895,7 +898,22 @@ function drawTable(){
 function drawAI(){
   const AI = D.sd2ai, sec = document.getElementById('sd2aiSec');
   const esc = t => String(t ?? '').replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
-  const md = t => esc(t).split(/\n{2,}/).map(p => '<p>' + p.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/\n/g, '<br>') + '</p>').join('');
+  const inl = x => x.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+  // [683차] 마크다운 표(| … |)를 표로 — 외인 동향·시나리오 표가 원문 그대로 찍히던 것. 「시나리오명세:」 줄은 숨긴다(칩으로 보인다)
+  const tbl = rows => { const c = rows.filter(r => !/^\|\s*:?-{2,}/.test(r)).map(r => r.replace(/^\||\|$/g, '').split('|').map(x => inl(x.trim())));
+    return '<table>' + c.map((r, i) => '<tr>' + r.map(x => i ? '<td>' + x + '</td>' : '<th>' + x + '</th>').join('') + '</tr>').join('') + '</table>'; };
+  const md = t => esc(t).split(/\n{2,}/).map(p => { let out = '', buf = [], tb = [];
+    const fp = () => { if (buf.length) out += '<p>' + inl(buf.join('<br>')) + '</p>'; buf = []; };
+    const ft = () => { if (tb.length) out += tbl(tb); tb = []; };
+    p.split('\n').forEach(l => { if (/^\s*\|.*\|\s*$/.test(l)) { fp(); tb.push(l.trim()); }
+                                 else { ft(); if (!/^시나리오명세:/.test(l.trim())) buf.push(l); } });
+    fp(); ft(); return out; }).join('');
+  // [683차] 확률 시나리오 칩 — 실현(굵게)·무효(취소선)·진행(점선)·미결
+  const scenChips = (items, res) => '<div class="scen">' + (items || []).map(i => { const r = (res || {})[i.key] || {}, st = r.status;
+    const cls = st === '실현' ? 's-ok' : st === '무효' ? 's-no' : st === '진행' ? 's-go' : '';
+    return `<span class="${cls}" title="목표 ${i.target} · 무효 ${i.invalid}${i.then != null ? ' · 이후 ' + i.then : ''}">${esc(i.key)} ${i.prob}% ${esc(i.name)}` +
+      `${st ? ' · <b>' + esc(st) + '</b>' + (r.t && st !== '미결' ? ' ' + esc(r.t) : '') : ''}</span>`; }).join('') + '</div>';
+  const scenScore = s => s && s.brier != null ? `<div class="meta">brier ${s.brier.toFixed(3)} · 균등 ${s.base.toFixed(3)} · BSS ${s.bss == null ? '—' : (s.bss > 0 ? '+' : '') + s.bss.toFixed(2)} · 기본(${esc(s.top)}) ${s.top_hit ? '적중' : '실패'}</div>` : '';
   const PH = { premarket: '장전', intraday: '장중', position: '보유', postmarket: '장후', overnight: '익일 계획' };
   if (!AI) {
     document.getElementById('sd2aiMeta').textContent = '';
@@ -918,6 +936,10 @@ function drawAI(){
     else box += `<div class="plan"><span class="k-sd2ai">${esc(L.dir || '관망')}</span></div>`;
     box += `<div class="body">${md(L.comment)}</div>`;
   } else box = '<div class="muted">재량 기록 없음 — 이벤트만 쌓이는 중</div>';
+  const SC = AI.scen || [];
+  if (SC.length) { const s = SC[SC.length - 1];
+    box += `<div class="meta">확률 시나리오 — ${esc(s.ts.slice(5, 16).replace('T', ' '))} ${PH[s.phase] || s.phase} 기록 · 효력 ${esc(s.eff)}~${SC.length > 1 ? ' · 오늘 ' + SC.length + '세트' : ''}${s.brier == null ? (D.live ? ' (장중 잠정)' : '') : ''}</div>` + scenChips(s.items, s.res) + scenScore(s); }
+  else if (AI.scen_err) box += `<div class="meta">시나리오 채점 실패 — ${esc(AI.scen_err)}</div>`;
   if (sim) box += `<div class="meta">신동2-AI 손익 ${fmt(sim.pnl, 2)}pt · 거래 ${sim.trades.length}${sim.pending ? ' · 대기 ' + (sim.pending.sgn > 0 ? '매수' : '매도') + ' ' + (sim.pending.entry ?? '시장가') : ''}${D.live ? ' (장중 잠정)' : ''}</div>`;
   document.getElementById('aiBox').innerHTML = box;
   const NP = AI.next_plan, nb = document.getElementById('aiNext');
@@ -927,6 +949,11 @@ function drawAI(){
     nb.innerHTML = `<div class="meta">익일 계획 → <b>${NP.for_date}</b> · ${r.ts.replace('T', ' ')} 작성 · ${r.action}${NP.n > 1 ? ' · ' + NP.n + '건 중 최신' : ''} · 그날 08:45부터 유효</div>` +
       ((r.dir && r.dir !== '관망') ? `<div class="plan"><span class="k-sd2ai">${esc(r.dir)}</span><span>진입 <b>${r.entry ?? '시장가'}</b></span><span>손절 <b>${r.stop ?? '—'}</b></span><span>청산 <b>${r.target ?? '—'}</b></span></div>` : `<div class="plan"><span class="k-sd2ai">${esc(r.dir || '관망')}</span></div>`) +
       `<div class="body">${md(r.comment)}</div>`;
+    const S2 = NP.scen;
+    if (S2 && S2.scenarios) {
+      nb.innerHTML += `<div class="meta">익일 확률 시나리오 — ${esc(S2.ts.replace('T', ' '))} 작성 · ${esc(S2.action)} · 그날 회차마다 채점</div>` + scenChips(S2.scenarios.items, null) +
+        (S2.id !== r.id ? `<details><summary class="meta">시나리오 기록 본문</summary><div class="body">${md(S2.comment)}</div></details>` : '');
+    }
   } else { nb.hidden = true; nb.innerHTML = ''; }
   // [672차] 학습 사이클 — 그날 계획 평가 · 워크포워드 판정 · 전일 피드백
   const LR = AI.learning, lb = document.getElementById('aiLearn');
@@ -940,10 +967,15 @@ function drawAI(){
         `<span>익일계획 <b>${cell(on.live)}</b>${on.legacy ? ' / 기존 ' + cell(on.legacy) : ''}</span>` +
         `<span>장전 <b>${cell(pm.live)}</b>${pm.legacy ? ' / 기존 ' + cell(pm.legacy) : ''}</span>` +
         `<span>적용 레슨 ${esc((E.lessons_applied || []).join(', ') || '—')}</span></div>`;
+      const ss = E.scen_summary;
+      if (ss && ss.n) h += `<div class="plan"><span class="k-sd2ai">시나리오 채점</span><span>세트 <b>${ss.n}</b></span><span>brier <b>${ss.brier.toFixed(3)}</b></span>` +
+        `<span>BSS <b>${ss.bss == null ? '—' : (ss.bss > 0 ? '+' : '') + ss.bss.toFixed(2)}</b></span><span>기본 적중 <b>${Math.round(ss.top_hit * 100)}%</b></span>` +
+        `<span>익일계획 세트 brier <b>${ss.on_brier == null ? '—' : ss.on_brier.toFixed(3)}</b></span></div>`;
     }
     if (LR.trend && LR.trend.verdict) {
       h += `<div class="body">${(LR.trend.verdict.messages || []).map(esc).join('<br>')}</div>`;
       const w = LR.trend.windows && LR.trend.windows['5'];
+      if (w && w.scen_bss) h += `<div class="meta">최근 ${w.n}일 시나리오: BSS ${w.scen_bss[0] == null ? '—(미측정)' : (w.scen_bss[0] > 0 ? '+' : '') + w.scen_bss[0].toFixed(2) + ' (n=' + w.scen_bss[1] + '일)'} · brier ${w.scen_brier[0] == null ? '—' : w.scen_brier[0].toFixed(3)} · 기본 적중 ${w.scen_top_hit[0] == null ? '—' : Math.round(w.scen_top_hit[0] * 100) + '%'}</div>`;
       if (w) h += `<div class="meta">최근 ${w.n}일: 익일계획 적중 ${w.on_hit[0] == null ? '—' : Math.round(w.on_hit[0] * 100) + '% (n=' + w.on_hit[1] + ')'} · 개선−기존 ${w.improve_on[0] == null ? '—(미측정)' : fmt(w.improve_on[0], 2) + 'pt (n=' + w.improve_on[1] + ')'} · 재량 실현 ${fmt(w.ai_pnl, 2)}pt · 규칙 기본 ${fmt(w.rules_base, 2)}pt</div>`;
     }
     if (LR.feedback) h += `<div class="meta">피드백 ${(LR.feedback.ts || '').replace('T', ' ')} · 적용 ${esc((LR.feedback.applied || []).join(', ') || '—')} · 적중 ${esc((LR.feedback.hits || []).join(', ') || '—')} · 실패 ${esc((LR.feedback.misses || []).join(', ') || '—')}</div><div class="body">${md((LR.feedback.comment || '').split('\n').slice(0, 14).join('\n'))}</div>`;
