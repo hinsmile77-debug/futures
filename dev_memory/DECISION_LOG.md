@@ -48022,3 +48022,5 @@ _arm 손절 승계 일반화 · collector/state/feed.json os.replace WinError 5(
 **번호**: 같은 날 다른 세션이 680·681·682차(장전·장중·장후 점검, 미커밋)를 써서 683차로 배정.
 **검증**: 신동2 테스트 82 passed(신규 `tests/test_683_shindong2_scenario_cycle.py` 9건).
 ⚠ 기존 「선물 외인 … · 기관」 줄(사다리 원천)은 10-12 15:08 기관 `-1` — raw_investor_futures 와 불일치, 원인 미조사.
+**배포 기록(683차)**: v9-dev `8dc27e7` → dev 체리픽 `de2445f`(코드 충돌 0, DECISION_LOG·MW0601 해설 문서 제외). dev 테스트 77 passed · 5 skipped. 2026-10-12 푸시 완료.
+⚠ MW0602 신동2 예약작업이 같은 스킬이면 다음 회차부터 장전·장중·익일 live 기록에 시나리오 필수 — 빠지면 record 가 거부(의도된 사이클 강제).
