@@ -119,29 +119,40 @@ def live_rows(trades_db, date, principal, open_pos=None):
 
 
 def shindong_shadow_rows(shindong_db, date):
-    """신동 MAIN 재생(가상) — CREON 요율 순손익."""
+    """신동 MAIN 재생(가상) — CREON 요율 순손익.
+
+    `shindong/display.py`(CREON 재환산, dev 590차)가 없는 브랜치(v9-dev)는 저장된 `net_krw`
+    (규격 요율)를 그대로 쓴다 — 그 사실을 status 에 「규격요율」로 남긴다(계측 4원칙 ④).
+    """
     try:
         from strategy.shindong import store as sd_store
-        from strategy.shindong import display as sd_disp
     except Exception:
         return []
+    try:
+        from strategy.shindong import display as sd_disp
+        rate = sd_disp.creon_rate()
+    except Exception:
+        sd_disp, rate = None, None
     out = []
-    rate = sd_disp.creon_rate()
     for t in sd_store.load_trades(shindong_db, date, 'MAIN'):
         net = None
         if t.get('status') == 'CLOSED':
-            net = 0.0
-            for i in (1, 2):
-                n = sd_disp.leg_net_at_rate(t.get('leg%d_net' % i), t['entry_px'],
-                                            t.get('leg%d_exit_px' % i) or t['entry_px'], rate)
-                net += n or 0.0
+            if sd_disp is None:
+                net = float(t.get('net_krw') or 0.0)
+            else:
+                net = 0.0
+                for i in (1, 2):
+                    n = sd_disp.leg_net_at_rate(t.get('leg%d_net' % i), t['entry_px'],
+                                                t.get('leg%d_exit_px' % i) or t['entry_px'], rate)
+                    net += n or 0.0
         out.append({'time': _hm(t.get('entry_ts')), 'who': '신동', 'kind': '섀도',
                     'side': SIDE_KO.get(t.get('side'), t.get('side')), 'qty': 2,
                     'entry': t.get('entry_px'),
                     'exit': t.get('leg1_exit_px') if t.get('status') == 'CLOSED' else t.get('stop_now'),
                     'pnl': None if net is None else round(net),
-                    'status': ('청산 %s' % (t.get('leg1_reason') or '')) if t.get('status') == 'CLOSED'
-                    else '보유(가상)'})
+                    'status': (('청산 %s' % (t.get('leg1_reason') or ''))
+                               + ('' if sd_disp is not None else ' ·규격요율'))
+                    if t.get('status') == 'CLOSED' else '보유(가상)'})
     return out
 
 

@@ -20,6 +20,10 @@ if ROOT not in sys.path:
 
 from strategy.runtime import trade_principal as TP   # noqa: E402
 
+# 브랜치 판별 — dev 에는 신동 V2(FLOWC, families.py)와 그 실행기가 있고, v9-dev 에는 없다
+#   (v9-dev 신동은 R2/R3 레그 분할 규격이라 실집행 미지원 · PRINCIPAL_SHINDONG_ENABLED=False).
+HAS_FLOWC = os.path.exists(os.path.join(ROOT, 'strategy', 'shindong', 'families.py'))
+
 
 @pytest.fixture
 def tp_tmp(tmp_path, monkeypatch):
@@ -109,6 +113,7 @@ def test_manage_trail_mirror_time_retract():
     assert LX.manage(rec, _t('k', 'x'), datetime.datetime(2026, 10, 12, 15, 5)) == [('exit', '신동시간청산')]
 
 
+@pytest.mark.skipif(not HAS_FLOWC, reason='v9-dev — 신동 V2(FLOWC) 없음')
 def test_flowc_two_legs_close_together():
     """2계약 2레그 = 일괄 청산의 근거 — FLOWC 의 두 레그는 같은 청산가·같은 시각이다."""
     from strategy.shindong import families as F
@@ -262,11 +267,27 @@ def test_peter_live_only_when_selected():
     tick = s[s.index('    def _peter2_tick_body(self)'):s.index('    def _peter2_update_button')]
     assert 'if mode == "live" and self._principal_state["principal"] != principal_mod.PETER:' in tick
     d = _src('dashboard/main_dashboard.py')
-    pm = d[d.index('    def _peter2_mode()'):]
-    pm = pm[:pm.index('\n    def ')]
-    assert '_tp.current() != _tp.PETER' in pm
+    if '    def _peter2_mode()' in d:                  # dev 만 패널 배너가 실효 모드를 읽는다
+        pm = d[d.index('    def _peter2_mode()'):]
+        pm = pm[:pm.index('\n    def ')]
+        assert '_tp.current() != _tp.PETER' in pm
 
 
+def test_shindong_disabled_on_branch_without_flowc():
+    """v9-dev — 신동 실집행을 붙이지 않고, 버튼·전환 처리기가 신동을 거부한다."""
+    if HAS_FLOWC:
+        pytest.skip('dev — 신동 실행기 있음')
+    import config.settings as S
+    assert S.PRINCIPAL_SHINDONG_ENABLED is False
+    s = _src('main.py')
+    assert '_shindong_exec_step' not in s and '_shindong_target_poll' not in s
+    ch = s[s.index('    def _on_principal_change_requested'):]
+    ch = ch[:ch.index('\n    def ')]
+    assert 'PRINCIPAL_SHINDONG_ENABLED' in ch
+    assert 'self._principal_disabled' in _src('dashboard/main_dashboard.py')
+
+
+@pytest.mark.skipif(not HAS_FLOWC, reason='v9-dev — 신동 실행기 없음')
 def test_shindong_exec_wired():
     s = _src('main.py')
     run = s[s.index('    def _run_shindong(self'):s.index('    def _sd_exec_load')]
@@ -285,7 +306,8 @@ def test_shindong_exec_wired():
 
 def test_isolation_and_cooldown_cover_shindong():
     s = _src('main.py')
-    assert s.count('_is_ext = (result.get("pos_entry_src") in EXTERNAL_ENTRY_SOURCES)') == 3
+    # dev 는 부분청산 2곳 + 최종청산 1곳, v9-dev 는 최종청산 1곳(부분청산은 원래 피터2 도 격리 안 함)
+    assert s.count('_is_ext = (result.get("pos_entry_src") in EXTERNAL_ENTRY_SOURCES)') == (3 if HAS_FLOWC else 1)
     assert 'and not _is_ext:' in s                         # 앙상블 학습 격리
     assert 'if entry_source in EXTERNAL_ENTRY_SOURCES:\n        cooldown_active = False' in s
 
