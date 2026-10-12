@@ -455,6 +455,12 @@ POSITION_FLAT  = "FLAT"
 #: ⚠ `entry_source != 'OPERATOR_MANUAL'` 같은 블랙리스트 소비처를 새로 만들지 말 것 —
 #:   PETER2 가 시스템 성과에 섞인다(이식 시 `scripts/hurst_threshold_shadow.py` 1곳 수정).
 PETER2_ENTRY_SOURCE = "PETER2"
+#: [MW0602 거래주체분리] 신동 V2(FLOWC) 실집행 진입 — 거래주체가 「신동」일 때만 나간다.
+#: `PROFIT_GUARD_SYSTEM_SOURCES` 화이트리스트 밖이라 PETER2 와 같이 「시스템 거래」에서 빠진다.
+SHINDONG_ENTRY_SOURCE = "SHINDONG"
+#: 외부 주체 출처 — 외부 손절·목표(PositionTracker.ext_*)가 효력을 갖고, 켈리·앙상블 학습에서
+#: 빠진다(미륵이 판단이 아닌 거래가 미륵이 사이징·가중치를 움직이면 안 된다). CB 는 계좌 단위로 센다.
+EXTERNAL_ENTRY_SOURCES = (PETER2_ENTRY_SOURCE, SHINDONG_ENTRY_SOURCE)
 
 # ── Circuit Breaker 상태 ──────────────────────────────────────
 CB_STATE_NORMAL    = "NORMAL"

@@ -1008,7 +1008,7 @@ def mk_prog(color=C['green'], h=6):
     return pb
 
 
-def card(title, widget, color=C['blue'], header_widget=None):
+def card(title, widget, color=C['blue'], header_widget=None, title_widget=None):
     gb = QGroupBox("" if (header_widget or not title) else f"● {title}")
     gb.setStyleSheet(
         f"QGroupBox{{border:1px solid {C['border']};border-radius:{S.p(6)}px;"
@@ -1025,6 +1025,8 @@ def card(title, widget, color=C['blue'], header_widget=None):
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(S.p(8))
         header.addWidget(mk_label(f"● {title}", color, 11, True))
+        if title_widget is not None:      # [거래주체분리] 제목 바로 오른쪽(예: 거래주체 배지)
+            header.addWidget(title_widget)
         header.addStretch()
         header.addWidget(header_widget)
         lay.addLayout(header)
@@ -1285,7 +1287,24 @@ class AccountInfoPanel(QWidget):
         self._balance_last_update_dt = None
         self._balance_last_source = ""
         self._balance_active = False
+        # [MW0602 거래주체분리] 제목 오른쪽 배지 — 「실시간 잔고 ● 미륵」. main 이 set_principal 로 맞춘다.
+        self.lbl_principal = QLabel("")
+        self.lbl_principal.setToolTip(
+            "거래주체 — 이 주체의 진입만 계좌에서 실주문으로 나갑니다(나머지는 섀도).\n"
+            "금일손익·수익율·전일손익은 이 주체의 실적입니다(둘째 줄 = 계좌 전체).")
+        self._principal_txt = None
         self._build()
+
+    def set_principal(self, label: str, color: str) -> None:
+        """거래주체 배지. 2초마다 불리므로 바뀔 때만 다시 그린다."""
+        key = (label, color)
+        if key == self._principal_txt:
+            return
+        self._principal_txt = key
+        self.lbl_principal.setText("● %s" % label)
+        self.lbl_principal.setStyleSheet(
+            f"color:{color};font-size:{S.f(11)}px;font-weight:bold;"
+            f"border:1px solid {color};border-radius:{S.p(3)}px;padding:0 {S.p(5)}px;")
 
     def _build(self):
         lay = QVBoxLayout(self)
@@ -1565,7 +1584,9 @@ class AccountInfoPanel(QWidget):
         # [MW0602 497차 / P1] 축 정합 표시 키 — main이 조립한 "net (g gross)" 등
         # 완성 문자열을 우선 소비한다(숫자 포맷 재적용 금지). 키가 없으면 종전
         # 동작(원본 키 + _format_value) 그대로 — 구버전 main과의 호환 폴백이다.
-        _display_pref = {"실현손익": "금일손익_표시", "추정자산": "전일손익_표시"}
+        # [MW0602 거래주체분리] 수익율도 주체 실적 표시 키를 받는다(없으면 종전 계좌값).
+        _display_pref = {"실현손익": "금일손익_표시", "추정자산": "전일손익_표시",
+                         "총평가": "수익율_표시"}
         for key, label in self._summary_values.items():
             _pref_key = _display_pref.get(key)
             _pref_val = str(summary.get(_pref_key) or "").strip() if _pref_key else ""
@@ -7419,9 +7440,14 @@ class PnlHistoryPanel(QWidget):
             import datetime as _d
             import config.settings as _rs
             from strategy.peter2.store import effective_mode
-            return effective_mode(getattr(_rs, "PETER2_FOLLOW_MODE", "off"),
-                                  _d.date.today().isoformat(),
-                                  getattr(_rs, "PETER2_LIVE_START", None))
+            m = effective_mode(getattr(_rs, "PETER2_FOLLOW_MODE", "off"),
+                               _d.date.today().isoformat(),
+                               getattr(_rs, "PETER2_LIVE_START", None))
+            # [MW0602 거래주체분리] 엔진과 같은 규칙 — 선택 주체가 피터가 아니면 섀도
+            from strategy.runtime import trade_principal as _tp
+            if m == "live" and _tp.current() != _tp.PETER:
+                m = "shadow"
+            return m
         except Exception:
             return "?"
 
@@ -14580,10 +14606,76 @@ def _find_symbol_text(market: str, *, symbol_code: str = "", symbol_text: str = 
     return symbols[0] if symbols else ""
 
 
+class TradeStatusPanel(QWidget):
+    """[MW0602 거래주체분리] 잔고 아래 「거래 현황」 — 오늘의 진입을 한눈에.
+
+    행 = dict(time, who, kind('실거래'|'섀도'), side, qty, entry, exit, pnl(원|None), status).
+    섀도 행은 회색이다. 🔴 paint 경로가 아니라 setItem 으로만 그린다(557차 — paint 안 예외 금지).
+    """
+    COLS = ("시각", "주체", "구분", "방향", "수량", "진입", "손절/청산", "손익", "상태")
+
+    def __init__(self):
+        super().__init__()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(S.p(4), S.p(2), S.p(4), S.p(4))
+        lay.setSpacing(S.p(2))
+        self.lbl_note = mk_label("오늘 진입 없음", C['text2'], 9)
+        lay.addWidget(self.lbl_note)
+        self.tbl = QTableWidget(0, len(self.COLS))
+        self.tbl.setHorizontalHeaderLabels(list(self.COLS))
+        self.tbl.verticalHeader().setVisible(False)
+        self.tbl.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.tbl.setSelectionMode(QTableWidget.NoSelection)
+        self.tbl.horizontalHeader().setStretchLastSection(True)
+        self.tbl.setStyleSheet(
+            f"QTableWidget{{background:{C['bg2']};color:{C['text']};gridline-color:{C['border']};"
+            f"font-size:{S.f(9)}px;border:none;}}"
+            f"QHeaderView::section{{background:{C['bg3']};color:{C['text2']};border:none;"
+            f"font-size:{S.f(9)}px;padding:1px;}}")
+        self.tbl.verticalHeader().setDefaultSectionSize(S.p(18))
+        lay.addWidget(self.tbl, 1)
+        self._last = None
+
+    def update_rows(self, rows, note=""):
+        key = (tuple(tuple(sorted((r or {}).items())) for r in (rows or [])), note)
+        if key == self._last:
+            return
+        self._last = key
+        rows = list(rows or [])
+        self.lbl_note.setText(note or ("오늘 진입 없음" if not rows else "오늘 %d건" % len(rows)))
+        self.tbl.setRowCount(len(rows))
+        for i, r in enumerate(rows):
+            shadow = r.get("kind") == "섀도"
+            pnl = r.get("pnl")
+            vals = (r.get("time") or "", r.get("who") or "", r.get("kind") or "",
+                    r.get("side") or "", "" if r.get("qty") is None else str(r.get("qty")),
+                    _fmt_px(r.get("entry")), _fmt_px(r.get("exit")),
+                    "" if pnl is None else format(float(pnl), "+,.0f"), r.get("status") or "")
+            for j, v in enumerate(vals):
+                it = QTableWidgetItem(str(v))
+                it.setTextAlignment(Qt.AlignCenter)
+                if shadow:
+                    it.setForeground(QColor(C['text2']))
+                elif j == 7 and pnl is not None:
+                    it.setForeground(QColor(C['green'] if pnl > 0 else C['red'] if pnl < 0 else C['text']))
+                elif j == 3:
+                    it.setForeground(QColor(C['red'] if r.get("side") in ("매수", "LONG") else C['blue']))
+                self.tbl.setItem(i, j, it)
+
+
+def _fmt_px(v):
+    try:
+        return "" if v is None or v == "" else "%.2f" % float(v)
+    except (TypeError, ValueError):
+        return str(v)
+
+
 class MireukDashboard(QMainWindow):
     """미륵이 v8.0 풀 대시보드"""
 
     sig_code_change_restart_requested = pyqtSignal()  # [234차] 종목변경 재시작 요청
+    # [MW0602 거래주체분리] 헤더 [미륵][신동][피터] — 요청만 보낸다. 수락은 main 이 set_principal 로 되돌려 준다.
+    sig_principal_change_requested = pyqtSignal(str)
 
     def __init__(self, kiwoom=None):
         super().__init__()
@@ -15177,7 +15269,15 @@ class MireukDashboard(QMainWindow):
         _chk_row.addWidget(self.cmb_chart_auto)
         _chk_row.addStretch()
         res_box.addWidget(self.lbl_scale)
-        res_box.addWidget(self.lbl_commit)
+        # [MW0602 거래주체분리] 커밋번호 줄 = 커밋 + [미륵][신동][피터]
+        _commit_row = QHBoxLayout()
+        _commit_row.setContentsMargins(0, 0, 0, 0)
+        _commit_row.setSpacing(S.p(4))
+        _commit_row.addWidget(self.lbl_commit)
+        _commit_row.addSpacing(S.p(8))
+        self._build_principal_buttons(_commit_row)
+        _commit_row.addStretch()
+        res_box.addLayout(_commit_row)
         res_box.addLayout(_chk_row)
         res_box.addLayout(_rdo_row)
 
@@ -15269,7 +15369,11 @@ class MireukDashboard(QMainWindow):
         self.pred_panel = PredictionPanel()
         left_split.addWidget(card("실시간 잔고",
                                   self.account_info_panel, C['cyan'],
-                                  header_widget=self.account_info_panel.live_header_widget))
+                                  header_widget=self.account_info_panel.live_header_widget,
+                                  title_widget=self.account_info_panel.lbl_principal))
+        # [MW0602 거래주체분리] 잔고 바로 아래 「거래 현황」 — 선택 주체 실거래 + 비선택 주체 섀도(회색)
+        self.trade_status_panel = TradeStatusPanel()
+        left_split.addWidget(card("거래 현황", self.trade_status_panel, C['cyan']))
         left_split.addWidget(card("",
                                   self.pred_panel, C['blue']))
 
@@ -15286,10 +15390,10 @@ class MireukDashboard(QMainWindow):
             #        360→330 과 호라이즌 스트립 77→31 을 합쳐 캔들차트가 ~76px 늘어난다.
             # 580차: 잔고 배지를 2행 고정높이로 묶어 잔고 카드가 여유 세로를
             #        빨아들이지 않게 했다 — 그만큼(200→160) 캔들차트로 넘긴다.
-            left_split.setSizes([160, 490, 330])
+            left_split.setSizes([160, 120, 370, 330])   # [거래주체분리] 거래 현황 120 — 캔들차트에서 뗐다
         except Exception as _cte:
             logger.warning("[Dashboard] ConfTrendCard 로드 실패: %s", _cte)
-            left_split.setSizes([160, 780])
+            left_split.setSizes([160, 120, 660])
 
         ll.addWidget(left_split, 1)
 
@@ -15610,6 +15714,83 @@ class MireukDashboard(QMainWindow):
         selected = _normalize_code_5(selected_raw)
         active = _normalize_code_5(self._active_futures_code)
         self.lbl_code_change.setVisible(bool(selected and selected != active))
+
+    # ── [MW0602 거래주체분리] 거래주체 버튼 [미륵][신동][피터] ────────────────────
+    _PRINCIPAL_UI = (("MIREUK", "미륵", "cyan"), ("SHINDONG", "신동", "purple"), ("PETER", "피터", "orange"))
+
+    def _build_principal_buttons(self, row) -> None:
+        from strategy.runtime import trade_principal as _tp
+        self._principal = _tp.current()          # main 이 첫 2초 안에 실제 상태로 덮는다
+        self._principal_locked = False
+        self._principal_btns = {}
+        row.addWidget(mk_label("거래", C['text2'], 9, align=Qt.AlignRight))
+        for key, txt, ck in self._PRINCIPAL_UI:
+            b = QPushButton(txt)
+            b.setCheckable(True)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setFixedHeight(S.p(18))
+            b.setMinimumWidth(S.p(38))
+            col = C[ck]
+            b.setStyleSheet(
+                f"QPushButton{{color:{C['text2']};background:{C['bg3']};border:1px solid {C['border']};"
+                f"border-radius:{S.p(3)}px;font-size:{S.f(9)}px;padding:0 {S.p(6)}px;}}"
+                f"QPushButton:checked{{color:{C['bg']};background:{col};border:1px solid {col};"
+                f"font-weight:bold;}}"
+                f"QPushButton:disabled{{color:{C['border']};}}"
+                f"QPushButton:checked:disabled{{color:{C['bg']};background:{col};}}")
+            b.clicked.connect(lambda _c=False, k=key: self._on_principal_btn(k))
+            row.addWidget(b)
+            self._principal_btns[key] = b
+        self._render_principal()
+
+    def _principal_label(self, key):
+        for k, txt, ck in self._PRINCIPAL_UI:
+            if k == key:
+                return txt, C[ck]
+        return str(key), C['text2']
+
+    def _render_principal(self) -> None:
+        for key, b in self._principal_btns.items():
+            on = (key == self._principal)
+            b.blockSignals(True)
+            b.setChecked(on)
+            b.blockSignals(False)
+            b.setEnabled(on or not self._principal_locked)
+            b.setToolTip(
+                ("ON — 이 주체만 계좌에서 실거래, 나머지는 섀도" if on else
+                 ("포지션·대기주문이 있어 전환할 수 없습니다(청산 뒤 전환)" if self._principal_locked
+                  else "클릭 → 이 주체로 전환(FLAT 일 때만). 전날 선택은 다음 날에도 유지됩니다")))
+        txt, col = self._principal_label(self._principal)
+        try:
+            self.account_info_panel.set_principal(txt, col)
+        except AttributeError:
+            pass                                   # 잔고 패널 생성 전(헤더가 먼저 만들어진다)
+
+    def _on_principal_btn(self, key: str) -> None:
+        if key == self._principal or self._principal_locked:
+            self._render_principal()               # 눌린 상태를 원래대로
+            return
+        from PyQt5.QtWidgets import QMessageBox
+        cur_txt, _ = self._principal_label(self._principal)
+        new_txt, _ = self._principal_label(key)
+        r = QMessageBox.question(
+            self, "거래주체 전환",
+            f"거래주체를 [{cur_txt}] → [{new_txt}] 로 바꿉니다.\n\n"
+            f"이후 {new_txt} 진입만 계좌에서 실주문으로 나가고,\n"
+            f"나머지 주체는 섀도(기록만)로 돕니다. 계속할까요?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        self._render_principal()                   # 수락 여부는 main 이 set_principal 로 알려 준다
+        if r == QMessageBox.Yes:
+            self.sig_principal_change_requested.emit(key)
+
+    def set_principal(self, principal: str, locked: bool = False) -> None:
+        """main → 실제 거래주체·잠금 상태. 2초마다 불리므로 바뀔 때만 다시 그린다."""
+        principal = str(principal or "").upper()
+        if principal == self._principal and bool(locked) == self._principal_locked:
+            return
+        self._principal = principal
+        self._principal_locked = bool(locked)
+        self._render_principal()
 
     # ── 서버 모드 관리 ─────────────────────────────────────────
 
@@ -16473,6 +16654,8 @@ class DashboardAdapter:
         self.sig_reset_feature_set_requested = self._win.feat_panel.sig_reset_feature_set_requested
         # [234차] 종목변경 재시작 요청 시그널
         self.sig_code_change_restart_requested = self._win.sig_code_change_restart_requested
+        # [MW0602 거래주체분리] 거래주체 전환 요청
+        self.sig_principal_change_requested = self._win.sig_principal_change_requested
 
     # ── 필수 메서드 ────────────────────────────────────────────
     def show(self):
@@ -16519,6 +16702,14 @@ class DashboardAdapter:
     def is_server_match(self) -> bool:
         """라디오 선택 == 실제 서버 여부. False 시 진입 차단해야 함."""
         return self._win.is_server_match()
+
+    def set_principal(self, principal: str, locked: bool = False) -> None:
+        """[MW0602 거래주체분리] 실제 거래주체·전환 잠금을 헤더 버튼·잔고 배지에 반영."""
+        self._win.set_principal(principal, locked=locked)
+
+    def update_trade_status(self, rows: list, note: str = "") -> None:
+        """[MW0602 거래주체분리] 잔고 아래 「거래 현황」 표."""
+        self._win.trade_status_panel.update_rows(rows, note)
 
 
     def append_sys_log(self, msg: str):

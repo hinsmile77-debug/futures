@@ -300,7 +300,9 @@ def test_main_wiring():
     assert 'try:' in body and 'logger.exception' in body
     # 켈리·앙상블 학습 제외, CB 는 유지
     pe = s[s.index('    def _post_exit(self'):s.index('    def _post_exit(self') + 4000]
-    assert 'if not _is_p2:' in pe and 'record_stop_loss' in pe
+    # [MW0602 거래주체분리] 격리 대상이 외부 주체 전체(피터2·신동)로 넓어졌다 — `_is_ext`
+    assert 'if not _is_ext:' in pe and 'record_stop_loss' in pe
+    assert '_is_ext = (result.get("pos_entry_src") in EXTERNAL_ENTRY_SOURCES)' in pe
     # 출처 라벨은 호출부 인자로(기본값 SYSTEM_AUTO 유지)
     assert 'entry_source: str = "SYSTEM_AUTO"' in s and 'self._entry_source = entry_source' in s
 

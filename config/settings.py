@@ -7742,6 +7742,15 @@ SHINDONG_DAILY_REPORT_DIR = os.path.join(BASE_DIR, "docs", "신동거래_V2", "�
 #   환경변수가 없으면 PDF 만 만들고 발송은 건너뛴다(로그에 빠진 이름을 남긴다).
 SHINDONG_REPORT_MAIL_ENABLED = True
 
+# ── [MW0602 거래주체분리] 신동 V2(FLOWC) 실집행 — 거래주체가 「신동」일 때만 ─────────────
+# 대시보드 헤더 [미륵][신동][피터] 에서 신동을 고른 동안 MAIN 재생의 새 진입을 실주문으로 옮긴다
+# (strategy/shindong/live_exec.py · main._shindong_exec_step). 다른 주체가 선택돼 있으면 지금처럼
+# shindong.db 가상거래만 남는다(그것이 신동의 섀도다).
+#   계획: docs/거래주체분리/거래주체분리_구현계획_MW0602-20261012.md
+# 🔴 15:10 강제청산·15:18 안전망·CB 즉시청산은 신동 포지션에도 그대로 적용된다.
+SHINDONG_LIVE_QTY = 2              # 2계약 2레그(사용자 결정 2026-10-12) — FLOWC 두 레그는 같은 지점에서 닫힌다
+SHINDONG_LIVE_MAX_AGE_MIN = 2      # 진입봉이 끝난 뒤 이 분 수가 지나면 쫓지 않는다(재기동·지연)
+
 # ── [MW0601 668차 / MW0602 이식] 피터2 — 피터리 트윗 실시간 추종 매매 ──────────────
 # 장중 피터리(@PeterLeejoa) 트윗을 Chrome 확장 → 로컬 수신기(127.0.0.1)로 받아
 # `data/peter_feed/_raw/<날짜>.jsonl` 에 적고, main.py 가 2초마다 새 줄을 읽어

@@ -12,7 +12,7 @@ from typing import Optional, Dict, Tuple
 from utils.time_utils import now_kst
 
 from config.constants import POSITION_LONG, POSITION_SHORT, POSITION_FLAT, FUTURES_PT_VALUE
-from config.constants import PETER2_ENTRY_SOURCE   # [668차 이식] 피터2 외부 손절·목표
+from config.constants import PETER2_ENTRY_SOURCE, EXTERNAL_ENTRY_SOURCES   # [668차 이식] 피터2 외부 손절·목표 · [거래주체분리] 신동
 from config.settings import (
     ATR_STOP_MULT, ATR_TP1_MULT, ATR_TP2_MULT, ATR_TP3_MULT,
     ATR_HORIZON_TP1_MULT, FUTURES_COMMISSION_RATE,
@@ -1217,8 +1217,13 @@ class PositionTracker:
 
     # ── [MW0601 668차 / MW0602 이식] 피터2 외부 손절·목표 ────────────────────
     def is_external(self) -> bool:
+        """외부 주체(피터2·신동) 포지션인가. [거래주체분리] 종전 PETER2 전용 → EXTERNAL_ENTRY_SOURCES."""
         return (self.status != POSITION_FLAT
-                and self.entry_source == PETER2_ENTRY_SOURCE)
+                and self.entry_source in EXTERNAL_ENTRY_SOURCES)
+
+    def is_external_of(self, source: str) -> bool:
+        """특정 외부 주체의 포지션인가 — 피터2 경로가 신동 포지션을 건드리지 않게 한다."""
+        return self.status != POSITION_FLAT and self.entry_source == source
 
     def set_external_levels(self, stop: Optional[float] = None,
                             target: Optional[float] = None,
@@ -1256,9 +1261,9 @@ class PositionTracker:
         """
         if self.status == POSITION_FLAT:
             return
-        if self.entry_source != PETER2_ENTRY_SOURCE:
+        if self.entry_source not in EXTERNAL_ENTRY_SOURCES:
             if self.ext_stop is not None or self.ext_target is not None:
-                logger.warning("[Peter2] 외부 손절이 비-PETER2 포지션(%s)에 남아 있어 폐기 "
+                logger.warning("[ExtLevels] 외부 손절이 비-외부주체 포지션(%s)에 남아 있어 폐기 "
                                "stop=%s target=%s path=%s", self.entry_source,
                                self.ext_stop, self.ext_target, path)
                 self.clear_external_levels()
@@ -1274,7 +1279,7 @@ class PositionTracker:
             self.ext_stop_src = "default(tracker)"
         if abs(self.stop_price - self.ext_stop) > 1e-9:
             self.stop_price = self.ext_stop
-            self._mark_stop_tightened("peter2")
+            self._mark_stop_tightened(str(self.entry_source or "ext").lower())
         far = self.entry_price + mult * 10000.0     # TP1~3 무력화(도달 불가)
         self.tp1_price = self.tp2_price = self.tp3_price = far
         self.loss_tier1_price = 0.0                 # 손절계단 무력화(is_loss_tier1_hit 가 0 이하 배제)
