@@ -239,11 +239,26 @@ def read_signals(date):
     return out
 
 
+def _replace_retry(src, dst, tries=6, wait=0.05):
+    """[668차 후속11] os.replace 가 Windows 에서 「액세스 거부」(WinError 5)로 실패할 때가 있다 —
+    다른 프로세스(미륵이 엔진 2초 폴링 ↔ 수신기 5초 게시)가 그 순간 대상 파일을 열고 있으면 그렇다.
+    10-12 실측 3회(10:22·13:58·14:24). 짧게 다시 시도하고, 끝내 안 되면 예외를 그대로 올린다."""
+    import time
+    for i in range(tries):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if i == tries - 1:
+                raise
+            time.sleep(wait * (i + 1))
+
+
 def _atomic_json(path, obj):
     tmp = path + '.tmp'
     with io.open(tmp, 'w', encoding='utf-8') as f:
         json.dump(obj, f, ensure_ascii=False, indent=1)
-    os.replace(tmp, path)
+    _replace_retry(tmp, path)
 
 
 def load_state(date):

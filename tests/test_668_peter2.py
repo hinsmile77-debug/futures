@@ -428,3 +428,84 @@ def test_closed_event_reads_exit_reason():
     i = s.index('self._peter2._ev("CLOSED"')
     assert 'result.get("exit_reason")' in s[i:i + 300]
     assert '"exit_reason":' in _src('strategy/position/position_tracker.py')
+
+
+# ── [668차 후속11] 10-12 해석 결함 3건 ─────────────────────────────────────
+def test_parse_conditional_warning_is_not_entry():
+    """14:20 「단타는 1014깨지면 다시 매수하더라도 무조건 손절해야 합니다」 → 매수 지시로 읽혀
+    실주문이 나갔다(롱 1011.62, −1.86pt). 훈계는 진입이 아니다 — 손절 끌어올림으로만 남는다."""
+    fx = parse_tweet('단타는 1014깨지면 다시 매수하더라도 무조건 손절해야 합니다.\n\n확 밀릴 수 있습니다.')['facts']
+    assert not [f for f in fx if f['type'] == 'entry']
+    assert {'type': 'tighten', 'level': 1014.0} in fx
+
+
+def test_parse_entry_with_breakdown_stop_kept():
+    """회귀 가드 — 「이탈시」를 진입 제외어로 넣으면 이 정상 지시가 사라진다(702건 대조에서 실측)."""
+    fx = parse_tweet('매수 맥점 변경 965돌파시 매수 958이탈시 손절')['facts']
+    ent = [f for f in fx if f['type'] == 'entry']
+    assert len(ent) == 1 and ent[0]['side'] == 'L' and ent[0]['level'] == 965.0
+    assert [f for f in fx if f['type'] == 'stop'][0]['level'] == 958.0
+    assert not [f for f in fx if f['type'] == 'tighten']       # 같은 값 중복 없음
+
+
+def test_parse_late_entry_after_fill_without_period():
+    """14:46 「1007 체결 안된사람은 1009부근 매수」 — 마침표가 없어 1009 지시가 사라졌다."""
+    fx = parse_tweet('1007 체결 안된사람은 1009부근 매수')['facts']
+    assert fx[0]['type'] == 'fill' and fx[0]['level'] == 1007.0
+    ent = [f for f in fx if f['type'] == 'entry']
+    assert len(ent) == 1 and ent[0]['level'] == 1009.0 and ent[0]['side'] == 'L'
+
+
+def test_parse_full_range_fill():
+    """14:47 「1007-1009 매수 체결」 — 4자리 전체 표기 구간이 1007 하나로 읽혔다."""
+    f = parse_tweet('1007-1009 매수 체결. 손절 1004- 오늘 마지막 도전.')['facts'][0]
+    assert (f['type'], f['lo'], f['hi'], f['level']) == ('fill', 1007.0, 1009.0, 1008.0)
+    assert parse_tweet('1085-7에서 매수 체결')['facts'][0]['hi'] == 1087.0      # 줄임형 유지
+
+
+def test_follow_1012_last_trade_sequence():
+    """10-12 14:45–14:47 재현 — 고친 해석이면 미니 1007.56 에서 따라 들어간다(그의 손절 1004 승계)."""
+    off = -2.29
+    fw = Peter2Follower('2026-10-12', off, 'override:broker_chart', True)
+    flat = lambda px: {'status': 'FLAT', 'source': None, 'pending': False, 'price': px}
+    t = lambda m, s: datetime.datetime(2026, 10, 12, 14, m, s)
+    fw.ingest(_tw(1, '2026-10-12T05:45:40', '1007 상방 돌파시 매수. 손절가 1004 - 오늘 마지막 도전'),
+              flat(1007.5), t(46, 13))
+    assert fw.on_price(flat(1007.5), t(46, 20)) == []          # 1004.72 돌파 구간 밖
+    out = fw.ingest(_tw(2, '2026-10-12T05:46:40', '1007-1009 매수 체결. 손절 1004- 오늘 마지막 도전.'),
+                    flat(1007.56), t(47, 43))
+    out += fw.on_price(flat(1007.56), t(47, 44))
+    ent = [x for x in out if x['type'] == 'ENTER']
+    assert len(ent) == 1 and ent[0]['price'] == 1007.56
+    assert ent[0]['stop'] == 1001.72                            # 그의 1004 → 미니
+
+
+def test_follow_late_entry_inherits_peter_stop():
+    """「안된사람은 1009부근 매수」 — 손절 없는 추가 지시는 그의 현재 손절(1004)을 잇는다."""
+    fw = Peter2Follower('2026-10-12', -2.29, 'x', True)
+    flat = lambda px: {'status': 'FLAT', 'source': None, 'pending': False, 'price': px}
+    t = lambda m, s: datetime.datetime(2026, 10, 12, 14, m, s)
+    fw.ingest(_tw(1, '2026-10-12T05:45:40', '1007 상방 돌파시 매수. 손절가 1004'), flat(1008.0), t(46, 0))
+    out = fw.ingest(_tw(2, '2026-10-12T05:46:20', '1007 체결 안된사람은 1009부근 매수'), flat(1007.2), t(46, 30))
+    out += fw.on_price(flat(1007.2), t(46, 31))
+    ent = [x for x in out if x['type'] == 'ENTER']
+    assert len(ent) == 1 and ent[0]['stop'] == 1001.72 and ent[0]['stop_src'].startswith('peter')
+
+
+def test_replace_retry_survives_transient_permission_error(tmp_path, monkeypatch):
+    """[668차 후속11] collector.json 교체가 WinError 5 로 실패(10-12 3회) — 일시 실패는 재시도로 넘긴다."""
+    import os as _os
+    from strategy.peter2 import store
+    calls = {'n': 0}
+    real = _os.replace
+
+    def flaky(a, b):
+        calls['n'] += 1
+        if calls['n'] < 3:
+            raise PermissionError(5, '액세스가 거부되었습니다')
+        return real(a, b)
+    monkeypatch.setattr(store.os, 'replace', flaky)
+    monkeypatch.setattr(store, 'LIVE_DIR', str(tmp_path))
+    store.save_state('2026-10-12', {'entries': 1})
+    assert calls['n'] == 3 and store.load_state('2026-10-12')['entries'] == 1
+    assert '_replace_retry(tmp, os.path.join(d, ' in _src('tools/peter2_live/receiver.py')

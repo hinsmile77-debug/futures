@@ -24,15 +24,20 @@ import re
 
 # 가격: 3–4자리 정수 + 선택 소수 1–2자리. 앞뒤가 숫자가 아니어야 한다.
 _P = r'(?<![\d.])(\d{3,4}(?:\.\d{1,2})?)(?![\d])'
-# 범위 표기 「1085-7」「1035-36」「1072-73」
-_RANGE = re.compile(r'(?<![\d.])(\d{3,4})\s*-\s*(\d{1,2})(?![\d])')
+# 범위 표기 「1085-7」「1035-36」「1072-73」「1007-1009」(후속11 — 전체 표기, 10-12 실측)
+_RANGE = re.compile(r'(?<![\d.])(\d{3,4})\s*[-~–]\s*(\d{1,4})(?![\d])')
 
 _OTHER_PRODUCT = re.compile(r'코스닥|KOSDAQ|kosdaq|나스닥|NASDAQ|삼전|하닉|닉스')
 # 계획·조건·가정 — 진입으로 읽지 않는다(문장 단위)
 _NOT_ORDER = re.compile(
     r'금지|하면\s*안|말고|관망|대기|예정|생각|가능|싶은|위험|조심|'
     r'못\s|했지|했잖|라고|였|이었|할\s*사람|하는\s*사람|분할|외쳤|외친|'
-    r'(매수|매도)분|(매수|매도)를|(매수|매도)세')
+    r'(매수|매도)분|(매수|매도)를|(매수|매도)세|'
+    # 후속11 — 조건부 경고 「단타는 1014깨지면 다시 매수하더라도 무조건 손절해야 합니다」(10-12 실측:
+    #   매수 지시로 읽혀 실주문이 나갔다). 양보(더라도)·당위(해야)는 지시가 아니라 훈계다.
+    #   ⚠ 「깨지면·이탈시」는 넣지 않는다 — 「965돌파시 매수 958이탈시 손절」(손절 조건)·
+    #     「N 깨지면 매도」(하방 돌파 진입)가 정상 지시다(702건 재해석 대조에서 회귀 확인).
+    r'더라도|해야')
 # 결산·복기 트윗(「6P 수익 - 5P 손실」「= 11p」) — 진입으로 읽지 않는다(청산 보고는 살린다)
 _RECAP = re.compile(r'\d\s*[pP](?![a-zA-Z])|포인트|=')
 _CANCEL = re.compile(r'(매수|매도)\s*금지|(매수|매도)하면\s*안|취소')
@@ -54,6 +59,8 @@ def _expand_range(sentence):
     if not m:
         return None
     a, tail = m.group(1), m.group(2)
+    if len(tail) > len(a):
+        return None
     b = a[:len(a) - len(tail)] + tail
     lo, hi = float(a), float(b)
     if hi < lo or hi - lo > 5:
@@ -66,6 +73,24 @@ def split_sentences(text):
     t = (text or '').replace('\r', '\n')
     parts = re.split(r'\n+|(?<!\d)\.(?!\d)|\.(?=\s)|!+|\?+|/', t)
     return [p.strip() for p in parts if p and p.strip()]
+
+
+# 「1007 체결 안된사람은 1009부근 매수」 — 마침표 없이 이어 쓴 「못 탄 사람용」 지시를 떼어 낸다.
+#   (후속11 — 10-12 14:46 실측: 체결 문장으로만 읽혀 1009 지시가 사라졌다. 마침표가 있던
+#    10:27 「1017 매수체결. 안된사람 1018에 매수」는 정상 해석)
+_LATE = re.compile(r'(?=(?:안\s*된|못\s*한|못\s*탄|미체결(?:된)?)\s*(?:사람|분))')
+
+
+def _split_late(sents):
+    out = []
+    for s in sents:
+        if _FILL.search(s):
+            parts = [x.strip() for x in _LATE.split(s) if x and x.strip()]
+            if len(parts) > 1 and _FILL.search(parts[0]):
+                out.extend(parts)
+                continue
+        out.append(s)
+    return out
 
 
 def _prices(sentence):
@@ -95,7 +120,7 @@ def parse_tweet(text):
 
     facts = []
     has_entry = False
-    for si, s in enumerate(split_sentences(raw)):
+    for si, s in enumerate(_split_late(split_sentences(raw))):
         for f in _parse_sentence(s, facts):
             f['_si'] = si
             facts.append(f)
@@ -154,7 +179,10 @@ def _parse_sentence(s, prior):
                 side = 'L' if sm.group(2) == '매수' else 'S'
             rg = _expand_range(s)
             lvl = ((rg[0] + rg[1]) / 2.0) if rg else (ps[0] if ps else None)
-            out.append({'type': 'fill', 'side': side, 'level': lvl})
+            f = {'type': 'fill', 'side': side, 'level': lvl}
+            if rg:
+                f['lo'], f['hi'] = rg          # 「1007-1009 매수 체결」 — 분할 체결 구간
+            out.append(f)
         # 체결 문장 뒤에 붙은 손절가·청산가(「1080 매수 체결. 청산가 1090」은 문장이 갈린다)
         out.extend(_mgmt(s, skip_first_price=True))
         return out
@@ -282,8 +310,11 @@ def _mgmt(s, skip_level=None, entry_ctx=False, skip_first_price=False):
     if t is not None and not (skip_level is not None and abs(t - skip_level) < 1e-9 and not re.search(r'청산', s)):
         out.append({'type': 'target', 'level': t})
     # 조건부 청산 → 손절 끌어올림
-    m = re.search(_P + r'\s*(?:을|를)?\s*(?:이탈하면|이탈시|깨지면|밑으로\s*내려가면)\s*.{0,10}?(?:청산|수익\s*실현|정리)', s) \
+    m = re.search(_P + r'\s*(?:을|를)?\s*(?:이탈하면|이탈시|깨지면|밑으로\s*내려가면)\s*.{0,24}?(?:청산|수익\s*실현|정리|손절)', s) \
         or re.search(r'밀리면\s*' + _P + r'\s*에\s*(?:수익\s*실현|청산)', s)
     if m:
-        out.append({'type': 'tighten', 'level': float(m.group(1))})
+        tl = float(m.group(1))
+        # 「993 이탈시 손절」은 위 손절가 해석과 같은 값이다 — 같은 사실을 두 번 내지 않는다
+        if not any(x['type'] == 'stop' and x.get('level') == tl for x in out):
+            out.append({'type': 'tighten', 'level': tl})
     return out

@@ -319,6 +319,12 @@ class Peter2Follower(object):
                 # 그는 이미 들어갔다 — 돌파 조건을 「현재가 근처면 진입」으로 푼다
                 self.armed['mode'] = 'limit'
                 self.armed['confirmed'] = True
+                # [후속11] 「1007-1009 매수 체결」 — 그가 구간에 걸쳐 체결했으면 대기 구간도 거기까지
+                #   (10-12 14:47 실측: 1007 하나로만 읽혀 미니 1007.56 에서 따라가지 못했다)
+                if f.get('hi') is not None and self.armed['side'] == 'L':
+                    self.armed['hi_m'] = max(self.armed['hi_m'], self._m(f['hi']))
+                elif f.get('lo') is not None and self.armed['side'] == 'S':
+                    self.armed['lo_m'] = min(self.armed['lo_m'], self._m(f['lo']))
                 self._ev('CONFIRM', tt, sig=self.armed['sig'], by=tid)
                 return out
             side = f.get('side') or (self.peter or {}).get('side')
@@ -326,16 +332,7 @@ class Peter2Follower(object):
                 # 지시 트윗 없이 체결만 왔다 — 체결가를 지정가로 대기
                 pseudo = {'side': side, 'level': lvl, 'lo': lvl, 'hi': lvl, 'mode': 'limit'}
                 if self._plausible(lvl, price):
-                    a = self._arm(pseudo, tt, tid, price, now)
-                    # [668차 후속9] 그가 앞서 지시한 손절·목표를 잇는다 — 지시 대기가 먼저 해제
-                    #   (stop_before_entry 등)된 뒤 체결만 오면 기본 손절로 열렸다
-                    #   (2026-10-12 10:02 「1026 매수체결」: 그의 손절 1023→미니 1020.71 대신 1019.72).
-                    pz = self.peter if (self.peter and self.peter.get('side') == side) else None
-                    if a is not None and pz is not None:
-                        if pz.get('stop') is not None:
-                            a['stop_m'], a['stop_src'] = self._m(pz['stop']), 'peter(이전 지시)'
-                        if pz.get('target') is not None:
-                            a['target_m'] = self._m(pz['target'])
+                    self._arm(pseudo, tt, tid, price, now)     # 그의 앞선 손절·목표는 _arm 이 잇는다
             return out
 
         if t == 'stop':
@@ -390,10 +387,21 @@ class Peter2Follower(object):
         stop_m, stop_src = None, 'default'
         # 같은 트윗의 손절은 ingest 가 이어서 넣는다 — 여기선 기본값으로 연다
         stop_m = self._default_stop(side, lvl_m)
+        target_m = None
+        # [668차 후속9 → 후속11 일반화] 그가 같은 방향 포지션을 들고 있으면 그 손절·목표를 잇는다.
+        #   · 체결만 온 대기(10-12 10:02 「1026 매수체결」: 손절 1023→미니 1020.72 대신 기본 1019.72)
+        #   · 손절 없는 추가 지시(10-12 14:46 「안된사람은 1009부근 매수」: 그의 손절 1004)
+        #   지시 트윗에 손절이 따로 있으면 뒤따르는 stop 사실이 덮어쓴다.
+        pz = self.peter if (self.peter and self.peter.get('side') == side) else None
+        if pz is not None:
+            if pz.get('stop') is not None:
+                stop_m, stop_src = self._m(pz['stop']), 'peter(이전 지시)'
+            if pz.get('target') is not None:
+                target_m = self._m(pz['target'])
         old = self.armed
         self.armed = {'sig': tid, 'side': side, 'lo_m': lo_m, 'hi_m': hi_m, 'level_m': lvl_m,
                       'peter_level': f['level'], 'mode': f['mode'], 'stop_m': stop_m,
-                      'stop_src': stop_src, 'target_m': None, 'armed_at': _hm(tt),
+                      'stop_src': stop_src, 'target_m': target_m, 'armed_at': _hm(tt),
                       'expire': base + datetime.timedelta(minutes=self.cfg['arm_expire_min']),
                       'confirmed': False}
         if old is not None and old['sig'] != tid:
