@@ -48142,3 +48142,26 @@ _arm 손절 승계 일반화 · collector/state/feed.json os.replace WinError 5(
 - **규격과 다른 점(의도)**: 진입가는 규칙가(진입봉 종가)가 아니라 알아챈 시점 시장가. 본전은 규격대로 규칙 진입가(실체결가 아님). 재생 미러 1차 청산은 시장가라 t1 보다 불리할 수 있다.
 - **검증**: `tests/test_685_shindong_live_legs.py` 11건 + 616·518·668·617·598 통과. 회귀 42파일 기준선과 동일 실패 2건(457 `peter_paste`·554 묶음실행 의존 — 변경 없는 상태에서도 동일). 실제 `TradingSystem` 메서드 스모크(가짜 엔진): 진입 2 → 1차 1 + 손절 1000.00 → 최종 FLAT, 15:05 시간청산, 재진입 없음, 미륵 주체 시 진입 없음. **라이브 미검증** — 첫 신동 선택일에 `[ShindongExec]` 진입·1차·본전 로그 확인.
 - **How to apply**: 신동을 실거래하려면 FLAT 에서 대시보드 [신동]. 판정·채점(shindong.db 가상거래)은 그대로이며 실거래 손익은 trades.db `entry_source='SHINDONG'`.
+
+## 2026-10-12 (MW0601 686차 — option_hts [9842] 폴더 MW0602 단방향 미러)
+
+**결정**: `data/db/option_hts`(HTS [9842] 내보내기, gitignore `data/*`)를 MW0602가
+**MW0601 읽기전용 SMB 공유에서 1분마다 당겨 오는** 단방향 미러로 공유한다.
+dev의 사다리(`tools/maekjeom_ladder/ladder_data.py`)는 같은 상대경로를 읽으므로 코드 변경 없이 동작한다.
+
+- **git으로 넘기지 않는 이유**: 체크아웃이 mtime을 바꾼다. `scripts/foreign_flow_pit_review.py`가
+  파일 mtime ≤ T로 시점 존재를 판정하므로 PIT가 조용히 깨진다. 런타임 산출물 커밋 금지 원칙과도 충돌.
+- **경로를 UNC로 직접 가리키지 않는 이유**: MW0601이 꺼지면 MW0602 사다리가 같이 죽는다. 로컬 사본을 읽는다.
+- `scripts/sync_option_hts.py`: copy2(mtime 보존) · `.part`→`os.replace` 원자 교체 · 정착 대기 5초 ·
+  삭제 비전파 · `_sync_arrivals.json`(원본 mtime vs 도착 시각 — MW0602 라이브에서 「mtime≤T면 T에 있었다」를
+  그대로 쓰지 않도록, 계측 4원칙 ②·④) · 원본 PC에서 실행 시 거부(rc=2) · 원본 불가 rc=3.
+- **단일 기록자**: 사본 폴더에 `_MIRROR_OF_<호스트>.txt` 표식. `derive_9842_daily.py`는 표식이 있으면 거부(rc=2).
+  파생본은 MW0601에서만 만들고 미러로 넘어간다.
+- 실행: MW0602에서 `OPTION_HTS_SYNC.bat`(08:40–16:30 루프). 예약작업 설치 스크립트와 공유 생성은
+  자동모드 권한 분류기가 거부해 **사용자 수동 단계로 남김**(NEXT_TODO 686-1·686-2).
+- 실측: 두 PC 같은 LAN(MW0602=192.168.0.12, ping 0ms) · MW0601 NTP(time.google.com) 동기 · 네트워크 프로필 Private.
+- 회귀 가드: `tests/test_686_option_hts_sync.py`(7건 통과, py37_32).
+- 관찰(무관·기존): `derive_9842_daily.py --dry-run`이 MW0601 원본에서 「머리행 다름」(투신 vs 기관계 열 구성)으로 예외 — 686차 변경과 무관.
+- **체리픽 기록**: 원 커밋 `3e72af1`(v9-dev) · 원 PC **MW0601** → dev `54026a3`(push 완료).
+  이유: 미러를 **받는 쪽이 MW0602(dev)** 라 스크립트·bat·derive 가드가 dev에 있어야 실행된다.
+  체리픽 전 `derive_9842_daily.py`는 dev·v9-dev 동일(diff 0) → 충돌 없음, dev 트리에서 테스트 7건 통과.

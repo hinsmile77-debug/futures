@@ -22697,3 +22697,12 @@ docs/정기점검/매일점검/evidence_MW0601-20260826_post.md
 - [ ] **1-2/O-t3 재질문 문구 갱신** — 684차 조사로 09:33·11:22는 X 버튼 재시작(user_restart)이 가장 유력(atexit 경로 중 무로그는 그것뿐). 사용자 확인 시 「해소(설명됨)」로 닫을 것.
 - [ ] **(신규, 관찰) 레거시 `[Shutdown] 정상 종료 플래그 기록` 문구가 로그 파일에 안 남는다** — 같은 모듈 로거 경로. NEXT_TODO가 「정상 마감일엔 정확히 2회」를 건강 신호로 적고 있으나 실측 0회 → 점검 기준이 측정 불가. 처분 선택지: (a) `write_exit_flags`가 `log_fn`에도 이 줄을 보내게 함 (b) 건강 신호를 `intent=daily_close`/`auto_shutdown` 2줄로 교체. 계측 전용(A등급)이나 「건강 신호 정의」 변경이라 사람 확인 후 진행.
 - [ ] F-16(소급 정정)·F-1(538-4)·F-2·663-1(F-5)·663-2(F-7) — 승인 대기 지속(682차 항목 참조).
+
+## 2026-10-12 (MW0601 686차 — option_hts MW0602 미러)
+
+- [ ] **686-1 (사용자, MW0601 관리자 PowerShell)** 읽기전용 공유 생성:
+  `New-SmbShare -Name option_hts -Path "C:\Users\82108\PycharmProjects\futures\data\db\option_hts" -ReadAccess Everyone`
+- [ ] **686-2 (사용자, MW0602)** `git pull`(dev `54026a3` 포함) → 자격증명 저장 `cmdkey /add:DeskTop-MW0601 /user:DeskTop-MW0601\mw0601 /pass`
+  → 1회 리허설 `python scripts\sync_option_hts.py` → 상시 `OPTION_HTS_SYNC.bat`(또는 작업 스케줄러에 08:40 등록).
+- [ ] **686-3** MW0602 첫 동기화 후 `logs\<날짜>_OPTION_HTS_SYNC.log`의 copied 수 · `_sync_arrivals.json` lag_sec 분포 확인(장중 1분 이내 기대).
+- [ ] **686-4 (관찰)** `derive_9842_daily.py --dry-run` 「머리행 다름(투신 vs 기관계)」 예외 — 내보내기 열 구성 변경 추정, 별도 조사.
