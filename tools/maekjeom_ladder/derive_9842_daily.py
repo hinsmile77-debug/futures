@@ -106,6 +106,12 @@ def main():
         except Exception:
             pass
 
+    # [686차] 미러 폴더(scripts/sync_option_hts.py 사본)에는 쓰지 않는다 — 파생본은 원본 PC 에서만
+    #   만들고 미러로 넘어온다. 양쪽에서 만들면 기록자가 둘이 되어 _derived_D.json 이 갈린다.
+    if os.path.isdir(L.DOCS_9842) and any(fn.startswith("_MIRROR_OF_") for fn in os.listdir(L.DOCS_9842)):
+        print("[derive_9842] 거부: %s 는 미러 폴더다(_MIRROR_OF_* 표식). 원본 PC 에서 실행할 것." % L.DOCS_9842)
+        return 2
+
     files = L._list_9842_files()
     P = {f["date"]: f["fn"] for f in files if f["mode"] == "P" and not f.get("hm")}
     # 시점 파일(YYMMDD_HHMM_D)은 장중 누적이라 하루치가 아니다 — 자기검증 대상도, 「진짜 _D 있음」도 아니다
