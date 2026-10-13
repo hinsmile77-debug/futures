@@ -166,7 +166,17 @@ DEFAULT_CONFIG = {
     # 거래일 요약 — 이름있는 그룹으로 뽑는다. 로그 문구가 바뀌면 여기만 고치면 된다.
     "day_summary_patterns": {
         "entry_check": r"\[진입체크\]\s*(?P<dir>\S+)\s+(?P<qty>\d+)계약\s+(?P<grade>[A-Z]급(?:\(원시[A-Z]\))?)\s*\|\s*(?P<checks>[^|]+?)\s*\|\s*conf=(?P<conf>[\d.]+)%",
-        "entry": r"\[Position\] 진입 (?P<dir>\w+) (?P<qty>\d+)계약 @ (?P<px>[\d.]+).*?horizon=(?P<hz>\w+)\s+hurst=(?P<hurst>\S+)",
+        # [MW0601 689차 / F-5 확장] `horizon=`·`hurst=` 접미사는 **선택**이다.
+        #   position_tracker.py 가 두 꼬리를 각각 조건부로 붙인다
+        #   (`entry_horizon` 이 비면 horizon= 없음, `_regime_mult` 가 없으면 hurst= 없음).
+        #   종전은 둘 다 필수라 피터2 경로(entry_horizon=None)의 `[Position] 진입`
+        #   6줄이 전부 미매칭 → 2026-10-13 요약이 6건 전부 「(추정귀속)」으로 나갔다(1-2).
+        #   출처(엔진/피터2/추정)는 여기서가 아니라 assemble_positions() 가 정한다.
+        "entry": r"\[Position\] 진입 (?P<dir>\w+) (?P<qty>\d+)계약 @ (?P<px>[\d.]+)(?:.*?horizon=(?P<hz>\w+))?(?:.*?hurst=(?P<hurst>\S+))?",
+        # [MW0601 689차 / F-5 확장] 피터2 보조 로직 진입 표식 — 같은 체결의
+        #   `[Position] 진입` 과 **같은 초**(±2초)에 TRADE 로그에 찍힌다(2026-10-13 6/6 실측).
+        #   이 줄이 있으면 그 자리는 엔진 판단이 아니다 — 엔진 성적에 넣지 말 것.
+        "peter2_entry": r"\[Peter2\] 진입 (?P<dir>\w+) (?P<qty>\d+)계약",
         # [MW0601 507차 후속 / F-8] 체결진입은 **두 형식**으로 찍힌다.
         #   · `[체결진입]`          — main.py:15272 · :17804 (log_manager.trade)
         #   · `[Position] 체결진입`  — position_tracker.py:752 (logger.info)
@@ -1307,6 +1317,45 @@ def _rec_seconds(rec):
     return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
 
 
+# [MW0601 689차 / F-5 확장] `[Peter2] 진입` ↔ `[Position] 진입` 짝짓기 허용 오차(초).
+# 실측 2026-10-13 6/6 이 같은 초였다. 체결 콜백 지연을 감안해 ±2초로 둔다.
+_PETER2_PAIR_TOL_SEC = 2
+
+
+def _peter2_secs(merged):
+    return [_rec_seconds(r) for r in merged.get("peter2_entry", [])]
+
+
+def entry_source_of(rec, peter2_secs):
+    """`[Position] 진입` 한 줄의 출처 — 「엔진」 / 「피터2」 / 「추정」.
+
+    - 같은 초(±2초)에 `[Peter2] 진입` 이 있으면 **피터2** (보조 로직, 엔진 판단 아님).
+    - 아니면 `horizon=` 이 있으면 **엔진** — 엔진 진입은 `select_entry_horizon()` 이
+      정한 호라이즌을 반드시 넘긴다.
+    - 둘 다 없으면 **추정** — 로그만으로 판별 불가(미측정). 「엔진 아님」이 아니다
+      (계측 4원칙 ②).
+    """
+    sec = _rec_seconds(rec)
+    if any(abs(sec - s) <= _PETER2_PAIR_TOL_SEC for s in peter2_secs):
+        return "피터2"
+    if rec.get("hz"):
+        return "엔진"
+    return "추정"
+
+
+def count_entry_sources(merged):
+    """`[Position] 진입` 을 출처별로 센다 → {"엔진": n, "피터2": n, "추정": n}.
+
+    [689차 / G-6] 「엔진 진입 0건」 판정은 이 값의 「엔진」으로 한다. `len(entry)` 로
+    하면 F-5 확장 뒤에는 피터2 진입이 엔진으로 세어져 적신호가 침묵한다.
+    """
+    p2 = _peter2_secs(merged)
+    out = {"엔진": 0, "피터2": 0, "추정": 0}
+    for rec in merged.get("entry", []):
+        out[entry_source_of(rec, p2)] += 1
+    return out
+
+
 def dedup_fill_entries(merged):
     """[MW0601 507차 후속 / F-8] 체결진입 레코드를 접어서 돌려준다.
 
@@ -1403,6 +1452,8 @@ def assemble_positions(merged):
     ext_secs = set()
     for rec in merged.get("ext_entry", []):
         ext_secs.add(_rec_seconds(rec))
+    # [MW0601 689차 / F-5 확장] 피터2 진입 표식 — `[Position] 진입` 의 출처 판정용.
+    p2_secs = _peter2_secs(merged)
     for _sec, _q, _h, rec in dedup_fill_entries(merged)[0]:
         if _q > 0 and _q == _h:
             ev.append((_sec, 1, "fill_open", rec))
@@ -1429,7 +1480,9 @@ def assemble_positions(merged):
                    "closed": False, "exit_reason": None, "_rem": _eq,
                    "inferred": False,
                    # [F-8] `[Position] 진입`이 있으면 엔진이 낸 자리다.
-                   "src": "엔진"}
+                   # [689차 / F-5 확장] 단, 같은 초에 `[Peter2] 진입`이 있으면
+                   # 피터2, horizon= 도 없으면 추정(판별 불가)이다.
+                   "src": entry_source_of(rec, p2_secs)}
             continue
         if kind in ("fill_open", "fill_add"):
             # [F-X] 체결 기반 보조 경로.
@@ -1536,8 +1589,15 @@ def day_summary(digests, cfg, out):
     # 체결 줄이 통째로 0으로 나와 그 사실 자체가 안 보였다.
     _fi_kept, _fi_dups = dedup_fill_entries(merged)
     _ext = merged.get("ext_entry", [])
+    # [MW0601 689차 / F-5 확장] `[Position] 진입` 을 출처별로 쪼갠다 — 피터2 진입도
+    # 같은 줄을 남기므로 그 줄 수를 그대로 「엔진」이라 부르면 안 된다.
+    _src_n = count_entry_sources(merged)
+    _en_engine = _src_n["엔진"]
     A("| 진입체크 통과(`[진입체크]`) | %d |" % len(ec))
-    A("| 진입 등록(`[Position] 진입`) — **엔진** | %d |" % len(en))
+    A("| 진입 등록(`[Position] 진입`) | %d |" % len(en))
+    A("| └ 그중 **엔진**(`horizon=` 동반) | %d |" % _en_engine)
+    A("| └ 그중 피터2(`[Peter2] 진입` 동반) — 보조 로직 | %d |" % _src_n["피터2"])
+    A("| └ 그중 판별불가(둘 다 없음 — 미측정) | %d |" % _src_n["추정"])
     A("| 체결(`[체결진입]`·`[Position] 체결진입`) | %d%s |"
       % (len(_fi_kept),
          ("  ※ 두 형식 중복 %d건 접음" % _fi_dups) if _fi_dups else ""))
@@ -1546,9 +1606,14 @@ def day_summary(digests, cfg, out):
     A("| 차단(`[차단]`) | %d |" % len(bl))
     A("| 사이저 호출(`[Sizer]`) | %d |" % len(sz))
     A("")
-    if _ext and not en:
-        A("> 🔴 **엔진 진입 0건인데 계좌 체결 %d건** — 이 날의 손익은 엔진 성적이"
-          " 아니다. 아래 포지션 표의 「출처」 칸을 반드시 볼 것." % len(_ext))
+    # [MW0601 689차 / G-6] 적신호를 외부동기화 케이스 밖으로 넓힌다.
+    #   종전 조건 `_ext and not en` 은 외부진입 표식이 있을 때만 떴다 — 2026-10-13 은
+    #   외부 0 · 엔진 0 · 체결 6(전량 피터2)이었는데 침묵했다(1-2).
+    #   이제 「체결 > 0 이고 엔진 진입 == 0」이면 출처와 무관하게 뜬다.
+    if _fi_kept and _en_engine == 0:
+        A("> 🔴 **엔진 진입 0건인데 계좌 체결 %d건**(외부표식 %d · 피터2 %d · 판별불가 %d)"
+          " — 이 날의 손익은 엔진 성적이 아니다. 아래 포지션 표의 「출처」 칸을 반드시 볼 것."
+          % (len(_fi_kept), len(_ext), _src_n["피터2"], _src_n["추정"]))
         A("")
 
     # --- 손익 — **포지션 단위가 기본**(계측 4원칙 ①) [MW0601 482차 / F-4] ---
@@ -1597,7 +1662,8 @@ def day_summary(digests, cfg, out):
                 for s, b in sorted(_by_src.items())))
             A("")
             A("> ⚠ 「외부」는 `[체결동기화] 외부진입`이 동반된 자리다 — 엔진 판단이"
-              " 만든 것이 아니므로 **엔진 성적·승률에 넣지 말 것**. 「추정」은"
+              " 만든 것이 아니므로 **엔진 성적·승률에 넣지 말 것**. 「피터2」는"
+              " `[Peter2] 진입`이 동반된 보조 로직 자리로 역시 엔진 성적이 아니다. 「추정」은"
               " 판별 불가(미측정)이지 「외부 아님」이 아니다(계측 4원칙 ②).")
             A("")
         # ── [MW0601 518차 / G-4] 이월 포지션(전일 이전 진입)의 손익을 드러낸다 ──
@@ -1760,11 +1826,14 @@ def day_summary(digests, cfg, out):
     if en:
         A("### 진입 %d건" % len(en))
         A("")
-        A("| 시각 | 방향 | 계약 | 진입가 | 호라이즌 | Hurst |")
-        A("|---|---|---|---|---|---|")
+        A("| 시각 | 출처 | 방향 | 계약 | 진입가 | 호라이즌 | Hurst |")
+        A("|---|---|---|---|---|---|---|")
+        _p2s = _peter2_secs(merged)
         for e in en:
-            A("| %s | %s | %s | %s | %s | %s |" % (
-                e["hhmm"], e.get("dir"), e.get("qty"), e.get("px"), e.get("hz"), e.get("hurst")))
+            # [689차 / F-5 확장] 접미사가 선택이 됐으므로 빈 값은 `—`(미기재)로 찍는다.
+            A("| %s | %s | %s | %s | %s | %s | %s |" % (
+                e["hhmm"], entry_source_of(e, _p2s), e.get("dir"), e.get("qty"),
+                e.get("px"), e.get("hz") or "—", e.get("hurst") or "—"))
         A("")
         qd = {}
         for e in en:
@@ -3310,7 +3379,10 @@ def build(root, day, phase, cfg, discover_only=False):
         # 사실은 어디에도 안 남았다. 두 값이 갈리는 날 한 칸에 섞으면 안 된다.
         _acct_n = len(dedup_fill_entries(merged)[0])
         _ext_n = len(merged.get("ext_entry", []))
-        if not en:
+        # [MW0601 689차 / G-6] 「엔진 진입 0건」은 출처별 「엔진」으로 판정한다 —
+        # F-5 확장으로 피터2 `[Position] 진입`도 매칭되므로 `not en` 이면 침묵한다.
+        _src_n = count_entry_sources(merged)
+        if _src_n["엔진"] == 0:
             top_bl = ""
             if bl:
                 bd = {}
@@ -3319,10 +3391,11 @@ def build(root, day, phase, cfg, discover_only=False):
                     bd[r] = bd.get(r, 0) + 1
                 top_bl = " 최다 차단 사유: `%s`" % sorted(bd.items(), key=lambda kv: -kv[1])[0][0]
             flags.append(
-                "**엔진 진입 0건 / 계좌 진입 %d건**(그중 외부표식 %d건) — 차단 %d건.%s "
+                "**엔진 진입 0건 / 계좌 진입 %d건**(그중 외부표식 %d건 · 피터2 %d건 · "
+                "판별불가 %d건) — 차단 %d건.%s "
                 "(진입0 딥다이브 절차를 따르라. 계좌 진입이 있으면 그 손익을 "
                 "**엔진 성적으로 집계하지 말 것**)"
-                % (_acct_n, _ext_n, len(bl), top_bl))
+                % (_acct_n, _ext_n, _src_n["피터2"], _src_n["추정"], len(bl), top_bl))
         # [MW0601 482차 / F-4] 포지션 단위로 센다. 종전은 `체결청산` 레그만 세어
         # 2026-08-20에 "4건 100% 하드스톱"이라 찍었으나 실제는 하드스톱 4 ·
         # 손절1차 조기축소 2 · TP1 부분청산 1(레그 7 / 포지션 4)이었다.
@@ -3342,9 +3415,12 @@ def build(root, day, phase, cfg, discover_only=False):
                              "(계측 4원칙 ①). §5 표는 포지션 단위이니 그 값을 인용하라"
                              % _hidden)
     try:
-        if sz and en:
+        # [689차] 사이저와 비교할 진입은 **엔진 진입만**이다 — 피터2 는 사이저를 거치지 않는다.
+        _p2s = _peter2_secs(merged)
+        _en_eng = [e for e in en if entry_source_of(e, _p2s) == "엔진"]
+        if sz and _en_eng:
             smax = max(int(s["qty"]) for s in sz if s.get("qty"))
-            emax = max(int(e["qty"]) for e in en if e.get("qty"))
+            emax = max(int(e["qty"]) for e in _en_eng if e.get("qty"))
             if smax > emax:
                 flags.append("사이저 최대 %d계약 → 실제 진입 최대 %d계약 — 게이트 배수에 눌림 "
                              "(sizing_inversion_watch 대상)" % (smax, emax))
