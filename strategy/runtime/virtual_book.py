@@ -196,6 +196,21 @@ class VirtualBook:
         self._save()
         return legs
 
+    def exit_qty(self, principal, price, qty, reason, now):
+        """주체 지시에 의한 부분 청산(v9 신동 1차 1계약 등). 잔량이 없어지면 전량 청산. → 레그 목록."""
+        t = self.books.get(principal)
+        if t is None or t.status == POSITION_FLAT or not price:
+            return []
+        qty = int(qty)
+        if qty <= 0:
+            return []
+        if qty >= int(t.quantity):
+            legs = [self._close(principal, float(price), reason, now)]
+        else:
+            legs = [self._partial(principal, t, float(price), qty, reason, now)]
+        self._save()
+        return legs
+
     # ── 평가 ────────────────────────────────────────────────
     def on_bar(self, bar, atr, now):
         """1분봉 마감 평가. bar = {ts(봉 시작 datetime), close, high, low}. → 레그 목록."""

@@ -255,3 +255,14 @@ def test_peter_and_shindong_divert_to_virtual():
     assert 'return self._peter2_execute_virtual(it, mode, date, now)' in s
     assert 'self._shindong_virtual_step(trades, by_key, payload, now)' in s
     assert 'and not _ts_real_trading_block_reason(self, SHINDONG_ENTRY_SOURCE)):' in s
+
+
+def test_exit_qty_partial_then_rest(tp_tmp):
+    vb = _vb()
+    vb.open(TP.SHINDONG, 'LONG', 1000.0, 2, 2.0, _t('10:00', 30), 'principal',
+            ext_stop=996.0, ext_target=1010.0)
+    legs = vb.exit_qty(TP.SHINDONG, 1005.0, 1, '가상:신동1차', _t('10:05'))
+    assert len(legs) == 1 and not legs[0]['final'] and vb.books[TP.SHINDONG].quantity == 1
+    legs = vb.exit_qty(TP.SHINDONG, 1007.0, 5, '가상:신동최종', _t('10:06'))
+    assert legs[0]['final'] and vb.is_flat(TP.SHINDONG)
+    assert legs[0]['pos_pnl_pts'] == 12.0
