@@ -129,6 +129,11 @@ foreach ($t in $tasksLaunch) {
     if (-not $x) { Log "  [WARN] 예약작업 '$t' 없음"; $warn++; continue }
     Log "  [INFO] 예약작업 '$t' RunLevel=$($x.Principal.RunLevel) State=$($x.State)"
 }
+$prefsP = Join-Path $root 'data\ui_prefs.json'
+if (Test-Path $prefsP) {
+    $srv = [regex]::Match([IO.File]::ReadAllText($prefsP, [Text.Encoding]::UTF8), '"server_mode"\s*:\s*"(\w+)"').Groups[1].Value
+    Log "  [INFO] ui_prefs server_mode=$srv (목표 $(if ($Mode -eq 'real') {'real'} else {'simul'}) -- -Apply 가 맞춘다)"
+}
 $h = Get-ScheduledTask -TaskName $taskHts -ErrorAction SilentlyContinue
 if ($h) { Log "  [INFO] 예약작업 '$taskHts' State=$($h.State)" }
 if ($Mode -eq 'real') {
@@ -178,6 +183,23 @@ if ($h) {
     if ($Broker -eq 'creon') { Disable-ScheduledTask -TaskName $taskHts | Out-Null; Log "  3) '$taskHts' 비활성 (CREON Plus 세션과 공존 불가)" }
     else                     { Enable-ScheduledTask  -TaskName $taskHts | Out-Null; Log "  3) '$taskHts' 재활성" }
 }
+
+# 4) 대시보드 서버 라디오(data/ui_prefs.json server_mode) — 실제 접속 서버와 다르면
+#    _ts_execute_entry 의 서버구분 하드게이트가 **모든 신규 진입을 차단**한다.
+#    2026-10-13 점검: 실거래 전환 후에도 simul 로 남아 있어 다음 날 진입 전량 차단 직전이었다.
+$prefs = Join-Path $root 'data\ui_prefs.json'
+$wantSrv = if ($Mode -eq 'real') { 'real' } else { 'simul' }
+if (Test-Path $prefs) {
+    $pj = [IO.File]::ReadAllText($prefs, [Text.Encoding]::UTF8)
+    $cur = [regex]::Match($pj, '"server_mode"\s*:\s*"(\w+)"').Groups[1].Value
+    if ($cur -ne $wantSrv) {
+        Copy-Item $prefs "$prefs.bak_$ts"
+        if ($cur) { $pj = [regex]::Replace($pj, '"server_mode"\s*:\s*"\w+"', "`"server_mode`": `"$wantSrv`"") }
+        else      { $pj = $pj.TrimEnd().TrimEnd('}') + ", `"server_mode`": `"$wantSrv`"}" }
+        [IO.File]::WriteAllText($prefs, $pj, (New-Object Text.UTF8Encoding($false)))
+        Log "  4) ui_prefs server_mode $cur -> $wantSrv (백업 ui_prefs.json.bak_$ts) -- main.py 실행 중이면 재기동 필요"
+    } else { Log "  4) ui_prefs server_mode 이미 $wantSrv" }
+} else { Log "  4) ui_prefs.json 없음 -- 대시보드 기본값(simul). real 이면 첫 기동 후 라디오를 실서버로 바꿀 것"; $warn++ }
 
 Log "=== 적용 완료: BROKER=$Broker TRADING_MODE=$Mode. 다음 무인 기동부터 반영 (WARN=$warn) ==="
 exit 0

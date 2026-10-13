@@ -18993,7 +18993,7 @@ def _ts_resolve_stuck_entry_pending(self) -> bool:
 
     before_qty = self.position.quantity
     # 브로커 실수량으로 포지션 sync (이벤트 유실로 인한 수량 불일치 해소)
-    self._entry_source = "BROKER_SYNC_RECOVERY"
+    self._entry_source = _ts_sync_source_label(self, broker_side)
     self.position.sync_from_broker(
         direction=broker_side,
         price=broker_avg,
@@ -19215,7 +19215,7 @@ def _ts_resolve_stuck_exit_pending(self) -> bool:
     prev_pos_qty = self.position.quantity
 
     entry_time_hint = self.position.entry_time or self.position.peek_saved_entry_time(side)
-    self._entry_source = "BROKER_SYNC_RECOVERY"
+    self._entry_source = _ts_sync_source_label(self, side)
     self.position.sync_from_broker(
         direction=side,
         price=avg_price,
@@ -20802,7 +20802,7 @@ def _ts_sync_position_from_broker(self) -> None:
                                      before_state=before)
         return
 
-    self._entry_source = "BROKER_SYNC_RECOVERY"
+    self._entry_source = _ts_sync_source_label(self, side)
     self.position.sync_from_broker(
         direction=side,
         price=avg_price,
@@ -20868,6 +20868,38 @@ def _ts_sync_position_from_broker(self) -> None:
         "MATCH" if before == after else "MISMATCH", "synced",
         before_state=before, after_state=after, reconciled_measured=True,
         broker_qty_per_position=qty, broker_avg_price=avg_price)
+
+
+def _ts_sync_source_label(self, side: str) -> str:
+    """브로커 동기화 직전의 진입 출처 라벨 — 외부 주체(피터·신동) 포지션이면 보존한다.
+
+    [MW0601 2026-10-13 거래주체별 규칙 점검 🔴] 동기화 4곳(기동 sync · 진입 정체 해소 ·
+    청산 부분체결 타임아웃 · 잔고 Chejan)이 보유 포지션과 무관하게 `BROKER_SYNC_RECOVERY`
+    를 대입했다. setter 가 그 값을 `position.entry_source` 에 복사하면 `_apply_ext_levels`
+    가 비외부 주체로 보고 피터·신동의 ext_stop/ext_target 을 **폐기**하고, 미륵의
+    TP1~3·손절계단·트레일링이 그 포지션에 붙는다. 동시에 `is_external_of(...)` 가 False 라
+    피터 지시·신동 1차/최종·15:05 시간청산이 멈춘다 — 다른 주체의 규칙으로 청산된다.
+    가장 흔한 발현은 **외부 주체 포지션 보유 중 장중 재기동**(기동 sync)이다.
+
+    보존 조건(같은 포지션이라는 근거가 있을 때만):
+      ① 트래커가 같은 방향의 외부 주체 포지션을 들고 있다, 또는
+      ② 트래커는 FLAT 이지만 같은 방향 ENTRY pending 이 외부 주체 출처로 나가 있다(진입 정체).
+    그 밖에는 종전대로 `BROKER_SYNC_RECOVERY`(출처 모를 포지션의 정상 라벨).
+    """
+    pos = self.position
+    cur = getattr(pos, "entry_source", None)
+    if cur in EXTERNAL_ENTRY_SOURCES and pos.status == side:
+        log_manager.system("[BrokerSync] 외부 주체 포지션 출처 보존: %s %s (BROKER_SYNC_RECOVERY 로 덮지 않음)"
+                           % (cur, side), "WARNING")
+        return cur
+    # 진입 정체(FLAT + ENTRY pending): `_entry_source` setter 가 주문 전 `position.entry_source`
+    # 에 이미 미러링했으므로 트래커 값만 본다(라벨 읽기 1곳 불변식 — test_518).
+    po = self._pending_order or {}
+    if (pos.status == "FLAT" and cur in EXTERNAL_ENTRY_SOURCES
+            and str(po.get("kind", "")) == "ENTRY" and po.get("direction") == side):
+        log_manager.system("[BrokerSync] 진입 대기 중인 외부 주체 출처 보존: %s %s" % (cur, side), "WARNING")
+        return cur
+    return "BROKER_SYNC_RECOVERY"
 
 
 def _ts_sync_from_balance_payload(self, payload: dict) -> None:
@@ -20959,7 +20991,7 @@ def _ts_sync_from_balance_payload(self, payload: dict) -> None:
         )
         return
 
-    self._entry_source = "BROKER_SYNC_RECOVERY"
+    self._entry_source = _ts_sync_source_label(self, side)
     self.position.sync_from_broker(
         direction=side,
         price=avg_price,

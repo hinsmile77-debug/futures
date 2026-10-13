@@ -112,7 +112,6 @@ def test_f3_manual_path_still_overrides_after_call(main_src):
 def test_f3_recovery_labels_are_not_removed(main_src):
     """복구·수동 라벨 자체는 그대로 살아 있다 — F-3 은 되돌리기만 추가했다."""
     for label in (
-        "BROKER_SYNC_RECOVERY",
         "GHOST_PENDING_MISS",
         "OPERATOR_MANUAL",
         "OPERATOR_RESTORE",
@@ -120,6 +119,12 @@ def test_f3_recovery_labels_are_not_removed(main_src):
         assert 'self._entry_source = "%s"' % label in main_src, (
             "%s 라벨 할당이 사라졌다 — F-3 은 라벨을 지우는 수정이 아니다" % label
         )
+    # [MW0601 2026-10-13] BROKER_SYNC_RECOVERY 는 `_ts_sync_source_label()` 로 옮겨졌다 —
+    #   외부 주체(피터·신동) 같은 방향 포지션이면 출처를 보존하고, 그 밖에는 이 라벨을 그대로 쓴다.
+    #   라벨이 사라진 것이 아니다(test_690b 가 보존 조건을 고정).
+    seg = main_src[main_src.index("def _ts_sync_source_label"):]
+    assert 'return "BROKER_SYNC_RECOVERY"' in seg[:seg.index("\ndef ", 10)]
+    assert main_src.count("self._entry_source = _ts_sync_source_label(self, ") == 4
 
 
 # ─────────────────────────────────────────────────────────────────────────────
