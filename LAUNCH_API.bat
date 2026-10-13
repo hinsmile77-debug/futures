@@ -12,9 +12,16 @@ IF EXIST "%~dp0machine.cfg" (
         SET "_MC_K=%%A"
         SET "_MC_K=!_MC_K: =!"
         IF /I "!_MC_K!"=="BROKER" SET "BROKER=%%B"
+        IF /I "!_MC_K!"=="TRADE_MODE" SET "TRADE_MODE_CFG=%%B"
     )
     IF DEFINED BROKER FOR /F "tokens=1" %%V IN ("!BROKER!") DO SET "BROKER=%%V"
+    IF DEFINED TRADE_MODE_CFG FOR /F "tokens=1" %%V IN ("!TRADE_MODE_CFG!") DO SET "TRADE_MODE_CFG=%%V"
 )
+REM [2026-10-13] TRADE_MODE (mock or real) is decided ONLY by machine.cfg.
+REM This launcher re-runs itself elevated and drops its arguments, so the
+REM scheduled task cannot pass the mode. autologin and preflight read the
+REM same key themselves (utils/trade_mode.py). Here it is for display/log.
+IF NOT DEFINED TRADE_MODE_CFG SET "TRADE_MODE_CFG=mock"
 IF "!BROKER!"=="" (
     ECHO [FATAL] machine.cfg 가 없거나 BROKER 값이 설정되지 않았습니다.
     ECHO [FATAL] machine.cfg.example 을 machine.cfg 로 복사하고 BROKER=cybos 또는 BROKER=creon 을 설정하세요.
@@ -31,6 +38,7 @@ IF /I "!BROKER!"=="creon" (
     SET "STARTER_EXE=C:\CREON\STARTER\coStarter.exe"
     SET "LOG_NAME=creon_plus_launch.log"
     SET "NEED_ADMIN=1"
+    IF /I "!TRADE_MODE_CFG!"=="real" SET "CRED_TARGET=creonplus_real"
 ) ELSE (
     SET "BROKER_LABEL=Cybos Plus"
     SET "CRED_TARGET=cybosplus"
@@ -66,6 +74,7 @@ ECHO.
 ECHO ============================================================
 ECHO   Mireuk !BROKER_LABEL! Launcher
 ECHO   Broker : !BROKER!
+ECHO   Mode   : !TRADE_MODE_CFG!  (machine.cfg TRADE_MODE)
 ECHO   Start  : %TIMESTAMP%
 ECHO ============================================================
 ECHO.
@@ -130,7 +139,7 @@ SET "LOG=!WORKDIR!\logs\!LOG_NAME!"
 
 ECHO. >> "!LOG!"
 ECHO ============================================================ >> "!LOG!"
-ECHO [%TIMESTAMP%] !BROKER_LABEL! Launcher started >> "!LOG!"
+ECHO [%TIMESTAMP%] !BROKER_LABEL! Launcher started  TRADE_MODE=!TRADE_MODE_CFG! >> "!LOG!"
 ECHO ============================================================ >> "!LOG!"
 
 REM ============================================================
@@ -208,7 +217,9 @@ IF %ERRORLEVEL% NEQ 0 (
         IF !ERRORLEVEL! NEQ 0 (
             ECHO.
             ECHO [ERROR] 자동 로그인 실패.
-            ECHO [HINT]  자격증명 등록: cmdkey /add:!CRED_TARGET! /user:아이디 /pass:비밀번호
+            ECHO [HINT]  자격증명 등록: cmdkey /generic:!CRED_TARGET! /user:아이디 /pass:비밀번호
+            IF /I "!TRADE_MODE_CFG!"=="real" ECHO [HINT]  실거래 인증서 비밀번호: cmdkey /generic:creonplus_cert /user:cert /pass:인증서비밀번호
+            ECHO [HINT]  로그인 진단: !WORKDIR!\logs\!BROKER!_autologin_diag.log
             ECHO [HINT]  실행 파일 확인: !STARTER_EXE!
             ECHO [HINT]  로그 위치: !WORKDIR!\logs\
             ECHO [ERROR] Auto-login failed. >> "!LOG!"
@@ -233,8 +244,12 @@ REM ============================================================
 ECHO.
 ECHO [INFO] !BROKER_LABEL! preflight 점검 중...
 IF EXIST "!WORKDIR!\scripts\cybos_plus_preflight.py" (
-    REM [2026-09-29] preflight 출력(CHECK 4/4 계좌목록 포함)을 로그에도 남긴다 - start_mireuk.bat 와 동일.
-    REM 파일 리다이렉트 시 py37 이 cp949 로 쓰므로 이 호출에만 UTF-8 을 강제하고 복원한다.
+    REM [2026-09-29] Tee preflight output (incl. CHECK 4/4 account list) into the log.
+    REM Force UTF-8 for this call only (py37 writes cp949 when redirected).
+    REM [2026-10-13] NEVER put a bare paren inside this block, not even in ECHO text.
+    REM The watchdog ECHO below had an unescaped close-paren that ended the IF block
+    REM early, so CMD died with '. was unexpected at this time.' and the window closed
+    REM right after auto-login. This launcher never ran preflight. Escape with ^^ .
     SET "_PF_OUT=!TEMP!\creon_preflight_!RANDOM!.txt"
     SET "_PF_OLDENC=!PYTHONIOENCODING!"
     SET "PYTHONIOENCODING=utf-8"
@@ -258,9 +273,8 @@ IF EXIST "!WORKDIR!\scripts\cybos_plus_preflight.py" (
         SET "ERROR_FLAG=1"
         GOTO :end_error
     )
-    REM [2026-08-06] 계좌 대조 실패 -- preflight CHECK 4/4 신설.
-    REM 연결도 되고 TradeInit 도 됐지만 설정 계좌가 세션에 없는 상태다.
-    REM 그대로 기동하면 잘못된 세션 위에서 하루를 보낸다(2026-08-06 사고).
+    REM [2026-08-06] Account mismatch - preflight CHECK 4/4. Connected and TradeInit
+    REM passed, but the configured account is not in this session - see 2026-08-06.
     IF "!PREFLIGHT_ERR!"=="4" (
         ECHO [ERROR] 설정 계좌가 브로커 세션에 없습니다 -- 위 preflight 출력의 계좌목록을 확인하세요.
         ECHO [HINT]  모의계좌 재발급 시 config\secrets.py 의 ACCOUNT_NO / ACCOUNT_GOODS_CODE / ACCOUNT_PWD 를 직접 갱신하십시오.
@@ -270,7 +284,7 @@ IF EXIST "!WORKDIR!\scripts\cybos_plus_preflight.py" (
         GOTO :end_error
     )
     IF "!PREFLIGHT_ERR!"=="5" (
-        ECHO [ERROR] Preflight 워치독 타임아웃 -- TradeInit 응답 없음(판정 불능).
+        ECHO [ERROR] Preflight 워치독 타임아웃 -- TradeInit 응답 없음 ^(판정 불능^).
         ECHO [HINT]  Cybos 창에 대화상자가 떠 있는지 확인 후 재시도하십시오.
         ECHO [ERROR] Preflight watchdog timeout. >> "!LOG!"
         SET "ERROR_FLAG=1"

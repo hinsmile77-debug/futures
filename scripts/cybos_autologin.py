@@ -106,8 +106,7 @@ import win32api
 
 # -- 설정 -----------------------------------------------------------------------
 CRED_TARGET       = "cybosplus"  # CYBOS 기본값; CREON은 아래에서 "creon"으로 재설정
-MOCK_MODE         = True         # True=모의투자, False=실투자
-CONNECT_TIMEOUT   = 120          # 통합 루프(모의투자 팝업 + 연결 대기) 타임아웃 (초)
+CONNECT_TIMEOUT   = 120         # 통합 루프(모의투자 팝업 + 연결 대기) 타임아웃 (초)
 MAX_LOGIN_ATTEMPTS = 3           # 연결 실패 시 전체 재시도 횟수
 MOCK_POPUP_MIN_WAIT = 8          # 구버전 호환용 상수 -- _wait_for_connection_and_mock 에서 미사용
 PASSWORD_OVERRIDE = None         # Windows 자격증명 관리자(cybosplus)에서 읽음
@@ -150,6 +149,38 @@ else:
     CYBOS_EXE        = _CYBOS_EXE_PATH
     CYBOS_ARGS       = "/prj:cp"
     CYBOS_PROC_NAMES = ["_ncstarter_.exe", "cpstart.exe"]
+
+# ── 매매 모드: --mode mock|real 인수 우선, 없으면 machine.cfg TRADE_MODE (기본 mock) ──
+# [2026-10-13] 종전에는 MOCK_MODE=True 하드코딩이라 실거래 로그인 경로가 없었다.
+# 모의/실거래는 로그인 ID 가 다를 수 있다(MW0602 는 실제로 다르다) —
+# 그래서 자격증명 타깃을 모드별로 분리한다. 모의 타깃은 손대지 않는다.
+#   mock : <CRED_TARGET>            (기존 그대로)
+#   real : <CRED_TARGET>_real       + 인증서 비밀번호 <CRED_TARGET>_cert (있으면)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils.trade_mode import get_trade_mode, MOCK as _MODE_MOCK, REAL as _MODE_REAL  # noqa: E402
+
+_mode_override = None
+for _i, _arg in enumerate(sys.argv[1:]):
+    if _arg == "--mode" and _i + 2 <= len(sys.argv[1:]):
+        _mode_override = sys.argv[_i + 2].lower()
+        break
+    elif _arg.startswith("--mode="):
+        _mode_override = _arg.split("=", 1)[1].lower()
+        break
+if _mode_override is not None and _mode_override not in (_MODE_MOCK, _MODE_REAL):
+    print("[ERROR] --mode 값은 mock 또는 real 이어야 합니다: %r" % _mode_override)
+    sys.exit(1)
+if _mode_override:
+    TRADE_MODE, TRADE_MODE_SOURCE = _mode_override, "argv"
+else:
+    TRADE_MODE, TRADE_MODE_SOURCE = get_trade_mode()
+MOCK_MODE = (TRADE_MODE == _MODE_MOCK)
+CERT_CRED_TARGET = None
+if not MOCK_MODE:
+    CERT_CRED_TARGET = CRED_TARGET + "_cert"
+    CRED_TARGET = CRED_TARGET + "_real"
+print("[INFO] TRADE_MODE=%s (source=%s) broker=%s cred_target=%s"
+      % (TRADE_MODE, TRADE_MODE_SOURCE, BROKER_TYPE, CRED_TARGET))
 
 # 보안 다이얼로그는 CYBOS 전용 -- CREON 흐름에는 없음
 HAS_SECURITY_DIALOG   = BROKER_TYPE == "cybos"
@@ -522,28 +553,49 @@ def _load_credential():
     if PASSWORD_OVERRIDE:
         return "", PASSWORD_OVERRIDE
 
+    found = _read_credential(CRED_TARGET)
+    if found:
+        return found
+
+    print("[ERROR] 자격증명 없음 -- PowerShell에서 아래 명령 실행 후 재시도:")
+    print("  cmdkey /generic:%s /user:아이디 /pass:비밀번호" % CRED_TARGET)
+    sys.exit(1)
+
+
+def _read_credential(target):
+    """CredRead(target) → (username, password) 또는 None."""
     CRED_TYPE_GENERIC          = 1
     CRED_TYPE_DOMAIN_PASSWORD  = 2
 
     for cred_type in (CRED_TYPE_GENERIC, CRED_TYPE_DOMAIN_PASSWORD):
         try:
-            cred = win32cred.CredRead(CRED_TARGET, cred_type, 0)
+            cred = win32cred.CredRead(target, cred_type, 0)
             username = cred.get("UserName", "")
             blob = cred.get("CredentialBlob", b"")
             if not blob:
                 print("[DEBUG] blob 비어있음 건너뜀: Target=%s Type=%d User=%s"
-                      % (CRED_TARGET, cred_type, username))
+                      % (target, cred_type, username))
                 continue
             password = blob.decode("utf-16-le")
             print("[DEBUG] 자격증명 로드 성공: Target=%s Type=%d User=%s"
-                  % (CRED_TARGET, cred_type, username))
+                  % (target, cred_type, username))
             return username, password
         except Exception as e:
-            print("[DEBUG] CredRead(Type=%d) 실패: %s" % (cred_type, e))
+            print("[DEBUG] CredRead(%s, Type=%d) 실패: %s" % (target, cred_type, e))
+    return None
 
-    print("[ERROR] 자격증명 없음 -- PowerShell에서 아래 명령 실행 후 재시도:")
-    print("  cmdkey /add:%s /user:아이디 /pass:비밀번호" % CRED_TARGET)
-    sys.exit(1)
+
+def _load_cert_password():
+    """실거래 모드 전용 — 인증서 비밀번호(<target>_cert). 없으면 None (미등록을 그대로 알린다)."""
+    if MOCK_MODE or not CERT_CRED_TARGET:
+        return None
+    found = _read_credential(CERT_CRED_TARGET)
+    if found:
+        return found[1]
+    print("[WARN] 인증서 비밀번호 자격증명 없음: Target=%s" % CERT_CRED_TARGET)
+    print("[WARN]   로그인 창에 인증서 비밀번호 칸이 있으면 로그인이 실패합니다. 등록:")
+    print("[WARN]   cmdkey /generic:%s /user:cert /pass:인증서비밀번호" % CERT_CRED_TARGET)
+    return None
 
 
 def _normalize_title(text):
@@ -728,8 +780,21 @@ def _click_creon_login_button(hwnd):
     # 실증 절대좌표: (770, 614) @ 창위치(599,209) → 창 상대: wx+171, wy+405
     btn_x = wx + 171
     btn_y = wy + 405
+    if not MOCK_MODE:
+        # [2026-10-13] 실거래(「거래」 선택) 화면은 인증서 비밀번호 칸 + 체크박스 3줄이
+        # 더해져 버튼이 아래로 내려간다. wy+405 는 이 화면에서 「주문/조회 계좌비밀번호
+        # 자동입력」 체크박스 자리라 그대로 누르면 설정이 바뀐다.
+        # 실측(사용자 캡처): 인증서 칸 중심 y=347 → 「아이디 로그인」 버튼 중심 y=472
+        # (창 상대), 버튼 x 범위 42~322 → 중심 182. 마지막 Edit 기준 +125 로 잡는다.
+        if not edits:
+            print("[WARN] 실거래 로그인 버튼 기준 Edit 없음 -- 좌표 클릭 생략 (Enter 에 의존)")
+            return
+        last = edits[-1]
+        btn_x = wx + 182
+        btn_y = (last[1] + last[3]) // 2 + 125
 
-    print("[INFO] CREON 모의투자로그인 버튼 클릭: screen(%d,%d)" % (btn_x, btn_y))
+    print("[INFO] CREON %s 버튼 클릭: screen(%d,%d)"
+          % ("모의투자로그인" if MOCK_MODE else "로그인(실거래)", btn_x, btn_y))
     _force_foreground(hwnd)
     time.sleep(0.20)
     _click_at_screen(hwnd, btn_x, btn_y)
@@ -977,7 +1042,12 @@ def _select_creon_plus_by_coordinate(hwnd):
             _dd_r = _dd_candidates[0][1]
             cp_x = (_dd_r[0] + _dd_r[2]) // 2
             # 실증 절대좌표: CREON Plus 항목 y=298 @ popup_top=246 → offset=52
-            _per_retry_offsets = (52, 42, 62, 35, 72)  # retry별 ONE 클릭
+            # [2026-10-13] 팝업(높이 70px, 3항목 ≈23px)에서 CREON Plus 는 3번째 항목
+            # (offset 46~70)이다. 종전 재시도 42 는 **2번째 항목**을 눌러 매 기동마다 상품을
+            # 잠깐 다른 것으로 바꿨다가 다음 재시도(62)로 되돌리고 있었다 — 선택 검증
+            # (「Edit 비가시 = CREON Plus」)이 현행 화면과 맞지 않아 재시도가 매번 3회 다
+            # 돌기 때문이다(로그 실측 13:04·13:20·13:33). 모든 재시도를 3번째 항목 안에 둔다.
+            _per_retry_offsets = (58, 52, 64)  # retry별 ONE 클릭 — 전부 CREON Plus 항목 안
             _oy = _per_retry_offsets[min(_retry, len(_per_retry_offsets) - 1)]
             cp_y = _dd_r[1] + _oy
             print("[INFO] 드롭다운 팝업 기준 CREON Plus 항목 클릭: retry%d y_offset=%d screen(%d,%d)" % (
@@ -1506,7 +1576,45 @@ def _wait_for_login_clicking_security(timeout=120):
 
 # -- 로그인 수행 ----------------------------------------------------------------
 
-def _perform_login(hwnd, user_id, password):
+_SCREEN_MODE_MISMATCH = False   # 로그인 창 「거래/모의」 ≠ TRADE_MODE → 재시도 금지
+
+
+def _creon_screen_matches_mode(hwnd):
+    """CREON 로그인 창의 「거래/모의」 선택이 TRADE_MODE 와 같은지 본다.
+
+    [2026-10-13] 그 선택(창 왼쪽 아래 드롭다운)은 owner-drawn 이라 코드가 고르지
+    못하고, CREON 이 마지막 선택을 기억한다. 화면 모양으로 판별한다(실측):
+      「거래」: 보이는 Edit 3칸 (아이디 / 비밀번호 / 인증서 비밀번호)
+      「모의」: 보이는 Edit 2칸 (인증서 칸은 0x0 으로 숨음)
+    다르면 진행하지 않는다 — 13:33 실측에서 모의 모드가 「거래」 화면에 들어가
+    모의 비밀번호를 인증서 칸에 넣고, 모의 버튼 좌표(wy+405)로 「주문/조회 계좌비밀번호
+    자동입력」 체크박스를 누르고, (962,509)를 5초마다 블라인드 클릭했다.
+    판별 불가(보이는 칸 0·1개 — 아이디 탭 미선택 등)면 종전대로 진행한다.
+    """
+    global _SCREEN_MODE_MISMATCH
+    visible = [e for e in _collect_wide_edits_visibility(hwnd) if e[2]]
+    if len(visible) >= 3:
+        screen_mode = _MODE_REAL
+    elif len(visible) == 2:
+        screen_mode = _MODE_MOCK
+    else:
+        print("[WARN] 로그인 창 거래/모의 판별 불가 (보이는 Edit %d칸) -- 진행" % len(visible))
+        return True
+    print("[INFO] 로그인 창 화면=%s (보이는 Edit %d칸) / 요청=%s"
+          % (screen_mode, len(visible), TRADE_MODE))
+    if screen_mode == TRADE_MODE:
+        return True
+    _SCREEN_MODE_MISMATCH = True
+    want = u"거래" if TRADE_MODE == _MODE_REAL else u"모의"
+    print("[ERROR] 로그인 창이 「%s」 화면인데 요청은 %s 입니다 -- 입력하지 않고 중단합니다."
+          % (u"거래" if screen_mode == _MODE_REAL else u"모의", TRADE_MODE))
+    print("[HINT]  CREON 로그인 창 왼쪽 아래 선택을 「%s」로 바꾼 뒤 다시 실행하십시오"
+          " (CREON 이 마지막 선택을 기억합니다)." % want)
+    print("[HINT]  또는 machine.cfg 의 TRADE_MODE 를 화면에 맞추십시오.")
+    return False
+
+
+def _perform_login(hwnd, user_id, password, cert_password=None):
     """
     로그인 창에서 컨트롤 기반으로:
       1. 아이디 Edit (y 좌표 첫 번째) → WM_SETTEXT
@@ -1528,8 +1636,20 @@ def _perform_login(hwnd, user_id, password):
     # "아이디" 탭을 클릭해야 ID/PW Edit가 visible=True가 됨
     if BROKER_TYPE == "creon":
         _click_creon_id_tab(hwnd)
+        if not _creon_screen_matches_mode(hwnd):
+            return False
 
-    id_edit, pw_edit = _find_id_password_edits(hwnd)
+    # 실거래 로그인 창은 [아이디 / 비밀번호 / 인증서 비밀번호] 3칸일 수 있다.
+    # 모의 경로의 "마지막 Edit = 비밀번호" 규칙을 그대로 쓰면 로그인 비밀번호가
+    # 인증서 칸에 들어가므로, 실거래 + 3칸 이상이면 [0]/[1]/[2] 로 배정한다.
+    # 모의 경로는 종전 동작 그대로 둔다.
+    cert_edit = None
+    _edits = _collect_edits(hwnd)
+    print("[INFO] 로그인 Edit %d개 탐지 (mode=%s)" % (len(_edits), TRADE_MODE))
+    if not MOCK_MODE and len(_edits) >= 3:
+        id_edit, pw_edit, cert_edit = _edits[0], _edits[1], _edits[2]
+    else:
+        id_edit, pw_edit = _find_id_password_edits(hwnd)
 
     EM_SETSEL = 0x00B1  # 전체 선택용 (0, -1)
 
@@ -1598,6 +1718,16 @@ def _perform_login(hwnd, user_id, password):
         send_keys("^a{BACKSPACE}")
         send_keys(password)
 
+    # ── STEP 2b: 인증서 비밀번호 (실거래 + 3번째 칸이 있을 때만) ──
+    if cert_edit:
+        if cert_password:
+            time.sleep(0.15)
+            print("[INFO] 인증서 비밀번호 Edit 발견: hwnd=%d" % cert_edit)
+            _clear_and_input(cert_edit, cert_password, "인증서 비밀번호")
+        else:
+            print("[ERROR] 인증서 비밀번호 칸이 있으나 자격증명(%s)이 없습니다 -- 로그인 실패 예상"
+                  % CERT_CRED_TARGET)
+
     time.sleep(0.3)
 
     # ── STEP 2: Enter 전송 (TextCtrl에 Enter가 login 역할 할 수 있음) ──
@@ -1630,12 +1760,28 @@ def _perform_login(hwnd, user_id, password):
     # CREON: 버튼이 owner-drawn이라 BM_CLICK 탐지 불가 → 좌표 클릭 추가
     if BROKER_TYPE == "creon":
         time.sleep(0.3)
+        if not MOCK_MODE:
+            # Enter 로 이미 로그인이 진행됐으면 좌표 클릭은 엉뚱한 곳을 누를 수 있다 —
+            # 입력칸이 아직 보일 때만 버튼을 누른다.
+            time.sleep(1.2)
+            _still = [e for e in _collect_wide_edits_visibility(hwnd) if e[2]]
+            if _is_connected() or not win32gui.IsWindowVisible(hwnd) or not _still:
+                print("[INFO] Enter 로 로그인 진행됨 -- 버튼 좌표 클릭 생략")
+                return True
         _click_creon_login_button(hwnd)
 
     return True
 
 
 # -- 비밀번호 확인 팝업 ---------------------------------------------------------
+
+_AUTH_FAILED = False   # 자격증명 거부 감지 시 True → autologin 재시도 금지
+_AUTH_FAIL_TITLES = (u"CYBOS", u"coStarter", u"CREON")
+# CREON 실패 팝업 실측(2026-10-13): 제목 'coStarter',
+#   본문 "15939 로그인 정보가 틀립니다. (ciisvr60)(...)" — 종전에는 제목 'CYBOS' 만 봐서
+#   놓쳤고, 틀린 비밀번호로 3회 재시도했다(계정 잠금 위험).
+_AUTH_FAIL_KEYWORDS = (u"로그인 정보가 틀", u"15939", u"비밀번호가 틀", u"비밀번호 오류")
+
 
 def _find_password_confirm_dialog():
     """실제 로그인 실패 팝업만 탐지한다."""
@@ -1646,7 +1792,7 @@ def _find_password_confirm_dialog():
             if not win32gui.IsWindowVisible(hwnd):
                 return
             title = win32gui.GetWindowText(hwnd).strip()
-            if title != u"CYBOS":
+            if title not in _AUTH_FAIL_TITLES:
                 return
 
             child_texts = []
@@ -1659,7 +1805,9 @@ def _find_password_confirm_dialog():
                     pass
 
             joined = u" ".join(child_texts)
-            if (u"아이디" in joined or u"비밀번호" in joined) and u"확인" in joined:
+            legacy = (title == u"CYBOS"
+                      and (u"아이디" in joined or u"비밀번호" in joined) and u"확인" in joined)
+            if legacy or any(kw in joined for kw in _AUTH_FAIL_KEYWORDS):
                 matches.append((hwnd, title, child_texts))
         except Exception:
             pass
@@ -2023,6 +2171,8 @@ def _wait_for_connection_and_mock(total_timeout=120):
         # ⑤ 로그인 실패 팝업 (내부 sleep 없이 직접 체크)
         fail = _find_password_confirm_dialog()
         if fail:
+            global _AUTH_FAILED
+            _AUTH_FAILED = True
             hwnd, title, child_texts = fail
             ok_btns = _find_child_by_exact_text(hwnd, PASSWORD_DIALOG_CONFIRM_TEXTS, class_name="Button")
             for btn_hwnd, _btn_text in ok_btns:
@@ -2056,6 +2206,9 @@ def _wait_for_connection_realmode(total_timeout=120):
         _dismiss_error_dialogs()
         fail = _find_password_confirm_dialog()
         if fail:
+            global _AUTH_FAILED
+            _AUTH_FAILED = True
+            print("[ERROR] 로그인 실패 팝업 감지: '%s' %s" % (fail[1], fail[2]))
             return False
         mark = elapsed // 10
         if mark > last_10s_mark:
@@ -2069,12 +2222,44 @@ def _wait_for_connection_realmode(total_timeout=120):
 
 # -- 메인 -----------------------------------------------------------------------
 
+def verify_server_type():
+    """접속된 서버(ServerType)가 요청 모드와 같은지 대조한다. 같으면 True.
+
+    [2026-10-13] 로그인 UI 는 owner-drawn 좌표 클릭이라 「모의투자」 체크 상태를
+    코드로 확정할 수 없다 — CREON 은 그 체크를 기억하므로 real 을 요청해도 모의로
+    붙을 수 있고, 그 반대도 가능하다. 그래서 UI 를 믿지 않고 결과를 대조한다.
+    ServerType: 1=모의 / 2=실서버 (config/constants.py:is_cybos_simulation 단일 출처).
+    판정 불능은 실서버로 간주한다 — mock 요청이면 불일치로 떨어져 안전하다.
+    """
+    try:
+        server_type = win32com.client.Dispatch("CpUtil.CpCybos").ServerType
+    except Exception as e:
+        print("[ERROR] ServerType 조회 실패: %s" % e)
+        return False
+    try:
+        actual = _MODE_MOCK if int(server_type) == 1 else _MODE_REAL
+    except (TypeError, ValueError):
+        actual = _MODE_REAL
+    ok = (actual == TRADE_MODE)
+    print("[%s] 서버 대조: 요청=%s 실제=%s (ServerType=%s)"
+          % ("OK" if ok else "ERROR", TRADE_MODE, actual, server_type))
+    if not ok:
+        print("[ERROR] 요청 모드와 다른 서버에 접속돼 있습니다 -- 진행을 중단합니다.")
+        if TRADE_MODE == _MODE_REAL:
+            print("[HINT]  CREON 로그인 창의 「모의투자」 체크를 해제한 뒤 다시 실행하십시오"
+                  " (CREON 은 그 체크 상태를 기억합니다).")
+        else:
+            print("[HINT]  실서버 세션이 떠 있습니다. CREON 을 종료하고 모의투자로 재로그인하십시오.")
+    return ok
+
+
 def autologin():
     if _is_connected():
         print("[INFO] CybosPlus 이미 연결됨 -- 로그인 생략")
-        return True
+        return verify_server_type()
 
     user_id, password = _load_credential()
+    cert_password = _load_cert_password()
 
     if not os.path.exists(CYBOS_EXE):
         print("[ERROR] HTS 실행 파일 없음: %s" % CYBOS_EXE)
@@ -2124,7 +2309,10 @@ def autologin():
 
         # STEP 3: 자격증명 입력 + 로그인
         try:
-            if not _perform_login(hwnd, user_id, password):
+            if not _perform_login(hwnd, user_id, password, cert_password):
+                if _SCREEN_MODE_MISMATCH:
+                    # 재시작해도 CREON 이 같은 선택으로 뜨므로 재시도는 무의미하다
+                    return False
                 print("[WARN] 로그인 자동화 실패 -- 재시도...")
                 continue
             if _handle_password_confirm_dialog(timeout=5):
@@ -2160,8 +2348,16 @@ def autologin():
                     except Exception as _e:
                         print("[WARN] 공지사항 닫기 실패: %s" % _e)
                     time.sleep(0.5)
-            return True
+            # 다른 서버에 붙었으면 재시도해도 같은 체크 상태로 다시 붙으므로 즉시 실패
+            return verify_server_type()
 
+        if _AUTH_FAILED:
+            # 같은 자격증명으로 재시도하면 오류 횟수만 쌓여 계정이 잠긴다.
+            print("[ERROR] 서버가 로그인 정보를 거부했습니다 -- 재시도하지 않습니다 (Target=%s)."
+                  % CRED_TARGET)
+            print("[HINT]  ID/비밀번호 확인 후: cmdkey /generic:%s /user:아이디 /pass:비밀번호"
+                  % CRED_TARGET)
+            return False
         print("[WARN] 시도 %d/%d 연결 실패" % (attempt + 1, MAX_LOGIN_ATTEMPTS))
 
     print("[ERROR] Auto-login failed.")
