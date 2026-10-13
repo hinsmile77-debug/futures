@@ -33,9 +33,15 @@ def _src(rel):
 # ── A. 순수 판단 ───────────────────────────────────────────────
 
 def test_qty_matches_spec_legs():
+    """[2026-10-13 사용자 결정] 실계좌 1계약 — 규격(LEGS=2)과 의도적으로 다르다.
+    1계약이면 1차 목표의 exit_leg1 이 부분청산이 아니라 전량청산으로 가야 한다(main 분기 고정)."""
     import config.settings as ST
-    assert ST.SHINDONG_LIVE_QTY == S.LEGS == 2
+    assert S.LEGS == 2
+    assert ST.SHINDONG_LIVE_QTY == 1
     assert ST.PRINCIPAL_SHINDONG_ENABLED is True
+    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "main.py"),
+               encoding="utf-8").read()
+    assert 'leg1 = (kind == "exit_leg1" and qty_all >= 2)' in src
 
 
 def test_entry_check_long_short():

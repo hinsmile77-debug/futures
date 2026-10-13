@@ -100,7 +100,11 @@ except ImportError:
 # (호가 깊이 슬리피지 가설, 미검증). 원인 치료는 집행 축이며 [17]·급행풀스톱 라인에 있다.
 # ⚠ 표본 한계: 3계약+ 포지션 39건·손실 16건. 313차 원칙상 확정 결론 금지 구간.
 # 근거: dev_memory/DECISION_LOG.md 431차, VALIDATION_CAMPAIGN_DECISIONS["sizing_prescription_axis"].
-MAX_CONTRACTS = 3  # 최대 계약 수 — 미니선물 기준 (일반선물 운영 시 재검토)
+# [MW0601 2026-10-13 사용자 결정 — CREON 실거래 전환] 3 → 1. 실운영금 1,500만원 계좌에서
+#   미니선물 1계약 명목가치만 실운영금의 약 3.5배라 3계약은 증거금 부족·과노출 위험이 크다.
+#   ⚠ 이 값 아래에서는 [28] sizing_inversion_watch 의 qty≥2·≥3 버킷 표본이 쌓이지 않는다.
+#   ⚠ 2026-10-13 이후 진입수량 분포는 이전과 불연속이다(포지션 단위 비교 시 경계를 나눌 것).
+MAX_CONTRACTS = 1  # 최대 계약 수 — 미니선물 기준 (일반선물 운영 시 재검토)
 TICK_SIZE = 0.02  # KOSPI 200 미니선물 1틱 = 0.02pt (일반선물은 0.05pt — 235차 미니선물 전용 교정)
 
 DAILY_LOSS_LIMIT_PCT = 0.02  # 일일 최대 손실 2%
@@ -139,6 +143,15 @@ ACCOUNT_BASE_RISK = 0.03  # 기본 리스크 3% (켈리 기준)
 # 절대금액이 커지면 등급/신뢰도 배수가 raw_qty에 기여하는 비중도 함께 커짐).
 SIZING_TARGET_CAPITAL_ENABLED = True
 SIZING_TARGET_CAPITAL_KRW = 50_000_000
+
+# [MW0601 2026-10-13 사용자 결정 — CREON 실거래 전환] 실운영금(실계좌에 실제로 거는 돈).
+#   사이징은 위 목표자본(5천만원) 기준을 **유지**하고(사용자 결정), 손실 한도는 실제 돈 기준으로 잰다.
+#   소비처(config/capital.py:risk_capital): daily_loss_ratio 분모 · daily_loss_limit_krw ·
+#   기동 시 [Capital] 프로파일·정합성 점검. 0 이하면 비활성(종전처럼 사이징 자본을 쓴다).
+#   ⇒ 일일 손실 2% 한도 = 1,500만 × 2% = **30만원**(종전 5천만 기준 100만원보다 엄격).
+#   ⚠ MDD 분모(strategy_registry `_capital_basis`)는 여전히 SIZING_TARGET_CAPITAL_KRW 다 — 461차
+#     지표 정의를 바꾸지 않았다. 실운영금 기준 MDD 가 필요하면 불연속 마커와 함께 별도 결정.
+LIVE_OPERATING_CAPITAL_KRW = 15_000_000
 
 # [2026-07-12 311차 후속] 미니선물 최소 진입 계약 수 — 기존 3의 도입 근거가
 # dev_memory에 없어(2026-05-12 커밋에 조용히 끼워 넣어짐), TP1/TP2/TP3 분할청산도
@@ -7669,7 +7682,12 @@ SHINDONG_REPORT_MAIL_ENABLED = True
 #   dev 실행기(FLOWC `live_exec.manage`)는 쓰지 않는다 — 신규 진입 선별(`pick_new_entry`)만 공유.
 #   ⚠ 신동은 **선택했을 때만** 실주문이다. 기본 주체는 여전히 미륵.
 PRINCIPAL_SHINDONG_ENABLED = True
-SHINDONG_LIVE_QTY = 2           # = spec.LEGS (1차 1계약 · 최종 1계약). 바꾸면 규격과 달라진다
+# [MW0601 2026-10-13 사용자 결정 — CREON 실거래 전환] 2 → 1. 실계좌는 1계약으로 운영한다.
+#   ⚠ 규격(spec.LEGS=2)과 다르다: 1계약이면 1차 목표 도달 시 `_shindong_apply` 가
+#   `leg1 = kind=="exit_leg1" and qty_all >= 2` 에서 부분청산이 아니라 **전량청산**을 낸다
+#   → 실집행은 「1차 목표 전량 익절」이 되고, 본전 손절 뒤 최종 목표 레그는 없다.
+#   재생(가상거래)·채점은 규격 2레그 그대로다 — 실손익과 재생 손익을 직접 비교하지 말 것.
+SHINDONG_LIVE_QTY = 1
 SHINDONG_LIVE_MAX_AGE_MIN = 2   # 진입봉이 끝난 뒤 이 분 안에 알아챈 신호만 쫓는다(재기동·지연분은 건너뜀)
 
 # ── [MW0601 668차] 피터2 — 피터리 트윗 실시간 추종 매매 ─────────────────────────

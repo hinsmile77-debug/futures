@@ -4997,7 +4997,9 @@ class EntryPanel(QWidget):
             if not os.path.exists(_f):
                 return MAX_CONTRACTS
             with open(_f, "r", encoding="utf-8") as fp:
-                return max(1, int(json.load(fp).get("max_entry_qty", MAX_CONTRACTS)))
+                # [2026-10-13] 저장값이 낮아진 MAX_CONTRACTS 보다 크면 상한으로 자른다(잔존값이 상한을 넘지 않게)
+                return max(1, min(int(MAX_CONTRACTS),
+                                  int(json.load(fp).get("max_entry_qty", MAX_CONTRACTS))))
         except Exception:
             return MAX_CONTRACTS
 

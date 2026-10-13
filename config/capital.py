@@ -41,6 +41,12 @@ from config.settings import (
     MAX_CONTRACTS,
 )
 
+try:
+    # [MW0601 2026-10-13] 실운영금 — 손실 한도 분모. 없거나 0 이하면 사이징 자본을 쓴다.
+    from config.settings import LIVE_OPERATING_CAPITAL_KRW
+except ImportError:                      # dev 등 미정의 브랜치 호환
+    LIVE_OPERATING_CAPITAL_KRW = 0
+
 # 최대노출 레버리지 경고 임계 (기준자본 대비 MAX_CONTRACTS 총 계약가치 배수).
 # 자동 조치는 하지 않는다 — 경고만.
 LEVERAGE_WARN_MULT = 5.0
@@ -72,8 +78,26 @@ def sizing_capital(actual_balance=0.0) -> float:
     return max(0.0, _f(actual_balance))
 
 
+def operating_capital() -> float:
+    """실운영금(원). 0 이면 미설정 — 계측 4원칙 ②: 「미설정」과 「0원」을 섞지 않도록 0 을 미설정으로만 쓴다."""
+    return max(0.0, _f(LIVE_OPERATING_CAPITAL_KRW))
+
+
+def risk_capital(actual_balance=0.0) -> float:
+    """손실 한도의 기준 자본. 실운영금이 설정돼 있으면 그것, 아니면 sizing_capital().
+
+    [MW0601 2026-10-13] 사이징은 목표자본(5천만원)을 유지하되 실계좌에 거는 돈은 1,500만원이다.
+    손실 한도를 사이징 자본으로 재면 실제 돈 대비 3.3배 느슨해진다(2% → 실질 6.7%).
+    """
+    op = operating_capital()
+    if op > 0:
+        return op
+    return sizing_capital(actual_balance)
+
+
 def daily_loss_ratio(loss_krw, actual_balance=0.0) -> float:
-    """당일 손실률(양수=손실). 분모는 sizing_capital() 하나뿐이다.
+    """당일 손실률(양수=손실). 분모는 risk_capital() 하나뿐이다
+    (실운영금 미설정이면 sizing_capital() 과 같다).
 
     구 코드는 `max(잔고, 50_000_000)` 으로 분모에 하한을 박아 뒀는데, 그 하한은
     자본이 그보다 작을 때 손실률을 **과소평가**해 2% 한도를 느슨하게 만든다.
@@ -81,7 +105,7 @@ def daily_loss_ratio(loss_krw, actual_balance=0.0) -> float:
     "손실 없음"이 아니라 "판정 근거 없음"이라는 뜻이다. 이 경우 9_risk 체크는
     통과하지만, 잔고 미확보 상태는 broker sync 게이트가 별도로 막는다.
     """
-    base = sizing_capital(actual_balance)
+    base = risk_capital(actual_balance)
     if base <= 0:
         return 0.0
     return max(0.0, _f(loss_krw)) / base
@@ -93,8 +117,8 @@ def base_risk_krw(actual_balance=0.0) -> float:
 
 
 def daily_loss_limit_krw(actual_balance=0.0) -> float:
-    """일일 손실 한도의 원화 환산(표시·로그용). = 기준자본 x DAILY_LOSS_LIMIT_PCT"""
-    return sizing_capital(actual_balance) * _f(DAILY_LOSS_LIMIT_PCT)
+    """일일 손실 한도의 원화 환산(표시·로그용). = risk_capital x DAILY_LOSS_LIMIT_PCT"""
+    return risk_capital(actual_balance) * _f(DAILY_LOSS_LIMIT_PCT)
 
 
 def check_consistency(actual_balance=0.0, index_price=0.0, pt_value=0.0,
@@ -112,16 +136,28 @@ def check_consistency(actual_balance=0.0, index_price=0.0, pt_value=0.0,
     bal = _f(actual_balance)
 
     # ① 실서버인데 목표자본 모드 -- 실전에서 실제 잔고와 무관하게 사이징된다.
+    #    실운영금이 명시돼 있으면 「사이징=목표자본 / 손실한도=실운영금」이 의도된 운영이므로
+    #    CRITICAL 이 아니라 INFO 로 그 사실만 남긴다(2026-10-13 사용자 결정).
     if is_simulation is False and SIZING_TARGET_CAPITAL_ENABLED:
-        out.append((
-            "CRITICAL",
-            "실서버 접속인데 SIZING_TARGET_CAPITAL_ENABLED=True 입니다 — "
-            "실제 잔고(%s원)와 무관하게 목표자본(%s원)으로 사이징됩니다. "
-            "실전에서는 False 로 전환하거나 _KRW 를 실제 자본으로 맞추십시오."
-            % (format(int(bal), ","), format(int(SIZING_TARGET_CAPITAL_KRW), ","))
-        ))
+        if operating_capital() > 0:
+            out.append((
+                "INFO",
+                "실서버 · 사이징 기준=목표자본 %s원 · 손실한도 기준=실운영금 %s원 (의도된 분리 설정)"
+                % (format(int(SIZING_TARGET_CAPITAL_KRW), ","), format(int(operating_capital()), ","))
+            ))
+        else:
+            out.append((
+                "CRITICAL",
+                "실서버 접속인데 SIZING_TARGET_CAPITAL_ENABLED=True 입니다 — "
+                "실제 잔고(%s원)와 무관하게 목표자본(%s원)으로 사이징됩니다. "
+                "실전에서는 False 로 전환하거나 _KRW 를 실제 자본으로 맞추십시오."
+                % (format(int(bal), ","), format(int(SIZING_TARGET_CAPITAL_KRW), ","))
+            ))
 
     # ② 실제잔고 vs 기준자본 괴리 -- 계좌 재발급/자본 변동 감지.
+    #    실운영금이 있으면 그것과 대조한다(실계좌 잔고는 실운영금이어야 한다).
+    if operating_capital() > 0:
+        base = operating_capital()
     if base > 0 and bal > 0:
         gap = (bal - base) / base
         if abs(gap) >= BALANCE_GAP_WARN:
@@ -140,10 +176,11 @@ def check_consistency(actual_balance=0.0, index_price=0.0, pt_value=0.0,
         if lev > LEVERAGE_WARN_MULT:
             out.append((
                 "WARNING",
-                "MAX_CONTRACTS=%s 최대노출 %s원 = 기준자본의 %.1f배 "
+                "MAX_CONTRACTS=%s 최대노출 %s원 = %s의 %.1f배 "
                 "(임계 %.1f배). 자동 조정하지 않습니다 — MAX_CONTRACTS 는 손익 "
                 "실측으로 정하는 값입니다(CLAUDE.md ⑧)."
-                % (MAX_CONTRACTS, format(int(exposure), ","), lev, LEVERAGE_WARN_MULT)
+                % (MAX_CONTRACTS, format(int(exposure), ","),
+                   "실운영금" if operating_capital() > 0 else "기준자본", lev, LEVERAGE_WARN_MULT)
             ))
 
     # ④ 대시보드 실효 상한이 MAX_CONTRACTS 와 다름 -- ui_prefs 잔존값 감지.
@@ -168,6 +205,7 @@ def capital_profile(actual_balance=0.0, index_price=0.0, pt_value=0.0) -> dict:
         "base_capital": base,
         "actual_balance": bal,
         "gap_pct": ((bal - base) / base * 100.0) if (base > 0 and bal > 0) else 0.0,
+        "operating_capital": operating_capital(),
         "base_risk_krw": base_risk_krw(actual_balance),
         "daily_loss_limit_krw": daily_loss_limit_krw(actual_balance),
         "max_contracts": int(_f(MAX_CONTRACTS, 0)),
@@ -181,12 +219,14 @@ def format_profile(profile: dict) -> str:
     if profile.get("base_capital", 0) > 0 and profile.get("max_exposure_krw", 0) > 0:
         lev = " (레버리지 %.2fx)" % (profile["max_exposure_krw"] / profile["base_capital"])
     return (
-        "[Capital] 기준자본=%s원(%s) | 실제잔고=%s원 | 괴리=%+.1f%% | "
+        "[Capital] 기준자본=%s원(%s) | 실운영금=%s | 실제잔고=%s원 | 괴리=%+.1f%% | "
         "base_risk=%s원(%.1f%%) | 일일한도=%s원(%.1f%%) | "
         "MAX_CONTRACTS=%d 최대노출=%s원%s"
         % (
             format(int(profile["base_capital"]), ","),
             profile["mode"],
+            (format(int(profile.get("operating_capital") or 0), ",") + "원")
+            if profile.get("operating_capital") else "미설정",
             format(int(profile["actual_balance"]), ","),
             profile["gap_pct"],
             format(int(profile["base_risk_krw"]), ","), _f(ACCOUNT_BASE_RISK) * 100.0,
