@@ -130,6 +130,8 @@ class DynamicMcPanel(QWidget):
         root.addWidget(_card("현재 min_conf (시간대별)", self._build_mc_cards()))
         root.addWidget(_card("신호 통과율 & 갱신 이벤트", self._build_gauge_area()))
         root.addWidget(_card("mc 변경 이력 (최근 20건)", self._build_history_table()))
+        self._root = root
+        self._mid_insert_at = 2   # 통과율 카드 바로 아래 = 탭 중단
 
         self._dir_dialog    = None
         self._candle_dialog = None
@@ -157,6 +159,14 @@ class DynamicMcPanel(QWidget):
         btn_row.addWidget(btn_chart)
 
         root.addLayout(btn_row)
+
+    def insert_mid_card(self, card: QWidget):
+        """외부 카드를 탭 중단(통과율 카드와 mc 변경 이력 사이)에 끼운다.
+
+        좌측 하단에 있던 「금일 conf → 진입단계 추적」 카드를 여기로 옮겼다.
+        """
+        self._root.insertWidget(self._mid_insert_at, card)
+        self._mid_insert_at += 1
 
     def _build_mc_cards(self) -> QWidget:
         w = QWidget()
