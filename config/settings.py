@@ -6533,9 +6533,12 @@ COST_MODEL_COMMISSION_RATE_PINNED = True       # ← 교체 시 False
 # ── Circuit Breaker 설정 ───────────────────────────────────────
 CB_SIGNAL_FLIP_LIMIT = 5  # 1분 내 신호 반전 횟수
 CB_SIGNAL_FLIP_PAUSE = 15  # 진입 정지 (분)
-CB_CONSEC_STOP_LIMIT = 2  # 연속 손절 횟수 — [MW0602 2026-10-13 사용자 결정] 9999 → 2 복원(실거래 전환)
+CB_CONSEC_STOP_LIMIT = 3  # 연속 손절 횟수 — [MW0602 2026-10-13 사용자 결정] 9999 → 2 → 3(같은 날 재결정)
 # 🔴 [MW0602 2026-10-13] 실거래 전환 — 9999(모의 한정 예외) → 2. 전환기준 ⑤.
 #   CLAUDE.md §2 D2(489차)가 묶은 대로 ⑧(실전 자본 재설정 SIZING_TARGET_CAPITAL_KRW)과 같은 커밋.
+#   [같은 날 재결정 2 → 3] 거래주체 피터 시뮬(10/13 재생)에서 2연속 손절로 09:31 당일 정지 —
+#   피터는 손절 직후 재진입이 잦고 PETER2_DAILY_STOP_LIMIT=0(2회 정지가 47pt 손실, 10/07 결정)과 충돌.
+#   ⚠ 코드상 CB②는 시간 창이 없고 pnl<=0(본전 포함) 포지션을 출처 무관 1회로 센다(main._post_exit).
 #   아래 2026-07-05 문단은 이력으로 보존한다.
 # [이력] 모의투자 한정 예외, 2026-07-05: 9999
 # CLAUDE.md 절대원칙 ②는 "5분 내 손절 3연속 → 당일 정지"이나, 모의투자 단계에서는
@@ -6552,7 +6555,7 @@ CB_CONSEC_STOP_LIMIT = 2  # 연속 손절 횟수 — [MW0602 2026-10-13 사용�
 # 수동 진입(OPERATOR_MANUAL)과 **모든 청산 경로는 막지 않는다**.
 # 모의 세션에서는 아무것도 하지 않는다. 구현: main.py:_ts_real_trading_block_reason
 # 회귀 가드: tests/test_real_trading_armed.py
-# [MW0602 2026-10-13 사용자 결정] True — CB②=2 · 실전 자본 1,500만원 · 신동 1계약과 함께 켬.
+# [MW0602 2026-10-13 사용자 결정] True — CB②=3 · 실전 자본 1,500만원 · 신동 1계약과 함께 켬.
 REAL_TRADING_ARMED = True
 REAL_TRADING_CB2_ALLOWED = (2, 3)
 #
