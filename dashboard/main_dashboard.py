@@ -16081,23 +16081,18 @@ class MireukDashboard(QMainWindow):
         left_split.addWidget(card("",
                                   self.pred_panel, C['blue']))
 
-        # 좌측 하단: 금일 conf 진입단계 추적 카드
+        # 금일 conf 진입단계 추적 카드 — 좌측 하단에서 중앙 「🎯 신뢰도 게이트」 탭
+        # 중단으로 옮겼다. 카드는 여기서 만들고 탭 패널 생성 뒤 끼운다.
+        # (패널 로드 실패 시에만 예전 자리인 좌측 하단으로 폴백)
+        self._conf_trend_card = None
         try:
             from dashboard.panels.conf_trend_widget import make_conf_trend_card
             self._conf_trend_card = make_conf_trend_card(parent=None)
-            left_split.addWidget(self._conf_trend_card)
-            # 340차: 호라이즌 on/off 체크박스 그리드 제거로 pred_panel 하단 여백이
-            # 늘어난 만큼 진입단계 카드 쪽으로 배분 (500→420, 280→360)
-            # 577차: 진입단계 표를 10행으로 고정했으므로 남는 세로를
-            #        pred_panel(방향 인디케이터 캔들차트)로 돌린다.
-            #        카드 높이 = 표 289(실측: 10행×25 + 크롬 39) + 요약행·여백 ≈ 330.
-            #        360→330 과 호라이즌 스트립 77→31 을 합쳐 캔들차트가 ~76px 늘어난다.
-            # 580차: 잔고 배지를 2행 고정높이로 묶어 잔고 카드가 여유 세로를
-            #        빨아들이지 않게 했다 — 그만큼(200→160) 캔들차트로 넘긴다.
-            left_split.setSizes([160, 120, 370, 330])   # [거래주체분리] 거래 현황 120 — 캔들차트에서 뗐다
         except Exception as _cte:
             logger.warning("[Dashboard] ConfTrendCard 로드 실패: %s", _cte)
-            left_split.setSizes([160, 120, 660])
+        # 580차: 잔고 배지 2행 고정 → 잔고 160. [거래주체분리] 거래 현황 120.
+        # 진입단계 카드(330)가 빠진 세로는 캔들차트(pred_panel)로 돌린다.
+        left_split.setSizes([160, 120, 700])
 
         ll.addWidget(left_split, 1)
 
@@ -16217,7 +16212,12 @@ class MireukDashboard(QMainWindow):
             logger.warning("[Dashboard] DynamicMcPanel 로드 실패: %s", _dmpe)
             self.dynamic_mc_panel = None
         if self.dynamic_mc_panel is not None:
+            if self._conf_trend_card is not None:
+                self.dynamic_mc_panel.insert_mid_card(self._conf_trend_card)
             self.mid_tabs.addTab(self._wrap(self.dynamic_mc_panel), "🎯 신뢰도 게이트")
+        elif self._conf_trend_card is not None:
+            left_split.addWidget(self._conf_trend_card)       # 폴백: 예전 자리
+            left_split.setSizes([160, 120, 370, 330])
 
         ml.addWidget(self.mid_tabs)
 
