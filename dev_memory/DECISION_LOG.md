@@ -48329,3 +48329,27 @@ G-7·G-8은 사용자 승인 필요(피터2 설계 취지와 충돌 가능) — 
 - `tests/test_689_collector_peter2_entry_source.py` 12건(정규식 4 · 출처 4 · 적신호 3 · 라이브 반영 0 불변식+컴파일 1) + 관련 수집기 테스트 포함 71 pass (py37_32).
 - 실데이터 스모크(`logs/20261013_TRADE.log`, 로그만·DB 무접근): entry 6 / peter2_entry 6 → 엔진 0 · 피터2 6 · 추정 0, 포지션 6건 전부 src=피터2 · inferred=False · 고아 0, 합계 −1,040,578원(= trades.db 엔진 net).
 - 매매 코드 무변경 — 변경 파일은 수집기(점검 도구)와 테스트뿐.
+
+## 2026-10-14 (MW0602 → v9-dev 체리픽: 거래주체분리 2단계 가상 장부 — 원 55018fb · 후속 exit_qty, dev) — 🟡 **구현 · 재기동부터 적용**
+
+- **출처**: dev `55018fb`(가상 장부) + dev 후속(`VirtualBook.exit_qty`). MW0602 세션이 사용자 지시(「V9-dev 배포」)로 이식했다.
+- **이식 범위 = 가상 장부만**(사용자 결정 2026-10-14). dev 의 실서버 자동주문 잠금(`b0f0ce6` REAL_TRADING_ARMED)과
+  외부 포지션 감시 전용(`48d44c4`)은 **이식하지 않았다** — MW0601 은 이미 CREON 실거래 중이라 잠금이 들어오면
+  재기동부터 자동진입이 막히고, 외부 감시 전용은 HTS 수동 포지션 관리 정책을 바꾸기 때문이다.
+  → v9 의 가상 조건은 **선택되지 않은 주체**뿐이다(`_ts_is_virtual`). dev 의 `[RealTradingLock]` 섀도 기록(①)은 v9 에 해당 없음.
+- **무엇이 바뀌나**: 비선택 주체(미륵 · 신동 · 피터)의 진입이 섀도 기록에 더해 **실시간 가상 포지션**으로 열리고,
+  실제와 같은 청산 사다리로 장중 관리된다(`strategy/runtime/virtual_book.py`). 상태 `data/principal/<날짜>/virtual_book.json`,
+  레그 `virtual_legs.jsonl`. 🔴 실계좌 `data/position_state.json` 은 건드리지 않는다(`_VTracker`).
+- **격리(사용자 결정)**: 가상 손절은 CB②에 세지 않고, 가상 거래는 켈리 · 앙상블 학습에 넣지 않는다 — 가상 경로는
+  trades · circuit_breaker · kelly · `_post_exit` 를 부르지 않는다(`tests/test_virtual_book.py` AST 고정).
+- **v9 적응**
+  - 신동 가상 경로는 dev(FLOWC `live_exec.manage`)가 아니라 **v9 규격 `live_legs`** 로 새로 썼다:
+    `pick_new_entry` + `entry_check` → 가상 진입(손절 = stop, 목표 = t2) · 2초 `poll` · 매분 `sync` ·
+    1차 = 1계약 청산(`exit_qty`) + 공통 손절 본전(`after_leg1`) → 최종. 기록 `shindong_vexec.json`(실집행 `shindong_exec.json` 과 분리).
+    ⚠ v9 매분 단계는 옵션흐름 수집 성공 분에만 돈다 — 가상 보유 관리는 2초 `poll` 과 가상 장부의 외부 손절/목표 · 15:10 이 받친다.
+  - 미륵: 자동진입 판단의 FLAT 을 `_mireuk_flat`(미륵이 비선택이면 가상 장부 기준)으로. STEP 8 은 실계좌 그대로.
+  - 피터: 비선택이면 엔진 상태를 가상 포지션으로 → `_peter2_execute_virtual`.
+  - dev 전용 블록(462차 P1-b · 485차 방향 무효화)은 이 체리픽에 섞여 들어오지 않게 충돌에서 뺐다.
+- **검증**: v9 worktree 에서 관련 스위트 293 passed / 6 failed — 실패 6건(`test_473_spread_extreme_watch` 5 · `test_457` `peter_paste` 1)은
+  **원본 origin/v9-dev(2cac4d6) 에서도 동일하게 실패**(기존). py37_32 컴파일 확인. 라이브 미검증.
+- ⚠ **가상 손익을 실거래 성과 · 전환기준 ① 근거로 인용하지 말 것** — 체결 근사(슬리피지 0 · 틱은 2초/분봉 고저 근사).
