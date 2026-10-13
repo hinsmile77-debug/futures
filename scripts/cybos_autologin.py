@@ -170,6 +170,44 @@ else:
     CYBOS_ARGS       = "/prj:cp"
     CYBOS_PROC_NAMES = ["_ncstarter_.exe", "cpstart.exe"]
 
+# ── 거래 모드: mock(기본) | real ─────────────────────────────────────────────
+# [MW0601 2026-10-13] 종전 MOCK_MODE=True 하드코딩 — 실거래 전환 시 CREON 「모의투자로그인」
+# 버튼을 누르게 된다. 우선순위: 환경변수 MIREUK_TRADING_MODE > machine.cfg TRADING_MODE > mock.
+# machine.cfg 를 직접 읽는 이유: ensure_cybos_login() 을 부르는 예약 수집 스크립트는
+# 런처(.bat)를 거치지 않아 환경변수가 없다.
+def _read_machine_cfg(key):
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "machine.cfg")
+    try:
+        with io.open(path, "r", encoding="utf-8-sig") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                if k.strip().upper() == key.upper():
+                    v = v.strip().split()
+                    return v[0] if v else ""
+    except Exception:
+        pass
+    return ""
+
+
+TRADING_MODE = (os.getenv("MIREUK_TRADING_MODE") or _read_machine_cfg("TRADING_MODE")
+                or "mock").strip().lower()
+if TRADING_MODE not in ("mock", "real"):
+    print("[ERROR] TRADING_MODE=%r 는 mock|real 만 허용 -- 로그인하지 않는다" % TRADING_MODE)
+    sys.exit(1)
+MOCK_MODE = TRADING_MODE != "real"
+
+# CREON 실거래 로그인 자격증명 (coStarter 명령줄 /id /pwd /pwdcert). 실거래는 인증서 비밀번호가
+# 필요해 모의용 'creonplus' 하나로는 안 된다. 기본값은 이 PC 에서 CREON HTS 자동기동
+# (creon_start.ps1, 2026-10-08)이 같은 방식으로 검증한 대상명이다.
+CREON_REAL_LOGIN_CRED = _read_machine_cfg("CREON_REAL_LOGIN_CRED") or "CREON_LOGIN"
+CREON_REAL_CERT_CRED  = _read_machine_cfg("CREON_REAL_CERT_CRED") or "CREON_CERT"
+CREON_REAL_LOGIN_WAIT = 240      # coStarter /autostart 후 연결 대기(초) — 업데이트 중이면 연장
+
+print("[INFO] broker=%s trading_mode=%s" % (BROKER_TYPE, TRADING_MODE))
+
 # 보안 다이얼로그는 CYBOS 전용 -- CREON 흐름에는 없음
 HAS_SECURITY_DIALOG   = BROKER_TYPE == "cybos"
 SECURITY_DIALOG_EXACT = u"CYBOS"
@@ -560,16 +598,17 @@ def _is_connected():
             return False
 
 
-def _load_credential():
-    """Windows Credential Manager에서 ID/PW 읽기.
+def _load_credential(target=None):
+    """Windows Credential Manager에서 ID/PW 읽기 (target 생략 시 CRED_TARGET).
 
     CredEnumerate(flags=0)는 CRED_TYPE_GENERIC을 빠뜨리는 경우가 있으므로
     CredRead로 타입을 명시해서 순서대로 시도한다.
       1. CRED_TYPE_GENERIC (1)  -- cmdkey /add 기본값
       2. CRED_TYPE_DOMAIN_PASSWORD (2)  -- 도메인 자격증명 (blob 비어있을 수 있음)
     """
-    if PASSWORD_OVERRIDE:
+    if PASSWORD_OVERRIDE and target is None:
         return "", PASSWORD_OVERRIDE
+    CRED_TARGET = target or globals()["CRED_TARGET"]
 
     CRED_TYPE_GENERIC          = 1
     CRED_TYPE_DOMAIN_PASSWORD  = 2
@@ -599,9 +638,50 @@ def _normalize_title(text):
     return (text or u"").replace(" ", "").upper()
 
 
+# 브라우저 프로세스 창은 브로커 팝업 후보에서 제외한다 (dev/MW0602 2026-09-29 이식).
+# 모의투자 재신청 페이지(Chrome, 제목 '크레온-모의투자 - Chrome')가 키워드 '모의투자'
+# 부분일치로 팝업 후보가 되어, 연결 대기 120초 내내 그 창에 Enter 가 반복 전송되고
+# 로그인이 진행되지 않았다. 판정은 창 클래스가 아니라 소유 프로세스 이름으로 한다 —
+# CREON 이 내장 Chromium(CEF)을 쓰더라도 그 창은 브로커 프로세스 소유라 걸리지 않는다.
+_BROWSER_EXES = frozenset([
+    "chrome.exe", "msedge.exe", "firefox.exe", "whale.exe", "iexplore.exe",
+    "opera.exe", "brave.exe", "naverwhale.exe",
+])
+
+
+def _window_process_name(hwnd):
+    """hwnd 소유 프로세스의 실행파일 이름(소문자). 조회 실패 시 None.
+
+    32-bit 파이썬에서 64-bit 프로세스도 읽히도록 QueryFullProcessImageNameW 를 쓴다.
+    """
+    try:
+        pid = ctypes.wintypes.DWORD()
+        ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if not pid.value:
+            return None
+        h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid.value)  # QUERY_LIMITED_INFORMATION
+        if not h:
+            return None
+        try:
+            buf = ctypes.create_unicode_buffer(1024)
+            size = ctypes.wintypes.DWORD(1024)
+            if not ctypes.windll.kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+                return None
+            return os.path.basename(buf.value).lower()
+        finally:
+            ctypes.windll.kernel32.CloseHandle(h)
+    except Exception:
+        return None
+
+
+def _is_browser_window(hwnd):
+    return _window_process_name(hwnd) in _BROWSER_EXES
+
+
 def _find_window_by_keywords(keywords, require_visible=True):
     normalized_keywords = tuple(_normalize_title(kw) for kw in keywords)
     found = []
+    skipped = []
 
     def _enum(hwnd, _):
         try:
@@ -612,6 +692,9 @@ def _find_window_by_keywords(keywords, require_visible=True):
                 return
             normalized = _normalize_title(title)
             if any(kw in normalized for kw in normalized_keywords):
+                if _is_browser_window(hwnd):
+                    skipped.append(title)
+                    return
                 found.append((hwnd, title))
         except Exception:
             pass
@@ -620,7 +703,19 @@ def _find_window_by_keywords(keywords, require_visible=True):
         win32gui.EnumWindows(_enum, None)
     except Exception:
         pass
+    _log_browser_skips(skipped)
     return found
+
+
+_BROWSER_SKIP_LOGGED = set()
+
+
+def _log_browser_skips(titles):
+    """제외한 브라우저 창을 제목당 1회만 남긴다 (매초 루프 스팸 방지)."""
+    for t in titles:
+        if t not in _BROWSER_SKIP_LOGGED:
+            _BROWSER_SKIP_LOGGED.add(t)
+            print("[INFO] 브라우저 창 제외(브로커 팝업 아님): '%s'" % t)
 
 
 def _click_creon_id_tab(hwnd):
@@ -2005,6 +2100,9 @@ def _wait_for_connection_and_mock(total_timeout=120):
                                 if 100 < ww_ < 800:
                                     t = win32gui.GetWindowText(h)
                                     if u"모의투자" in t or u"선택" in t:
+                                        if _is_browser_window(h):
+                                            _log_browser_skips([t])
+                                            return
                                         _small_popup_ref[0] = h
                             except Exception:
                                 pass
@@ -2084,7 +2182,255 @@ def _wait_for_connection_realmode(total_timeout=120):
 
 # -- 메인 -----------------------------------------------------------------------
 
+_SERVER_TYPE_PROBE = ("import win32com.client as w\n"
+                      "c = w.Dispatch('CpUtil.CpCybos')\n"
+                      "accs = '-'\n"
+                      "if c.IsConnect == 1:\n"
+                      "    try:\n"
+                      "        t = w.Dispatch('CpTrade.CpTdUtil')\n"
+                      "        if t.TradeInit(0) == 0:\n"
+                      "            accs = ','.join(t.AccountNumber) or '-'\n"
+                      "    except Exception:\n"
+                      "        pass\n"
+                      "print('%d %d %s' % (c.IsConnect, c.ServerType, accs))\n")
+
+
+_LAST_PROBE_DIALOG = [None]   # 직전 판독에서 TradeInit 이 띄운 모달 대화상자 문구
+
+
+def _modal_text_of_pid(pid):
+    """pid 소유의 보이는 #32770 대화상자 문구와 확인 버튼 목록."""
+    import win32process
+    found = []
+
+    def _enum(h, _):
+        try:
+            if (win32gui.IsWindowVisible(h) and win32gui.GetClassName(h) == "#32770"
+                    and win32process.GetWindowThreadProcessId(h)[1] == pid):
+                texts, btns = [], []
+                for c in _enum_children(h):
+                    t = (win32gui.GetWindowText(c) or "").strip()
+                    if win32gui.GetClassName(c) == "Button":
+                        btns.append(c)
+                    elif t:
+                        texts.append(t)
+                found.append((win32gui.GetWindowText(h), " ".join(texts), btns))
+        except Exception:
+            pass
+    try:
+        win32gui.EnumWindows(_enum, None)
+    except Exception:
+        pass
+    return found
+
+
+def _session_probe():
+    """(IsConnect, ServerType, [계좌]) — _is_connected() 와 같은 이유로 새 프로세스에서 읽는다.
+    실패 시 (0, -1, []).
+
+    [2026-10-13 리허설] TradeInit 이 모달(「주문오브젝트 사용 동의를 하지 않으셨습니다」)을
+    띄우면 판독 프로세스가 영원히 멈췄다. 20초 안에 안 끝나면 그 프로세스의 대화상자 문구를
+    _LAST_PROBE_DIALOG 에 남기고 닫은 뒤 종료한다 — 원인을 로그로 드러낸다(계측 4원칙 ④).
+    """
+    _LAST_PROBE_DIALOG[0] = None
+    try:
+        p = subprocess.Popen(
+            [sys.executable, "-c", _SERVER_TYPE_PROBE],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        try:
+            out, _ = p.communicate(timeout=20)
+        except subprocess.TimeoutExpired:
+            dlg = _modal_text_of_pid(p.pid)
+            if dlg:
+                _LAST_PROBE_DIALOG[0] = " | ".join("%s: %s" % (t, s) for t, s, _ in dlg)
+                for _t, _s, btns in dlg:
+                    for b in btns:
+                        _post_button_click(b)
+            p.kill()
+            p.communicate()
+            return 1, -1, []
+        a, b, c = out.decode("ascii", "ignore").split()[:3]
+        return int(a), int(b), ([] if c == "-" else c.split(","))
+    except Exception:
+        return 0, -1, []
+
+
+def _expected_account():
+    """실거래 세션이 가져야 할 계좌. MIREUK_EXPECT_ACCOUNT > config/secrets.py ACCOUNT_NO."""
+    env = (os.getenv("MIREUK_EXPECT_ACCOUNT") or "").strip()
+    if env:
+        return env
+    try:
+        _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if _root not in sys.path:
+            sys.path.insert(0, _root)
+        from config import secrets as _s
+        return str(getattr(_s, "ACCOUNT_NO", "") or "").strip()
+    except Exception:
+        return ""
+
+
+def _click_already_running_yes():
+    """「동일한 프로그램(CPSTART.EXE)이 이미 실행중입니다. 종료하시겠습니까?」 → 예.
+
+    실거래 명령줄 로그인 전용. 기존 세션을 내려야 새 ID 로 붙을 수 있다 — 2026-10-13 리허설:
+    관리자 권한 셸에서도 psutil kill 이 CpStart.exe 를 못 내려 이 대화상자가 떴다.
+    """
+    hits = []
+
+    def _enum(h, _):
+        try:
+            if not win32gui.IsWindowVisible(h) or win32gui.GetWindowText(h) not in LOGIN_WINDOW_TITLES:
+                return
+            kids = _enum_children(h)
+            if any(_is_already_running_text(win32gui.GetWindowText(c)) for c in kids):
+                for c in kids:
+                    if win32gui.GetClassName(c) == "Button" and u"예" in win32gui.GetWindowText(c):
+                        hits.append(c)
+                        return
+        except Exception:
+            pass
+    try:
+        win32gui.EnumWindows(_enum, None)
+    except Exception:
+        pass
+    for b in hits:
+        print("[INFO] '이미 실행중' 대화상자 -- '예' 클릭 (기존 세션 종료 후 새 로그인 진행)")
+        _post_button_click(b)
+    return len(hits)
+
+
+def _close_plus_notice(wait_sec=20):
+    """로그인 직후 CpStart 가 띄우는 「공지사항」 창을 닫는다 (WM_CLOSE — 좌표 클릭 아님).
+
+    소유 프로세스가 cpstart.exe 인 창만 닫는다(브라우저 등 다른 '공지사항' 창 보호).
+    공지는 연결 후 몇 초 뒤에 뜨므로 wait_sec 동안 기다리며 본다. 닫은 개수를 반환.
+    """
+    closed = 0
+    end = time.time() + wait_sec
+    while time.time() < end:
+        hits = []
+
+        def _enum(h, _):
+            try:
+                if (win32gui.IsWindowVisible(h) and win32gui.GetWindowText(h).strip() == u"공지사항"
+                        and _window_process_name(h) == "cpstart.exe"):
+                    hits.append(h)
+            except Exception:
+                pass
+        try:
+            win32gui.EnumWindows(_enum, None)
+        except Exception:
+            pass
+        for h in hits:
+            win32gui.PostMessage(h, win32con.WM_CLOSE, 0, 0)
+            closed += 1
+            print("[INFO] CREON Plus 공지사항 창 닫음 (hwnd=%d)" % h)
+        if closed:
+            return closed
+        time.sleep(1)
+    return closed
+
+
+def _updater_running():
+    import psutil
+    return any((p.info["name"] or "").lower() in ("spdn.exe", "repairgiant.exe")
+               for p in psutil.process_iter(["name"]))
+
+
+def _creon_real_cmdline_login():
+    """CREON Plus 실거래 로그인 — coStarter 명령줄 자동기동 (GUI 클릭 없음).
+
+    `coStarter.exe /prj:cp /id: /pwd: /pwdcert: /autostart` 는 이 PC 에서 CREON HTS
+    자동기동(scripts/creon_autostart/creon_start.ps1, /prj:dcybos)으로 이미 검증된 방식이다.
+    좌표 클릭(모의투자 버튼·공지 X 버튼)에 기대는 GUI 흐름보다 실거래에 안전하다.
+    연결 후 ServerType 이 실서버(2)가 아니면 실패로 끝낸다 — 모드 오인을 통과시키지 않는다.
+    ⚠ 비밀번호가 프로세스 명령줄에 실린다(creon_start.ps1 과 동일한 노출 수준).
+    """
+    try:
+        _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if _root not in sys.path:
+            sys.path.insert(0, _root)
+        from config.constants import CYBOS_SERVER_TYPE_REAL
+    except Exception:
+        CYBOS_SERVER_TYPE_REAL = 2   # config/constants.py 단일 출처와 같은 값 (2026-08-06 실측)
+    uid, pwd = _load_credential(CREON_REAL_LOGIN_CRED)
+    _, cert = _load_credential(CREON_REAL_CERT_CRED)
+    exe_dir = os.path.dirname(CYBOS_EXE)
+    args = "/prj:cp /id:%s /pwd:%s /pwdcert:%s /autostart" % (uid, pwd, cert)
+    want = _expected_account()
+    print("[INFO] 기대 계좌: %s" % (want or "(미지정 -- 실서버 여부만 확인)"))
+
+    def _good(st, accs):
+        # 실서버이고, 기대 계좌가 있으면 그 계좌가 세션에 사인온돼 있어야 한다.
+        # 2026-10-13 실측: 다른 ID 의 실서버 세션(783293269)을 「이미 연결됨」으로 통과시켰다.
+        return st == CYBOS_SERVER_TYPE_REAL and (not want or want in accs)
+
+    for real_attempt in range(MAX_LOGIN_ATTEMPTS):
+        conn, st, accs = _session_probe()
+        if conn == 1 and _good(st, accs):
+            print("[OK] 실서버 세션 이미 연결됨 (ServerType=%d 계좌=%s) -- 로그인 생략" % (st, accs))
+            return True
+        if conn == 1:
+            print("[WARN] 연결돼 있으나 ServerType=%d 계좌=%s -- 기대(실서버·%s)와 다름, 종료 후 재로그인"
+                  % (st, accs, want))
+        _kill_cybos_procs()
+        # kill 이 실패하면 옛 세션이 살아 있다. 그 판독을 새 로그인 결과로 읽지 않도록,
+        # 연결 끊김(conn!=1)을 한 번 본 뒤에만 계좌를 판정한다 (2026-10-13 리허설 1차 오판).
+        seen_drop = _session_probe()[0] != 1
+        print("[INFO] CREON 실거래 로그인 %d/%d: coStarter /prj:cp /id:%s /pwd:*** /pwdcert:*** /autostart"
+              % (real_attempt + 1, MAX_LOGIN_ATTEMPTS, uid))
+        win32api.ShellExecute(0, "open", CYBOS_EXE, args, exe_dir, win32con.SW_SHOW)
+
+        deadline = time.time() + CREON_REAL_LOGIN_WAIT
+        extended = False
+        while time.time() < deadline:
+            time.sleep(5)
+            if _click_already_running_yes():
+                time.sleep(5)
+                continue   # 옛 세션이 내려가는 중 — 이 시점 판독은 옛 세션일 수 있다
+            conn, st, accs = _session_probe()
+            if conn != 1:
+                seen_drop = True
+            elif not seen_drop:
+                continue   # 아직 옛 세션
+            if conn == 1:
+                if _good(st, accs):
+                    print("[OK] CREON Plus 실서버 연결 (ServerType=%d 계좌=%s)" % (st, accs))
+                    _close_plus_notice()
+                    for _ in range(6):
+                        if _dismiss_error_dialogs() == 0:
+                            break
+                        time.sleep(0.8)
+                    return True
+                if not accs:
+                    if _LAST_PROBE_DIALOG[0]:
+                        # 재시도해도 같은 대화상자가 뜬다(계정 설정 문제) — 세션을 죽이지 말고 실패로 끝낸다
+                        _close_plus_notice(wait_sec=5)
+                        print("[ERROR] TradeInit 이 대화상자로 막힘: %s" % _LAST_PROBE_DIALOG[0])
+                        print("[HINT]  「주문오브젝트 사용 동의」 문구면: HTS #0840 시스템트레이딩 이용신청 후 "
+                              "CREON Plus 주문오브젝트 사용 동의(최초 1회, 사용자 본인)")
+                        return False
+                    continue   # 연결 직후 TradeInit 준비 전 — 다음 폴링에서 다시 본다
+                print("[ERROR] 연결됐으나 ServerType=%d 계좌=%s -- 기대(실서버·%s)와 다르다. 실패 처리"
+                      % (st, accs, want))
+                return False
+            # 업데이트(spdn/RepairGiant) 중이면 한 번만 300초 연장 (creon_start.ps1 2026-10-08 실측)
+            if not extended and deadline - time.time() < 10 and _updater_running():
+                print("[INFO] CREON 업데이트 진행 중 -- 300초 추가 대기")
+                deadline += 300
+                extended = True
+        print("[WARN] %d초 안에 연결 안 됨" % CREON_REAL_LOGIN_WAIT)
+
+    print("[ERROR] CREON 실거래 자동로그인 실패")
+    return False
+
+
 def _autologin_impl():
+    if BROKER_TYPE == "creon" and not MOCK_MODE:
+        return _creon_real_cmdline_login()
+
     if _is_connected():
         print("[INFO] CybosPlus 이미 연결됨 -- 로그인 생략")
         return True

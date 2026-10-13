@@ -307,10 +307,17 @@ CALL :L "[INFO] PATH 앞에 py37_32 경로 추가: !_PY32_DIR!"
 
 SET "BROKER_BACKEND=cybos"
 SET "BROKER_TYPE=!BROKER!"
+REM [MW0601 broker switch] Pin the commission channel to machine.cfg BROKER.
+REM detect_broker_channel() otherwise guesses from starter-log mtime, and this PC
+REM has BOTH starters installed - opening the other one flips the fee rate 5.16x
+REM (CLAUDE.md 26-week item, NEXT_TODO 495-1). An explicit env value wins.
+IF NOT DEFINED MIREUK_BROKER_CHANNEL (
+    IF /I "!BROKER!"=="creon" (SET "MIREUK_BROKER_CHANNEL=CREON") ELSE (SET "MIREUK_BROKER_CHANNEL=CYBOS")
+)
 SET PYTHONUNBUFFERED=1
 SET PYTHONIOENCODING=utf-8
 SET PYTHONUTF8=1
-ECHO [INFO] BROKER=!BROKER!  BROKER_BACKEND=!BROKER_BACKEND!  BROKER_TYPE=!BROKER_TYPE!
+CALL :L "[INFO] BROKER=!BROKER!  BROKER_BACKEND=!BROKER_BACKEND!  BROKER_TYPE=!BROKER_TYPE!  MIREUK_BROKER_CHANNEL=!MIREUK_BROKER_CHANNEL!"
 
 IF NOT EXIST "logs" MKDIR "logs" 2>NUL
 
@@ -341,8 +348,8 @@ IF !ERRORLEVEL! NEQ 0 (
     CALL :L "[ERROR] !BROKER! API 세션이 !_API_WAIT_TIMEOUT!초 안에 준비되지 않았습니다."
     CALL :L "[ERROR] 이 런처는 로그인을 수행하지 않습니다 -- 로그인은 LAUNCH_API.bat 담당입니다."
     CALL :L "[HINT]  LAUNCH_API.bat 를 먼저 실행한 뒤 이 런처를 다시 실행하십시오."
-    CALL :L "[HINT]  LAUNCH_API 로그 : !WORKDIR!\logs\cybos_plus_launch.log"
-    CALL :L "[HINT]  로그인 진단 로그: !WORKDIR!\logs\cybos_autologin_diag.log"
+    CALL :L "[HINT]  LAUNCH_API 로그 : !WORKDIR!\logs\!BROKER!_plus_launch.log"
+    CALL :L "[HINT]  로그인 진단 로그: !WORKDIR!\logs\!BROKER!_autologin_diag.log"
     TIMEOUT /T 30
     EXIT /B 1
 )
@@ -354,8 +361,21 @@ REM ============================================================
 IF EXIST "!WORKDIR!\scripts\cybos_plus_preflight.py" (
     ECHO.
     CALL :L "[INFO] !BROKER! preflight 점검 중..."
-    "!PY32!" "!WORKDIR!\scripts\cybos_plus_preflight.py"
+    REM [dev 2026-09-29 port] Keep preflight output (CHECK 4/4 account list) in the
+    REM launcher log too. Before, it went to the console only, so an unattended
+    REM exit 4 left no account list behind - and an account mismatch is exactly what
+    REM a broker switch risks. py37 writes cp949 on redirect, so force UTF-8 here only.
+    SET "_PF_OUT=!TEMP!\mireuk_preflight_!RANDOM!.txt"
+    SET "_PF_OLDENC=!PYTHONIOENCODING!"
+    SET "PYTHONIOENCODING=utf-8"
+    "!PY32!" "!WORKDIR!\scripts\cybos_plus_preflight.py" > "!_PF_OUT!" 2>&1
     SET "PREFLIGHT_ERR=!ERRORLEVEL!"
+    SET "PYTHONIOENCODING=!_PF_OLDENC!"
+    IF EXIST "!_PF_OUT!" (
+        TYPE "!_PF_OUT!"
+        TYPE "!_PF_OUT!" >> "!_BLOG!"
+        DEL "!_PF_OUT!" >NUL 2>&1
+    )
     IF "!PREFLIGHT_ERR!"=="1" (
         CALL :L "[ERROR] Preflight: COM 연결 실패."
         TIMEOUT /T 30
