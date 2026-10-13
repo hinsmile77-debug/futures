@@ -875,6 +875,10 @@ class TradingSystem:
         self._sd_exec_day = None
         self._sd_exec_skipped = set()      # 늦어서·조건 미달로 건너뛴 신호 — 한 번만 알린다
         self._sd_exec_orphan_warned = False
+        # [MW0601 2026-10-13] 보유 중 재생 대조의 마지막 실행 시각 — 옵션흐름 수집과 분리(_shindong_hold_reconcile).
+        #   None = 이 세션에서 아직 대조하지 않음(재기동 직후 → 즉시 1회 대조).
+        self._sd_exec_last_sync = None
+        self._sd_hold_gap_logged = False   # 수집 미갱신으로 대체 대조 중임을 알렸는가(회복 시 리셋)
         # 잔고 스트립 「전일손익」 주체 실적 캐시 (오늘, 직전 거래일, 그날 요약, 주체). None = 아직 안 셈
         self._principal_prev_cache = None
         # [MW0601 612차 후속5] 수급 첫 호출 실패 시 조기 재시도 — 세션당 1회.
@@ -3943,6 +3947,7 @@ class TradingSystem:
         # [MW0601 685차] 신동 1차·최종 목표 — 같은 2초 슬롯(새 타이머 없음 — 617차). 피터2 와 예외를 섞지 않는다.
         try:
             self._shindong_target_poll()
+            self._shindong_hold_reconcile()   # [2026-10-13] 보유 중 대조·복원을 수집과 분리(새 타이머 없음)
         except Exception as _e:
             logger.exception("[ShindongExec] 폴링 예외 — 이번 주기 건너뜀: %s", _e)
             try:
@@ -5523,6 +5528,10 @@ class TradingSystem:
             #   재생 기록과 예외를 섞지 않는다 — 집행 실패는 매번 ERROR 로 남긴다(억제하지 않는다).
             try:
                 self._shindong_exec_step(payload, now)
+                self._sd_exec_last_sync = now
+                if self._sd_hold_gap_logged:
+                    self._sd_hold_gap_logged = False
+                    log_manager.system("[ShindongExec] 옵션흐름 수집 회복 — 정규 재생 대조로 복귀", "INFO")
             except Exception as _xe:
                 logger.exception("[ShindongExec] 집행 단계 예외: %s", _xe)
                 log_manager.system("[ShindongExec] 집행 단계 예외: %s" % (_xe,), "ERROR")
@@ -5698,6 +5707,43 @@ class TradingSystem:
         log_manager.system("[ShindongExec] 집행 기록 복원 %s (1차 %s)"
                            % (rec["trade_key"], "완료" if rec["leg1_done"] else "대기"), "WARNING")
         return rec
+
+    def _shindong_hold_reconcile(self) -> None:
+        """2초 슬롯(피터2 슬롯 안) — 신동 포지션 보유 중 매분 재생 대조·복원을 옵션흐름 수집과 분리한다.
+
+        [MW0601 2026-10-13 사용자 지시] 매분 단계(`_run_shindong` → `_shindong_exec_step`)는
+        옵션흐름 수집이 **성공한 분에만** 돈다(`_fetch_weekly_option_flow`, 09:00–09:02 피크도 건너뜀).
+        수집이 끊기면 보유 포지션의 손절 조이기(set_stop)·재생 청산 미러(exit_all)·재기동 복원
+        (`_shindong_adopt`)이 함께 멈췄다. 신규 진입은 새 흐름 없이는 신호도 없으니 그대로 묶어 두고,
+        **보유 중 관리만** 여기서 채운다.
+
+        - 60초 넘게 정규 대조가 없었으면, DB 에 저장된 **직전 재생 결과**(`run_and_store` 가 돌려주는
+          것과 같은 `store.load_trades`)로 `_shindong_exec_step` 의 보유 분기를 돈다.
+          보유 중이면 그 함수는 보유 분기에서 반환하므로 신규 진입은 일어나지 않는다.
+        - 직전 결과로 대조해도 안전하다: `sync` 는 손절을 **조이기만** 하고, 청산은 재생에서 이미
+          일어난 것만 따른다.
+        - 재기동 직후(`_sd_exec_last_sync=None`)는 즉시 1회 — 복원이 수집을 기다리지 않는다.
+        """
+        if not self.position.is_external_of(SHINDONG_ENTRY_SOURCE):
+            return
+        if self._has_pending_order():
+            return
+        now = datetime.datetime.now()
+        last = self._sd_exec_last_sync
+        if last is not None and (now - last).total_seconds() < 60.0:
+            return
+        from strategy.shindong import store as _sd_store
+        day = now.date().isoformat()
+        trades = _sd_store.load_trades(runtime_settings.SHINDONG_DB, day, "MAIN")
+        if not self._sd_hold_gap_logged:
+            self._sd_hold_gap_logged = True
+            log_manager.system(
+                "[ShindongExec] 정규 재생 대조 %s — 직전 재생 결과(DB %d건)로 보유 포지션 대조"
+                % ("없음(재기동 직후)" if last is None
+                   else "%.0f초 미갱신(옵션흐름 수집 미성공)" % (now - last).total_seconds(),
+                   len(trades)), "WARNING")
+        self._shindong_exec_step({"trades": trades}, now)
+        self._sd_exec_last_sync = now
 
     def _shindong_target_poll(self) -> None:
         """2초 폴링(피터2 슬롯 안) — 신동 포지션의 1차·최종 목표·시간청산."""
