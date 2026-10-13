@@ -1063,6 +1063,8 @@ class TradingSystem:
         # 미륵이 자신의 마지막 주문 송신 시각 — 그 직후 잔고 이벤트는 「자기 것」으로 본다
         self._last_own_order_at: datetime.datetime = None
         self._external_watch_skip_logged_at: datetime.datetime = None
+        # 외부 포지션 수동 청산(사람이 버튼을 누름) 마지막 송신 시각 — 연타 중복 주문 방지
+        self._external_manual_exit_at: datetime.datetime = None
 
         # ── 15:18 FINAL_CLOSE 안전망 ───────────────────────────────────────────
         self._final_close_done: bool = False     # 1회만 실행 (중복 방지)
@@ -3774,6 +3776,10 @@ class TradingSystem:
 
     def _on_manual_exit_requested(self, percent: int) -> None:
         percent = int(percent or 0)
+        if (self.position.status == "FLAT" or self.position.quantity <= 0) and self._external_watch:
+            # 실서버 외부 포지션(감시 전용) — 자동 청산은 안 하지만 사람이 누른 청산은 보낸다.
+            _ts_operator_exit_external(self, percent)
+            return
         if self.position.status == "FLAT" or self.position.quantity <= 0:
             log_manager.system("[ManualExit] 포지션이 없어 수동 청산을 무시했습니다.", "WARNING")
             return
@@ -17450,6 +17456,23 @@ def _ts_handle_external_fill(
     if fill_qty <= 0 or side not in ("LONG", "SHORT"):
         return
 
+    # [MW0602 2026-10-13] 외부 포지션 감시 중 엔진 FLAT 에서 들어온 미추적 체결은
+    #   그 외부 포지션의 체결이다(사람의 HTS 정리 · 대시보드 수동 청산 버튼).
+    #   아래로 내려가면 반대매매 체결이 **유령 진입**(GHOST_PENDING_MISS)으로 넘겨받아져
+    #   실재하지 않는 포지션을 미륵이가 관리하게 된다. 잔량은 잔고 이벤트가 갱신한다.
+    if self._external_watch and self.position.status == "FLAT":
+        w = self._external_watch
+        log_manager.system(
+            f"[ExternalWatch] 외부 포지션 체결 — 넘겨받지 않음 order_no={payload.get('order_no') or '?'} "
+            f"side={side} qty={fill_qty} price={fill_price} (감시 {w.get('side')} {w.get('qty')}계약)",
+            "WARNING",
+        )
+        log_manager.trade(
+            f"[ExternalWatch] 외부 포지션 체결 {side} {fill_qty}계약 @ {fill_price} — 기록만"
+        )
+        QTimer.singleShot(500, lambda: _ts_refresh_dashboard_balance(self))
+        return
+
     before = _ts_get_position_snapshot(self)
     reason_label = "미추적체결(pending_miss)"
     atr = _ts_get_reference_atr(self)
@@ -18187,6 +18210,7 @@ def _ts_start_external_watch(self, side: str, qty: int, avg: float, origin: str)
     _ts_set_broker_sync_status(
         self, True, f"external watch-only {side} {qty} @ {avg}", True,
     )
+    _ts_push_external_exit_target(self)
     if prev and prev.get("side") == side and prev.get("qty") == int(qty):
         return
     msg = (
@@ -18211,10 +18235,62 @@ def _ts_clear_external_watch(self, reason: str) -> None:
     w = self._external_watch
     self._external_watch = None
     _ts_set_broker_sync_status(self, True, "external position cleared — " + reason, False)
+    _ts_push_external_exit_target(self)
     msg = (f"[ExternalWatch] 외부 포지션 정리 확인 — {w.get('side')} {w.get('qty')}계약 "
            f"@ {w.get('avg'):.2f} 감시 종료 ({reason}). 신규 진입 차단 해제.")
     log_manager.system(msg, "CRITICAL")
     log_manager.trade(msg)
+
+
+def _ts_push_external_exit_target(self) -> None:
+    """대시보드 수동 청산 버튼에 외부 포지션 상태를 알린다(없으면 닫힘)."""
+    w = self._external_watch or {}
+    try:
+        self.dashboard.set_external_exit_target(w.get("side", ""), int(w.get("qty") or 0))
+    except Exception as _e:
+        logger.debug("[ExternalWatch] 대시보드 청산버튼 갱신 실패: %s", _e)
+
+
+def _ts_operator_exit_external(self, percent: int) -> None:
+    """외부 포지션(감시 전용)을 사람이 대시보드 버튼으로 청산한다.
+
+    감시 전용 규칙(미륵이가 열지 않은 포지션은 **자동으로** 팔지 않는다)은 그대로다.
+    버튼 클릭은 「사람이 정리한다」 그 자체이므로 막지 않는다 — 이전에는 엔진이
+    FLAT 이라 버튼이 비활성인데 비활성으로 보이지 않아 클릭이 조용히 무시됐다.
+    엔진 포지션은 FLAT 그대로 두고 브로커에 직접 시장가 주문을 낸다
+    (잔량은 잔고 체결 이벤트가 _external_watch 를 갱신·해제한다).
+    """
+    w = self._external_watch or {}
+    now = datetime.datetime.now()
+    _last = self._external_manual_exit_at
+    if _last is not None and (now - _last).total_seconds() < 5:
+        log_manager.system("[ManualExit] 외부 포지션 청산 직후 5초 — 중복 클릭 무시", "WARNING")
+        return
+    watch_qty = int(w.get("qty") or 0)
+    if percent >= 100 or watch_qty <= 1:
+        send_qty = None                      # 브로커 잔량 전부
+    else:
+        send_qty = max(1, round(watch_qty * (percent / 100.0)))
+        if send_qty >= watch_qty:
+            send_qty = None
+    reason = "수동 청산(외부 포지션) %d%%" % percent
+    log_manager.system(
+        f"[ManualExit] 외부 포지션 {w.get('side')} {watch_qty}계약 — 사람 지시 청산 "
+        f"pct={percent} qty={'전량' if send_qty is None else send_qty}",
+        "WARNING",
+    )
+    self._external_manual_exit_at = now
+    ok = _ts_broker_direct_force_exit(
+        self, float(getattr(self, "_last_pipeline_price", 0.0) or 0.0), reason,
+        operator=True, qty_cap=send_qty,
+    )
+    if ok:
+        log_manager.trade(
+            f"[주문요청] {reason} {w.get('side')} "
+            f"{'전량' if send_qty is None else str(send_qty) + '계약'} 시장가 (외부 포지션 · 사람 지시)"
+        )
+    else:
+        self._external_manual_exit_at = None   # 실패면 바로 다시 누를 수 있게
 
 
 def _ts_log_external_watch_skip(self, where: str) -> None:
@@ -18232,11 +18308,14 @@ def _ts_log_external_watch_skip(self, where: str) -> None:
     )
 
 
-def _ts_broker_direct_force_exit(self, price: float, reason: str = "강제청산") -> bool:
+def _ts_broker_direct_force_exit(self, price: float, reason: str = "강제청산",
+                                 operator: bool = False, qty_cap: int = None) -> bool:
     """Cybos 잔고를 직접 조회해 남은 포지션을 시장가로 청산.
 
     내부 position=FLAT이지만 broker에 잔량이 남은 경우 안전망으로 사용.
     _send_broker_exit_order의 FLAT 가드를 우회해 send_market_order를 직접 호출한다.
+    operator=True 는 사람이 버튼으로 지시한 청산 — 외부 포지션 차단을 통과한다.
+    qty_cap 이 있으면 min(qty_cap, 브로커 잔량)만 청산한다(부분 청산).
     Returns True if an order was sent successfully.
     """
     account_no = str(_secrets.ACCOUNT_NO or "").strip()
@@ -18251,7 +18330,7 @@ def _ts_broker_direct_force_exit(self, price: float, reason: str = "강제청산
 
     # [MW0602 2026-10-13] 외부 포지션 감시 전용 — 미륵이가 열지 않은 실계좌 포지션은
     #   이 경로(15:10·15:18 안전망·ExchangeCB 해제 즉시청산 등)로도 팔지 않는다.
-    if self._external_watch:
+    if self._external_watch and not operator:
         _ts_log_external_watch_skip(self, "BrokerDirectExit:%s" % reason)
         return False
 
@@ -18301,6 +18380,9 @@ def _ts_broker_direct_force_exit(self, price: float, reason: str = "강제청산
             "WARNING",
         )
         return False
+
+    if qty_cap is not None:
+        broker_qty = max(1, min(int(qty_cap), broker_qty))
 
     close_side = "BUY" if broker_side == "SHORT" else "SELL"
     log_manager.system(

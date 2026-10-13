@@ -2753,6 +2753,9 @@ class ExitPanel(QWidget):
     def __init__(self):
         super().__init__()
         self._tp1_protect_mode = "atr_profit"
+        self._external_exit_qty = 0        # 실서버 외부 포지션(감시 전용) 수량 — 0=없음
+        self._external_exit_label = ""
+        self._last_pos_flat = True
         self._build()
 
     def _build(self):
@@ -2941,10 +2944,13 @@ class ExitPanel(QWidget):
             btn.setEnabled(False)
             btn.setToolTip(self.manual_exit_tooltips.get(pct, ""))
             btn.clicked.connect(lambda checked, p=pct: self.sig_manual_exit_requested.emit(p))
+            # :disabled 를 명시한다 — 없으면 색 지정 때문에 비활성 버튼이 활성처럼 보여
+            #   「눌러도 아무 일이 없다」로만 드러난다(2026-10-13 실서버 외부 포지션 사례).
             btn.setStyleSheet(
                 f"QPushButton{{background:{C['bg3']};color:{col};"
                 f"border:1px solid {col};border-radius:4px;padding:4px 8px;}}"
                 f"QPushButton:hover{{background:{col};color:#000;}}"
+                f"QPushButton:disabled{{color:{C['text2']};border:1px solid {C['border']};}}"
             )
             self.manual_exit_btns[pct] = btn
             btn_lay.addWidget(btn)
@@ -2952,6 +2958,7 @@ class ExitPanel(QWidget):
 
     def _reset_display(self):
         """포지션 FLAT 상태: 모든 필드를 '——' 로 초기화"""
+        self._last_pos_flat = True
         for w in (self.entry_price, self.cur_price, self.unreal_pnl, self.hold_time):
             w.setText("——")
         self.unreal_pnl.setStyleSheet(
@@ -2980,8 +2987,23 @@ class ExitPanel(QWidget):
             lbl_w.setText("대기")
             lbl_w.setStyleSheet(f"color:{C['text2']};font-size:{S.f(11)}px;")
 
-        for btn in getattr(self, "manual_exit_btns", {}).values():
-            btn.setEnabled(False)
+        # 엔진 FLAT 이어도 실서버 외부 포지션(감시 전용)이 있으면 수동 청산은 열어 둔다 —
+        #   자동 청산은 하지 않지만 사람이 누르는 청산은 막지 않는다.
+        _ext = self._external_exit_qty > 0
+        for pct, btn in getattr(self, "manual_exit_btns", {}).items():
+            btn.setEnabled(_ext)
+            btn.setToolTip(
+                f"[외부 포지션 {self._external_exit_label}] 미륵이가 열지 않은 실계좌 포지션입니다.\n"
+                f"누르면 브로커에 직접 시장가 청산 주문을 보냅니다({pct}%)."
+                if _ext else self.manual_exit_tooltips.get(pct, "")
+            )
+
+    def set_external_exit_target(self, side: str = "", qty: int = 0) -> None:
+        """실서버 외부 포지션 감시 상태를 받는다 — qty=0 이면 해제."""
+        self._external_exit_qty = max(0, int(qty or 0))
+        self._external_exit_label = f"{side} {self._external_exit_qty}계약" if self._external_exit_qty else ""
+        if self._external_exit_qty > 0 or self._last_pos_flat:
+            self._reset_display()
 
     def _sync_tp1_mode_buttons(self):
         for mode, btn in self.tp1_mode_btns.items():
@@ -3049,6 +3071,7 @@ class ExitPanel(QWidget):
         if status == 'FLAT':
             self._reset_display()
             return
+        self._last_pos_flat = False
 
         entry  = _as_float(pos_data.get('entry', 0.0), 0.0)
         cur    = _as_float(pos_data.get('current', entry), entry)
@@ -16841,6 +16864,10 @@ class DashboardAdapter:
 
     def set_ui_position_mode(self) -> None:
         self._win.ui_auto_tabs.set_position_mode()
+
+    def set_external_exit_target(self, side: str = "", qty: int = 0) -> None:
+        """실서버 외부 포지션(감시 전용) — 수동 청산 버튼을 열고 닫는다. qty=0 이면 해제."""
+        self._win.exit_panel.set_external_exit_target(side, qty)
 
     def set_account_options(self, accounts, selected: str = ""):
         combo = self._win.cmb_account

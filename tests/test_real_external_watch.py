@@ -15,7 +15,8 @@ import types
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MAIN = os.path.join(ROOT, "main.py")
 FNS = ("_ts_is_real_server", "_ts_should_watch_external", "_ts_start_external_watch",
-       "_ts_clear_external_watch", "_ts_log_external_watch_skip")
+       "_ts_clear_external_watch", "_ts_log_external_watch_skip",
+       "_ts_push_external_exit_target", "_ts_operator_exit_external")
 
 
 def _src():
@@ -63,11 +64,22 @@ class _Broker(object):
         return self.gubun
 
 
+class _Dash(object):
+    def __init__(self):
+        self.targets = []
+
+    def set_external_exit_target(self, side, qty):
+        self.targets.append((side, qty))
+
+
 def _self(gubun="0", pending=False, last_order_sec_ago=None):
     s = types.SimpleNamespace(
         broker=_Broker(gubun),
+        dashboard=_Dash(),
         _external_watch=None,
         _external_watch_skip_logged_at=None,
+        _external_manual_exit_at=None,
+        _last_pipeline_price=941.0,
         _last_own_order_at=(None if last_order_sec_ago is None else
                             datetime.datetime.now() - datetime.timedelta(seconds=last_order_sec_ago)),
     )
@@ -117,6 +129,58 @@ def test_start_blocks_entries_and_clear_unblocks():
     ns["_ts_clear_external_watch"](s, "qty=0")
     assert s._external_watch is None
     assert ns["_status"][-1][2] is False
+    # 대시보드 수동 청산 버튼: 감시 시작에 열리고 해제에 닫힌다
+    assert s.dashboard.targets == [("LONG", 2), ("", 0)]
+
+
+def _operator_ns(watch_qty=2):
+    ns = _load()
+    calls = []
+
+    def _direct(self, price, reason, operator=False, qty_cap=None):
+        calls.append({"operator": operator, "qty_cap": qty_cap, "reason": reason})
+        return True
+    ns["_ts_broker_direct_force_exit"] = _direct
+    s = _self("0")
+    s._external_watch = {"side": "LONG", "qty": watch_qty, "avg": 941.78}
+    return ns, s, calls
+
+
+def test_operator_exit_full_sends_all_as_operator():
+    """2026-10-13 사건: 외부 포지션에서 「전량 청산」이 아무 일도 안 했다."""
+    ns, s, calls = _operator_ns(2)
+    ns["_ts_operator_exit_external"](s, 100)
+    assert calls == [{"operator": True, "qty_cap": None, "reason": calls[0]["reason"]}]
+
+
+def test_operator_exit_partial_and_single_contract():
+    ns, s, calls = _operator_ns(4)
+    ns["_ts_operator_exit_external"](s, 50)
+    assert calls[-1]["qty_cap"] == 2
+    ns, s, calls = _operator_ns(1)
+    ns["_ts_operator_exit_external"](s, 33)
+    assert calls[-1]["qty_cap"] is None          # 1계약은 전량
+
+
+def test_operator_exit_debounces_double_click():
+    ns, s, calls = _operator_ns(2)
+    ns["_ts_operator_exit_external"](s, 100)
+    ns["_ts_operator_exit_external"](s, 100)
+    assert len(calls) == 1
+
+
+def test_manual_exit_routes_external_before_flat_reject():
+    s = _src()      # 클래스 메서드라 _body()(모듈 함수용) 대신 들여쓰기 기준으로 자른다
+    i = s.index("    def _on_manual_exit_requested(")
+    body = s[i:s.index("\n    def ", i + 1)]
+    assert body.index("_ts_operator_exit_external(self, percent)") < body.index("포지션이 없어 수동 청산을 무시")
+
+
+def test_external_fill_not_adopted_as_ghost_entry():
+    """외부 포지션 반대매매 체결이 GHOST_PENDING_MISS 진입으로 넘겨받아지면 안 된다."""
+    b = _body("_ts_handle_external_fill")
+    assert b.index('if self._external_watch and self.position.status == "FLAT":') \
+        < b.index('self._entry_source = "GHOST_PENDING_MISS"')
 
 
 def _body(fn_name):
@@ -139,7 +203,8 @@ def test_balance_chejan_checks_watch_before_adopting():
 
 def test_broker_direct_exit_refuses_external():
     b = _body("_ts_broker_direct_force_exit")
-    assert b.index("if self._external_watch:") < b.index("request_futures_balance(")
+    # 자동 경로는 막고, 사람 지시(operator=True)만 통과한다
+    assert b.index("if self._external_watch and not operator:") < b.index("request_futures_balance(")
 
 
 def test_integrity_check_quiet_but_blocking():
