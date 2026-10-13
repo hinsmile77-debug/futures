@@ -1051,6 +1051,15 @@ class TradingSystem:
         self._integrity_broker_qty:  int  = 0   # 최근 balance chejan/TR에서 갱신
         self._integrity_fail_count:  int  = 0   # 연속 불일치 횟수
 
+        # ── [MW0602 2026-10-13] 실서버 외부 포지션 감시 전용 ─────────────────
+        # 미륵이가 열지 않은 브로커 포지션은 넘겨받지 않고(self.position 은 FLAT 유지)
+        # 여기 기록만 한다 → 엔진 청산 경로가 하나도 반응하지 않는다.
+        # None = 외부 포지션 없음. dict = {side, qty, avg, since, origin}
+        self._external_watch: dict = None
+        # 미륵이 자신의 마지막 주문 송신 시각 — 그 직후 잔고 이벤트는 「자기 것」으로 본다
+        self._last_own_order_at: datetime.datetime = None
+        self._external_watch_skip_logged_at: datetime.datetime = None
+
         # ── 15:18 FINAL_CLOSE 안전망 ───────────────────────────────────────────
         self._final_close_done: bool = False     # 1회만 실행 (중복 방지)
 
@@ -2972,14 +2981,23 @@ class TradingSystem:
         except FileNotFoundError:
             lines = []
 
+        # [2026-10-13] secrets.py 가 모드별 계좌(ACCOUNT_NO_MOCK / ACCOUNT_NO_REAL)를
+        # 가지면 현재 TRADE_MODE 쪽 키만 고친다. 종전의 startswith("ACCOUNT_NO") 는
+        # ACCOUNT_NO_MOCK 줄을 ACCOUNT_NO 로 덮어써 secrets import 를 깨뜨린다.
+        import re
+        _is_real_mode = bool(getattr(_secrets, "TRADE_MODE_REAL", False))
+        _mode_key = "ACCOUNT_NO_REAL" if _is_real_mode else "ACCOUNT_NO_MOCK"
+        _key_re = lambda k: re.compile(r"^\s*%s\s*=" % k)
+        target_key = _mode_key if any(_key_re(_mode_key).match(l) for l in lines) else "ACCOUNT_NO"
+
         replaced = False
         for i, line in enumerate(lines):
-            if line.lstrip().startswith("ACCOUNT_NO"):
-                lines[i] = f'ACCOUNT_NO  = "{account_no}"\n'
+            if _key_re(target_key).match(line):
+                lines[i] = f'{target_key} = "{account_no}"\n'
                 replaced = True
                 break
         if not replaced:
-            lines.insert(0, f'ACCOUNT_NO  = "{account_no}"\n')
+            lines.insert(0, f'{target_key} = "{account_no}"\n')
 
         with open(secrets_path, "w", encoding="utf-8", newline="") as f:
             f.writelines(lines)
@@ -12229,6 +12247,7 @@ class TradingSystem:
         if not account_no:
             return -1
         side = "BUY" if direction == "LONG" else "SELL"
+        self._last_own_order_at = datetime.datetime.now()
 
         self._pending_limit_is_active = False
         if LIMIT_ENTRY_FIRST_ENABLED:
@@ -12358,6 +12377,7 @@ class TradingSystem:
                 )
                 return EXIT_RET_THROTTLED
         side = "SELL" if self.position.status == "LONG" else "BUY"
+        self._last_own_order_at = datetime.datetime.now()
         ret = self.broker.send_market_order(
             account_no=account_no,
             code=code,
@@ -16854,6 +16874,11 @@ def _ts_check_position_integrity(self) -> bool:
     pending     = getattr(self, "_pending_order", None)
     pending_qty = int((pending or {}).get("qty", 0) or 0)
 
+    # [MW0602 2026-10-13] 외부 포지션 감시 중 — 엔진 0 vs 브로커 N 은 의도된 차이다.
+    #   불일치로 세지 않고(매분 Slack 경보 방지) 진입만 계속 막는다.
+    if self._external_watch:
+        return False
+
     # 포지션 없고 브로커 잔량도 0이면 무결성 OK
     if engine_qty == 0 and broker_qty == 0:
         self._integrity_fail_count = max(0, self._integrity_fail_count - 1)
@@ -17540,7 +17565,7 @@ def _ts_resolve_stuck_entry_pending(self) -> bool:
 
     before_qty = self.position.quantity
     # 브로커 실수량으로 포지션 sync (이벤트 유실로 인한 수량 불일치 해소)
-    self._entry_source = "BROKER_SYNC_RECOVERY"
+    self._entry_source = _ts_broker_sync_source(self, broker_side)
     self.position.sync_from_broker(
         direction=broker_side,
         price=broker_avg,
@@ -17761,7 +17786,7 @@ def _ts_resolve_stuck_exit_pending(self) -> bool:
     prev_pos_qty = self.position.quantity
 
     entry_time_hint = self.position.entry_time or self.position.peek_saved_entry_time(side)
-    self._entry_source = "BROKER_SYNC_RECOVERY"
+    self._entry_source = _ts_broker_sync_source(self, side)
     self.position.sync_from_broker(
         direction=side,
         price=avg_price,
@@ -18053,6 +18078,118 @@ def _ts_scheduler_force_exit_net(self, now: datetime.datetime = None) -> bool:
     return _ts_broker_direct_force_exit(self, price, "15:10 스케줄러 안전망")
 
 
+# ── [MW0602 2026-10-13] 실서버 외부 포지션 = 감시 전용 ─────────────────────────
+# 사건: 실거래 첫 기동(14:07:31) 때 실계좌에 있던 수동 포지션(LONG 2 @938.27)을
+#   startup sync 가 넘겨받았고, 현재가가 이미 TP1 위라 4~6초 만에 실매도 2건이 나갔다.
+#   REAL_TRADING_ARMED 는 **진입만** 막도록 설계돼 이 경로를 못 막았다.
+# 규칙(사용자 결정): 실서버에서 미륵이가 열지 않은 브로커 포지션은 넘겨받지 않는다.
+#   self.position 은 FLAT 그대로 두고 _external_watch 에만 기록한다 →
+#   틱 TP·손절·STEP8·15:10·EmergencyExit 이 전부 FLAT 을 보고 반응하지 않는다.
+#   엔진이 FLAT 인데 브로커 잔량을 보고 직접 파는 BrokerDirectExit 만 별도로 막는다.
+#   신규 진입은 감시 중 계속 막는다(외부 포지션 위에 미륵이 포지션을 겹치지 않는다).
+# ⚠ 15:10 강제청산(절대원칙 §1)도 이 포지션에는 하지 않는다 — 사람이 정리해야 한다.
+#   대신 CRITICAL 로그를 남긴다.
+# 「미륵이가 열지 않았다」 판정: 실서버 · 엔진 FLAT · pending 없음 · 최근
+#   EXTERNAL_ADOPT_OWN_ORDER_GRACE_SEC 안에 자기 주문 송신 없음.
+#   (자기 청산이 일부 안 된 잔량을 외부로 오인하지 않기 위한 유예다.)
+
+def _ts_broker_sync_source(self, side: str) -> str:
+    """브로커 동기화가 포지션에 붙일 진입 출처.
+
+    [MW0602 2026-10-13 거래주체 규칙 점검] `self._entry_source` 대입은 setter 로
+    `position.entry_source` 에 미러링된다(552-11). 동기화 4곳이 무조건
+    "BROKER_SYNC_RECOVERY" 를 넣으면, **신동·피터 포지션을 보유한 채 재시작**하거나
+    그 진입의 체결 이벤트가 유실돼 동기화로 복구될 때 출처가 바뀌어
+    `_apply_ext_levels` 가 그 주체의 손절·목표를 폐기하고 **미륵 ATR 손절·TP·트레일링**
+    이 붙는다 — 진입은 신동 규칙, 청산은 미륵 규칙이 되는 것이다.
+    규칙: 지금 포지션(같은 방향 보유) 또는 진행 중인 ENTRY pending 의 출처가 외부 주체면
+    그 출처를 유지한다. 그 밖(엔진 FLAT 에서 새로 넘겨받음 · 반대 방향)만 BROKER_SYNC_RECOVERY.
+    """
+    cur = getattr(self.position, "entry_source", None)
+    if cur in EXTERNAL_ENTRY_SOURCES:
+        _pend = self._pending_order or {}
+        _entry_pending = str(_pend.get("kind", "")) == "ENTRY" and _pend.get("direction") == side
+        if self.position.status == side or _entry_pending:
+            return cur
+    return "BROKER_SYNC_RECOVERY"
+
+
+def _ts_is_real_server(self) -> bool:
+    """GetServerGubun "1"=모의. 조회 실패·빈 값은 실서버로 간주(안전 쪽)."""
+    try:
+        return str(self.broker.get_login_info("GetServerGubun") or "") != "1"
+    except Exception:
+        return True
+
+
+def _ts_should_watch_external(self, before: str) -> bool:
+    if not bool(getattr(runtime_settings, "REAL_EXTERNAL_POSITION_WATCH_ONLY", True)):
+        return False
+    if before != "FLAT" or self._has_pending_order():
+        return False
+    if not _ts_is_real_server(self):
+        return False
+    _grace = float(getattr(runtime_settings, "EXTERNAL_ADOPT_OWN_ORDER_GRACE_SEC", 120))
+    _last = self._last_own_order_at
+    if _last is not None and (datetime.datetime.now() - _last).total_seconds() < _grace:
+        return False
+    return True
+
+
+def _ts_start_external_watch(self, side: str, qty: int, avg: float, origin: str) -> None:
+    prev = self._external_watch
+    self._external_watch = {
+        "side": side, "qty": int(qty), "avg": float(avg), "origin": origin,
+        "since": (prev or {}).get("since") or datetime.datetime.now().isoformat(timespec="seconds"),
+    }
+    _ts_set_broker_sync_status(
+        self, True, f"external watch-only {side} {qty} @ {avg}", True,
+    )
+    if prev and prev.get("side") == side and prev.get("qty") == int(qty):
+        return
+    msg = (
+        f"[ExternalWatch] 실서버 외부 포지션 감시 시작 — {side} {qty}계약 @ {avg:.2f} "
+        f"(출처={origin}). 미륵이가 연 포지션이 아니므로 **자동 청산하지 않는다**"
+        f"(TP·손절·15:10 포함). 신규 진입은 이 포지션이 정리될 때까지 차단."
+    )
+    log_manager.system(msg, "CRITICAL")
+    log_manager.trade(msg)
+    logger.critical(msg)
+    try:
+        from utils.notify import notify_circuit_breaker
+        notify_circuit_breaker("실서버 외부 포지션 감시 전용",
+                               f"{side} {qty}계약 @ {avg:.2f} — 자동청산 안 함, 사람이 정리")
+    except Exception:
+        pass
+
+
+def _ts_clear_external_watch(self, reason: str) -> None:
+    if not self._external_watch:
+        return
+    w = self._external_watch
+    self._external_watch = None
+    _ts_set_broker_sync_status(self, True, "external position cleared — " + reason, False)
+    msg = (f"[ExternalWatch] 외부 포지션 정리 확인 — {w.get('side')} {w.get('qty')}계약 "
+           f"@ {w.get('avg'):.2f} 감시 종료 ({reason}). 신규 진입 차단 해제.")
+    log_manager.system(msg, "CRITICAL")
+    log_manager.trade(msg)
+
+
+def _ts_log_external_watch_skip(self, where: str) -> None:
+    """외부 포지션이라 청산을 건너뛴 사실을 남긴다 — 분당 1회."""
+    now = datetime.datetime.now()
+    _last = self._external_watch_skip_logged_at
+    if _last is not None and (now - _last).total_seconds() < 60:
+        return
+    self._external_watch_skip_logged_at = now
+    w = self._external_watch or {}
+    log_manager.system(
+        f"[ExternalWatch] 🔴 {where} — 외부 포지션 {w.get('side')} {w.get('qty')}계약 "
+        f"@ {w.get('avg')} 은 자동 청산하지 않는다. 대신증권 계좌에서 사람이 정리할 것.",
+        "CRITICAL",
+    )
+
+
 def _ts_broker_direct_force_exit(self, price: float, reason: str = "강제청산") -> bool:
     """Cybos 잔고를 직접 조회해 남은 포지션을 시장가로 청산.
 
@@ -18068,6 +18205,12 @@ def _ts_broker_direct_force_exit(self, price: float, reason: str = "강제청산
             f"[BrokerDirectExit] account_no 또는 code 없음 — 청산 불가 reason={reason}",
             "ERROR",
         )
+        return False
+
+    # [MW0602 2026-10-13] 외부 포지션 감시 전용 — 미륵이가 열지 않은 실계좌 포지션은
+    #   이 경로(15:10·15:18 안전망·ExchangeCB 해제 즉시청산 등)로도 팔지 않는다.
+    if self._external_watch:
+        _ts_log_external_watch_skip(self, "BrokerDirectExit:%s" % reason)
         return False
 
     result = self.broker.request_futures_balance(account_no)
@@ -19065,6 +19208,7 @@ def _ts_sync_position_from_broker(self) -> None:
                 self.position.sync_flat_from_broker()
                 self.dashboard.minute_chart_clear_active_position()
             self._clear_pending_order()
+            _ts_clear_external_watch(self, "startup sync blank/no holdings")
             _ts_set_broker_sync_status(self, True, "blank/no holdings response interpreted as flat", False)
             # P1-a: blank-as-flat = FLAT 확인 완료 → Armistice 즉시 해제 (sync_count=2 직접 설정)
             # +1 방식은 FLAT 재시작 시 두 번째 sync가 영구적으로 오지 않아 장 종료까지 Armistice가 지속되는 버그 유발
@@ -19144,7 +19288,12 @@ def _ts_sync_position_from_broker(self) -> None:
         )
         return
 
-    self._entry_source = "BROKER_SYNC_RECOVERY"
+    # [MW0602 2026-10-13] 실서버 외부 포지션은 넘겨받지 않는다(감시 전용).
+    if _ts_should_watch_external(self, before):
+        _ts_start_external_watch(self, side, qty, avg_price, "startup_sync")
+        return
+
+    self._entry_source = _ts_broker_sync_source(self, side)
     self.position.sync_from_broker(
         direction=side,
         price=avg_price,
@@ -19232,6 +19381,7 @@ def _ts_sync_from_balance_payload(self, payload: dict) -> None:
     )
 
     if qty <= 0:
+        _ts_clear_external_watch(self, "balance chejan qty=0")
         self.position.sync_flat_from_broker()
         self.dashboard.minute_chart_clear_active_position()
         self._clear_pending_order()   # [B56] 내부에서 ENTRY 미체결이면 cooldown 자동 설정
@@ -19256,7 +19406,13 @@ def _ts_sync_from_balance_payload(self, payload: dict) -> None:
         )
         return
 
-    self._entry_source = "BROKER_SYNC_RECOVERY"
+    # [MW0602 2026-10-13] 실서버 외부 포지션(HTS 수동 등)은 넘겨받지 않는다(감시 전용).
+    #   이미 감시 중이면 수량·평단 변화만 갱신한다.
+    if self._external_watch or _ts_should_watch_external(self, before):
+        _ts_start_external_watch(self, side, qty, avg_price, "balance_chejan")
+        return
+
+    self._entry_source = _ts_broker_sync_source(self, side)
     self.position.sync_from_broker(
         direction=side,
         price=avg_price,
@@ -19287,6 +19443,33 @@ def _ts_sync_from_balance_payload(self, payload: dict) -> None:
         "CRITICAL" if before != after else "INFO",
     )
     QTimer.singleShot(800, lambda: _ts_refresh_dashboard_balance(self))
+
+
+REAL_TRADING_UNLOCKED_SOURCES = ("OPERATOR_MANUAL",)
+
+
+def _ts_real_trading_block_reason(self, entry_source):
+    """실서버 자동진입을 막아야 하면 사유 문자열, 아니면 None.
+
+    서버 판정은 GetServerGubun("1"=모의). 조회 실패·빈 값은 **실서버로 간주**한다 —
+    판정 불능일 때 실자금 쪽으로 기울이는 것이 안전하다(config.constants.is_cybos_simulation
+    과 같은 원칙). 그 대가는 모의 세션에서 조회가 실패한 순간의 자동진입 1건 차단이다.
+    """
+    if entry_source in REAL_TRADING_UNLOCKED_SOURCES:
+        return None
+    try:
+        _gubun = str(self.broker.get_login_info("GetServerGubun") or "")
+    except Exception:
+        _gubun = ""
+    if _gubun == "1":
+        return None
+    if not bool(getattr(runtime_settings, "REAL_TRADING_ARMED", False)):
+        return "REAL_TRADING_ARMED=False (settings.py 에서 명시적으로 켜야 함)"
+    _cb2 = getattr(runtime_settings, "CB_CONSEC_STOP_LIMIT", None)
+    _allowed = tuple(getattr(runtime_settings, "REAL_TRADING_CB2_ALLOWED", (2, 3)))
+    if _cb2 not in _allowed:
+        return "CB② 미복원 CB_CONSEC_STOP_LIMIT=%s (허용 %s)" % (_cb2, _allowed)
+    return None
 
 
 def _ts_execute_entry(
@@ -19353,6 +19536,18 @@ def _ts_execute_entry(
             "[PrincipalBlock] %s 진입 → 섀도(선택 주체=%s) %s %s계약 @%s 등급=%s"
             % (principal_mod.label(_owner), principal_mod.label(_principal),
                direction, quantity, price, grade), "INFO")
+        return
+    # [MW0602 2026-10-13] 실거래 자동주문 잠금 — settings.REAL_TRADING_ARMED 참조.
+    #   주체 관문 다음에 둔다: 선택 주체가 아닌 출처는 이미 섀도로 빠졌고, 여기서는
+    #   「실제로 주문이 나갈 진입」만 남는다. 🔴 청산 경로는 여기를 지나지 않는다.
+    _real_block = _ts_real_trading_block_reason(self, entry_source)
+    if _real_block:
+        msg = (
+            f"[RealTradingLock] 실서버 자동진입 차단 — {_real_block} "
+            f"source={entry_source} raw={raw_direction} final={direction} qty={quantity}"
+        )
+        log_manager.system(msg, "CRITICAL")
+        logger.critical(msg)
         return
     # [2026-08-06] 서버 구분 하드게이트 — 대시보드 라디오(모의/실서버) 선택이
     # 실제 접속 서버와 다르면 신규 진입을 보내지 않는다.
@@ -19650,6 +19845,9 @@ def _ts_manual_position_restore(self, direction: str, price: float, qty: int, at
         "WARNING",
     )
     try:
+        # [MW0602 2026-10-13] 수동 복원 = 사람이 명시적으로 미륵이에게 관리를 넘기는 행위.
+        #   외부 포지션 감시를 끝내고 이후로는 미륵이가 청산까지 관리한다.
+        _ts_clear_external_watch(self, "operator restore — 관리 인계")
         self._entry_source = "OPERATOR_RESTORE"
         result = self.position.sync_from_broker(
             direction=direction,

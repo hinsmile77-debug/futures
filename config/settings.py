@@ -6479,6 +6479,9 @@ def active_contract_spec():
 # ⚠ 세금 축 없음: 선물/옵션은 증권거래세·농특세 「없음」(고시) — 고정비 ≈0 실측과 부합.
 FUTURES_COMMISSION_RATE = _BROKER_SPEC["one_way_commission_rate"]
 # (CREON 0.0019% 기준 1계약 1040pt: 편도 ≈ 988원 / 왕복 ≈ 1,976원)
+# ✅ [MW0602 2026-10-13 사용자 결정] **실계좌(CREON 트레이딩, 번호는 config/secrets.py)도 0.0019%** 로 한다.
+#   위 6458행 "실전 요율은 다를 수 있다"는 이 결정으로 닫힌다 — 값은 바꾸지 않는다
+#   (채널 감지가 이미 0.0019%를 낸다). 실전 첫 주 F-2 net 대사에서 MISMATCH 가 뜨면 재측정.
 
 # 종전(키움) 요율 — **소급 재계산·세대 판별 전용**. 라이브 계산에 쓰지 말 것.
 # 전환일 이전 trades 행의 commission_krw는 이 요율로 계산돼 있다
@@ -6531,6 +6534,29 @@ CB_CONSEC_STOP_LIMIT = 9999  # 연속 손절 횟수 — [모의투자 한정 예
 # 거래 기회 확보·데이터 축적(레이블/SGD/SHAP 표본)이 우선이라 9999(사실상 비활성)로 완화.
 # 실투 전환 전 반드시 2~3으로 복원할 것 (ROADMAP.md Phase 5 실전 전환 체크리스트 항목).
 # 근거: docs/260704_SYSTEM_AUDIT_UPGRADE_PROPOSAL.md §7-1 (P0)
+#
+# ── 실거래 자동주문 잠금 [MW0602 2026-10-13 사용자 결정] ─────────
+# 실서버(ServerType≠모의) 세션에서는 자동 진입(엔진 SYSTEM_AUTO·신동·피터2 등
+# OPERATOR_MANUAL 외 전 출처)을 **명시적으로 켜기 전까지 막는다**.
+# 켜려면 두 가지가 함께 필요하다 — 하나라도 빠지면 계속 막힌다:
+#   ① REAL_TRADING_ARMED = True
+#   ② CB_CONSEC_STOP_LIMIT 이 REAL_TRADING_CB2_ALLOWED 안 (CB② 복원, 절대원칙 §2)
+# 수동 진입(OPERATOR_MANUAL)과 **모든 청산 경로는 막지 않는다**.
+# 모의 세션에서는 아무것도 하지 않는다. 구현: main.py:_ts_real_trading_block_reason
+# 회귀 가드: tests/test_real_trading_armed.py
+REAL_TRADING_ARMED = False
+REAL_TRADING_CB2_ALLOWED = (2, 3)
+#
+# ── 실서버 외부 포지션 = 감시 전용 [MW0602 2026-10-13 사용자 결정] ──
+# 미륵이가 열지 않은 실계좌 포지션(HTS 수동 등)은 넘겨받지 않는다 — 엔진 포지션은
+# FLAT 으로 두고 감시만 한다 → TP·손절·15:10 강제청산·BrokerDirectExit 모두 하지 않는다.
+# 감시 중에는 신규 진입을 막는다. 대시보드 「포지션 복원」을 누르면 관리를 넘겨받는다.
+# 계기: 2026-10-13 14:07 실거래 첫 기동에서 수동 포지션 LONG 2 를 4~6초 만에 실매도.
+# 구현: main.py:_ts_should_watch_external / 회귀: tests/test_real_external_watch.py
+REAL_EXTERNAL_POSITION_WATCH_ONLY = True
+# 미륵이 자기 주문 송신 뒤 이 시간 안의 잔고 이벤트는 「자기 것」으로 본다
+# (자기 청산이 덜 된 잔량을 외부로 오인해 방치하지 않기 위함).
+EXTERNAL_ADOPT_OWN_ORDER_GRACE_SEC = 120
 #
 # [2026-08-01 W4 결산 결정] **복원 4주 연기 → 재검토 2026-08-29.**
 # 감사 §7은 "캠페인 종료 시 CB② 2~3 복원 후 1주 재확인"을 권장했고 2026-08-02가 그
