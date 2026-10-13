@@ -199,13 +199,44 @@ def peter_shadow_rows(date):
         return []
 
 
-def status_rows(trades_db, shindong_db, date, principal, open_pos=None):
+def virtual_rows(date, open_books=None):
+    """[거래주체분리 2단계] 가상 장부 — 청산된 가상 포지션 + 보유 중 가상 포지션.
+
+    open_books = {principal: {status, qty, entry, stop, entry_ts, unrealized}} (main 이 넘긴다).
+    → (행 목록, 가상 기록이 있는 주체 집합).
+    """
+    try:
+        from strategy.runtime import virtual_book as VB
+        poss = VB.day_positions(date)
+    except Exception:
+        poss = []
+    out, who_set = [], set()
+    for p in poss:
+        who_set.add(p['principal'])
+        out.append({'time': _hm(p['entry_ts']), 'who': TP.label(p['principal']), 'kind': '가상',
+                    'side': SIDE_KO.get(p['direction'], p['direction']), 'qty': p['qty'],
+                    'entry': p['entry'], 'exit': p['exit'], 'pnl': p['net'],
+                    'status': ('청산 %s %s' % (_hm(p['exit_ts']), p['reason'])) if p['closed']
+                    else ('부분 %s' % p['reason'])})
+    for pr, b in (open_books or {}).items():
+        who_set.add(pr)
+        out.append({'time': _hm(b.get('entry_ts')), 'who': TP.label(pr), 'kind': '가상',
+                    'side': SIDE_KO.get(b.get('status'), b.get('status')), 'qty': b.get('qty'),
+                    'entry': b.get('entry'), 'exit': b.get('stop'), 'pnl': b.get('unrealized'),
+                    'status': '보유(가상)'})
+    return out, who_set
+
+
+def status_rows(trades_db, shindong_db, date, principal, open_pos=None, open_books=None):
     rows = live_rows(trades_db, date, principal, open_pos)
-    if principal != TP.MIREUK:
+    vrows, vwho = virtual_rows(date, open_books)
+    rows += vrows
+    # 가상 장부 기록이 있는 주체는 1단계 섀도 행을 겹쳐 싣지 않는다(같은 진입이 두 번 보인다).
+    if principal != TP.MIREUK and TP.MIREUK not in vwho:
         rows += mireuk_shadow_rows(date)
-    if principal != TP.SHINDONG:
+    if principal != TP.SHINDONG and TP.SHINDONG not in vwho:
         rows += shindong_shadow_rows(shindong_db, date)
-    if principal != TP.PETER:
+    if principal != TP.PETER and TP.PETER not in vwho:
         rows += peter_shadow_rows(date)
     rows.sort(key=lambda r: (r.get('time') or '', r.get('kind') != '실거래'))
     return rows

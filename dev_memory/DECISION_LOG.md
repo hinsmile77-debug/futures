@@ -49334,3 +49334,19 @@ post --pc MW0602 --skill-rev 2026-08-26e --out-auto` 정상 실행(62.4KB). 수�
 ### 검증
 `tests/test_entry_pause_switch.py` 6건 신설 + test_616·test_518 게이트명 갱신, 관련 45 pass (py37_32).
 오프스크린 실 위젯: 정지→라벨·신호·prefs 저장·재생성 시 복원·해제 확인. `test_457` 1건 실패는 기존 실패(무관).
+
+## 2026-10-14 (MW0602 거래주체분리 2단계 — 가상 장부: 실주문이 안 나가는 주체의 실시간 가상 포지션) — 🟡 **구현 · 재기동부터 적용**
+
+- **사용자 결정**: ① 실서버 자동주문 잠금(`[RealTradingLock]`)에 막힌 진입도 섀도로 남긴다. ② 실시간 가상 포지션을 만든다 — **가상 손절은 CB②에서 제외**, **가상 거래는 켈리·앙상블 학습에서 격리**. ③ 피터·신동이 가상일 때도 같게 처리한다.
+- **① 계기**: `REAL_TRADING_ARMED=False` 등으로 잠금이 걸리면 `_ts_execute_entry` 가 기록 없이 반환해, 「전원 실거래 끔」인 날 미륵의 판단이 통째로 사라졌다. → `<owner>_shadow.jsonl` 에 `blocked_by=real_lock` 로 기록(장후 `mireuk_shadow_eval` 1단계도 그대로 이것을 읽는다).
+- **② 구현**: `strategy/runtime/virtual_book.py`. `PositionTracker` 를 상속하되 `_save_state`/`load_state` 를 무력화한 `_VTracker` — 🔴 전역 `data/position_state.json` 을 덮으면 실계좌 복원이 오염된다(1단계를 미뤘던 이유). 상태는 `data/principal/<날짜>/virtual_book.json`, 레그는 `virtual_legs.jsonl`(append-only, `final=True` 가 포지션 마감).
+  - 청산 사다리는 실제(`_ts_check_exit_triggers`)를 따른다: 트레일 → 하드스톱(종가·봉중, 423차 가드 동일) → 손절1차(initial 선차감) → TP1(봉 고저=틱 근사, 1계약은 보호전환) → TP2·TP3 → 외부 목표 → 15:10(2초 폴링이 피드 정지에도 닫는다) → 장후 안전망.
+  - 근사: 슬리피지 0 · 섀도 계측류와 역방향 클램프 미재현 · 계좌 단위 관문(증거금·무결성·동기화)은 실계좌 그대로.
+- **가상이 되는 조건**(`_ts_is_virtual`): 비선택 주체 **또는** 선택 주체라도 `_ts_real_trading_block_reason` 이 사유를 낼 때.
+  - **미륵**: 주체 관문·잠금 분기에서 가상 진입. 자동진입 판단의 FLAT 은 `_mireuk_flat`(가상이면 가상 장부 기준) — 실계좌를 다른 주체가 들고 있어도 미륵 판단이 끊기지 않는다. 🔴 STEP 8(실계좌 청산 감시)은 그대로 실포지션 기준.
+  - **피터**: 잠금이어도 `shadow`. 엔진 상태(`_peter2_engine_state`)를 가상 포지션으로 줘서 손절 변경·청산·반대 지시가 계속 나온다 → `_peter2_execute_virtual`. 실계좌 상태·CB·킬스위치는 보지 않고 하트비트·시간 관문은 본다.
+  - **신동**: `_shindong_virtual_step` — 실집행과 같은 `live_exec.pick_new_entry`/`manage`, 기록은 `shindong_vexec.json`(실집행 `shindong_exec.json` 과 분리).
+- **격리는 구조다**: 가상 경로는 `trades`·`circuit_breaker`·`kelly`·`_post_exit`·`_record_trade_result` 를 부르지 않는다 — `tests/test_virtual_book.py` 가 AST 로 고정.
+- **화면**: 「거래 현황」에 `kind='가상'` 행(청산·보유). 가상 기록이 있는 주체는 1단계 섀도 행을 겹쳐 싣지 않는다. 피터 버튼은 가상 포지션·손익을 보인다.
+- **테스트**: `tests/test_virtual_book.py` 18건 + 기존 principal/잠금/피터/신동 스위트 통과. 무관한 기존 실패 3건(`test_626` 재생 수치 2 · `test_457` 대시보드 `peter_paste`)은 손대지 않음. py37_32 컴파일·스모크(재기동 복원 포함) 확인.
+- ⚠ **가상 손익을 실거래 성과·전환기준 ① 근거로 인용하지 말 것** — 체결 근사다.
