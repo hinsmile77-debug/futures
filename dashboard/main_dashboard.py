@@ -16233,6 +16233,9 @@ class MireukDashboard(QMainWindow):
         main_split.addWidget(right)
         main_split.setSizes([520, 680, 440])
         root.addWidget(main_split, 1)
+        # 사용자가 끈 분할 크기를 다음 기동에 그대로 — 위 setSizes 는 저장값이 없을 때의 기본값
+        self._persist_splitter("main", main_split)
+        self._persist_splitter("left", left_split)
 
         self.ui_auto_tabs = UiAutoTabController(self.log_panel.tabs, self.mid_tabs)
         self.chk_mid_auto.toggled.connect(self.ui_auto_tabs.set_mid_auto)
@@ -16593,6 +16596,83 @@ class MireukDashboard(QMainWindow):
                 f"color:{C['red']};font-size:{S.f(8)}px;font-weight:bold;"
             )
             self.lbl_server_warn.setVisible(True)
+
+    # ── 분할(QSplitter) 크기 저장·복원 ───────────────────────────────────
+    #   ui_prefs.json 의 "splitter_sizes": {이름: [px, ...]} 에 둔다.
+    #   드래그가 멈추고 0.5초 뒤 한 번 저장(드래그 중 매 픽셀 쓰기 방지), 종료 시 flush.
+    #   위젯 개수가 바뀐 저장값(카드 추가·이동 등)은 버리고 코드 기본값을 쓴다.
+    def _persist_splitter(self, name, splitter):
+        if not hasattr(self, "_splitters"):
+            self._splitters = {}
+            self._splitter_restored_on_show = False
+            self._splitter_save_timer = QTimer(self)
+            self._splitter_save_timer.setSingleShot(True)
+            self._splitter_save_timer.setInterval(500)
+            self._splitter_save_timer.timeout.connect(self._save_splitter_sizes)
+        self._splitters[name] = splitter
+        self._apply_saved_splitter(name)
+        splitter.splitterMoved.connect(lambda *_: self._splitter_save_timer.start())
+
+    def _load_saved_splitter_sizes(self):
+        try:
+            if os.path.exists(_UI_PREFS_FILE):
+                with open(_UI_PREFS_FILE, "r", encoding="utf-8") as _rf:
+                    return json.load(_rf).get("splitter_sizes") or {}
+        except Exception as _e:
+            logger.debug("[Dashboard] splitter_sizes 읽기 실패: %s", _e)
+        return {}
+
+    def _apply_saved_splitter(self, name, saved=None):
+        splitter = self._splitters.get(name)
+        if splitter is None:
+            return
+        if saved is None:
+            saved = self._load_saved_splitter_sizes()
+        sizes = saved.get(name)
+        if (isinstance(sizes, list) and len(sizes) == splitter.count()
+                and all(isinstance(v, int) and v > 0 for v in sizes)):
+            splitter.setSizes(sizes)
+        elif sizes is not None:
+            logger.info("[Dashboard] 분할 %s 저장값 무시(%s, 위젯 %d개) — 기본값 사용",
+                        name, sizes, splitter.count())
+
+    def _save_splitter_sizes(self):
+        try:
+            prefs = {}
+            if os.path.exists(_UI_PREFS_FILE):
+                try:
+                    with open(_UI_PREFS_FILE, "r", encoding="utf-8") as _rf:
+                        prefs = json.load(_rf)
+                except Exception:
+                    prefs = {}
+            saved = prefs.get("splitter_sizes") or {}
+            for _n, _sp in getattr(self, "_splitters", {}).items():
+                saved[_n] = [int(v) for v in _sp.sizes()]
+            prefs["splitter_sizes"] = saved
+            with open(_UI_PREFS_FILE, "w", encoding="utf-8") as f:
+                json.dump(prefs, f, ensure_ascii=False)
+        except Exception as _e:
+            logger.debug("[Dashboard] splitter_sizes 저장 실패: %s", _e)
+
+    def showEvent(self, event):
+        # Qt 가상 메서드 — 여기서 예외가 새면 프로세스가 죽는다(CLAUDE.md 557차 후속3)
+        try:
+            super().showEvent(event)
+            # 생성 시점엔 창이 최대화 전 크기라 Qt 가 비율로 재분배한다 — 첫 표시 직후
+            # 한 번 더 적용해 저장된 픽셀값을 그대로 맞춘다.
+            if hasattr(self, "_splitters") and not self._splitter_restored_on_show:
+                self._splitter_restored_on_show = True
+
+                def _reapply():
+                    try:
+                        _saved = self._load_saved_splitter_sizes()
+                        for _n in self._splitters:
+                            self._apply_saved_splitter(_n, _saved)
+                    except Exception as _e:  # noqa: BLE001
+                        logger.debug("[Dashboard] 분할 크기 재적용 실패: %s", _e)
+                QTimer.singleShot(0, _reapply)
+        except Exception as _qe:  # noqa: BLE001 — Qt 진입점 최후 방어선
+            _qt_guard_fail('MireukDashboard.showEvent', _qe)
 
     def _save_ui_prefs(self):
         """현재 종목코드·시장구분·슬랙 On/Off를 ui_prefs.json에 저장.
@@ -17236,6 +17316,11 @@ class MireukDashboard(QMainWindow):
         if _clicked == _btn_cancel:
             event.ignore()
             return
+
+        # 분할 크기 — 디바운스 대기 중이던 저장을 끝낸다
+        if hasattr(self, "_splitters"):
+            self._splitter_save_timer.stop()
+            self._save_splitter_sizes()
 
         # 차트 다이얼로그 geometry 저장
         if hasattr(self, '_minute_chart_dialog'):
