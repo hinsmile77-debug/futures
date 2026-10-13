@@ -75,7 +75,8 @@ def test_f3_assignment_sits_after_all_early_return_gates(main_src):
 
     # 조기 반환 게이트들 — 전부 할당보다 앞에 있어야 한다.
     for gate in (
-        "_server_matched",
+        "_entry_paused",          # 2026-10-14 서버 구분 게이트 → 운영자 진입 일시정지
+
         "_account_mismatch_block",
         "_broker_sync_block_new_entries",
         "if cooldown_active:",

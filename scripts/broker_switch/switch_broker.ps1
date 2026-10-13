@@ -131,8 +131,10 @@ foreach ($t in $tasksLaunch) {
 }
 $prefsP = Join-Path $root 'data\ui_prefs.json'
 if (Test-Path $prefsP) {
-    $srv = [regex]::Match([IO.File]::ReadAllText($prefsP, [Text.Encoding]::UTF8), '"server_mode"\s*:\s*"(\w+)"').Groups[1].Value
-    Log "  [INFO] ui_prefs server_mode=$srv (목표 $(if ($Mode -eq 'real') {'real'} else {'simul'}) -- -Apply 가 맞춘다)"
+    # 2026-10-14: 우측상단 라디오는 「서버 선언」이 아니라 「진입 일시정지」로 바뀌었다 — 상태만 알린다.
+    $paused = [regex]::Match([IO.File]::ReadAllText($prefsP, [Text.Encoding]::UTF8), '"entry_paused"\s*:\s*(true|false)').Groups[1].Value
+    if ($paused -eq 'true') { Log "  [WARN] ui_prefs entry_paused=true -- 기동 후 신규 진입이 정지 상태다 (대시보드 [진입허용]으로 해제)"; $warn++ }
+    else { Log "  [INFO] ui_prefs entry_paused=$(if ($paused) {$paused} else {'(미기록=허용)'})" }
 }
 $h = Get-ScheduledTask -TaskName $taskHts -ErrorAction SilentlyContinue
 if ($h) { Log "  [INFO] 예약작업 '$taskHts' State=$($h.State)" }
@@ -184,22 +186,10 @@ if ($h) {
     else                     { Enable-ScheduledTask  -TaskName $taskHts | Out-Null; Log "  3) '$taskHts' 재활성" }
 }
 
-# 4) 대시보드 서버 라디오(data/ui_prefs.json server_mode) — 실제 접속 서버와 다르면
-#    _ts_execute_entry 의 서버구분 하드게이트가 **모든 신규 진입을 차단**한다.
-#    2026-10-13 점검: 실거래 전환 후에도 simul 로 남아 있어 다음 날 진입 전량 차단 직전이었다.
-$prefs = Join-Path $root 'data\ui_prefs.json'
-$wantSrv = if ($Mode -eq 'real') { 'real' } else { 'simul' }
-if (Test-Path $prefs) {
-    $pj = [IO.File]::ReadAllText($prefs, [Text.Encoding]::UTF8)
-    $cur = [regex]::Match($pj, '"server_mode"\s*:\s*"(\w+)"').Groups[1].Value
-    if ($cur -ne $wantSrv) {
-        Copy-Item $prefs "$prefs.bak_$ts"
-        if ($cur) { $pj = [regex]::Replace($pj, '"server_mode"\s*:\s*"\w+"', "`"server_mode`": `"$wantSrv`"") }
-        else      { $pj = $pj.TrimEnd().TrimEnd('}') + ", `"server_mode`": `"$wantSrv`"}" }
-        [IO.File]::WriteAllText($prefs, $pj, (New-Object Text.UTF8Encoding($false)))
-        Log "  4) ui_prefs server_mode $cur -> $wantSrv (백업 ui_prefs.json.bak_$ts) -- main.py 실행 중이면 재기동 필요"
-    } else { Log "  4) ui_prefs server_mode 이미 $wantSrv" }
-} else { Log "  4) ui_prefs.json 없음 -- 대시보드 기본값(simul). real 이면 첫 기동 후 라디오를 실서버로 바꿀 것"; $warn++ }
+# 4) (폐지 2026-10-14) 대시보드 서버 라디오 동기화 — 라디오가 「진입 일시정지」로 바뀌어
+#    서버 구분 하드게이트가 없어졌다. ui_prefs.json 을 건드리지 않는다.
+#    실제 접속 서버는 대시보드 우측상단 「접속:모의/실서버」 읽기전용 라벨로 확인한다.
+Log "  4) ui_prefs 동기화 불필요 (서버 라디오 폐지 -- 접속 서버는 대시보드 라벨로 확인)"
 
 Log "=== 적용 완료: BROKER=$Broker TRADING_MODE=$Mode. 다음 무인 기동부터 반영 (WARN=$warn) ==="
 exit 0
