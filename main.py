@@ -869,6 +869,13 @@ class TradingSystem:
         # [MW0602 거래주체분리] 현재 거래주체 — 파일(data/trade_principal.json)이 정본이고 이것은 캐시다.
         #   전환은 `_on_principal_change_requested` 한 곳에서만 일어나며 그때 둘을 함께 바꾼다.
         self._principal_state = principal_mod.load()
+        # [MW0602 거래주체분리 2단계] 가상 장부 — 실주문이 안 나가는 주체의 실시간 가상 포지션.
+        #   None = 오늘 아직 안 만듦(`_ts_vbook` 이 날짜별로 만들고 저장본을 복원한다).
+        self._vbook = None
+        self._vbook_err_logged = False
+        # 신동 가상 집행 기록 {trade_key: rec} — 실집행 `_sd_exec` 와 분리(같은 거래를 둘 다 하지 않는다)
+        self._sd_vexec = {}
+        self._sd_vexec_day = None
         # [MW0601 685차] 신동 실집행 기록 {trade_key: rec} — data/principal/<날짜>/shindong_exec.json 이
         #   정본이고 이것은 캐시다. 날짜가 바뀌면 `_sd_exec_load` 가 다시 읽는다.
         self._sd_exec = {}
@@ -1156,6 +1163,8 @@ class TradingSystem:
         self._peter2_tail = None               # store.RawTail
         self._peter2_rows: list = []           # 오늘 받은 트윗 원본(차트 사료용)
         self._peter2_last_mode = None          # 모드 전환 로그용
+        # [거래주체분리 2단계] 이번 틱의 실효 모드 — 엔진 상태(실계좌 vs 가상 장부)를 고른다. 기본 off.
+        self._peter2_mode_now = "off"
         self._peter2_stale_logged = False      # 수집기 정지 경보 1회 제한
         self._peter2_override_mtime = None     # 당일 수동 오프셋 파일 mtime(668차 후속7)
         # [MW0602 615차 후속2] 오프셋 장중 자동 실측 — 스케줄러 틱이 재고 폴링 틱이 반영한다.
@@ -3895,9 +3904,22 @@ class TradingSystem:
                         "qty": pos.quantity, "entry": pos.entry_price, "stop": pos.stop_price,
                         "unrealized": _unreal}
         p = self._principal_state["principal"]
-        rows = _pv.status_rows(runtime_settings.TRADES_DB, runtime_settings.SHINDONG_DB, day, p, open_pos)
+        # [거래주체분리 2단계] 보유 중 가상 포지션
+        open_books = {}
+        _vb = self._vbook
+        if _vb is not None:
+            _px = self._peter2_last_price()
+            for _pr in principal_mod.PRINCIPALS:
+                _vp = _vb.position(_pr)
+                if _vp:
+                    _u = _vb.unrealized_krw(_pr, _px)
+                    open_books[_pr] = dict(_vp, unrealized=None if _u is None else round(_u))
+        rows = _pv.status_rows(runtime_settings.TRADES_DB, runtime_settings.SHINDONG_DB, day, p, open_pos,
+                               open_books)
         n_live = sum(1 for r in rows if r.get("kind") == "실거래")
-        note = "%s 실거래 %d건 · 섀도 %d건" % (principal_mod.label(p), n_live, len(rows) - n_live)
+        n_virt = sum(1 for r in rows if r.get("kind") == "가상")
+        note = "%s 실거래 %d건 · 가상 %d건 · 섀도 %d건" % (principal_mod.label(p), n_live, n_virt,
+                                                     len(rows) - n_live - n_virt)
         self.dashboard.update_trade_status(rows, note)
 
     def _principal_balance_keys(self, summary: dict) -> None:
@@ -3941,6 +3963,11 @@ class TradingSystem:
         # [MW0602 거래주체분리] 같은 2초 슬롯에서 거래주체 버튼 잠금을 맞춘다(새 타이머를 만들지 않는다 — 617차).
         self._push_principal_ui()
         try:
+            _ts_vbook_on_price(self)          # [거래주체분리 2단계] 가상 포지션 외부목표·틱TP1·15:10
+            self._shindong_virtual_poll()     # [거래주체분리 2단계] 가상 신동 1차·최종·시간청산
+        except Exception as _vb_e:
+            logger.exception("[Virtual] 2초 폴링 예외: %s", _vb_e)
+        try:
             self._peter2_tick_body()
         except Exception as _e:
             logger.exception("[Peter2] 폴링 예외 — 이번 주기 건너뜀: %s", _e)
@@ -3971,6 +3998,21 @@ class TradingSystem:
             return None
 
     def _peter2_engine_state(self) -> dict:
+        # [거래주체분리 2단계] 피터가 가상이면 엔진 상태도 **가상 장부의 피터 포지션**이다 —
+        #   그래야 추종 엔진이 보유 중 지시(손절 변경 · 청산 · 반대 지시)를 계속 낸다.
+        #   실계좌를 다른 주체가 들고 있어도 피터의 추종은 막히지 않는다(가상은 별개 계좌처럼 본다).
+        if self._peter2_mode_now != "live":
+            _vb = _ts_vbook(self)
+            _vp = _vb.position(principal_mod.PETER) if _vb is not None else None
+            return {
+                "status": _vp["status"] if _vp else "FLAT",
+                "source": PETER2_ENTRY_SOURCE if _vp else None,
+                "pending": False,
+                "price": self._peter2_last_price(),
+                "stop": _vp["ext_stop"] if _vp else None,
+                "target": _vp["target"] if _vp else None,
+                "virtual": True,
+            }
         pos = self.position
         _ext = pos.is_external_of(PETER2_ENTRY_SOURCE)
         try:
@@ -4141,6 +4183,7 @@ class TradingSystem:
         # [MW0602 거래주체분리] 선택 주체가 피터가 아니면 live 라도 섀도다(해석·기록은 계속).
         if mode == "live" and self._principal_state["principal"] != principal_mod.PETER:
             mode = "shadow"
+        self._peter2_mode_now = mode     # [거래주체분리 2단계] 엔진 상태(실계좌 vs 가상 장부) 선택
         if mode != self._peter2_last_mode:
             log_manager.system(f"[Peter2] 모드={mode} (거래주체=%s)"
                                % principal_mod.label(self._principal_state["principal"]), "INFO")
@@ -4214,7 +4257,13 @@ class TradingSystem:
             return
         pos = self.position
         side = unreal = None
-        if pos.is_external_of(PETER2_ENTRY_SOURCE) and eng.get("price"):
+        if eng.get("virtual"):
+            # [거래주체분리 2단계] 가상 — 버튼에는 가상 포지션·가상 손익을 보인다(모드 표기로 구분된다)
+            _vb = self._vbook
+            if _vb is not None and eng.get("status") in ("LONG", "SHORT"):
+                side = "매수" if eng["status"] == "LONG" else "매도"
+                unreal = _vb.unrealized_krw(principal_mod.PETER, eng.get("price"))
+        elif pos.is_external_of(PETER2_ENTRY_SOURCE) and eng.get("price"):
             side = "매수" if pos.status == "LONG" else "매도"
             try:
                 unreal = pos.unrealized_pnl_pts(eng["price"]) * pos._pt_value   # 수량 포함 pt
@@ -4268,11 +4317,9 @@ class TradingSystem:
         fw = self._peter2
         typ = it.get("type")
         pos = self.position
+        if mode != "live":
+            return self._peter2_execute_virtual(it, mode, date, now)
         if typ == "ENTER":
-            if mode != "live":
-                fw._ev("SHADOW", now, sig=it.get("sig"), side=it.get("side"), price=it.get("price"),
-                       stop=it.get("stop"), target=it.get("target"), why="mode=%s" % mode)
-                return
             age, _ = peter2_store.collector_heartbeat(date)
             if age is None or age > float(getattr(runtime_settings, "PETER2_HEARTBEAT_STALE_SEC", 90)):
                 return self._peter2_reject(date, now, it, "collector_stale")
@@ -4341,6 +4388,79 @@ class TradingSystem:
         if typ == "EXIT":
             self._peter2_exit(it.get("reason") or "피터2미러", date, now, why=it.get("why"),
                               sig=it.get("sig"))
+
+    def _peter2_execute_virtual(self, it: dict, mode: str, date: str, now) -> None:
+        """[거래주체분리 2단계] 피터가 가상일 때 — 실주문 대신 가상 장부에서 같은 지시를 집행한다.
+
+        실집행과 같은 규칙: 진입 수량 PETER2_QTY · 손절 캡 PETER2_STOP_CAP_PT · 시간 관문.
+        다른 점: 실계좌 상태(보유 · 대기주문 · CB · 킬스위치)는 보지 않는다 — 가상은 별개 계좌이고
+        CB 는 실계좌 안전장치다(사용자 결정 2026-10-14). 수집기 하트비트는 본다(지시가 낡으면 따라가지 않는다).
+        """
+        fw = self._peter2
+        typ = it.get("type")
+        vb = _ts_vbook(self)
+        if vb is None:
+            fw._ev("SHADOW", now, sig=it.get("sig"), side=it.get("side"), price=it.get("price"),
+                   stop=it.get("stop"), target=it.get("target"), why="mode=%s(가상장부 없음)" % mode)
+            return
+        P = principal_mod.PETER
+        if typ == "ENTER":
+            age, _ = peter2_store.collector_heartbeat(date)
+            if age is None or age > float(getattr(runtime_settings, "PETER2_HEARTBEAT_STALE_SEC", 90)):
+                return self._peter2_reject(date, now, it, "collector_stale(가상)")
+            if not is_new_entry_allowed():
+                return self._peter2_reject(date, now, it, "time(신규진입 마감)(가상)")
+            if is_force_exit_time():
+                return self._peter2_reject(date, now, it, "force_exit_time(가상)")
+            qty = max(1, int(getattr(runtime_settings, "PETER2_QTY", 1) or 1))
+            _ctx = self._manual_entry_ctx or {}
+            atr = float(_ctx.get("atr") or 0.0) or 1.0
+            ok = _ts_vbook_open(self, P, it["side"], it["price"], qty, atr,
+                                "principal" if self._principal_state["principal"] != P else "real_lock",
+                                grade="P", ext_stop=it["stop"], ext_target=it.get("target"),
+                                ext_src=it.get("stop_src"), why=it.get("why") or "")
+            if ok:
+                fw.mark_entered()
+                fw._ev("SHADOW", now, sig=it.get("sig"), side=it["side"], price=it["price"],
+                       stop=it["stop"], target=it.get("target"), stop_src=it.get("stop_src"),
+                       why="virtual mode=%s %s" % (mode, it.get("why") or ""))
+            else:
+                self._peter2_reject(date, now, it, "virtual_open_failed(가상 보유 중 등)")
+            return
+        vp = vb.position(P)
+        if vp is None:
+            if typ in ("SET_STOP", "SET_TARGET", "EXIT"):
+                fw._ev("SKIP", now, sig=it.get("sig"), why="no_peter2_virtual_position", intent=typ)
+            return
+        if typ == "SET_STOP":
+            new = float(it["stop"])
+            cap = float(getattr(runtime_settings, "PETER2_STOP_CAP_PT", 8.0))
+            ent = float(vp["entry"] or 0.0)
+            capped = False
+            if vp["status"] == "LONG" and new < ent - cap:
+                new, capped = round(ent - cap, 2), True
+            elif vp["status"] == "SHORT" and new > ent + cap:
+                new, capped = round(ent + cap, 2), True
+            old = vp.get("ext_stop")
+            vb.set_ext(P, stop=new, src="peter(capped)" if capped else "peter", now=now)
+            fw._ev("SET_STOP", now, sig=it.get("sig"), old=old, new=new, capped=capped,
+                   why=it.get("why"), virtual=True)
+            log_manager.trade("[Virtual] 피터 가상 손절가 %s → %.2f%s (%s)" % (
+                old, new, " (캡)" if capped else "", it.get("why")))
+            return
+        if typ == "SET_TARGET":
+            old = vp.get("target")
+            vb.set_ext(P, target=float(it["target"]), now=now)
+            fw._ev("SET_TARGET", now, sig=it.get("sig"), old=old, new=it["target"], why=it.get("why"),
+                   virtual=True)
+            log_manager.trade("[Virtual] 피터 가상 청산가 %s → %.2f" % (old, float(it["target"])))
+            return
+        if typ == "EXIT":
+            px = self._peter2_last_price()
+            legs = vb.exit(P, px, "가상:" + (it.get("reason") or "피터2미러"), now)
+            fw._ev("EXIT", now, sig=it.get("sig"), reason=it.get("reason"), price=px,
+                   why=it.get("why"), virtual=True)
+            _ts_vbook_dispatch(self, legs)
 
     def _peter2_exit(self, reason: str, date: str, now, why: str = "", sig=None) -> None:
         """피터2 포지션 전량 청산(시장가). 수동 전량청산과 같은 pending→주문 순서."""
@@ -5637,6 +5757,12 @@ class TradingSystem:
         self._sd_exec_load(day)
         trades = payload.get("trades") or []
         by_key = {t["trade_key"]: t for t in trades}
+        # [MW0602 거래주체분리 2단계] 신동이 가상이면(비선택 주체) 같은 재생을 가상 장부로 옮긴다.
+        #   실집행 아래 로직과 독립이다 — 실계좌 포지션 유무와 무관하게 돈다.
+        try:
+            self._shindong_virtual_step(trades, by_key, now)
+        except Exception as _sv_e:
+            logger.warning("[ShindongVirtual] 가상 집행 예외: %s", _sv_e, exc_info=True)
         pos = self.position
         # ① 보유 중 — 재생 대조(주체가 바뀌었어도 들고 있는 신동 포지션은 끝까지 관리한다)
         if pos.is_external_of(SHINDONG_ENTRY_SOURCE):
@@ -5715,6 +5841,140 @@ class TradingSystem:
         self._sd_exec[rec["trade_key"]] = rec
         self._sd_exec_save(day)
         self._sd_exec_event(day, "ENTER", **rec)
+
+    # ── [MW0602 거래주체분리 2단계] 신동 가상 집행 — v9 규격(live_legs) 그대로, 주문 대신 가상 장부 ──
+    #   실집행(`_shindong_exec_step` · `_shindong_apply`)과 같은 판단 함수를 쓴다:
+    #     진입 = live_exec.pick_new_entry + live_legs.entry_check · 2초 = live_legs.poll · 매분 = live_legs.sync.
+    #   1차 → 1계약 청산 + 공통 손절 본전(after_leg1) → 최종. 손절은 가상 장부의 외부 손절(ext_stop).
+    #   다른 점: 실계좌 상태(보유 · 대기주문 · CB · 킬스위치)는 보지 않는다 — 가상은 별개 계좌이고 CB 는
+    #   실계좌 안전장치다(사용자 결정 2026-10-14). 시간 관문은 같다. 기록은 shindong_vexec.json.
+
+    def _sd_vexec_sync_day(self, day: str) -> None:
+        if self._sd_vexec_day != day:
+            self._sd_vexec = principal_mod.read_json(day, "shindong_vexec.json", {}) or {}
+            self._sd_vexec_day = day
+
+    def _sd_vexec_save(self, day: str) -> None:
+        try:
+            principal_mod.write_json(day, "shindong_vexec.json", self._sd_vexec)
+        except Exception as _e:
+            logger.warning("[ShindongVirtual] 가상 집행 기록 저장 실패: %s", _e)
+
+    def _sd_vexec_active(self):
+        live = [r for r in self._sd_vexec.values() if r.get("filled") and not r.get("done")]
+        return live[-1] if live else None
+
+    def _shindong_virtual_step(self, trades: list, by_key: dict, now: datetime.datetime) -> None:
+        from strategy.shindong import live_exec as _lx, live_legs as _ll
+        P = principal_mod.SHINDONG
+        day = now.date().isoformat()
+        self._sd_vexec_sync_day(day)
+        vb = _ts_vbook(self)
+        if vb is None:
+            return
+        rec = self._sd_vexec_active()
+        if rec is not None:
+            if vb.is_flat(P):
+                rec["done"] = True                 # 가상 장부가 이미 닫았다(손절 · 15:10 등)
+                self._sd_vexec_save(day)
+            else:
+                for act in _ll.sync(rec, by_key.get(rec["trade_key"]), now):
+                    self._shindong_virtual_apply(rec, act, day, now, src="replay")
+            return
+        if not _ts_is_virtual(self, P):
+            return
+        if not getattr(runtime_settings, "PRINCIPAL_SHINDONG_ENABLED", False):
+            return
+        max_age = float(getattr(runtime_settings, "SHINDONG_LIVE_MAX_AGE_MIN", 2))
+        pick, _stale = _lx.pick_new_entry(trades, self._sd_vexec, now, max_age)
+        if pick is None or not vb.is_flat(P):
+            return
+        rec = _ll.make_rec(pick)
+        try:
+            price = float(self._last_pipeline_price or 0.0) or None
+        except Exception:
+            price = None
+        why = _ll.entry_check(rec, price)
+        if why is None and not is_new_entry_allowed():
+            why = "time(신규진입 마감)"
+        if why is None and is_force_exit_time():
+            why = "force_exit_time"
+        if why is None:
+            qty = int(getattr(runtime_settings, "SHINDONG_LIVE_QTY", 2) or 2)
+            _ctx = self._manual_entry_ctx or {}
+            atr = float(_ctx.get("atr") or 0.0) or 1.0
+            ok = _ts_vbook_open(self, P, "LONG" if rec["side"] > 0 else "SHORT", price, qty, atr,
+                                "principal", grade="S", ext_stop=rec["stop"], ext_target=rec["t2"],
+                                ext_src="shindong", why=rec["trade_key"])
+            if not ok:
+                why = "virtual_open_failed"
+        if why is not None:
+            rec["done"] = True
+            rec["reject"] = why
+        else:
+            rec["filled"] = True
+            rec["entered_at"] = now.isoformat(timespec="seconds")
+            rec["entry_hint"] = price
+        self._sd_vexec[rec["trade_key"]] = rec
+        self._sd_vexec_save(day)
+
+    def _shindong_virtual_poll(self) -> None:
+        """2초 슬롯 — 가상 신동 포지션의 1차 · 최종 · 시간청산(live_legs.poll)."""
+        vb = self._vbook
+        if vb is None or vb.is_flat(principal_mod.SHINDONG):
+            return
+        now = datetime.datetime.now()
+        day = now.date().isoformat()
+        self._sd_vexec_sync_day(day)
+        rec = self._sd_vexec_active()
+        if rec is None:
+            return
+        try:
+            price = float(self._last_pipeline_price or 0.0) or None
+        except Exception:
+            price = None
+        if price is None:
+            return
+        from strategy.shindong import live_legs as _ll
+        for act in _ll.poll(rec, price, now):
+            self._shindong_virtual_apply(rec, act, day, now, src="poll", price=price)
+
+    def _shindong_virtual_apply(self, rec: dict, act: tuple, day: str, now, src: str, price=None) -> None:
+        from strategy.shindong import live_legs as _ll
+        P = principal_mod.SHINDONG
+        vb = self._vbook
+        if vb is None:
+            return
+        kind = act[0]
+        if kind == "retracted":
+            rec["retracted"] = True
+            self._sd_vexec_save(day)
+            return
+        if kind == "set_stop":
+            old = rec.get("stop")
+            rec["stop"] = act[1]
+            vb.set_ext(P, stop=act[1], src="shindong(%s)" % src, now=now)
+            self._sd_vexec_save(day)
+            log_manager.trade("[Virtual] 신동 가상 손절 %s → %.2f (%s)" % (old, act[1], src))
+            return
+        vp = vb.position(P)
+        if vp is None:
+            rec["done"] = True
+            self._sd_vexec_save(day)
+            return
+        px = float(price or self._last_pipeline_price or vp["entry"] or 0.0)
+        leg1 = (kind == "exit_leg1" and int(vp["qty"]) >= 2)
+        legs = vb.exit_qty(P, px, 1 if leg1 else int(vp["qty"]), "가상:" + act[1], now)
+        if leg1:
+            be = _ll.after_leg1(rec)
+            if be is not None:
+                vb.set_ext(P, stop=be, src="shindong(BE)", now=now)
+        else:
+            rec["done"] = True
+        if vb.is_flat(P):
+            rec["done"] = True
+        self._sd_vexec_save(day)
+        _ts_vbook_dispatch(self, legs)
 
     def _shindong_adopt(self, trades: list, day: str):
         """기록 없이 신동 포지션을 들고 있다(기록 파일 유실 등) — 같은 방향 최신 OPEN 재생 거래로 복원."""
@@ -9691,12 +9951,17 @@ class TradingSystem:
         else:
             _hz_agreement = 0.5
 
+        # [MW0602 거래주체분리 2단계] 미륵 자동진입 판단의 FLAT — 미륵이 가상이면 가상 장부 기준.
+        #   실거래 주체일 때는 실계좌 FLAT 그대로라 종전과 같다(_ts_mireuk_entry_flat).
+        #   🔴 STEP 8(실계좌 청산 감시)은 이 값을 쓰지 않는다 — 실포지션은 늘 실계좌 기준으로 닫힌다.
+        _mireuk_flat = _ts_mireuk_entry_flat(self)
+
         # Checklist 선행 평가 — MetaGate checklist_grade 결정용
         # 체크리스트는 MetaGate와 독립(features만 사용) → FLAT 포지션 진입 후보 분에 한해 선행 실행
         # 결과(_pre_cr_cache)는 이후 STEP 7 체크리스트 절에서 재사용해 이중 계산 방지
         _pre_cl_grade = grade        # 기본: 앙상블 등급 (포지션 청산 감시 분 등은 이 값 유지)
         _pre_cr_cache = None
-        if direction != DIRECTION_FLAT and self.position.status == "FLAT":
+        if direction != DIRECTION_FLAT and _mireuk_flat:
             if not self.model.is_in_startup_warmup(_ts_dt_obj):
                 try:
                     _cl_min_conf_pre = actual_min_conf
@@ -10082,7 +10347,7 @@ class TradingSystem:
         # direction==0 이거나 포지션 보유 중이면 UnboundLocalError로 파이프라인 전체가
         # 매분 크래시하던 버그 (399차 a603dc6 회귀, 2026-07-29 라이브 중 발견)
 
-        if direction != 0 and self.position.status == "FLAT":
+        if direction != 0 and _mireuk_flat:
             # 재가동 cold-start 워밍업 — elapsed=infmin 이후 3분간 진입 차단
             if self.model.is_in_startup_warmup(_ts_dt_obj):
                 _warmup_remain = int(
@@ -10581,7 +10846,7 @@ class TradingSystem:
         # (_tox_qty_before·_qty_before_hurst)이 "그 시점의 현재 수량"이라는 의미를 유지한다.
         _qty_safety_base = _qty_display
         _quality_mults = {}
-        if direction != 0 and self.position.status == "FLAT":
+        if direction != 0 and _mireuk_flat:
             if self._health_degraded_mode:
                 # DynMC zone_mc(actual_min_conf)를 기준으로 동적 계산.
                 # 고정값 0.62는 현 Platt-보정 conf 분포(32~42%)에서 상시 차단.
@@ -10869,7 +11134,7 @@ class TradingSystem:
         _hurst_soft_block_applied = False
         _hurst_soft_block_noop = None
         if (HURST_SOFT_BLOCK_ENABLED and not _hurst_ok
-                and direction != 0 and self.position.status == "FLAT" and _qty_display > 0):
+                and direction != 0 and _mireuk_flat and _qty_display > 0):
             _hurst_size = HURST_SOFT_BLOCK_SIZE_MULT
             _qty_before_hurst = _qty_display
             # [431차] 품질군 — 배수 등록 후 재합성. no-op 판정 의미는 그대로 보존된다:
@@ -11168,7 +11433,7 @@ class TradingSystem:
         # 이미 죽은 신호를 섞지 않는다. 읽기 전용 계측 — 실거래 의사결정에 관여하지
         # 않음(scripts/generate_validation_campaign_report.py가 주간 사후 판정).
         if (direction != 0
-                and self.position.status == "FLAT"
+                and _mireuk_flat
                 and not _hurst_ok
                 and _final_grade != "X"):
             _hgs_no_hurst_ok = (
@@ -11231,7 +11496,7 @@ class TradingSystem:
         # 등급도 X가 아닌 경우만 대상. 읽기 전용 계측 — 실거래 의사결정에 관여하지
         # 않음(scripts/generate_validation_campaign_report.py가 주간 사후 판정).
         if (direction != 0
-                and self.position.status == "FLAT"
+                and _mireuk_flat
                 and not _open_gap_ok
                 and _final_grade != "X"):
             _ogs_no_gap_ok = (
@@ -11306,7 +11571,7 @@ class TradingSystem:
         _reg_ctr_failed = not _cr.get("checks", {}).get("11_countertrend", True) if _cr else False
         _reg_exhaustion_cond = (
             direction != 0
-            and self.position.status == "FLAT"
+            and _mireuk_flat
             and _final_grade != "X"
             and _cr is not None
             and _reg_hurst_now < HURST_RANGE_THRESHOLD
@@ -11365,7 +11630,7 @@ class TradingSystem:
         # 의사결정에 관여하지 않음(scripts/generate_validation_campaign_report.py가
         # 주간 사후 판정). action="reduce"는 실제 축소 체결로 trades에 남으므로 대상 아님.
         if (direction != 0
-                and self.position.status == "FLAT"
+                and _mireuk_flat
                 and _tox_action == "block"
                 and _tox_grade_before != "X"):
             _tgs_no_tox_ok = (
@@ -11517,7 +11782,7 @@ class TradingSystem:
             _gate_checks["day_regime_shadow_confidence"] = _drs.get("confidence")
 
         _entry_block_reason = ""
-        if direction != 0 and self.position.status == "FLAT":
+        if direction != 0 and _mireuk_flat:
             _cb_state = self.circuit_breaker.state
             if not _ecb_observation_ok:
                 _obs_remain = int((self._ecb_observation_until - datetime.datetime.now()).total_seconds() / 60) + 1
@@ -11699,7 +11964,7 @@ class TradingSystem:
         #     기존 컬럼은 1등 사유 그대로 둔다. 기존 리포트는 무영향.
         # 키는 조회용 안정 식별자다 — 문구가 바뀌어도 키는 유지할 것.
         _block_axes = []
-        if direction != 0 and self.position.status == "FLAT":
+        if direction != 0 and _mireuk_flat:
             for _bk, _bc in (
                 ("ecb_observation",  not _ecb_observation_ok),
                 ("cb_halt",          self.circuit_breaker.state != "NORMAL"),
@@ -12335,17 +12600,19 @@ class TradingSystem:
 
         # ── 진입 차단 이유 로그 (이유가 바뀔 때만 1회 출력) ──────
         # _entry_block_reason은 위(_final_entry_ok 계산 직후)에서 동일 우선순위로 산출됨
-        if direction != 0 and self.position.status == "FLAT":
+        if direction != 0 and _mireuk_flat:
             if _entry_block_reason and _entry_block_reason != self._last_block_reason:
                 log_manager.signal(_entry_block_reason)
                 self._last_block_reason = _entry_block_reason
-        elif direction == 0 or self.position.status != "FLAT":
+        elif direction == 0 or not _mireuk_flat:
             self._last_block_reason = ""
 
         # ── STEP 8: 청산 트리거 감시 ───────────────────────────
         _st.append(("S8", time.perf_counter()))
         if self.position.status != "FLAT":
             self._check_exit_triggers(close, features, decision, bar)
+        # [거래주체분리 2단계] 가상 포지션도 같은 봉으로 청산 사다리를 평가한다(주문 없음).
+        _ts_vbook_on_bar(self, bar, features.get("atr", 0.5))
 
         # ── 청산 패널 갱신 (매분 — 실제 PositionTracker 값 전달) ──
         _pos = self.position
@@ -14249,6 +14516,26 @@ class TradingSystem:
                        _mse_res["n_skip"], _mse_res["rule"]), "INFO")
         except Exception as _mse_e:
             logger.warning("[MireukShadow] 장후 가상 손익 실패: %s", _mse_e, exc_info=True)
+
+        # ── [MW0602 거래주체분리 2단계] 가상 장부 장후 정리 · 주체별 가상 실적 ──────
+        # 15:10 은 2초 폴링이 이미 닫는다. 여기는 그 뒤에도 남은 것(피드 멎음 등)의 안전망이다.
+        # 🔴 가상 레그는 trades·CB·켈리·앙상블로 보내지 않는다 — 집계·로그만.
+        try:
+            from strategy.runtime import virtual_book as _vbm
+            _vb = _ts_vbook(self)
+            if _vb is not None:
+                _ts_vbook_dispatch(self, _vb.close_all(
+                    self._peter2_last_price(), "가상:장마감정리", datetime.datetime.now()))
+            _vpos = _vbm.day_positions(datetime.date.today().isoformat())
+            for _p in principal_mod.PRINCIPALS:
+                _mine = [x for x in _vpos if x["principal"] == _p and x["closed"]]
+                if _mine:
+                    log_manager.system(
+                        "[Virtual] 장후 %s 가상 실적 %s원 — 포지션 %d건 (승 %d)"
+                        % (principal_mod.label(_p), format(sum(x["net"] for x in _mine), "+,d"),
+                           len(_mine), sum(1 for x in _mine if x["net"] > 0)), "INFO")
+        except Exception as _vbe:
+            logger.warning("[Virtual] 장후 정리 실패: %s", _vbe, exc_info=True)
 
         # ── [MW0601 629차] 신동 조건부 러너 섀도 — 장후 1회 ──────────
         # 미륵이 포지션 × 신동 R1 방향 → TP1 뒤 잔량을 신동 최종목표까지 들고 갔다면(가상).
@@ -21112,6 +21399,140 @@ def _ts_sync_from_balance_payload(self, payload: dict) -> None:
     QTimer.singleShot(800, lambda: _ts_refresh_dashboard_balance(self))
 
 
+# ── [MW0602 거래주체분리 2단계] 가상 장부 배선 (사용자 결정 2026-10-14) ──────────────
+#   주체의 진입이 실주문으로 못 나가면(비선택 주체 · 실서버 자동주문 잠금) 가상 장부에서 연다.
+#   🔴 격리: 가상 레그는 trades · CB(②포함) · 켈리 · 앙상블 학습 어디에도 들어가지 않는다.
+#      `strategy/runtime/virtual_book.py` 는 그 경로들을 부르지 않으며, 여기서도 부르지 않는다.
+
+def _ts_vbook(self):
+    """오늘 가상 장부(없으면 만들고 저장본 복원). 실패하면 None — 가상은 부가 기능이다."""
+    from strategy.runtime import virtual_book as _vb
+    day = datetime.date.today().isoformat()
+    if self._vbook is None or self._vbook.date != day:
+        try:
+            self._vbook = _vb.load(
+                day, self._pt_value,
+                force_exit=str(getattr(runtime_settings, "FORCE_EXIT_TIME", "15:10") or "15:10"),
+                tp1_protect_mode=self._tp1_protect_mode,
+                protect_alpha=TP1_PROTECT_PLUS_ALPHA_PTS,
+                protect_atr_lock=TP1_PROTECT_ATR_LOCK_MULT,
+            )
+            _open = [p for p in principal_mod.PRINCIPALS if not self._vbook.is_flat(p)]
+            if _open:
+                log_manager.system("[Virtual] 가상 장부 복원 — 보유 %s" % ", ".join(
+                    principal_mod.label(p) for p in _open), "INFO")
+        except Exception as _e:
+            if not self._vbook_err_logged:
+                self._vbook_err_logged = True
+                logger.warning("[Virtual] 가상 장부 생성 실패(이후 로그 억제): %s", _e, exc_info=True)
+            return None
+    self._vbook.tp1_protect_mode = self._tp1_protect_mode
+    return self._vbook
+
+
+def _ts_is_virtual(self, principal) -> bool:
+    """이 주체의 진입이 지금 실주문으로 못 나가는가.
+
+    v9-dev 에는 dev 의 실서버 자동주문 잠금(REAL_TRADING_ARMED)이 없다(2026-10-14 사용자 결정 —
+    가상 장부만 이식). 그래서 가상 = **선택되지 않은 주체**뿐이다.
+    """
+    return principal != self._principal_state["principal"]
+
+
+def _ts_mireuk_entry_flat(self) -> bool:
+    """미륵 자동진입 판단이 보는 「FLAT」.
+
+    미륵이 실거래 주체면 실계좌 포지션 그대로(종전과 동일). 가상이면 **가상 장부의 미륵 포지션**을
+    본다 — 실계좌를 다른 주체가 들고 있어도 미륵의 판단은 끊기지 않고, 미륵이 가상으로 들고
+    있으면 실제처럼 새 진입을 하지 않는다.
+    """
+    try:
+        if _ts_is_virtual(self, principal_mod.MIREUK):
+            vb = _ts_vbook(self)
+            if vb is not None:
+                return vb.is_flat(principal_mod.MIREUK)
+    except Exception as _e:
+        logger.debug("[Virtual] 미륵 FLAT 판정 폴백(실계좌): %s", _e)
+    return self.position.status == "FLAT"
+
+
+def _ts_vbook_open(self, principal, direction, price, qty, atr, origin, **kw) -> bool:
+    vb = _ts_vbook(self)
+    if vb is None:
+        return False
+    now = datetime.datetime.now()
+    try:
+        ok, why = vb.open(principal, direction, price, qty, atr, now, origin, **kw)
+    except Exception as _e:
+        logger.warning("[Virtual] 가상 진입 실패: %s", _e, exc_info=True)
+        return False
+    _lbl = principal_mod.label(principal)
+    if ok:
+        _pos = vb.position(principal) or {}
+        log_manager.trade(
+            "[Virtual] %s 가상진입 %s %s계약 @%.2f 손절 %.2f%s (%s)"
+            % (_lbl, direction, qty, float(price), float(_pos.get("stop") or 0.0),
+               (" 목표 %.2f" % _pos["target"]) if _pos.get("target") is not None else "", origin))
+    else:
+        log_manager.system("[Virtual] %s 가상진입 생략 — %s" % (_lbl, why), "INFO")
+    return ok
+
+
+def _ts_vbook_dispatch(self, legs) -> None:
+    """가상 레그 후처리 — 로그 · 피터 엔진 통지 · 화면. 🔴 CB·켈리·trades 로는 보내지 않는다."""
+    if not legs:
+        return
+    for r in legs:
+        log_manager.trade(
+            "[Virtual] %s 가상청산 %s %s계약 @%.2f %s | %+.2fpt %s원%s"
+            % (principal_mod.label(r.get("principal")), r.get("direction"), r.get("qty"),
+               float(r.get("exit_px") or 0.0), r.get("reason"), float(r.get("pnl_pts") or 0.0),
+               format(int(r.get("net_krw") or 0), "+,d"), " (포지션 종료)" if r.get("final") else ""))
+        if r.get("final") and r.get("principal") == principal_mod.PETER and self._peter2 is not None:
+            try:
+                _now = datetime.datetime.now()
+                self._peter2.on_peter2_closed(r.get("pos_pnl_pts"), _now, pnl_krw=r.get("net_krw"))
+                self._peter2._ev("CLOSED", _now, pnl_pts=r.get("pos_pnl_pts"), pnl_krw=r.get("net_krw"),
+                                 reason=r.get("reason"), virtual=True)
+                self._peter2_flush(self._peter2.date)
+                peter2_store.save_state(self._peter2.date, self._peter2.snapshot())
+            except Exception as _pe:
+                logger.warning("[Virtual] 피터 가상 청산 통지 실패: %s", _pe)
+    try:
+        self._ts_refresh_principal_views()
+    except Exception as _re:
+        logger.debug("[Virtual] 거래 현황 갱신 실패(무해): %s", _re)
+
+
+def _ts_vbook_on_bar(self, bar: dict, atr: float) -> None:
+    """STEP 8 옆 — 분봉 마감마다 가상 포지션 청산 사다리 평가."""
+    vb = _ts_vbook(self)
+    if vb is None:
+        return
+    try:
+        legs = vb.on_bar(bar, atr, datetime.datetime.now())
+    except Exception as _e:
+        logger.warning("[Virtual] 분봉 평가 실패: %s", _e, exc_info=True)
+        return
+    _ts_vbook_dispatch(self, legs)
+
+
+def _ts_vbook_on_price(self) -> None:
+    """2초 폴링 — 외부 목표 · 틱 TP1 · 15:10 (피드가 멎어도 15:10 은 닫힌다)."""
+    vb = self._vbook
+    if vb is None or all(vb.is_flat(p) for p in principal_mod.PRINCIPALS):
+        return
+    px = self._peter2_last_price()
+    if not px:
+        return
+    try:
+        legs = vb.on_price(px, datetime.datetime.now())
+    except Exception as _e:
+        logger.warning("[Virtual] 가격 평가 실패: %s", _e, exc_info=True)
+        return
+    _ts_vbook_dispatch(self, legs)
+
+
 def _ts_execute_entry(
     self,
     direction: str,
@@ -21176,6 +21597,12 @@ def _ts_execute_entry(
             "[PrincipalBlock] %s 진입 → 섀도(선택 주체=%s) %s %s계약 @%s 등급=%s"
             % (principal_mod.label(_owner), principal_mod.label(_principal),
                direction, quantity, price, grade), "INFO")
+        # [거래주체분리 2단계] 미륵은 여기서 가상 장부에 연다. 피터·신동은 각자의 경로가
+        #   이 관문에 오기 전에 가상으로 돌린다(외부 손절·목표를 그쪽이 알기 때문).
+        if _owner == principal_mod.MIREUK:
+            _ts_vbook_open(self, _owner, direction, price, quantity, atr, "principal",
+                           grade=grade, entry_horizon=entry_horizon, hurst_bucket=hurst_bucket,
+                           extra_stop_mult=extra_stop_mult)
         return
     # [MW0601 2026-10-14] 운영자 진입 일시정지 — 우측상단 [진입정지] 라디오.
     #
