@@ -149,8 +149,12 @@ ACCOUNT_BASE_RISK = 0.03  # 기본 리스크 3% (켈리 기준)
 # [2026-07-16 339차 후속] 1억원 → 5천만원 — ACCOUNT_BASE_RISK 3%와 병행해
 # raw_qty가 2~3계약대에 오도록 재조정(1억원+1%와 산술적으로 유사하나, base_risk
 # 절대금액이 커지면 등급/신뢰도 배수가 raw_qty에 기여하는 비중도 함께 커짐).
+# 🔴 [MW0602 2026-10-13 사용자 결정] 실전 자본 1,500만원 — 전환기준 ⑧ 조건 1(실전 자본 재설정).
+#   ENABLED 는 True 유지(끄면 실제 잔고 기준 3~10계약 체제 복원 — CLAUDE.md ⑧ 경고).
+#   ⚠ 이 값은 자본 대비 MDD(mdd_pct_of_capital)의 분모이기도 하다 — 2026-10-13 전후 MDD 직접 비교 금지.
+#   ⚠ MAX_CONTRACTS(=3)는 이 자본 기준 재산출이 아직이다(사용자 미결정 — DECISION_LOG 2026-10-13).
 SIZING_TARGET_CAPITAL_ENABLED = True
-SIZING_TARGET_CAPITAL_KRW = 50_000_000
+SIZING_TARGET_CAPITAL_KRW = 15_000_000
 
 # [2026-07-12 311차 후속] 미니선물 최소 진입 계약 수 — 기존 3의 도입 근거가
 # dev_memory에 없어(2026-05-12 커밋에 조용히 끼워 넣어짐), TP1/TP2/TP3 분할청산도
@@ -6529,7 +6533,11 @@ COST_MODEL_COMMISSION_RATE_PINNED = True       # ← 교체 시 False
 # ── Circuit Breaker 설정 ───────────────────────────────────────
 CB_SIGNAL_FLIP_LIMIT = 5  # 1분 내 신호 반전 횟수
 CB_SIGNAL_FLIP_PAUSE = 15  # 진입 정지 (분)
-CB_CONSEC_STOP_LIMIT = 9999  # 연속 손절 횟수 — [모의투자 한정 예외, 2026-07-05]
+CB_CONSEC_STOP_LIMIT = 2  # 연속 손절 횟수 — [MW0602 2026-10-13 사용자 결정] 9999 → 2 복원(실거래 전환)
+# 🔴 [MW0602 2026-10-13] 실거래 전환 — 9999(모의 한정 예외) → 2. 전환기준 ⑤.
+#   CLAUDE.md §2 D2(489차)가 묶은 대로 ⑧(실전 자본 재설정 SIZING_TARGET_CAPITAL_KRW)과 같은 커밋.
+#   아래 2026-07-05 문단은 이력으로 보존한다.
+# [이력] 모의투자 한정 예외, 2026-07-05: 9999
 # CLAUDE.md 절대원칙 ②는 "5분 내 손절 3연속 → 당일 정지"이나, 모의투자 단계에서는
 # 거래 기회 확보·데이터 축적(레이블/SGD/SHAP 표본)이 우선이라 9999(사실상 비활성)로 완화.
 # 실투 전환 전 반드시 2~3으로 복원할 것 (ROADMAP.md Phase 5 실전 전환 체크리스트 항목).
@@ -6544,7 +6552,8 @@ CB_CONSEC_STOP_LIMIT = 9999  # 연속 손절 횟수 — [모의투자 한정 예
 # 수동 진입(OPERATOR_MANUAL)과 **모든 청산 경로는 막지 않는다**.
 # 모의 세션에서는 아무것도 하지 않는다. 구현: main.py:_ts_real_trading_block_reason
 # 회귀 가드: tests/test_real_trading_armed.py
-REAL_TRADING_ARMED = False
+# [MW0602 2026-10-13 사용자 결정] True — CB②=2 · 실전 자본 1,500만원 · 신동 1계약과 함께 켬.
+REAL_TRADING_ARMED = True
 REAL_TRADING_CB2_ALLOWED = (2, 3)
 #
 # ── 실서버 외부 포지션 = 감시 전용 [MW0602 2026-10-13 사용자 결정] ──
@@ -7789,7 +7798,7 @@ SHINDONG_REPORT_MAIL_ENABLED = True
 # shindong.db 가상거래만 남는다(그것이 신동의 섀도다).
 #   계획: docs/거래주체분리/거래주체분리_구현계획_MW0602-20261012.md
 # 🔴 15:10 강제청산·15:18 안전망·CB 즉시청산은 신동 포지션에도 그대로 적용된다.
-SHINDONG_LIVE_QTY = 2              # 2계약 2레그(사용자 결정 2026-10-12) — FLOWC 두 레그는 같은 지점에서 닫힌다
+SHINDONG_LIVE_QTY = 1              # 1계약(사용자 결정 2026-10-13 실거래 전환, 종전 2) — 청산은 전량 1회(live_exec.manage)
 SHINDONG_LIVE_MAX_AGE_MIN = 2      # 진입봉이 끝난 뒤 이 분 수가 지나면 쫓지 않는다(재기동·지연)
 
 # ── [MW0601 668차 / MW0602 이식] 피터2 — 피터리 트윗 실시간 추종 매매 ──────────────

@@ -98,8 +98,11 @@ def test_gate_is_wired_before_broker_order():
     assert s.count("self._send_broker_entry_order(") == 1
 
 
-def test_settings_default_is_locked():
+def test_settings_armed_only_with_cb2_restored():
+    """[MW0602 2026-10-13 사용자 결정] ARMED=True 로 전환 — 단 CB② 복원과 함께여야 실효가 있다."""
     with io.open(SETTINGS, encoding="utf-8") as f:
         t = f.read()
-    assert "\nREAL_TRADING_ARMED = False" in t
+    assert "\nREAL_TRADING_ARMED = True" in t
     assert "\nREAL_TRADING_CB2_ALLOWED = (2, 3)" in t
+    import config.settings as S
+    assert S.CB_CONSEC_STOP_LIMIT in S.REAL_TRADING_CB2_ALLOWED

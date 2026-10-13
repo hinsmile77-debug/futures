@@ -38,11 +38,14 @@ def test_cb2_exception_still_held():
     **전환기준 ⑧ 해제와 동일 커밋**으로 재지정했다. MW0601 이 근거로 삼은
     "재검토 기한 2026-08-29" 는 이 브랜치에서 이미 폐기된 기한이다.
     """
-    from config.settings import CB_CONSEC_STOP_LIMIT, SIZING_TARGET_CAPITAL_ENABLED
+    from config.settings import (CB_CONSEC_STOP_LIMIT, SIZING_TARGET_CAPITAL_ENABLED,
+                                 SIZING_TARGET_CAPITAL_KRW)
     if CB_CONSEC_STOP_LIMIT != 9999:
         # 복원했다면 ⑧ 이 함께 해제돼 있어야 한다(같은 커밋 규정).
-        assert not SIZING_TARGET_CAPITAL_ENABLED, (
-            "CB② 를 복원했는데 ⑧(SIZING_TARGET_CAPITAL_ENABLED)이 아직 True 다 — "
+        # ⑧ 해제 = 실전 자본으로 재설정 **또는** False 전환(CLAUDE.md ⑧ 조건 1).
+        #   [MW0602 2026-10-13] 실전 자본 1,500만원 재설정(ENABLED True 유지)으로 해제.
+        assert (not SIZING_TARGET_CAPITAL_ENABLED) or SIZING_TARGET_CAPITAL_KRW != 50_000_000, (
+            "CB② 를 복원했는데 ⑧(모의 목표자본 5천만원)이 그대로다 — "
             "489차 D2 는 둘을 같은 커밋으로 묶었다")
     return CB_CONSEC_STOP_LIMIT
 

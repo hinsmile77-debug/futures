@@ -71,7 +71,10 @@ def test_d2_cb2_limit_unchanged():
     ⚠ 복원 자체는 금지가 아니다 — 다만 **⑧ 해제와 같은 커밋**이어야 한다(D2).
       그 커밋이라면 이 테스트도 함께 고치는 것이 맞다.
     """
-    assert CB_CONSEC_STOP_LIMIT == 9999
+    # [MW0602 2026-10-13 사용자 결정] 실거래 전환 — ⑧(실전 자본 1,500만원)과 같은 커밋에서 2로 복원.
+    from config.settings import SIZING_TARGET_CAPITAL_KRW
+    assert CB_CONSEC_STOP_LIMIT == 2
+    assert SIZING_TARGET_CAPITAL_KRW == 15_000_000
 
 
 def test_d2_cb2_shadow_channel_preregistered():

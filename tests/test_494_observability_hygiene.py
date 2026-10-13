@@ -227,7 +227,8 @@ def test_calibration_reason_axis_registered():
 def test_no_threshold_was_changed():
     """이 커밋 전체가 관측 전용 — 매매에 닿는 상수는 하나도 안 바꿨다."""
     s = _read(os.path.join("config", "settings.py"))
-    assert "CB_CONSEC_STOP_LIMIT = 9999" in s
+    # [MW0602 2026-10-13] CB② 는 실거래 전환 사용자 결정으로 2 복원(이 커밋과 무관한 후속 결정)
+    assert "CB_CONSEC_STOP_LIMIT = 2" in s
     assert "CB3_P4_GRADE_BLOCK_ENABLED = False" in s
     assert "FP_CRITICAL_GRADE_BLOCK_ENABLED = False" in s
     assert "TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED = False" in s
