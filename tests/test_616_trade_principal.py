@@ -250,7 +250,7 @@ def test_main_gate_is_first_and_exits_untouched():
     fn = s[s.index('def _ts_execute_entry('):]
     fn = fn[:fn.index('\ndef ')]
     g = fn.index('principal_mod.is_live_source(entry_source, _principal)')
-    assert g < fn.index('is_server_match()') < fn.index('_send_broker_entry_order')
+    assert g < fn.index('is_entry_paused()') < fn.index('_send_broker_entry_order')
     # 청산 주문 함수는 거래주체를 보지 않는다
     ex = s[s.index('    def _send_broker_exit_order'):]
     ex = ex[:ex.index('\n    def ')]

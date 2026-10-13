@@ -801,6 +801,7 @@ class TradingSystem:
         # [MW0601 542차 이식] 수동 맥점 산출 — 관측 전용(진입·청산·사이징 무관)
         self.dashboard.sig_manual_levels_requested.connect(self._on_manual_levels_requested)
         self.dashboard.sig_auto_mode_changed.connect(self._on_auto_mode_changed)
+        self.dashboard.sig_entry_pause_changed.connect(self._on_entry_pause_changed)
         self.dashboard.sig_layer2_gate_toggled.connect(self._on_layer2_gate_ui_toggled)
         self.dashboard.sig_tp1_protect_mode_changed.connect(self._on_tp1_protect_mode_changed)
         self.dashboard.sig_manual_exit_requested.connect(self._on_manual_exit_requested)
@@ -895,6 +896,9 @@ class TradingSystem:
         # worker 완료 시 (tag, *args) 를 put → 매분 S0 drain → 메인 스레드에서 안전 실행.
         self._deferred_callbacks: _queue.Queue = _queue.Queue()
         self._auto_entry_enabled: bool = True   # Auto On/Off 토글 상태
+        # [MW0601] 우측상단 [진입정지] — 상태 원천은 대시보드(is_entry_paused). 여기는 로그용 계측만.
+        self._entry_pause_since = None           # 정지 시작 시각(datetime) — 해제 로그에 지속시간
+        self._entry_pause_blocked = 0            # 정지 중 차단한 진입 시도 수
         self._auto_entry_disabled_until: object = None  # FATAL 정책이 끈 자동진입 자동복구 시각
         self._manual_entry_ctx: dict = {}        # 마지막 파이프라인 산출값 (수동 진입 버튼용)
         self._last_order_event_key = None
@@ -3626,7 +3630,7 @@ class TradingSystem:
             else:
                 if pos.status == "FLAT":
                     pos.clear_external_levels()
-                self._peter2_reject(date, now, it, "execute_entry_blocked(로그 [EntryBlock] 참조)")
+                self._peter2_reject(date, now, it, "execute_entry_blocked(로그 [EntryBlock]·[EntryPause] 참조)")
             return
         if not pos.is_external_of(PETER2_ENTRY_SOURCE):
             if typ in ("SET_STOP", "SET_TARGET", "EXIT"):
@@ -3698,6 +3702,34 @@ class TradingSystem:
             f"[EntryConfig] 자동진입={'ON' if enabled else 'OFF (수동 전환)'}",
             "WARNING" if not enabled else "INFO",
         )
+
+    def _on_entry_pause_changed(self, paused: bool) -> None:
+        """우측상단 [진입허용][진입정지] 전환 — 로그만 남긴다(차단은 _ts_execute_entry 관문)."""
+        try:
+            _now = datetime.datetime.now()
+            if paused:
+                self._entry_pause_since = _now
+                self._entry_pause_blocked = 0
+                log_manager.system(
+                    f"[EntryPause] 진입 일시정지중 — {_now:%H:%M:%S} 운영자 정지 "
+                    f"(미륵 자동·피터·신동 신규 진입 차단 / 청산·수동 버튼은 동작, "
+                    f"포지션={self.position.status})",
+                    "WARNING",
+                )
+            else:
+                _dur = ""
+                if self._entry_pause_since is not None:
+                    _mins = int((_now - self._entry_pause_since).total_seconds() // 60)
+                    _dur = f" 정지 {_mins}분 · 차단 {self._entry_pause_blocked}건"
+                else:
+                    _dur = " (정지 시작 시각 미기록 — 재기동 전부터 정지)"
+                log_manager.system(
+                    f"[EntryPause] 진입 재개 — {_now:%H:%M:%S}{_dur}", "WARNING",
+                )
+                self._entry_pause_since = None
+                self._entry_pause_blocked = 0
+        except Exception as _e:                                   # noqa: BLE001
+            logger.warning("[EntryPause] 전환 로그 실패(차단 동작은 무관): %s", _e)
 
     def _on_layer2_gate_ui_toggled(self, enabled: bool) -> None:
         """Layer 2 Intraday Gate UI 토글 — ON 시 DAY_RISK_OFF/CRASH 규칙 적용, OFF 시 무시."""
@@ -4954,7 +4986,7 @@ class TradingSystem:
                                               "why": "execute_entry_blocked(로그 [EntryBlock] 참조)",
                                               "entry_ts": pick["entry_ts"],
                                               "at": now.isoformat(timespec="seconds")}
-                        log_manager.system("[ShindongLive] %s 진입 주문이 나가지 않음 — [EntryBlock] 참조"
+                        log_manager.system("[ShindongLive] %s 진입 주문이 나가지 않음 — [EntryBlock]·[EntryPause] 참조"
                                            % key, "WARNING")
                     changed = True
         if changed:
@@ -15049,8 +15081,18 @@ class TradingSystem:
         else:
             _startup_srv = "모의투자" if _is_simul else "실서버"
         notify_startup(_startup_code, _startup_srv)
-        # 대시보드 서버 모드 동기화 (라디오 버튼 불일치 시 진입 차단)
+        # 대시보드에 실제 접속 서버 표시 (읽기전용 라벨 — 2026-10-14부터 라디오는 진입정지 용도)
         self.dashboard.set_server_mode("simul" if _is_simul else "real")
+        # 정지 상태는 재기동해도 유지된다 — 모르고 멈춰 있지 않도록 기동 시 알린다.
+        try:
+            if self.dashboard.is_entry_paused():
+                log_manager.system(
+                    "[EntryPause] 진입 일시정지중 상태로 기동 — 우측상단 [진입허용]을 눌러야 "
+                    "신규 진입이 나갑니다 (청산은 정상 동작)",
+                    "CRITICAL",
+                )
+        except Exception as _ep_e:                                # noqa: BLE001
+            logger.warning("[EntryPause] 기동 시 상태 조회 실패: %s", _ep_e)
 
         self._pre_market_done          = False
         self._pre_market_stage1_done   = False
@@ -19549,40 +19591,34 @@ def _ts_execute_entry(
         log_manager.system(msg, "CRITICAL")
         logger.critical(msg)
         return
-    # [2026-08-06] 서버 구분 하드게이트 — 대시보드 라디오(모의/실서버) 선택이
-    # 실제 접속 서버와 다르면 신규 진입을 보내지 않는다.
+    # [MW0601 2026-10-14] 운영자 진입 일시정지 — 우측상단 [진입정지] 라디오.
     #
-    # 이 게이트는 `dashboard.is_server_match()`로 2026-05월부터 존재했으나
-    # **호출하는 곳이 한 곳도 없어 죽은 코드**였다 — 함수 docstring과 화면 경고
-    # 라벨("⚠ 실접속=... · 진입차단")이 둘 다 차단을 약속하는데 실제로는 빨간
-    # 글씨만 뜨고 주문은 그대로 나갔다. 2026-08-06 실측에서 ServerType=2(실서버)
-    # 세션에 ui_prefs의 라디오가 "simul"로 복원되는 조합이 실재함을 확인해 배선한다.
+    # 이 자리는 2026-08-06부터 「서버 구분 하드게이트」(`is_server_match()`)였다.
+    # 라디오(모의/실서버) 선언이 실제 접속과 다르면 막는 장치였는데, 라디오는 서버를
+    # 바꾸지 못하고 운영자가 사실상 진입 정지 스위치로 쓰고 있어 역할을 바꿨다
+    # (실제 접속 서버는 대시보드 읽기전용 라벨로 표시). 계좌 불일치·broker sync
+    # 게이트는 아래에 그대로 있다.
     #
-    # 연결 전(actual="unknown")은 True를 돌려주므로 기동 구간을 막지 않는다.
-    # 대시보드 조회 자체가 실패하면 판정 불능이므로 **막지 않고 경고만** 남긴다 —
-    # UI 예외로 매매 전체가 정지되는 것이 더 큰 손해이고, 아래 계좌 불일치·
-    # broker sync 게이트가 그대로 살아 있다.
-    try:
-        _server_matched = bool(self.dashboard.is_server_match())
-    except Exception as _srv_e:
-        _server_matched = True
-        logger.warning("[EntryBlock] is_server_match 조회 실패 — 서버 게이트 통과: %s", _srv_e)
-    if not _server_matched:
-        _srv_gubun = ""
+    # · 거래주체 관문 **뒤**에 둔다 — 선택 주체가 아닌 출처는 정지 여부와 무관하게 섀도다.
+    # · OPERATOR_MANUAL(수동 매수/매도 버튼)은 통과 — 운영자가 직접 누른 주문이다.
+    # · 🔴 청산 경로는 이 함수를 지나지 않는다 — 정지 중에도 손절·TP·15:10 청산은 나간다.
+    # · 대시보드 조회가 실패하면 판정 불능이므로 막지 않고 경고만 남긴다(종전 서버 게이트와 같은 이유).
+    if entry_source != "OPERATOR_MANUAL":
         try:
-            _srv_gubun = str(self.broker.get_login_info("GetServerGubun") or "")
-        except Exception:
-            pass
-        _actual_lbl = "모의투자" if _srv_gubun == "1" else "실서버"
-        msg = (
-            f"[EntryBlock] 서버 구분 불일치로 진입 차단 — 실제 접속={_actual_lbl}"
-            f"(ServerType gubun={_srv_gubun or '?'}) 인데 대시보드 선택이 다릅니다. "
-            f"raw={raw_direction} final={direction} qty={quantity}. "
-            f"라디오 선택을 실제 서버에 맞추거나 올바른 서버로 재접속하십시오."
-        )
-        log_manager.system(msg, "CRITICAL")
-        logger.critical(msg)
-        return
+            _entry_paused = bool(self.dashboard.is_entry_paused())
+        except Exception as _ep_e:
+            _entry_paused = False
+            logger.warning("[EntryPause] is_entry_paused 조회 실패 — 정지 게이트 통과: %s", _ep_e)
+        if _entry_paused:
+            self._entry_pause_blocked += 1
+            log_manager.system(
+                f"[EntryPause] 진입 일시정지중 — 신규 진입 차단 "
+                f"출처={entry_source} raw={raw_direction} final={direction} "
+                f"qty={quantity} @{price} 등급={grade} "
+                f"(정지 중 누적 {self._entry_pause_blocked}건)",
+                "WARNING",
+            )
+            return
     # [2026-08-06] 계좌 불일치 하드게이트 — 설정 계좌가 브로커 세션에 없으면
     # 어떤 경로(자동/수동)로도 신규 진입을 보내지 않는다. 잘못된 계좌 체결 방지.
     if getattr(self, "_account_mismatch_block", False):

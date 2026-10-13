@@ -14676,6 +14676,8 @@ class MireukDashboard(QMainWindow):
     sig_code_change_restart_requested = pyqtSignal()  # [234차] 종목변경 재시작 요청
     # [MW0602 거래주체분리] 헤더 [미륵][신동][피터] — 요청만 보낸다. 수락은 main 이 set_principal 로 되돌려 준다.
     sig_principal_change_requested = pyqtSignal(str)
+    # [MW0601] 우측상단 [진입허용][진입정지] — True=일시정지. main 이 로그만 남긴다(상태 원천은 대시보드).
+    sig_entry_pause_changed = pyqtSignal(bool)
 
     def __init__(self, kiwoom=None):
         super().__init__()
@@ -15195,21 +15197,35 @@ class MireukDashboard(QMainWindow):
             f"border:1px solid {C['border']};}}"
             f"QRadioButton::indicator:checked{{border:3px solid {C['bg2']};}}"
         )
+        # [MW0601] 이 자리는 2026-10-14까지 [모의투자][실서버] 「서버 선언」 라디오였다.
+        #   선언이 실제 접속과 다르면 진입을 막는 용도였는데, 서버는 로그인 단계에서 정해지고
+        #   라디오는 아무것도 바꾸지 않아 운영자가 사실상 「진입 정지 스위치」로 쓰고 있었다.
+        #   → 역할을 진입 일시정지로 바꾸고, 실제 접속 서버는 읽기전용 라벨로 보여 준다.
+        #   🔴 막는 것은 **신규 진입**뿐이다. 청산(손절·TP·15:10 강제청산)은 이 버튼과 무관하다.
         self._actual_server_mode = "unknown"   # 브로커 연결 후 set_server_mode()로 갱신
-        self._server_rb_grp = QButtonGroup(self)
-        self.rdo_simul = QRadioButton("모의투자")
-        self.rdo_real  = QRadioButton("실서버")
-        self.rdo_simul.setChecked(True)
-        self.rdo_simul.setCursor(Qt.PointingHandCursor)
-        self.rdo_real.setCursor(Qt.PointingHandCursor)
-        self.rdo_simul.setToolTip("모의투자 서버에서 거래합니다")
-        self.rdo_real.setToolTip("실서버에서 거래합니다 — 실제 자금 위험")
-        self._server_rb_grp.addButton(self.rdo_simul, 0)
-        self._server_rb_grp.addButton(self.rdo_real,  1)
-        self.rdo_simul.setStyleSheet(_rb_style + f"QRadioButton::indicator:checked{{background:{C['cyan']};}}")
-        self.rdo_real.setStyleSheet(_rb_style  + f"QRadioButton::indicator:checked{{background:{C['orange']};}}")
-        self.lbl_server_warn = mk_label("", C['red'], 8, align=Qt.AlignLeft)
-        self.lbl_server_warn.setVisible(False)
+        self._entry_pause_grp = QButtonGroup(self)
+        self.rdo_entry_run   = QRadioButton("진입허용")
+        self.rdo_entry_pause = QRadioButton("진입정지")
+        self.rdo_entry_run.setChecked(True)
+        self.rdo_entry_run.setCursor(Qt.PointingHandCursor)
+        self.rdo_entry_pause.setCursor(Qt.PointingHandCursor)
+        self.rdo_entry_run.setToolTip("자동·외부(피터·신동) 신규 진입을 허용합니다")
+        self.rdo_entry_pause.setToolTip(
+            "신규 진입을 일시 정지합니다 (미륵 자동·피터·신동 전부)\n"
+            "· 보유 포지션 청산(손절·TP·15:10 강제청산)은 그대로 동작\n"
+            "· 수동 매수/매도 버튼은 운영자 의사로 보고 통과\n"
+            "· 재기동해도 정지 상태가 유지됩니다"
+        )
+        self._entry_pause_grp.addButton(self.rdo_entry_run,   0)
+        self._entry_pause_grp.addButton(self.rdo_entry_pause, 1)
+        self.rdo_entry_run.setStyleSheet(_rb_style + f"QRadioButton::indicator:checked{{background:{C['cyan']};}}")
+        self.rdo_entry_pause.setStyleSheet(_rb_style + f"QRadioButton::indicator:checked{{background:{C['red']};}}")
+        # 정지 중 표시 + 실제 접속 서버(읽기전용)
+        self.lbl_entry_pause = mk_label("", C['red'], 8, align=Qt.AlignLeft)
+        self.lbl_entry_pause.setVisible(False)
+        self.lbl_server_actual = mk_label("", C['text2'], 8, align=Qt.AlignLeft)
+        self.lbl_server_actual.setToolTip("브로커 로그인으로 정해진 실제 접속 서버 (읽기전용)")
+        self.lbl_server_actual.setVisible(False)
         # ── DB 초기화 버튼 (잠금해제 체크 후 활성) ────────────────
         self.chk_db_reset_unlock = QCheckBox("🔓")
         self.chk_db_reset_unlock.setChecked(False)
@@ -15244,15 +15260,16 @@ class MireukDashboard(QMainWindow):
         _rdo_row = QHBoxLayout()
         _rdo_row.setSpacing(S.p(8))
         _rdo_row.setContentsMargins(0, 0, 0, 0)
-        _rdo_row.addWidget(self.rdo_simul)
-        _rdo_row.addWidget(self.rdo_real)
-        _rdo_row.addWidget(self.lbl_server_warn)
+        _rdo_row.addWidget(self.lbl_server_actual)
+        _rdo_row.addWidget(self.rdo_entry_run)
+        _rdo_row.addWidget(self.rdo_entry_pause)
+        _rdo_row.addWidget(self.lbl_entry_pause)
         _rdo_row.addWidget(self.chk_state_persist)
         _rdo_row.addWidget(_sep)
         _rdo_row.addWidget(self.chk_db_reset_unlock)
         _rdo_row.addWidget(self.btn_db_reset)
         _rdo_row.addStretch()
-        self.rdo_simul.toggled.connect(self._on_server_mode_changed)
+        self.rdo_entry_pause.toggled.connect(self._on_entry_pause_toggled)
 
         res_box = QVBoxLayout()
         res_box.setSpacing(S.p(1))
@@ -15802,15 +15819,11 @@ class MireukDashboard(QMainWindow):
         main.py connect_broker 성공 후 호출한다.
         """
         self._actual_server_mode = mode
-        self._update_server_warn()
+        self._update_server_label()
 
-    def is_server_match(self) -> bool:
-        """라디오 버튼 선택 == 실제 접속 서버 여부 반환. 불일치 시 진입 차단."""
-        actual = self._actual_server_mode
-        if actual == "unknown":
-            return True   # 연결 전: 제한 없음
-        selected = "simul" if self.rdo_simul.isChecked() else "real"
-        return selected == actual
+    def is_entry_paused(self) -> bool:
+        """[진입정지] 선택 여부. True 면 main 이 신규 진입을 보내지 않는다."""
+        return self.rdo_entry_pause.isChecked()
 
     def _on_db_reset_clicked(self) -> None:
         """손익추이 DB 3테이블 초기화 — 잠금 해제 후 클릭 시 확인 다이얼로그."""
@@ -15862,25 +15875,41 @@ class MireukDashboard(QMainWindow):
             from PyQt5.QtWidgets import QMessageBox as _MB
             _MB.critical(self, "오류", f"DB 초기화 실패:\n{_e}")
 
-    def _on_server_mode_changed(self) -> None:
-        self._update_server_warn()
-        self._save_ui_prefs()
+    def _on_entry_pause_toggled(self, paused: bool) -> None:
+        # 슬롯 예외는 PyQt5 가 qFatal 로 프로세스를 죽인다(617차) — 표시·저장 실패는 삼킨다.
+        #   emit 은 마지막에 따로 감싼다: 표시가 실패해도 main 로그는 남아야 한다.
+        try:
+            self._update_entry_pause_label()
+            self._save_ui_prefs()
+        except Exception as _e:                                   # noqa: BLE001
+            logger.warning("[EntryPause] 표시/저장 실패(정지 상태 자체는 유효): %s", _e)
+        try:
+            self.sig_entry_pause_changed.emit(bool(paused))
+        except Exception as _e:                                   # noqa: BLE001
+            logger.warning("[EntryPause] 상태 통지 실패: %s", _e)
 
-    def _update_server_warn(self) -> None:
-        actual = self._actual_server_mode
-        if actual == "unknown":
-            self.lbl_server_warn.setVisible(False)
-            return
-        selected = "simul" if self.rdo_simul.isChecked() else "real"
-        if selected == actual:
-            self.lbl_server_warn.setVisible(False)
-        else:
-            actual_lbl = "모의투자" if actual == "simul" else "실서버"
-            self.lbl_server_warn.setText(f"⚠ 실접속={actual_lbl} · 진입차단")
-            self.lbl_server_warn.setStyleSheet(
+    def _update_entry_pause_label(self) -> None:
+        if self.rdo_entry_pause.isChecked():
+            self.lbl_entry_pause.setText("⏸ 진입 일시정지중")
+            self.lbl_entry_pause.setStyleSheet(
                 f"color:{C['red']};font-size:{S.f(8)}px;font-weight:bold;"
             )
-            self.lbl_server_warn.setVisible(True)
+            self.lbl_entry_pause.setVisible(True)
+        else:
+            self.lbl_entry_pause.setVisible(False)
+
+    def _update_server_label(self) -> None:
+        actual = self._actual_server_mode
+        if actual not in ("simul", "real"):
+            self.lbl_server_actual.setVisible(False)
+            return
+        is_real = (actual == "real")
+        self.lbl_server_actual.setText("접속:실서버" if is_real else "접속:모의")
+        self.lbl_server_actual.setStyleSheet(
+            f"color:{C['orange'] if is_real else C['cyan']};font-size:{S.f(8)}px;"
+            f"font-weight:{'bold' if is_real else 'normal'};"
+        )
+        self.lbl_server_actual.setVisible(True)
 
     # ── 분할(QSplitter) 크기 저장·복원 ───────────────────────────────────
     #   ui_prefs.json 의 "splitter_sizes": {이름: [px, ...]} 에 둔다.
@@ -15981,7 +16010,7 @@ class MireukDashboard(QMainWindow):
                 "mid_auto_enabled": self.chk_mid_auto.isChecked(),
                 "right_auto_enabled": self.chk_right_auto.isChecked(),
                 "state_persist_enabled": self.chk_state_persist.isChecked(),
-                "server_mode": "simul" if self.rdo_simul.isChecked() else "real",
+                "entry_paused": self.rdo_entry_pause.isChecked(),
                 "chart_auto_popup": self.cmb_chart_auto.currentText() == "자동팝업",
             })
             with open(_UI_PREFS_FILE, "w", encoding="utf-8") as f:
@@ -16046,15 +16075,17 @@ class MireukDashboard(QMainWindow):
             self.chk_state_persist.setChecked(state_persist)
             self.chk_state_persist.blockSignals(False)
 
-            # 서버 모드 복원 (기본 모의투자)
-            saved_mode = prefs.get("server_mode", "simul")
-            is_real = (saved_mode == "real")
-            self.rdo_simul.blockSignals(True)
-            self.rdo_real.blockSignals(True)
-            self.rdo_real.setChecked(is_real)
-            self.rdo_simul.setChecked(not is_real)
-            self.rdo_simul.blockSignals(False)
-            self.rdo_real.blockSignals(False)
+            # 진입 일시정지 복원 (기본 허용). 정지 상태는 재기동해도 유지한다 —
+            #   「모르고 풀리는」 쪽이 「모르고 멈춰 있는」 쪽보다 비싸다. 기동 시 main 이 로그로 알린다.
+            #   종전 "server_mode" 키는 읽지 않는다(라디오 역할 변경, 2026-10-14).
+            paused = bool(prefs.get("entry_paused", False))
+            self.rdo_entry_run.blockSignals(True)
+            self.rdo_entry_pause.blockSignals(True)
+            self.rdo_entry_pause.setChecked(paused)
+            self.rdo_entry_run.setChecked(not paused)
+            self.rdo_entry_run.blockSignals(False)
+            self.rdo_entry_pause.blockSignals(False)
+            self._update_entry_pause_label()
 
             # 봉차트 자동팝업 복원 (기본 수동)
             chart_auto = bool(prefs.get("chart_auto_popup", False))
@@ -16741,6 +16772,7 @@ class DashboardAdapter:
         self.sig_code_change_restart_requested = self._win.sig_code_change_restart_requested
         # [MW0602 거래주체분리] 거래주체 전환 요청
         self.sig_principal_change_requested = self._win.sig_principal_change_requested
+        self.sig_entry_pause_changed = self._win.sig_entry_pause_changed
 
     # ── 필수 메서드 ────────────────────────────────────────────
     def show(self):
@@ -16784,9 +16816,9 @@ class DashboardAdapter:
         """실제 접속 서버 타입 전달 (mode: 'simul' | 'real'). connect_broker 후 호출."""
         self._win.set_server_mode(mode)
 
-    def is_server_match(self) -> bool:
-        """라디오 선택 == 실제 서버 여부. False 시 진입 차단해야 함."""
-        return self._win.is_server_match()
+    def is_entry_paused(self) -> bool:
+        """우측상단 [진입정지] 선택 여부. True 시 신규 진입 차단(청산 무관)."""
+        return self._win.is_entry_paused()
 
     def set_principal(self, principal: str, locked: bool = False) -> None:
         """[MW0602 거래주체분리] 실제 거래주체·전환 잠금을 헤더 버튼·잔고 배지에 반영."""
