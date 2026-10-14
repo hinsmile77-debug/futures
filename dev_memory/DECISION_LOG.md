@@ -49594,3 +49594,26 @@ CpTd6197 idx6(금일매매손익)은 모의=gross, 실계좌=net. 코드 전 구
 
 ### 검증
 `tests/test_628_broker_axis_and_balance_measured.py` 9건 + 관련 118건 통과, py37_32 컴파일, `commission_rate_recon.py --verify` PASS(10/14 net 축 제외 명시). **라이브 미검증** — O-107(2026-10-15).
+
+## 2026-10-14 (MW0602 629차 — v9-dev 배포 설명 정정 · ProfitGuard broker 추정 수수료 이중 차감 수정)
+
+### 증상
+v9-dev 체리픽 `8a5f782` 커밋 메시지에 "MW0601(모의계좌)에서는 세 가지 모두 동작 변화 없음"이라고 써서 push했다. 사용자 정정: **MW0601도 실계좌다**(2026-10-13~, CYBOS · 사이징 목표자본 5천만 · 손실한도 실운영금 1,500만 · MAX_CONTRACTS=1).
+재검토 중 연쇄 효과 발견: ProfitGuard broker 추정이 `idx6 − 엔진 수수료`인데 실계좌 idx6은 이미 수수료 후 → **수수료 이중 차감**. 626차 날짜 재시도로 실계좌 조회가 살아나면서 이 경로가 처음 실데이터를 받게 됐다(dev·v9-dev 공통 코드).
+
+### 원인
+497차 P3 축 정합이 「idx6 = gross」(모의 실측) 전제로 설계됐다. 실계좌 조회는 그동안 날짜 형식 때문에 실패해 이 경로가 캐시 None → 엔진 폴백으로만 돌았다.
+
+### 결정
+- `main.py` — `_broker_pnl_axis_seen`(init None) 신설. 잔고 요약 수신 시 `broker_pnl_axis(idx6, 익일가−예탁, 엔진 수수료)` 로 판별해 `[PnL] 브로커 금일매매손익 축 판별 = …` 1회 로그. "net" 은 프로세스 동안 고정(보유 중 미실현 혼입으로 흔들리지 않게). net 축이면 broker 추정에서 수수료를 빼지 않고 source=`broker_net`.
+- 영향 범위: `PROFIT_GUARD_SYSTEM_ONLY_PNL=True`(양 브랜치)라 **판정값이 아니라 `[DebugPnL] broker=` 표시값**만 바뀐다. False 로 바꾸면 판정값이 된다.
+- v9-dev 에 같은 수정 + 정정 기록을 체리픽해 push(사용자 승인).
+
+### Why
+v9-dev 배포 영향 평가를 "MW0601=모의" 전제로 했다 — 틀린 전제로 "변화 없음"을 보증한 것이 문제의 본체다. 실제 MW0601 영향: 일일손익 조회 복구(의도), 사이징·ProfitGuard 판정 무변경, DebugPnL 이중 차감(이번 수정).
+
+### How to apply
+v9-dev 배포 시 MW0601 을 실계좌로 보고 실계좌 경로 영향을 평가할 것(개인 메모리 `project_both_pcs_real_account`).
+
+### 검증
+`tests/test_629_profitguard_broker_axis.py` 4건 + 관련 162건 통과, py37_32 컴파일. 라이브 확인: 다음 기동 후 `[PnL] 브로커 금일매매손익 축 판별 = net` 1회 출현, `[ProfitGuard][DebugPnL] source=…` 의 broker 값이 브로커 net 과 일치.
