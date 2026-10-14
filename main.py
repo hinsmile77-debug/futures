@@ -1257,6 +1257,10 @@ class TradingSystem:
         self._pre_retrain_done: bool = False         # True이면 방법3 레이블 GBM 사용 중
         self._last_balance_result: dict = {}
         self._last_sizer_balance: float = 100_000_000.0
+        # [MW0602 629차] CpTd6197 금일매매손익(idx6) 축 — 모의=수수료 전 / 실계좌=수수료 후.
+        #   None = 아직 판별 못 함. 한 번 "net" 으로 판별되면 프로세스 동안 유지(계좌 성질이라
+        #   바뀌지 않는다 — 보유 중 미실현이 섞여 판별이 흔들리는 것을 막는다).
+        self._broker_pnl_axis_seen: Optional[str] = None
         self._effect_report_tick: int = 0
         self._effect_report_running: bool = False
         self._canary_1m_last_run_date: object = None  # [331차 후속2] 1일 1회 실행 게이트
@@ -11269,10 +11273,15 @@ class TradingSystem:
                     # gross − 당일 엔진 수수료 합 = net 추정.
                     # ⚠ 보유 중에는 gross에 미실현이 섞이고 미청산 진입 레그의
                     #   수수료는 아직 trades에 없어 약간 낙관 — 청산 시 해소된다.
-                    _comm_today = _ts_engine_commission_today(self, _today_key)
-                    _broker_daily_pnl_now = float(_cached_realized) - _comm_today
+                    # [MW0602 629차] 실계좌(net 축)는 idx6 이 이미 수수료 후 — 다시 빼면 이중 차감.
+                    if self._broker_pnl_axis_seen == "net":
+                        _broker_daily_pnl_now = float(_cached_realized)
+                        _daily_pnl_source = "broker_net"
+                    else:
+                        _comm_today = _ts_engine_commission_today(self, _today_key)
+                        _broker_daily_pnl_now = float(_cached_realized) - _comm_today
+                        _daily_pnl_source = "broker_net_est"
                     _daily_pnl_now = _broker_daily_pnl_now
-                    _daily_pnl_source = "broker_net_est"
                 except Exception as _pnl_e:
                     logger.warning("[PnL] 브로커 일일손익 float 변환 실패 — 내부 추정값 사용: %s", _pnl_e)
         # ── 🔴 [MW0601 546차 / 사용자 지시] ProfitGuard 판정 손익 축 교체 ──────
@@ -20642,6 +20651,24 @@ def _ts_push_balance_to_dashboard(self, result: dict, *, quiet: bool = False) ->
         try:
             self._last_balance_realized_krw = float(_num(broker_realized_text))
             self._last_balance_realized_date = today_str
+            # [MW0602 629차] 축 판별 — 예탁현금 축 net(익일가 − 예탁)과 idx6 이 1원 이내면 net 축.
+            if is_cybos_balance and self._broker_pnl_axis_seen != "net":
+                from utils.db_utils import broker_pnl_axis as _ax_fn
+                _ax_dep = _num(summary.get("총매매"))
+                _ax_nxt = _num(summary.get("총평가수익률"))
+                if _ax_dep > 0 and _ax_nxt > 0:
+                    _ax = _ax_fn(self._last_balance_realized_krw, _ax_nxt - _ax_dep,
+                                 _ts_engine_commission_today(self, today_str))
+                    if _ax is not None and _ax != self._broker_pnl_axis_seen:
+                        self._broker_pnl_axis_seen = _ax
+                        log_manager.system(
+                            f"[PnL] 브로커 금일매매손익 축 판별 = {_ax} "
+                            f"(idx6 {self._last_balance_realized_krw:+,.0f} vs 예탁현금 축 net "
+                            f"{_ax_nxt - _ax_dep:+,.0f}) — "
+                            + ("수수료 후 값이라 ProfitGuard broker 추정에서 수수료를 다시 빼지 않는다"
+                               if _ax == "net" else "수수료 전 값 — 엔진 수수료를 빼서 net 추정"),
+                            "INFO",
+                        )
         except Exception as _brk_e:
             logger.warning("[Balance] 실현손익 파싱 실패 — ProfitGuard 기준값 부정확 가능성: %s", _brk_e)
     if not is_cybos_balance:
