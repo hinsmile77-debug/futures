@@ -122,6 +122,8 @@ from config.constants import PETER2_ENTRY_SOURCE, SHINDONG_ENTRY_SOURCE, EXTERNA
 from strategy.runtime import trade_principal as principal_mod
 from strategy.peter2.follower import Peter2Follower
 from strategy.peter2 import store as peter2_store
+from strategy.peter2 import trail as peter2_trail
+from strategy.peter2.parse import parse_tweet as peter2_parse_tweet
 # [2026-08-06] 자본 기준 단일 출처. daily_loss_pct 분모가 세 곳에
 # `max(잔고, 50_000_000)` 으로 하드코딩돼 있던 것을 이 모듈로 이관했다.
 from config.capital import (
@@ -1166,6 +1168,11 @@ class TradingSystem:
         # [거래주체분리 2단계] 이번 틱의 실효 모드 — 엔진 상태(실계좌 vs 가상 장부)를 고른다. 기본 off.
         self._peter2_mode_now = "off"
         self._peter2_stale_logged = False      # 수집기 정지 경보 1회 제한
+        # [MW0601 690차 후속] 이익보호 트레일(실거래) · 기존 규칙 섀도. None = 해당 포지션/섀도 없음.
+        self._p2trail = None                   # strategy.peter2.trail.Peter2Trail
+        self._p2ghosts: list = []              # 진행 중인 strategy.peter2.trail.NoTrailGhost 목록
+        self._p2trail_date = None              # 영속 상태를 읽은 날짜(재기동 복원 1회)
+        self._p2trail_skip_key = None          # ATR 비정상으로 트레일 미적용한 포지션 키(경고 1회)
         self._peter2_override_mtime = None     # 당일 수동 오프셋 파일 mtime(668차 후속7)
         # [MW0602 615차 후속2] 오프셋 장중 자동 실측 — 스케줄러 틱이 재고 폴링 틱이 반영한다.
         self._peter2_live_offset_mtime = None  # offset_live.json mtime(반영 여부 판단)
@@ -4023,14 +4030,184 @@ class TradingSystem:
             _px = float(self._last_pipeline_price or 0.0) or None
         except Exception:
             _px = None
+        # [690차 후속] 트레일이 손절을 올려 둔 동안에도 추종 엔진에는 **피터 규칙의 손절**을 보인다 —
+        #   그래야 피터의 조건부 손절(tighten)·체결 근접 판정이 「트레일 없는 세계」와 같게 돈다.
+        #   실손절(pos.ext_stop)은 둘 중 더 보호적인 값이다(_peter2_execute SET_STOP 참조).
+        _stop = pos.ext_stop if _ext else None
+        _tr = self._p2trail_for(pos) if _ext else None
+        if _tr is not None and _tr.armed:
+            _stop = _tr.base_stop
         return {
             "status": pos.status,
             "source": pos.entry_source,
             "pending": self._has_pending_order(),
             "price": _px,
-            "stop": pos.ext_stop if _ext else None,
+            "stop": _stop,
             "target": pos.ext_target if _ext else None,
         }
+
+    # ── [MW0601 690차 후속] 피터2 이익보호 트레일(실거래) + 기존 규칙 섀도 ────────────
+    @staticmethod
+    def _p2trail_key(pos) -> str:
+        """포지션 식별자 — 체결보정으로 진입가가 바뀌어도 같아야 하므로 진입 시각(초)·방향만 쓴다."""
+        return "%s|%s" % (str(pos.entry_time or "")[:19], pos.status)
+
+    def _p2trail_for(self, pos):
+        """현재 실포지션의 트레일 상태(없거나 다른 포지션 것이면 None)."""
+        tr = self._p2trail
+        if tr is None or tr.pos_key != self._p2trail_key(pos):
+            return None
+        return tr
+
+    def _p2trail_mode(self) -> str:
+        return str(getattr(runtime_settings, "PETER2_TRAIL_MODE", "off") or "off").lower()
+
+    def _p2trail_poll(self, date: str, now, new_rows) -> None:
+        """2초 폴링(`_peter2_tick_body`)에서 호출. 주문은 내지 않는다 —
+        보호선을 `pos.ext_stop` 으로 올리기만 하고, 터치 청산은 기존 틱 하드스톱 경로가 한다.
+        🔴 COM 콜백이 아니라 QTimer 슬롯 안이다(절대원칙 §4 무관). 새 타이머를 만들지 않는다(617차)."""
+        if self._p2trail_mode() != "live":
+            return
+        hm = now.strftime("%H:%M")
+        price = self._peter2_last_price()
+        # 재기동 복원 — 날짜당 1회
+        if self._p2trail_date != date:
+            self._p2trail_date = date
+            _tr, _ghs = peter2_trail.load_state(peter2_store.LIVE_DIR, date)
+            self._p2trail, self._p2ghosts = _tr, list(_ghs)
+            if _tr is not None or _ghs:
+                log_manager.system(
+                    "[Peter2Trail] 상태 복원 — 트레일=%s 섀도 %d건 진행" % (
+                        ("%s 무장=%s 보호선=%s" % (_tr.pos_key, _tr.armed, _tr.trail_stop)) if _tr else "-",
+                        len(_ghs)), "INFO")
+        dirty = False
+        # ① 기존 규칙 섀도 — 트윗 사실 → 가격 순
+        if self._p2ghosts:
+            fw = self._peter2
+            facts_all = []
+            for tw in new_rows or []:
+                try:
+                    facts_all.append(peter2_parse_tweet(tw.get("text") or "").get("facts") or [])
+                except Exception:
+                    pass
+            for gh in self._p2ghosts:
+                for facts in facts_all:
+                    if facts and fw is not None and not gh.done:
+                        gh.on_facts(facts, price, hm, fw._m,
+                                    stop_cap=float(getattr(runtime_settings, "PETER2_STOP_CAP_PT", 8.0)))
+                        dirty = True
+                if not gh.done and price:
+                    gh.on_price(price, hm)
+                if gh.done:
+                    self._p2trail_record(date, gh)
+                    dirty = True
+            self._p2ghosts = [g for g in self._p2ghosts if not g.done]
+        # ② 실포지션 트레일
+        pos = self.position
+        if (pos.is_external_of(PETER2_ENTRY_SOURCE) and pos.quantity > 0
+                and not self._has_pending_order() and price):
+            tr = self._p2trail_for(pos)
+            key = self._p2trail_key(pos)
+            if tr is None and self._p2trail_skip_key != key:
+                atr = None
+                try:
+                    atr = float((self._manual_entry_ctx or {}).get("atr") or 0.0)
+                except (TypeError, ValueError):
+                    atr = None
+                lo = float(getattr(runtime_settings, "PETER2_TRAIL_ATR_MIN", 0.3))
+                hi = float(getattr(runtime_settings, "PETER2_TRAIL_ATR_MAX", 15.0))
+                tr = peter2_trail.Peter2Trail(
+                    float(getattr(runtime_settings, "PETER2_TRAIL_ARM_ATR", 4.5)),
+                    float(getattr(runtime_settings, "PETER2_TRAIL_BACK_ATR", 3.5)))
+                if atr is None or not (lo <= atr <= hi) or not tr.start(
+                        key, pos.status, pos.entry_price, atr, pos.ext_stop, pos.ext_target):
+                    # 계측 4원칙 ④ — 폴백 ATR 로 트레일을 걸지 않는다. 이 포지션은 기존 규칙 그대로.
+                    self._p2trail_skip_key = key
+                    log_manager.system(
+                        "[Peter2Trail] 트레일 미적용 — 진입 ATR 비정상(%s, 허용 %.1f–%.1f) · 기존 규칙으로 보유"
+                        % (atr, lo, hi), "WARNING")
+                    tr = None
+                else:
+                    self._p2trail = tr
+                    dirty = True
+                    log_manager.trade(
+                        "[Peter2Trail] 감시 시작 %s @%.2f ATR=%.2f → 무장 +%.2fpt(%.2f) · 보호 간격 %.2fpt · 피터손절 %s"
+                        % (pos.status, tr.entry, tr.atr, tr.arm_pt,
+                           tr.entry + (tr.arm_pt if tr.side == "L" else -tr.arm_pt),
+                           tr.back_pt, tr.base_stop))
+            if tr is not None:
+                tr.target = pos.ext_target
+                was_armed = tr.armed
+                new_lvl = tr.on_price(price, hm)
+                if new_lvl is not None:
+                    eff = tr.effective_stop()
+                    if eff is not None and (pos.ext_stop is None or abs(eff - pos.ext_stop) > 1e-9):
+                        pos.set_external_levels(stop=eff, src="trail")
+                    log_manager.trade(
+                        "[Peter2Trail] %s 보호선 %.2f (고점 %.2f · MFE %+.2fpt · 잠금 %+.2fpt · 피터손절 %s)"
+                        % ("무장" if not was_armed else "상향", new_lvl, tr.peak_px, tr.mfe_pt(),
+                           (new_lvl - tr.entry) if tr.side == "L" else (tr.entry - new_lvl), tr.base_stop))
+                    if self._peter2 is not None:
+                        self._peter2._ev("TRAIL", now, level=new_lvl, peak=tr.peak_px,
+                                         mfe=round(tr.mfe_pt(), 2), armed_now=not was_armed)
+                    dirty = True
+        if dirty:
+            try:
+                peter2_trail.save_state(peter2_store.LIVE_DIR, date, self._p2trail, self._p2ghosts)
+            except Exception as _se:
+                logger.warning("[Peter2Trail] 상태 저장 실패: %s", _se)
+
+    def _p2trail_on_closed(self, result: dict) -> None:
+        """피터2 실포지션 종료 후처리 — 트레일이 먼저 내보냈으면 기존 규칙 섀도를 시작한다."""
+        tr = self._p2trail
+        if tr is None or self._p2trail_mode() != "live":
+            return
+        now = datetime.datetime.now()
+        date = now.date().isoformat()
+        reason = str(result.get("exit_reason") or "")
+        real_px = result.get("exit_price")
+        real_pnl = result.get("pnl_pts")
+        # 트레일 청산 = 무장 상태 + 실손절을 트레일이 정하던 중 + 스톱 경로 청산
+        by_trail = tr.trail_binding() and ("스톱" in reason or "손절" in reason)
+        if by_trail:
+            gh = peter2_trail.NoTrailGhost(
+                tr.pos_key, tr.side, tr.entry, tr.base_stop, tr.target, now.strftime("%H:%M"),
+                real_px, real_pnl, atr=tr.atr, peak_px=tr.peak_px)
+            self._p2ghosts.append(gh)
+            log_manager.trade(
+                "[Peter2Trail] 보호선 청산 @%s (%+.2fpt) — 기존 규칙 섀도 시작: 피터손절 %s · 목표 %s"
+                % (real_px, float(real_pnl or 0.0), tr.base_stop, tr.target))
+            if self._peter2 is not None:
+                self._peter2._ev("TRAIL_EXIT", now, price=real_px, pnl_pts=real_pnl,
+                                 base_stop=tr.base_stop, peak=tr.peak_px)
+        else:
+            # 트레일이 청산에 관여하지 않았다 — 두 규칙의 결과가 같다(Δ=0)
+            peter2_trail.append_result(peter2_store.LIVE_DIR, {
+                "date": date, "pos_key": tr.pos_key, "side": tr.side, "entry": tr.entry,
+                "atr": tr.atr, "armed": tr.armed, "mfe_pt": round(tr.mfe_pt(), 2),
+                "real_exit_px": real_px, "real_pnl_pts": real_pnl, "real_reason": reason,
+                "shadow_exit_px": real_px, "shadow_pnl_pts": real_pnl,
+                "shadow_why": "동일(트레일 미관여)", "delta_pts": 0.0, "divergence": False})
+        self._p2trail = None
+        try:
+            peter2_trail.save_state(peter2_store.LIVE_DIR, date, None, self._p2ghosts)
+        except Exception as _se:
+            logger.warning("[Peter2Trail] 상태 저장 실패: %s", _se)
+
+    def _p2trail_record(self, date: str, gh) -> None:
+        sh = gh.pnl_pts()
+        delta = None if (sh is None or gh.real_pnl_pts is None) else round(gh.real_pnl_pts - sh, 2)
+        peter2_trail.append_result(peter2_store.LIVE_DIR, {
+            "date": date, "pos_key": gh.pos_key, "side": gh.side, "entry": gh.entry,
+            "atr": gh.atr, "armed": True, "peak_px": gh.peak_px,
+            "real_exit_px": gh.real_exit_px, "real_pnl_pts": gh.real_pnl_pts, "real_reason": "트레일 보호선",
+            "trail_exit_hm": gh.start_hm,
+            "shadow_exit_px": gh.exit_px, "shadow_exit_hm": gh.exit_hm, "shadow_pnl_pts": sh,
+            "shadow_why": gh.exit_why, "delta_pts": delta, "divergence": True})
+        log_manager.trade(
+            "[Peter2TrailShadow] 기존 규칙이었다면 %s %s @%.2f (%+.2fpt) · 트레일 실현 %+.2fpt → Δ %s"
+            % (gh.exit_hm, gh.exit_why, gh.exit_px, sh or 0.0, gh.real_pnl_pts or 0.0,
+               ("%+.2fpt" % delta) if delta is not None else "미측정"))
 
     def _peter2_init(self, date: str, now) -> None:
         off, src, safe = peter2_store.load_offset(date)
@@ -4225,6 +4402,14 @@ class TradingSystem:
                 fw._ev("REJECT", now, sig=it.get("sig"), why="exception:%s" % _xe,
                        intent=it.get("type"))
                 log_manager.system(f"[Peter2] {it.get('type')} 집행 예외 — {_xe}", "ERROR")
+        # [690차 후속] 이익보호 트레일(실거래) · 기존 규칙 섀도 — 실계좌(live) 모드에서만.
+        #   예외를 가둔다 — 트레일 실패가 피터 추종 자체(청산가·하트비트)를 멈추면 안 된다.
+        if mode == "live":
+            try:
+                self._p2trail_poll(date, now, new_rows)
+            except Exception as _te:
+                logger.exception("[Peter2Trail] 폴링 예외: %s", _te)
+                log_manager.system(f"[Peter2Trail] 폴링 예외 — {_te}", "ERROR")
         # 그가 걸어 둔 청산가 — 2초 폴링으로 본다(지정가 대기 주문은 내지 않는다)
         _eng = self._peter2_engine_state()
         if (_eng["price"] and not _eng["pending"]
@@ -4384,11 +4569,26 @@ class TradingSystem:
             elif pos.status == "SHORT" and new > ent + cap:
                 new, capped = round(ent + cap, 2), True
             old = pos.ext_stop
-            pos.set_external_levels(stop=new, src="peter(capped)" if capped else "peter")
+            # [690차 후속] 트레일 무장 중이면 피터 손절은 「기존 규칙 손절」로만 기록하고,
+            #   실손절은 둘 중 더 보호적인 값을 쓴다(피터가 손절을 내려도 잠근 이익을 풀지 않는다).
+            _tr = self._p2trail_for(pos)
+            applied, held = new, False
+            if _tr is not None:
+                eff = _tr.on_base_stop(new)
+                if eff is not None and abs(eff - new) > 1e-9:
+                    applied, held = eff, True
+            pos.set_external_levels(stop=applied,
+                                    src="trail" if held else ("peter(capped)" if capped else "peter"))
             fw._ev("SET_STOP", now, sig=it.get("sig"), old=old, new=new, capped=capped,
-                   why=it.get("why"))
-            log_manager.trade("[Peter2] 손절가 %s → %.2f%s (%s)" % (
-                old, new, " (캡)" if capped else "", it.get("why")))
+                   why=it.get("why"), applied=applied, trail_held=held)
+            log_manager.trade("[Peter2] 손절가 %s → %.2f%s (%s)%s" % (
+                old, new, " (캡)" if capped else "", it.get("why"),
+                (" — 트레일 보호선 %.2f 유지(실손절)" % applied) if held else ""))
+            if _tr is not None:
+                try:
+                    peter2_trail.save_state(peter2_store.LIVE_DIR, date, self._p2trail, self._p2ghosts)
+                except Exception as _se:
+                    logger.warning("[Peter2Trail] 상태 저장 실패: %s", _se)
             return
         if typ == "SET_TARGET":
             old = pos.ext_target
@@ -13707,6 +13907,11 @@ class TradingSystem:
                 peter2_store.save_state(self._peter2.date, self._peter2.snapshot())
             except Exception as _p2e:
                 logger.warning("[Peter2] 청산 후처리 실패: %s", _p2e)
+        if _is_p2:
+            try:
+                self._p2trail_on_closed(result)        # [690차 후속] 트레일 청산이면 기존 규칙 섀도 시작
+            except Exception as _tce:
+                logger.warning("[Peter2Trail] 청산 후처리 실패: %s", _tce)
         # EnsembleGater 온라인 가중치 갱신 — 진입 시 저장된 gate signals 사용
         if self._last_gate_signals and self._last_gate_direction != 0 and not _is_ext:
             try:
