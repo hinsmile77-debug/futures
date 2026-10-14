@@ -14192,13 +14192,44 @@ class TradingSystem:
         try:
             from utils.db_utils import (update_daily_broker_pnl_net,
                                        fetch_broker_daily_pnl_map,
+                                       fetch_broker_net, broker_pnl_axis,
+                                       NET_RECON_ABS_TOL_KRW,
                                        reconcile_daily_net)
             _f4_gross = float(stats.get("gross_krw", 0.0) or 0.0)
             _f4_comm = float(stats.get("commission", 0.0) or 0.0)
             _f4_net = float(stats.get("pnl_krw", 0.0) or 0.0)
             update_daily_broker_pnl_net(today_str, _f4_gross, _f4_comm, _f4_net)
             _f4_broker = fetch_broker_daily_pnl_map(3).get(today_str)
-            if _f4_broker is not None and abs(_f4_broker - _f4_gross) > 1.0:
+            # ── [MW0602 628차] 브로커 「금일매매손익」의 축은 서버마다 다르다 ──
+            # 모의 = 수수료 전(gross) / 실계좌 = 수수료 후(net). 2026-10-14 실계좌에서
+            # gross 로 대조해 `gross 불일치 −3,647원`(= 수수료) 거짓 경보가 났다.
+            # 브로커 net(예탁현금 축)이 있으면 데이터로 축을 가른다(`broker_pnl_axis`).
+            _f4_bn = fetch_broker_net(today_str)
+            _f4_axis = (broker_pnl_axis(_f4_broker, _f4_bn["net_krw"], _f4_comm)
+                        if (_f4_bn is not None and _f4_broker is not None) else None)
+            if _f4_axis == "net":
+                _f4_d = _f4_broker - _f4_net
+                log_manager.system(
+                    f"[BrokerPnl] broker 금일매매손익은 **net 축**(수수료 후 — 실계좌) — "
+                    f"engine net 과 대조: broker {_f4_broker:+,.0f} vs engine net "
+                    f"{_f4_net:+,.0f}원 (차 {_f4_d:+,.0f}원) → "
+                    + ("일치" if abs(_f4_d) <= NET_RECON_ABS_TOL_KRW else "🔴 불일치 — 확인 필요")
+                    + ". gross 대사는 브로커 원천이 없어 **미측정**",
+                    "INFO" if abs(_f4_d) <= NET_RECON_ABS_TOL_KRW else "WARNING",
+                )
+            elif _f4_broker is not None and abs(_f4_broker - _f4_gross) > 1.0:
+                # 축 판별 불가(브로커 net 미수신)인데 engine net 쪽에 더 가까우면 그 사실을 함께
+                # 남긴다 — 확정하지 않는다(실계좌라면 이 필드는 수수료 후 금액일 수 있다).
+                _f4_hint = ""
+                if _f4_bn is None and abs(_f4_broker - _f4_net) < abs(_f4_broker - _f4_gross):
+                    _f4_hint = (f" ※ engine net 과는 차 {_f4_broker - _f4_net:+,.0f}원 — "
+                                f"실계좌는 이 필드가 수수료 후(net)다(628차). 브로커 net 미수신이라 축 판별 불가")
+                log_manager.system(
+                    f"[BrokerPnl] gross 불일치 — broker {_f4_broker:+,.0f}원 vs "
+                    f"engine {_f4_gross:+,.0f}원 (차 {_f4_broker - _f4_gross:+,.0f}원). "
+                    f"체결 누락 또는 브로커 미정산 가능 — 확인 필요" + _f4_hint,
+                    "WARNING",
+                )
                 log_manager.system(
                     f"[BrokerPnl] gross 불일치 — broker {_f4_broker:+,.0f}원 vs "
                     f"engine {_f4_gross:+,.0f}원 (차 {_f4_broker - _f4_gross:+,.0f}원). "
@@ -14240,12 +14271,16 @@ class TradingSystem:
                 )
             elif _rec["status"] == "MISMATCH":
                 _ratio = _rec["commission_ratio"]
+                # [628차] 실계좌(net 축)는 브로커 수수료가 미측정(None)이다 — 0 으로 찍지 않는다.
+                _bc_txt = ("{:,.0f}원".format(_rec["broker_commission"])
+                           if _rec["broker_commission"] is not None
+                           else "미측정(실계좌 net 축)")
                 log_manager.system(
                     f"[NetRecon] 🔴 net 불일치 — 엔진 {_rec['engine_net']:+,.0f}원 vs "
                     f"브로커 {_rec['broker_net']:+,.0f}원 (잔차 {_rec['residual']:+,.0f}원, "
                     f"허용 ±{_rec['tolerance']:,.0f}). "
                     f"수수료: 엔진 {_rec['engine_commission']:,.0f} vs 브로커 실측 "
-                    f"{_rec['broker_commission']:,.0f}원"
+                    f"{_bc_txt}"
                     + (f" (배수 {_ratio:.2f})" if _ratio else "")
                     + ". gross가 일치하는데 net만 어긋나면 원인은 **수수료율**이다 — "
                       "scripts/commission_rate_recon.py --verify 로 재보정할 것",
@@ -14255,7 +14290,9 @@ class TradingSystem:
                 log_manager.system(
                     f"[NetRecon] net 대사 일치 — 엔진 {_rec['engine_net']:+,.0f} vs "
                     f"브로커 {_rec['broker_net']:+,.0f}원 (잔차 {_rec['residual']:+,.0f}원). "
-                    f"브로커 실측 수수료 {_rec['broker_commission']:,.0f}원",
+                    + ("브로커 실측 수수료 {:,.0f}원".format(_rec["broker_commission"])
+                       if _rec["broker_commission"] is not None
+                       else "브로커 수수료 미측정(실계좌 net 축 — 금일매매손익이 이미 수수료 후)"),
                     "INFO",
                 )
         except Exception as _nr_e:
@@ -15262,6 +15299,10 @@ class TradingSystem:
         """
         try:
             balance = _ts_current_sizer_balance(self)
+            # [MW0602 628차] 잔고가 브로커 실측인가, 코드 기본값(1억)인가 — 계측 4원칙 ②.
+            # 2026-10-14 실계좌 잔고 TR 이 종일 실패하는 동안 기본값이 「실제잔고 1억」으로
+            # 찍혀 CRITICAL·괴리 +566.7% 경고를 냈고, 사람이 계좌 문제를 의심했다.
+            balance_measured = _ts_sizer_balance_measured(self)
             pt_value = float(getattr(self, "_pt_value", 0.0) or 0.0)
 
             # 기동 시점에는 파이프라인 가격이 아직 없다(항상 0). 그대로 두면
@@ -15297,7 +15338,8 @@ class TradingSystem:
             except Exception:
                 pass
 
-            profile = _capital_profile(balance, price, pt_value)
+            profile = _capital_profile(balance, price, pt_value,
+                                       balance_measured=balance_measured)
             msg = _capital_format_profile(profile)
             logger.info(msg)
             log_manager.system(msg)
@@ -15305,6 +15347,7 @@ class TradingSystem:
             for level, text in _capital_check_consistency(
                 actual_balance=balance, index_price=price, pt_value=pt_value,
                 is_simulation=is_simul, effective_max_qty=eff_qty,
+                balance_measured=balance_measured,
             ):
                 full = "[Capital] " + text
                 if level == "CRITICAL":
@@ -18864,6 +18907,17 @@ def _ts_extract_sizer_balance(summary: dict) -> float:
         if value > 0:
             return value
     return 0.0
+
+
+def _ts_sizer_balance_measured(self) -> bool:
+    """[MW0602 628차] `_ts_current_sizer_balance()` 가 돌려주는 잔고가 브로커 실측인가.
+
+    False = 브로커 잔고 요약이 한 번도 안 들어와 생성자 기본값(1억)이 쓰이는 중.
+    """
+    summary = dict((getattr(self, "_last_balance_result", None) or {}).get("summary") or {})
+    if _ts_extract_sizer_balance(summary) > 0:
+        return True
+    return bool(getattr(self.sizer, "balance_measured", False))
 
 
 def _ts_current_sizer_balance(self) -> float:
