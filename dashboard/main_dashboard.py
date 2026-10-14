@@ -3474,6 +3474,14 @@ class EntryPanel(QWidget):
         self._trend_blink_timer = QTimer(self)
         self._trend_blink_timer.setInterval(600)
         self._trend_blink_timer.timeout.connect(self._on_trend_blink_tick)
+        # [2026-10-15] 08:50 맥점이 전 거래일 이력 없이 산출됐을 때 메타 줄 깜박임.
+        # 텍스트가 아니라 **표식**을 깜박인다 — 값은 그대로 읽혀야 한다.
+        self._levels_prev_warn: str = ""      # "" = 경고 없음
+        self._levels_prev_blink_on: bool = False
+        self._levels_meta_tip0 = None         # 08:50 메타 줄 원래 툴팁(경고 해제 시 복원)
+        self._levels_prev_blink_timer = QTimer(self)
+        self._levels_prev_blink_timer.setInterval(600)
+        self._levels_prev_blink_timer.timeout.connect(self._on_levels_prev_blink_tick)
         self._time_router = TimeStrategyRouter()
         self._mode_button_labels = {
             "auto": "A 등급진입",
@@ -4367,6 +4375,9 @@ class EntryPanel(QWidget):
                         _l.setText("고 ——" if _l is hi_l else "저 ——")
                         _l.setStyleSheet(f"color:{C['text2']};font-size:{S.f(10)}px;")
 
+            if _st == "0850":
+                self._sync_levels_prev_warn(row)
+
             up_l, dn_l = self._levels_struct_labels.get(_st, (None, None))
             if up_l is not None:
                 st = row.get("structure") or {}
@@ -4385,6 +4396,74 @@ class EntryPanel(QWidget):
                 if _note:
                     up_l.setToolTip(_note)
                     dn_l.setToolTip(_note)
+
+    def _sync_levels_prev_warn(self, row) -> None:
+        """[2026-10-15] 08:50 행 warnings 에 「전일 이력 없음」이 있으면 깜박임을 켠다.
+
+        산출(값 있음)·미산출(note) 행 모두 대상이다 — 둘 다 그 하루 밀린 이력으로
+        계산됐다. 머리말은 `levels_store.PREV_DAY_MISSING_MARK` 단일 원천.
+        """
+        try:
+            try:
+                from features.levels.levels_store import (
+                    PREV_DAY_MISSING_MARK as _mk, PREV_DAY_PARTIAL_MARK as _pk)
+            except Exception:
+                _mk, _pk = "전일 이력 없음", "전일 부분 결손"
+            _ws = [w for w in ((row or {}).get("warnings") or []) if isinstance(w, str)]
+            _w = [w for w in _ws if w.startswith(_mk)]
+            _p = [w for w in _ws if w.startswith(_pk)]
+            meta = self._levels_dist_labels.get("0850", (None, None, None))[0]
+            if meta is not None:
+                # 경고가 걷히면 원래 설명 툴팁으로 되돌린다.
+                if self._levels_meta_tip0 is None:
+                    self._levels_meta_tip0 = meta.toolTip()
+                meta.setToolTip(self._levels_meta_tip0)
+            self._levels_prev_warn = _w[0] if _w else ""
+            if self._levels_prev_warn:
+                if meta is not None:
+                    _base = meta.text()
+                    if not _base.startswith("⚠"):
+                        meta.setText("⚠ 전일 이력 없음 · " + _base)
+                    meta.setToolTip(self._levels_prev_warn)
+                if not self._levels_prev_blink_timer.isActive():
+                    self._levels_prev_blink_on = False
+                    self._levels_prev_blink_timer.start()
+                self._apply_levels_prev_blink_style()
+                return
+            if self._levels_prev_blink_timer.isActive():
+                self._levels_prev_blink_timer.stop()
+                self._levels_prev_blink_on = False
+            if _p and meta is not None:
+                # 부분 결손은 정보성 — 깜박이지 않는 주황 고정.
+                _base = meta.text()
+                if not _base.startswith("△"):
+                    meta.setText("△ 전일 부분 결손 · " + _base)
+                meta.setToolTip(_p[0])
+                meta.setStyleSheet(f"color:{C['orange']};background:transparent;"
+                                   f"font-size:{S.f(9)}px;")
+        except Exception as _e:
+            logger.debug("[LEVELS] 전일 누락 경고 표시 실패 (무해): %s", _e)
+
+    def _apply_levels_prev_blink_style(self) -> None:
+        meta = self._levels_dist_labels.get("0850", (None, None, None))[0]
+        if meta is None:
+            return
+        if self._levels_prev_blink_on:
+            meta.setStyleSheet(f"color:#ffffff;background:{C['red']};"
+                               f"font-size:{S.f(9)}px;font-weight:bold;")
+        else:
+            meta.setStyleSheet(f"color:{C['orange']};background:transparent;"
+                               f"font-size:{S.f(9)}px;font-weight:bold;")
+
+    def _on_levels_prev_blink_tick(self):
+        try:
+            if not self._levels_prev_warn:
+                self._levels_prev_blink_timer.stop()
+                return
+            self._levels_prev_blink_on = not self._levels_prev_blink_on
+            self._apply_levels_prev_blink_style()
+        except Exception as _e:
+            logger.debug("[LEVELS] 전일 누락 깜박임 실패 (무해): %s", _e)
 
     def _on_manual_levels_clicked(self):
         """[MW0601 542차] 수동 산출 버튼 — 「산출 중」을 먼저 그리고 요청만 낸다.
