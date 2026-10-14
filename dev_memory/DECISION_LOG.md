@@ -49617,3 +49617,11 @@ v9-dev 배포 시 MW0601 을 실계좌로 보고 실계좌 경로 영향을 평�
 
 ### 검증
 `tests/test_629_profitguard_broker_axis.py` 4건 + 관련 162건 통과, py37_32 컴파일. 라이브 확인: 다음 기동 후 `[PnL] 브로커 금일매매손익 축 판별 = net` 1회 출현, `[ProfitGuard][DebugPnL] source=…` 의 broker 값이 브로커 net 과 일치.
+
+## 2026-10-14 (MW0601 → dev 체리픽: 피터2 이익보호 트레일 실거래 + 기존 규칙 섀도 — 원 0140c60, v9-dev) — 🟡 **구현 · 다음 기동부터 적용 · 라이브 미검증**
+
+- **원 커밋**: `0140c60` (v9-dev, MW0601 690차 후속). **원 PC**: MW0601. **가져온 이유**: 사용자 지시(「커밋하고 dev 배포해」) — 피터2 실계좌 주체 운영 중 이익이 사람의 수동 청산에만 의존하던 구조(MW0601 10-14 장후 점검 제4부)를 dev 도 같이 바꾼다.
+- **내용**: 진입 시 1분 ATR14 고정, MFE ≥ 4.5×ATR 무장 → 보호선 = 고점 − 3.5×ATR(유리 방향으로만). 보호선은 `pos.ext_stop` 상향만 하고 청산은 기존 틱 하드스톱. 트레일이 먼저 청산하면 「기존 규칙이었다면」을 섀도로 끝까지 따라가 `data/peter2_live/trail_shadow.jsonl` 에 Δ 기록. 근거·한계(이득 10월 집중)는 `docs/미륵이고도화3/피터2/피터2_이익보호트레일_제안_MW0601-20261014.md`.
+- **충돌 해소(3곳, 양쪽 보존)**: `config/settings.py` 피터2 블록 — dev 의 DAILY_STOP 주석 유지 + 트레일 상수 추가 · `main.py` import — dev 의 `principal_mod` 유지 + 트레일 import · `_peter2_engine_state()` — dev 의 `self._peter2_last_price()` 유지(v9-dev 의 `_px` 계산은 가져오지 않음) + 트레일 무장 중 `base_stop` 노출.
+- **검증(dev 워크트리, py37_32)**: `tests/test_690_peter2_trail.py` 18 passed · 피터2/거래주체/Qt 슬롯/가상장부 관련 191 passed, 1 failed(`test_virtual_book::test_main_dispatch_is_isolated` — `ast.get_source_segment` 는 py3.8+, 기존 실패).
+- ⚠ **MW0602 확인 필요**: dev 의 `_manual_entry_ctx["atr"]` 가 1분 ATR14 인지(이 브랜치 `main.py` 11435행대 대입 확인함), 피터2 live 모드에서 `[Peter2Trail] 감시 시작` 로그 출현. 되돌리기 `PETER2_TRAIL_MODE="off"`.
