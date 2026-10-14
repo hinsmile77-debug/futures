@@ -4340,21 +4340,28 @@ class TradingSystem:
             # open_position/_recalculate_levels 끝에서 PETER2 일 때만 적용된다.
             pos.set_external_levels(stop=it["stop"], target=it.get("target"),
                                     src=it.get("stop_src"), clear_target=True)
-            log_manager.trade(
-                "[Peter2] 진입 %s %d계약 @%.2f 손절 %.2f 목표 %s — %s" % (
-                    it["side"], qty, it["price"], it["stop"],
-                    ("%.2f" % it["target"]) if it.get("target") is not None else "-", it.get("why")))
+            # [2026-10-14] 종전엔 주문 전에 `[Peter2] 진입` 을 찍어, 브로커 거부(12644 최소예탁총액
+            #   부족 2건)에도 TRADE 로그만 보면 진입한 것으로 읽혔다(계측 4원칙 ④). 시도·결과를 나눈다.
+            #   `[Peter2] 진입 ` 형식은 점검 수집기 출처 판정이 쓰므로(test_689) **접수된 경우에만** 남긴다.
+            _p2_desc = "%s %d계약 @%.2f 손절 %.2f 목표 %s — %s" % (
+                it["side"], qty, it["price"], it["stop"],
+                ("%.2f" % it["target"]) if it.get("target") is not None else "-", it.get("why"))
+            log_manager.trade("[Peter2] 진입시도 " + _p2_desc)
             self._execute_entry(it["side"], it["price"], qty, atr, "P",
                                 entry_source=PETER2_ENTRY_SOURCE)
             _sent = (self._has_pending_order()
                      and str((self._pending_order or {}).get("kind", "")) == "ENTRY") \
                 or (pos.status != "FLAT" and pos.entry_source == PETER2_ENTRY_SOURCE)
             if _sent:
+                log_manager.trade("[Peter2] 진입 " + _p2_desc)
                 fw.mark_entered()
                 fw._ev("ENTER", now, sig=it.get("sig"), side=it["side"], price=it["price"],
                        stop=it["stop"], target=it.get("target"), stop_src=it.get("stop_src"),
                        why=it.get("why"))
             else:
+                log_manager.trade("[Peter2] 진입실패 %s %d계약 @%.2f — 주문 미접수·포지션 미오픈 "
+                                  "(사유: WARN 로그 [EntrySendResult]·[EntryBlock]·[EntryPause])"
+                                  % (it["side"], qty, it["price"]))
                 if pos.status == "FLAT":
                     pos.clear_external_levels()
                 self._peter2_reject(date, now, it, "execute_entry_blocked(로그 [EntryBlock]·[EntryPause] 참조)")
