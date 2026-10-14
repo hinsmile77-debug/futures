@@ -137,7 +137,16 @@ DEFAULT_CONFIG = {
     # 거래일 요약 — 이름있는 그룹으로 뽑는다. 로그 문구가 바뀌면 여기만 고치면 된다.
     "day_summary_patterns": {
         "entry_check": r"\[진입체크\]\s*(?P<dir>\S+)\s+(?P<qty>\d+)계약\s+(?P<grade>[A-Z]급(?:\(원시[A-Z]\))?)\s*\|\s*(?P<checks>[^|]+?)\s*\|\s*conf=(?P<conf>[\d.]+)%",
-        "entry": r"\[Position\] 진입 (?P<dir>\w+) (?P<qty>\d+)계약 @ (?P<px>[\d.]+).*?horizon=(?P<hz>\w+)\s+hurst=(?P<hurst>\S+)",
+        # [MW0602 626차 / F-2] `horizon=`·`hurst=` 꼬리는 **선택**이다 — 신동·피터 경로의
+        # 진입 줄에는 없다(`… 1차=10961.86(×1.00) 2차=10961.86`). 필수로 두면 실거래 신동
+        # 진입이 통째로 빠지고 그 청산이 「고아」로 뜬다(2026-10-13·14 실측).
+        "entry": r"\[Position\] 진입 (?P<dir>\w+) (?P<qty>\d+)계약 @ (?P<px>[\d.]+)(?:.*?horizon=(?P<hz>\w+)\s+hurst=(?P<hurst>\S+))?",
+        # [MW0602 626차] 가상 장부(2026-10-14 신설) — 실주문이 안 나가는 주체의 진입·청산.
+        # 가상 진입도 같은 초에 `[Position] 진입 …` 을 찍으므로, `entry` 에서 이것과
+        # (시각·방향·가격)이 겹치는 줄은 **실거래가 아니다** — `_real_entries()` 가 뺀다.
+        # 가상 청산은 `[Position] 청산 … | 가상:<사유>` 라 `exit`(체결청산)에 원래 안 걸린다.
+        "virtual_entry": r"\[Virtual\] (?P<who>\S+) 가상진입 (?P<dir>\w+) (?P<qty>\d+)계약 @(?P<px>[\d.]+)",
+        "virtual_exit": r"\[Virtual\] (?P<who>\S+) 가상청산 (?P<dir>\w+) (?P<qty>\d+)계약 @(?P<px>[\d.]+) (?P<reason>\S+) \| (?P<pt>[+-][\d.]+)pt (?P<won>[+-][\d,]+)원",
         "fill_entry": r"\[체결진입\]\s*(?P<dir>\w+)\s+(?P<qty>\d+)계약.*?보유=(?P<held>\d+)계약",
         "exit": r"\[Position\] 체결청산 (?P<dir>\w+) @ (?P<px>[\d.]+)\s*\|\s*PnL=(?P<pt>[+-][\d.]+)pt\s*\((?P<won>[+-][\d,]+)원\)\s*\|\s*(?P<reason>.+?)\s*$",
         # [MW0602 470차 S3] 부분청산 — 이것을 안 세면 §5 손익이 배너와 어긋난다.
@@ -3491,6 +3500,83 @@ def _pt_to_float(s):
         return None
 
 
+def _vkey(rec):
+    """가상/실 진입 대조 키 — (초 단위 시각, 방향, 가격 0.01pt)."""
+    px = _pt_to_float(rec.get("px"))
+    return (rec.get("hhmm") or "", rec.get("dir"), round(px, 2) if px is not None else None)
+
+
+def _real_entries(merged):
+    """[MW0602 626차] `[Position] 진입` 중 가상 장부 진입을 뺀 **실거래 진입**.
+
+    가상 진입도 같은 초에 `[Position] 진입` 을 찍는다. 빼지 않으면 가상 진입이
+    실포지션으로 열리고, 가상 청산은 `체결청산` 이 아니라서 영원히 `_미청산_` 으로
+    남는다(2026-10-14 장중 다이제스트: 「미청산 4건」 거짓 경보 — 실제는 가상 4건 전부 청산).
+    """
+    vk = set(_vkey(v) for v in merged.get("virtual_entry", []))
+    return [e for e in merged.get("entry", []) if _vkey(e) not in vk]
+
+
+def _render_virtual_book(merged, A, ds_flags):
+    """[MW0602 626차] §5 「가상 장부」 절 — 실거래 손익과 **같은 칸에 합치지 않는다**."""
+    vpos, vorph = group_virtual(merged.get("virtual_entry", []), merged.get("virtual_exit", []))
+    if not vpos and not vorph:
+        return
+    A("### 가상 장부 %d건 — ⚠ 실거래 아님 (실주문 없음 · 체결 근사)" % len(vpos))
+    A("")
+    A("> 위 포지션 표·비용 축·검산은 **실거래만**이다. 이 절의 손익을 그 합계에 더하지 말 것 — "
+      "슬리피지 0 근사이며 실거래 성과·전환기준 ① 근거로 인용 금지(가상장부 DECISION_LOG).")
+    A("")
+    A("| 주체 | 진입 | 방향 | 계약 | 진입가 | 청산 | 청산가 | 사유 | pt | 원 |")
+    A("|---|---|---|---|---|---|---|---|---|---|")
+    by_who = {}
+    for p in vpos:
+        e, x = p["entry"], p["exit"]
+        A("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
+            p["who"], e.get("hhmm"), e.get("dir"), e.get("qty"), e.get("px"),
+            x.get("hhmm") if x else "_보유_", x.get("px") if x else "—",
+            x.get("reason") if x else "—", x.get("pt") if x else "—", x.get("won") if x else "—"))
+        if x:
+            s = by_who.setdefault(p["who"], [0, 0, 0])
+            w = _won_to_int(x.get("won")) or 0
+            s[0] += 1
+            s[1] += 1 if w > 0 else 0
+            s[2] += w
+    A("")
+    if by_who:
+        A("**주체별(청산분)** — " + " · ".join(
+            "%s %d건 승%d %s원" % (k, v[0], v[1], format(v[2], "+,d")) for k, v in sorted(by_who.items())))
+        A("")
+    n_open = sum(1 for p in vpos if p["exit"] is None)
+    if n_open:
+        A("> ℹ️ 가상 보유 %d건 — 실계좌와 무관(절대원칙 ① 대상 아님). 장후면 가상 장부의 15:10 처리를 확인." % n_open)
+        A("")
+    if vorph:
+        A("> ⚠ 진입 없는 가상 청산 %d건 — 로그 절단 또는 재기동 복원분." % len(vorph))
+        A("")
+        ds_flags.append("가상 장부: 진입 없는 가상 청산 **%d건**" % len(vorph))
+
+
+def group_virtual(ventries, vexits):
+    """가상 장부 포지션 — 주체별로 진입→청산을 시각순으로 묶는다(주체당 동시 1포지션)."""
+    ev = [((e.get("hhmm") or ""), 0, "entry", e) for e in ventries or []]
+    ev += [((e.get("hhmm") or ""), 1, "exit", e) for e in vexits or []]
+    ev.sort(key=lambda t: (t[0], t[1]))
+    cur, positions, orphans = {}, [], []
+    for _h, _o, kind, rec in ev:
+        who = rec.get("who") or "?"
+        if kind == "entry":
+            p = {"who": who, "entry": rec, "exit": None}
+            cur[who] = p
+            positions.append(p)
+        elif cur.get(who) is not None:
+            cur[who]["exit"] = rec
+            cur[who] = None
+        else:
+            orphans.append(rec)
+    return positions, orphans
+
+
 def day_summary(digests, cfg, out, root=None, day=None):
     """거래일 요약 — 로그 요약이 아니라 '오늘 무엇을 했는가'.
 
@@ -3528,7 +3614,7 @@ def day_summary(digests, cfg, out, root=None, day=None):
         A("")
 
     ec = merged.get("entry_check", [])
-    en = merged.get("entry", [])
+    en = _real_entries(merged)   # [626차] 가상 장부 진입 제외 — 아래 「가상 장부」 절이 따로 센다
     fi = merged.get("fill_entry", [])
     ex = merged.get("exit", [])
     pex = merged.get("partial_exit", [])
@@ -3647,6 +3733,8 @@ def day_summary(digests, cfg, out, root=None, day=None):
                                            truncate((r.get("reason") or "?").strip(), 40)))
             A("")
             ds_flags.append("진입 없는 청산 레그 **%d건** — 이월 포지션 또는 로그 절단" % len(orphans))
+
+        _render_virtual_book(merged, A, ds_flags)
 
         # --- 자동 검산: 전략 상태 경보 배너의 '오늘 PnL' 과 대조 ---
         # 2026-08-14: §5가 -82,547원(레그·부분청산 누락), 배너가 -93,450원이었는데
@@ -4830,7 +4918,7 @@ def build(root, day, phase, cfg, discover_only=False):
             break
 
     ex = merged.get("exit", [])
-    en = merged.get("entry", [])
+    en = _real_entries(merged)   # [626차] 가상 진입이 「실거래 0건」 경보를 가리지 않게
     bl = merged.get("block", [])
     sz = merged.get("sizer", [])
     if phase in ("post", "all"):

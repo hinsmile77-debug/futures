@@ -560,6 +560,11 @@ class CybosAPI:
         # 금지)와 같은 취지를 Cybos 체결 콜백 경로에도 적용.
         self._fill_queue: "deque[Dict[str, Any]]" = deque()
         self._fill_drain_scheduled = False
+        # [MW0602 626차] CpTd6197 기준일자 형식 — 계좌별로 성공한 형식을 기억한다.
+        #   None = 아직 미확정(기본 yyMMdd 로 시작). 상세는 _request_futures_daily_pnl_summary.
+        self._daily_pnl_date_fmt: Dict[str, str] = {}
+        # 같은 날 두 형식 모두 실패한 계좌 → 그날은 재시도 생략(BlockRequest 낭비 방지).
+        self._daily_pnl_both_failed: Dict[str, str] = {}
 
     @property
     def is_connected(self) -> bool:
@@ -834,23 +839,59 @@ class CybosAPI:
         )
         return result
 
-    def _request_futures_daily_pnl_summary(self, account_no: str) -> Dict[str, str]:
-        today_yyMMdd = time.strftime("%y%m%d")
+    # [MW0602 626차] CpTd6197 기준일자(입력 idx=1) 후보 형식.
+    # 2026-05-11(19abc37) 이래 `yyMMdd` 6자리를 보냈고 **모의계좌(777020696)에서는
+    # 정상 응답**했다. 그러나 실거래 계좌(783293269)는 2026-10-14 하루 종일
+    # `status=-1 msg=12242 조회된 내용이 없습니다 (selfoaccptthdys)` 로 실패했다
+    # (12건 · 성공 0 · 체결 이후 조회 포함). 문서(`docs/CyBos ref/…TR_MAP.md` §19)는
+    # 「기준일자」라고만 적고 자릿수를 밝히지 않는다. 모의 서버가 날짜를 무시하고
+    # 실서버가 날짜로 거르는 것이라면 6자리가 원인이다 — **미확정 가설**이다.
+    # ⇒ 기본 형식은 그대로 두고, `12242`(내용 없음)일 때만 8자리로 **1회** 재시도해
+    #   성공한 형식을 계좌별로 기억한다. 결과는 어느 쪽이든 로그로 남긴다(계측 4원칙 ④).
+    _DAILY_PNL_DATE_FMTS = ("%y%m%d", "%Y%m%d")
+    _DAILY_PNL_NO_DATA_CODE = "12242"
 
+    def _request_futures_daily_pnl_summary(self, account_no: str) -> Dict[str, str]:
         def _read_pnl(obj):
             return {idx: _safe_str(obj.GetHeaderValue(idx)) for idx in range(0, 21)}
 
-        try:
-            ret, status, msg, raw_headers = _run_block_request(
+        def _request(date_fmt):
+            return _run_block_request(
                 progid=CYBOS_FUTURES_DAILY_PNL_PROGID,
                 input_pairs=[
                     (0, account_no),
-                    (1, today_yyMMdd),
+                    (1, time.strftime(date_fmt)),
                     (2, CYBOS_GOODS_CODE_FUTURES),
                     (3, 10),
                 ],
                 data_reader=_read_pnl,
             )
+
+        _acct = str(account_no)
+        _today = time.strftime("%Y-%m-%d")
+        _fmt = self._daily_pnl_date_fmt.get(_acct, self._DAILY_PNL_DATE_FMTS[0])
+        try:
+            ret, status, msg, raw_headers = _request(_fmt)
+            _failed = ret not in (0, None) or status != 0
+            if (_failed
+                    and self._DAILY_PNL_NO_DATA_CODE in str(msg or "")
+                    and self._daily_pnl_both_failed.get(_acct) != _today):
+                _alt = next(f for f in self._DAILY_PNL_DATE_FMTS if f != _fmt)
+                ret2, status2, msg2, raw2 = _request(_alt)
+                if ret2 in (0, None) and status2 == 0:
+                    self._daily_pnl_date_fmt[_acct] = _alt
+                    _system_warning(
+                        f"[CybosDailyPnl] 기준일자 형식 전환 {_fmt}→{_alt} account={_acct} "
+                        f"— 앞 형식은 '{msg}' 였고 뒤 형식은 성공했다. 이후 이 계좌는 {_alt} 사용"
+                    )
+                    ret, status, msg, raw_headers = ret2, status2, msg2, raw2
+                else:
+                    self._daily_pnl_both_failed[_acct] = _today
+                    _system_warning(
+                        f"[CybosDailyPnl] 기준일자 두 형식 모두 실패 account={_acct} "
+                        f"{_fmt}='{msg}' / {_alt}='{msg2}' — 날짜 형식이 원인이 아니다. "
+                        f"오늘은 재시도 생략(브로커 일일손익 미수신 = 대사 불가, 0 아님)"
+                    )
         except TimeoutError as exc:
             system_logger.error("[CybosDailyPnl] %s account=%s", exc, account_no)
             return {}

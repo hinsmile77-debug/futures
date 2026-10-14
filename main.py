@@ -6517,7 +6517,23 @@ class TradingSystem:
         self._on_gbm_retrain_done(_result, _is_wu)
 
     def _on_gbm_retrain_done(self, result: dict, is_warmup: bool) -> None:
-        """GBM 재학습 daemon thread 완료 콜백 — 메인 스레드에서 실행."""
+        """GBM 재학습 완료 콜백.
+
+        ⚠ **메인 스레드 또는 `daily_close()` 백그라운드 스레드에서 호출될 수 있다**
+        (`daily_close` → `_poll_gbm_retrain_subprocess` → 여기). 종전 docstring 의
+        "메인 스레드에서 실행"은 참이 아니었다.
+
+        ⇒ **대시보드 접근은 반드시 `self._dashboard_call(...)` 경유**로 할 것.
+          [MW0602 626차] 2026-10-14 15:40:07 `daily_close` 스레드가 여기서
+          `self.dashboard.set_model_status` 를 직접 불러 **영구 동결** — 그 뒤
+          브로커 대사(`[BrokerPnl]`/`[NetRecon]`)·EOD 재학습 예약·자동 종료가 전부
+          돌지 않았다(crash_fault.log 스택: main_dashboard.py:1181 set_model_status).
+          v9-dev 490차 F-L(2026-08-24 같은 동결)의 이식이다.
+          `tests/test_626_no_gui_from_retrain_done.py` 가 불변식을 고정한다.
+
+        🔵 `_gbm_retrain_done_event.set()` · CB⑤ 복원은 GUI 가 아니므로 제자리에
+          둔다 — 큐로 옮기면 `daily_close()` 의 대기 해제가 밀린다.
+        """
         self._gbm_retrain_running = False
         self._gbm_retrain_started_at = None  # P1-B: 타임아웃 허위 경고 방지
         self._gbm_retrain_done_event.set()  # daily_close 대기 해제
@@ -6589,8 +6605,13 @@ class TradingSystem:
                 f"{result.get('elapsed_sec', '?')}초 데이터={result.get('data_size', '?')}행"
             )
             notify("GBM 배치 재학습 완료", "INFO")
-            self.dashboard.set_model_status(
-                f"GBM {prefix}재학습 완료", f"데이터 {result.get('data_size', '?')}행"
+            # [MW0602 626차] 워커 스레드(daily_close)에서도 호출되므로 직접 만지지 않는다
+            # — 2026-10-14 15:40:07 영구 동결의 발화 지점.
+            _ds = result.get("data_size", "?")
+            self._dashboard_call(
+                lambda: self.dashboard.set_model_status(
+                    f"GBM {prefix}재학습 완료", f"데이터 {_ds}행"
+                )
             )
             # ATR 동적 threshold 갱신 제거 (P2) — rolling σ×k 방법3이 매분 갱신
             self._reset_rollback_active = None
@@ -6647,7 +6668,8 @@ class TradingSystem:
                 )
         else:
             log_manager.learning(f"[GBM] {prefix}재학습 건너뜀: {result.get('error', '')}")
-            self.dashboard.set_model_status("대기")
+            # [MW0602 626차] 실패 경로도 같은 통로로 — 워커 스레드 도달 가능.
+            self._dashboard_call(lambda: self.dashboard.set_model_status("대기"))
             rollback = getattr(self, "_reset_rollback_active", None)
             if rollback:
                 registry = self._load_feature_registry()
@@ -6661,10 +6683,14 @@ class TradingSystem:
                 self._reset_rollback_active = None
         # 재학습 완료(성공/실패 모두) 후 SHAP 패널 버튼 상태 갱신
         # 파이프라인이 멈춘 상태(장 마감 후 등)에서도 버튼 enabled 복원
-        try:
-            self._update_shap_dashboard()
-        except Exception:
-            pass
+        # [MW0602 626차] `_update_shap_dashboard()` 끝에 `self.dashboard.update_shap(...)`
+        # 가 있다 — 위 `set_model_status` 와 같은 이유로 메인 스레드 경유.
+        def _shap_refresh():
+            try:
+                self._update_shap_dashboard()
+            except Exception:
+                pass
+        self._dashboard_call(_shap_refresh)
 
     # _log_threshold_monitor() — P2에서 제거 (91차)
     # rolling σ × k 방법3이 HORIZON_THRESHOLDS를 매분 갱신하므로 ATR 동적 불필요
