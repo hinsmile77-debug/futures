@@ -449,6 +449,33 @@ def supplement_bars(bars, supplement, until=None):
     return merged, len(add)
 
 
+CHART_OPEN_FIX_MARK = "08:45 시가 차트 보정"
+
+
+def apply_chart_open(bars, chart_bars):
+    # type: (List[PL.Bar], Optional[Sequence[PL.Bar]]) -> Tuple[List[PL.Bar], Optional[str]]
+    """[MW0601 692차 후속] 실시간 08:45 봉의 O/H/L/V 를 차트 TR 08:45 봉으로 덮는다(close 유지).
+
+    실시간 구독이 08:45:07–18 에 붙어 **개장 단일가 체결을 놓친다**(565차 — 09-11 차트 1076.06
+    vs 실시간 1072.72). 692차가 이력(raw_candles 08:45)을 차트 개장가로 바꿨으므로, 당일 산출
+    시가도 같은 정의여야 훈련과 입력이 맞는다. 반환: (봉, 경고문 | None). 차트 봉이 없거나
+    값이 같으면 아무것도 하지 않는다(None).
+    """
+    bars = list(bars or [])
+    if not bars or bars[0].t != "08:45" or not chart_bars:
+        return bars, None
+    ch = [b for b in chart_bars if b.t == "08:45"]
+    if not ch:
+        return bars, None
+    rt, c = bars[0], ch[0]
+    if (abs(rt.o - c.o) < 1e-6 and abs(rt.h - c.h) < 1e-6 and abs(rt.l - c.l) < 1e-6
+            and rt.v == c.v):
+        return bars, None
+    bars[0] = PL.Bar(t=rt.t, o=c.o, h=c.h, l=c.l, c=rt.c, v=c.v)
+    return bars, ("%s — 실시간 O=%.2f/V=%d → 차트 O=%.2f/V=%d (개장 체결가)"
+                  % (CHART_OPEN_FIX_MARK, rt.o, rt.v, c.o, c.v))
+
+
 def _supplement_warning(n):
     # type: (int) -> str
     return ("%s %d봉(FutOptChart · 개장 체결가라 실시간 시가와 다를 수 있음)"
@@ -843,6 +870,11 @@ def ensure_stage(stage, now=None, today_candles=None, db_path=None, cache_path=N
         bars = load_today_bars(date_str, until=cut, db_path=db_path)
     bars, n_sup = supplement_bars(bars, supplement, until=cut)
     sup_w = [_supplement_warning(n_sup)] if n_sup else []
+    if not n_sup:
+        # [MW0601 692차 후속] 08:45 결손이 아니면 실시간 08:45 시가를 차트 개장가로 보정한다.
+        bars, _ofix = apply_chart_open(bars, supplement)
+        if _ofix:
+            sup_w = [_ofix]
 
     summaries, bars_by_day = history_from_cache(cache_path)
     # [538차 F-2] 품질 제외 목록을 함께 넘긴다 — 제외된 날 때문에 캐시가 낡아
@@ -936,8 +968,13 @@ def compute_manual(now=None, today_candles=None, db_path=None, cache_path=None,
             return _row(note="당일 봉 조회 실패: %s" % e, bars=0,
                         bars_source="db_fallback(실패)")
     bars, n_sup = supplement_bars(bars, supplement, until=cut)
+    _ofix = None
     if n_sup:
         bars_source = "%s+chart(%d봉)" % (bars_source, n_sup)
+    else:
+        bars, _ofix = apply_chart_open(bars, supplement)
+        if _ofix:
+            bars_source = "%s+chart_open" % bars_source
     if not bars:
         return _row(note="당일 봉 0개 — 미산출", bars=0, bars_source=bars_source)
     if bars[0].t > "08:50":
@@ -965,6 +1002,8 @@ def compute_manual(now=None, today_candles=None, db_path=None, cache_path=None,
     out["warnings"] = stage_warnings(out) + list(params.get("warnings") or [])
     if n_sup:
         out["warnings"].insert(0, _supplement_warning(n_sup))
+    elif _ofix:
+        out["warnings"].insert(0, _ofix)
     if at is None:
         out["warnings"].insert(
             0, "09:00 이전 — 시점 조건부 모델 없음, M1(시가 기준) 사용")
