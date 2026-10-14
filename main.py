@@ -7102,6 +7102,17 @@ class TradingSystem:
                     f"[LEVELS {stage[:2]}:{stage[2:]}] 08:45 봉 버퍼 결손 — "
                     "차트 TR 보충(스케줄러 틱) 뒤로 산출을 미룸", "WARNING")
             return False
+        # [MW0601 692차 후속] 08:45 봉이 있어도 **시가 보정용 차트 조회**를 기다린다 —
+        # 실시간 첫 틱은 개장 단일가 체결을 놓친다(565차). 단 08:53 까지만 — 조회가
+        # 안 오면(브로커 미연결 등) 실시간 시가로 산출하고 그 사실을 로그에 남긴다.
+        if not self._levels_chart_supp_done:
+            if datetime.datetime.now().time() < datetime.time(8, 53):
+                return False
+            if ("open_fix", stage) not in self._levels_defer_logged:
+                self._levels_defer_logged.add(("open_fix", stage))
+                log_manager.system(
+                    f"[LEVELS {stage[:2]}:{stage[2:]}] 차트 TR 조회 없이 산출 — "
+                    "08:45 시가 = 실시간 첫 틱(개장 체결가 아님)", "WARNING")
         try:
             from features.levels import levels_store as _LS
         except Exception as _lv_ie:
@@ -17238,9 +17249,15 @@ class TradingSystem:
                 and is_trading_day(now)
                 and datetime.time(8, 50) <= now.time() < datetime.time(15, 40)
                 and self.broker is not None and self.broker.is_connected
-                and not self._levels_have_0845()
+                # 시가 보정 목적은 09:30 단계 전까지만 — 장중 재기동마다 BlockRequest 로
+                # 메인 스레드를 멈추지 않는다(결손 보충은 597차대로 15:40 까지).
+                and (not self._levels_have_0845() or now.time() < datetime.time(9, 30))
             ):
+                # [MW0601 692차 후속] 08:45 봉이 있어도 1회 조회한다 — 결손 보충(597차)과
+                # 함께 **08:45 시가 보정**(실시간 첫 틱 → 차트 개장 체결가)에 쓴다.
                 self._levels_chart_supp_done = True
+                _miss0845 = not self._levels_have_0845()
+                _purpose = "08:45 결손 — 차트 TR 보충" if _miss0845 else "08:45 시가 보정용 차트 TR"
                 try:
                     from collection.cybos.chart_backfill import (
                         request_futopt_minute_bars, mini_code_for_date)
@@ -17253,14 +17270,15 @@ class TradingSystem:
                         _rows, now.strftime("%Y-%m-%d"))
                     _cb = self._levels_chart_bars
                     log_manager.system(
-                        "[LEVELS] 08:45 결손 — 차트 TR 보충 code=%s %d봉 (%s~%s) %.0fms"
-                        % (_code, len(_cb), _cb[0].t if _cb else "-",
+                        "[LEVELS] %s code=%s %d봉 (%s~%s) %.0fms"
+                        % (_purpose, _code, len(_cb), _cb[0].t if _cb else "-",
                            _cb[-1].t if _cb else "-", (time.time() - _t0) * 1000.0),
-                        "WARNING")
+                        "WARNING" if _miss0845 else "INFO")
                 except Exception as _lcs_e:
-                    logger.warning("[LEVELS] 차트 TR 보충 실패: %s", _lcs_e, exc_info=True)
+                    logger.warning("[LEVELS] 차트 TR 조회 실패: %s", _lcs_e, exc_info=True)
                     log_manager.system(
-                        f"[LEVELS] 08:45 결손 — 차트 TR 보충 실패 (무해, 미산출로 굳음): {_lcs_e}",
+                        f"[LEVELS] {_purpose} 실패 (무해 — "
+                        f"{'미산출로 굳음' if _miss0845 else '실시간 시가로 산출'}): {_lcs_e}",
                         "WARNING")
                 # 미뤄 둔 단계를 이어서 산출한다(보충 실패여도 사유가 남도록 산출).
                 if not self._premarket_levels_0850_done:

@@ -159,3 +159,42 @@ def test_confirm_runs_once():
     fn = src[i:i + 700]
     assert fn.index("if self._bargap_confirm_done:") < fn.index("self._bargap_confirm_done = True") \
         < fn.index("_bg_conf(")
+
+
+# ────────────────────────────────────────────── ⑥ 08:45 시가 당일 차트 보정 (692차 후속)
+
+from features.levels import premarket_levels as PL
+from features.levels import levels_store as LS
+
+
+def _bar(t, o, h, l, c, v):
+    return PL.Bar(t=t, o=o, h=h, l=l, c=c, v=v)
+
+
+def test_apply_chart_open_replaces_ohlv_keeps_close():
+    rt = [_bar("08:45", 976.60, 977.0, 975.0, 976.9, 384), _bar("08:46", 976.9, 977.2, 976.5, 977.0, 50)]
+    ch = [_bar("08:45", 977.08, 977.5, 975.0, 976.95, 634)]
+    out, w = LS.apply_chart_open(rt, ch)
+    assert (out[0].o, out[0].h, out[0].l, out[0].c, out[0].v) == (977.08, 977.5, 975.0, 976.9, 634)
+    assert out[1] == rt[1]
+    assert w.startswith(LS.CHART_OPEN_FIX_MARK) and "976.60" in w and "977.08" in w
+
+
+def test_apply_chart_open_noop_cases():
+    rt = [_bar("08:45", 976.60, 977.0, 975.0, 976.9, 384)]
+    assert LS.apply_chart_open(rt, None) == (rt, None)
+    assert LS.apply_chart_open(rt, [_bar("08:46", 1, 1, 1, 1, 1)]) == (rt, None)
+    assert LS.apply_chart_open(rt, list(rt)) == (rt, None)                  # 같으면 무변경
+    late = [_bar("08:47", 976.60, 977.0, 975.0, 976.9, 384)]
+    assert LS.apply_chart_open(late, [_bar("08:45", 9, 9, 9, 9, 9)]) == (late, None)  # 결손 보충 몫
+
+
+def test_main_open_fix_wiring():
+    src = _main_src()
+    i = src.index("def _compute_premarket_levels")
+    fn = src[i:i + 3500]
+    assert "datetime.time(8, 53)" in fn, "시가 보정 대기는 08:53 까지만"
+    j = src.index("# ── [MW0602 597차] 맥점 산출용 08:45 결손 차트 TR 보충")
+    blk = src[j:j + 2500]
+    assert "and not self._levels_have_0845()\n" not in blk, "08:45 봉이 있어도 조회해야 한다"
+    assert "now.time() < datetime.time(9, 30)" in blk, "시가 보정 조회는 09:30 전까지만"
