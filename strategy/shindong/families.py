@@ -146,7 +146,8 @@ def _run_position(d: "E.DayFrame", side: int, t0: str, stop: Optional[float],
 
 def _run_signal(d: "E.DayFrame", sig: Callable[[str], int], rule: str, stop_fn, trail, tp, max_trades: int,
                 start: str = "09:00", level_of=None, halt_on_sl: bool = False,
-                notes: Optional[List[str]] = None, halt_mode: Optional[str] = None) -> List[Dict[str, Any]]:
+                notes: Optional[List[str]] = None, halt_mode: Optional[str] = None,
+                r1_bias: int = 0, ctr_max: Optional[int] = None) -> List[Dict[str, Any]]:
     """stop_fn(side, entry_px) -> 손절가 또는 None.
     halt_mode: "all"(손절 뒤 당일 전면 중단 — v2.1 규격) · "same"(손절 난 방향만 중단 — [605차] 반사실 계측용) · None.
     halt_on_sl=True 는 halt_mode="all" 과 같다(호환).
@@ -157,6 +158,9 @@ def _run_signal(d: "E.DayFrame", sig: Callable[[str], int], rule: str, stop_fn, 
     halted = False
     blocked = 0                       # halt_mode="same": 손절 난 방향만 그날 막는다
     mode = halt_mode or ("all" if halt_on_sl else None)
+    # [v2.2] R1 반대 방향 재진입 금지 — ctr_max 가 None 이면 꺼짐(섀도·반사실은 종전과 같다)
+    ctr_n = 0
+    ctr_blocked = []                  # 막힌 분(탈락 가시화 — 계측 4원칙 ③)
     for k in d.idx:
         if k < start or k not in d.c:
             continue
@@ -169,12 +173,18 @@ def _run_signal(d: "E.DayFrame", sig: Callable[[str], int], rule: str, stop_fn, 
         side = sig(k)
         if not side or side == blocked:
             continue
+        ctr = bool(r1_bias) and side == -r1_bias
+        if ctr and ctr_max is not None and ctr_n >= ctr_max:
+            ctr_blocked.append(k)
+            continue
         e = d.c[k]
         stop = stop_fn(side, e) if stop_fn else None
         tr = _run_position(d, side, k, stop, trail, tp)
         tr.update(rule=rule, touch_level=(level_of() if level_of else None), touch_ts=None)
         trades.append(tr)
         busy = tr["exit_ts"] or "99:99"
+        if ctr:
+            ctr_n += 1
         if mode in ("all", "same") and tr["status"] == "CLOSED" and tr["legs"][0].get("reason") == "SL":
             if mode == "all":
                 halted = True
@@ -184,6 +194,10 @@ def _run_signal(d: "E.DayFrame", sig: Callable[[str], int], rule: str, stop_fn, 
                 blocked = side
                 if notes is not None:
                     notes.append("재난 손절 발동(%s) — 같은 방향만 당일 중단" % tr["exit_ts"])
+    if ctr_blocked and notes is not None:
+        # 신호가 켜져 있던 분마다 세면 수십 개라 첫 시각·분 수만 남긴다(…외 N 형식 — 계측 4원칙 ③).
+        notes.append("[v2.2] R1 반대 재진입 차단 — 첫 %s · 신호 %d분 (R1 %s · 허용 %d건 소진)"
+                     % (ctr_blocked[0], len(ctr_blocked), "하방" if r1_bias < 0 else "상방", ctr_max or 0))
     return trades
 
 
@@ -219,16 +233,20 @@ def run_family_day(d: "E.DayFrame", L, family: str,
     cat = _cat_stop_pts(L, dec["notes"])                     # [v2.1] 재난 손절 폭(pt)
     cat_stop = lambda side, e: e - side * cat               # 진입가 ∓ 재난 손절 폭
 
-    def flowc():
+    def flowc(r1_guard=False):
         sig, why = _flow_signal(d, d.sp, S.FLOWC_K, -1)
         if sig is None:
             dec["notes"].append("FLOWC %s — 거래 없음(미측정)" % why)
             return []
         return _run_signal(d, sig, RULE_FLOW, cat_stop, S.FLOW_TRAIL, S.FLOW_TP, S.FLOW_MAX_TRADES,
-                           halt_on_sl=S.FLOW_CAT_STOP_HALT_DAY, notes=dec["notes"])
+                           halt_on_sl=S.FLOW_CAT_STOP_HALT_DAY, notes=dec["notes"],
+                           r1_bias=bias if r1_guard else 0,
+                           ctr_max=S.FLOW_R1_CTR_MAX if r1_guard else None)
 
     if family == "flowc":
-        trades = flowc()
+        # [v2.2] MAIN 의 FLOWC 만 R1 반대 재진입 금지를 쓴다. BRKC 보류일 대체(아래)는 R1=0 이라
+        # 어차피 무영향이지만 규격을 섞지 않으려 명시적으로 끈다.
+        trades = flowc(r1_guard=S.FLOW_R1_CTR_REENTRY_BLOCK)
     elif family == "flowr60":
         if not d.sp:
             dec["notes"].append("FLOWR60 원천 없음 — 거래 없음(미측정)")

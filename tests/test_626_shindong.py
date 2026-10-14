@@ -36,7 +36,7 @@ from strategy.shindong.calendar import select_flow_product  # noqa: E402
 def test_spec_is_preregistered_values():
     """🔴 값이 바뀌면 검증 시계가 초기화된다 — 이 테스트를 고치기 전에 사전등록 문서부터."""
     assert spec.V1_SPEC_VERSION == "SD-2026-09-24-v1"          # [604차] v1 규칙 — SHADOW_V1 이 이 규칙으로 기록
-    assert spec.SPEC_VERSION == "SD-2026-09-30-v2.1"            # [604차] MAIN = FLOWC (test_604 가 v2 값을 고정)
+    assert spec.SPEC_VERSION == "SD-2026-10-15-v2.2"            # [604차] MAIN = FLOWC · [v2.2] R1 반대 재진입 금지 (test_604 가 v2 값을 고정)
     assert (spec.BIAS_MIN, spec.CONF_MIN, spec.CONF_END, spec.REV_MIN, spec.REV_WIN_MIN) == \
         (50, 50, "09:10", 50, 10)
     assert (spec.TOUCH_NEAR, spec.TOUCH_FAR, spec.LV_STOP_BUF, spec.EXT_STOP_BUF) == \

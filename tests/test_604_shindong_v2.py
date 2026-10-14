@@ -43,10 +43,12 @@ def _scorecard():
 
 # ── A. 사전등록 값 ────────────────────────────────────────────────────────
 def test_v2_spec_is_preregistered():
-    assert spec.SPEC_VERSION == "SD-2026-09-30-v2.1"                 # v2.1 = 재난 손절 사전 정정(채점 전)
+    assert spec.SPEC_VERSION == "SD-2026-10-15-v2.2"                 # [2026-10-15] v2.2 = R1 반대 재진입 금지
+    assert (spec.V21_SPEC_VERSION, spec.V21_SCORING_START) == ("SD-2026-09-30-v2.1", "2026-10-01")
+    assert (spec.FLOW_R1_CTR_REENTRY_BLOCK, spec.FLOW_R1_CTR_MAX) == (True, 1)
     assert (spec.FLOW_CAT_STOP_ATR, spec.FLOW_CAT_STOP_FALLBACK_PT, spec.FLOW_CAT_STOP_HALT_DAY) == (0.6, 20.0, True)
     assert spec.V1_SPEC_VERSION == "SD-2026-09-24-v1"
-    assert (spec.SCORING_START, spec.V1_SCORING_START) == ("2026-10-01", "2026-09-28")
+    assert (spec.SCORING_START, spec.V1_SCORING_START) == ("2026-10-15", "2026-09-28")   # [v2.2] 창 재시작
     assert (spec.MAIN_KIND, spec.MAIN_FAMILY) == ("family", "flowc")
     assert (spec.FLOW_BASE, spec.FLOWC_K, spec.FLOW_TRAIL, spec.FLOW_TP, spec.FLOW_MAX_TRADES, spec.FLOW_LAST_ENTRY) == \
         ("09:00", 300, (6.0, 4.0), 12.0, 3, "14:50")
@@ -54,9 +56,10 @@ def test_v2_spec_is_preregistered():
     assert (spec.BRK_STOP_BUF, spec.BRK_TRAIL, spec.BRK_TP, spec.BRK_MAX_TRADES) == (2.0, (6.0, 3.0), 8.0, 5)
     assert spec.JUDGE_AFTER_DAYS == 20
     assert spec.VARIANTS == ("MAIN", "SHADOW_V1", "SHADOW_V1X4", "SHADOW_FLOWF", "SHADOW_BRKC", "SHADOW_FLOWR60")
-    # 604차 섀도 4개는 v2 와 같은 날, [605차] FLOWR60 은 등록 다음 거래일부터
-    assert spec.LATE_SHADOW_START == {"SHADOW_V1": "2026-10-01", "SHADOW_V1X4": "2026-10-01", "SHADOW_FLOWF": "2026-10-01",
-                                      "SHADOW_BRKC": "2026-10-01", "SHADOW_FLOWR60": "2026-10-02"}
+    # [v2.2] MAIN 규칙이 바뀌어 섀도 비교 창도 10/15 부터 다시 연다. FLOWR60 등록 시작(10/02)은 META 에 사료로 남는다
+    assert spec.LATE_SHADOW_START == {"SHADOW_V1": "2026-10-15", "SHADOW_V1X4": "2026-10-15", "SHADOW_FLOWF": "2026-10-15",
+                                      "SHADOW_BRKC": "2026-10-15", "SHADOW_FLOWR60": "2026-10-15"}
+    assert spec.SHADOW_META_D["SHADOW_FLOWR60"]["start"] == "2026-10-02"
     assert (spec.FLOWR_WIN_MIN, spec.FLOWR_K) == (60, 150)
     assert set(spec.RETIRED_SHADOWS) == {"SHADOW_E2F2", "SHADOW_X4NF", "SHADOW_TR44", "SHADOW_X4NFA"}
     assert not (set(spec.RETIRED_SHADOWS) & set(spec.VARIANTS))
@@ -231,7 +234,18 @@ def test_runner_compute_dispatches_by_kind(tmp_path):
     assert any("FLOWF" in n for n in r2["results"]["SHADOW_FLOWF"]["decision"]["notes"])
 
 
-def test_run_and_store_then_report_and_scorecard(tmp_path):
+def _v21_window(monkeypatch):
+    """[v2.2] 아래 두 테스트의 합성 데이터는 2026-10-01(v2.1 창 첫날)이다. 리포트·채점표의 **계산 방식**을
+    검사하므로 채점 시작을 그 날짜로 맞춘다 — 실제 창(10/15~)은 test_v2_spec_is_preregistered 가 고정한다."""
+    monkeypatch.setattr(spec, "SCORING_START", spec.V21_SCORING_START)
+    # v2.1 창 당시 값 그대로(604차 섀도 4개 = 10/01 · FLOWR60 = 10/02)
+    monkeypatch.setattr(spec, "LATE_SHADOW_START",
+                        {k: ("2026-10-02" if k == "SHADOW_FLOWR60" else spec.V21_SCORING_START)
+                         for k, _m in spec.SHADOW_META})
+
+
+def test_run_and_store_then_report_and_scorecard(tmp_path, monkeypatch):
+    _v21_window(monkeypatch)
     raw, fl, lv = _write_dbs(tmp_path)
     sd = str(tmp_path / "sd.db")
     runner.run_and_store(DAY, raw, fl, lv, sd, live=False)
@@ -359,7 +373,8 @@ def test_halt_mode_same_blocks_only_the_stopped_direction():
     assert families.flowc_counterfactual(engine.DayFrame(_flat(), {}), L) is None           # 흐름 없음 → 미측정
 
 
-def test_scorecard_daily_instrumentation_and_cat_stop_section(tmp_path):
+def test_scorecard_daily_instrumentation_and_cat_stop_section(tmp_path, monkeypatch):
+    _v21_window(monkeypatch)
     raw, fl, lv = _write_dbs(tmp_path)
     # 재난 손절이 나도록 봉을 덮어쓴다: 09:05 매도 1100 → 10:30 고가 1120(손절 1118) · 흐름은 11:00 에 −300 으로 반전
     con = sqlite3.connect(raw)

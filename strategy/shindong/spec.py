@@ -16,7 +16,11 @@ v2 규칙·섀도 메타는 이 파일 끝 「v2」 절에 있다.
 """
 
 V1_SPEC_VERSION = "SD-2026-09-24-v1"   # v1(R1/R2/R3) — SHADOW_V1 이 이 규칙으로 계속 기록한다
-SPEC_VERSION = "SD-2026-09-30-v2.1"    # [604차] MAIN = FLOWC. v2.1 = 채점 전(9/30) 재난 손절 사전 정정. 이 파일 끝 「v2」 절
+SPEC_VERSION = "SD-2026-10-15-v2.2"    # [604차] MAIN = FLOWC. v2.1 = 채점 전(9/30) 재난 손절 사전 정정.
+#   [2026-10-15 사용자 결정] v2.2 = R1 반대 방향 재진입 금지(`FLOW_R1_CTR_REENTRY_BLOCK`). MAIN 규칙이 바뀌었으므로
+#   채점 창을 다시 연다(`SCORING_START`). v2.1 행(10/01~10/14)은 DB 에 그대로 남는다 — `--since 2026-10-01` 로 본다.
+V21_SPEC_VERSION = "SD-2026-09-30-v2.1"
+V21_SCORING_START = "2026-10-01"      # v2.1 창(사료) — 8거래일로 종료
 
 # ── R1 장전 방향 ─────────────────────────────────────────────────────────
 PREMARKET_LAST = "08:59"      # 장전 판단에 쓰는 마지막 분
@@ -79,7 +83,7 @@ TR44_DIST = 4.0
 #   대체공휴일로 잘못 알고 있었다(krx_holidays 오등록 정정). 채점 전 정정이라 표본 영향 없음 —
 #   규칙 값은 그대로이므로 SPEC_VERSION 은 올리지 않는다(사전등록 문서 §6-1에 기록).
 V1_SCORING_START = "2026-09-28"   # v1 창 — SHADOW_V1 의 R3 중단 판정은 이 날부터 센다(레거시 창)
-SCORING_START = "2026-10-01"      # [604차] v2 채점 시작(배포 다음 거래일)
+SCORING_START = "2026-10-15"      # [v2.2] 채점 재시작(MAIN 규칙 변경 당일 — 장전 배포). v2.1 창은 V21_SCORING_START
 R3_KILL_AFTER_DAYS = 10       # 채점 시작 후 이 거래일 수가 차면 판정
 R3_KILL_NET_MAX = 0           # R3 누적 순손익이 이것 미만이고
 R3_KILL_WINRATE_MAX = 0.35    # R3 승률(거래 단위)이 이것 미만이면 R3 중단
@@ -140,6 +144,15 @@ FLOW_LAST_ENTRY = "14:50"      # 신규 진입 마지막 분. 시간 청산은 T
 FLOW_CAT_STOP_ATR = 0.6
 FLOW_CAT_STOP_FALLBACK_PT = 20.0
 FLOW_CAT_STOP_HALT_DAY = True
+# [v2.2 · 2026-10-15 사용자 결정] R1 반대 방향 **재진입 금지** — MAIN(FLOWC) 전용.
+#   R1(장전 콜−풋)이 방향을 낸 날, R1 과 반대 방향 FLOWC 진입은 **그날 첫 1건만** 허용한다.
+#   그 뒤 같은(R1 반대) 방향 신호는 진입하지 않는다. R1 방향 진입 · R1 보류일은 무변경.
+#   패턴: 10/07 · 10/14 — R1 반대 첫 거래는 이겼고(+162.5만) 직후 재진입이 재난 손절(−338.7만).
+#   13일 반사실(9/21~10/14): R1 반대 4거래 −176.2만 vs R1 일치·보류 27거래 +1,157.8만 · R1 적중 10/11.
+#   ⚠ 사후 근거다 — 효과가 전부 패턴 이틀에서 나왔고 설계 구간(9/21~9/30)엔 R1 반대 거래가 0건이었다.
+#   근거: `docs/신동거래_V2/R1역방향_손실방어_MW0602-20261015.md`. 막힌 신호는 decision.notes 에 남긴다.
+FLOW_R1_CTR_REENTRY_BLOCK = True
+FLOW_R1_CTR_MAX = 1            # R1 반대 방향 허용 건수(하루)
 # FLOWF — 같은 규칙, 원천만 **외국인 선물 순매수 계약수**(raw_investor_futures) · 순방향.
 FLOWF_K = 800                  # 구조로 정한 값: 겹침 5일 진폭비 ≈ 2.5 × 300 → 둥근 값. 결과 보고 바꾸지 않는다
 # FLOWR60 — [605차 · 2026-10-01 사전등록] 같은 원천·같은 청산, 방향 판단만 **최근 60분 변화**(누적 아님).
@@ -176,7 +189,9 @@ SHADOW_META = (
 )
 SHADOW_META_D = dict(SHADOW_META)
 VARIANTS = ("MAIN",) + tuple(k for k, _ in SHADOW_META)
-LATE_SHADOW_START = {k: m["start"] for k, m in SHADOW_META}
+# [v2.2] 채점 시작 = max(등록 시작, SCORING_START). MAIN 규칙이 바뀌면 섀도 비교 창도 함께 다시 연다
+#   (MAIN 대비 판정이므로). FLOWR60 의 등록 시작 「2026-10-02」 은 SHADOW_META 에 사료로 남는다.
+LATE_SHADOW_START = {k: max(m["start"], SCORING_START) for k, m in SHADOW_META}
 # 종료된 v1 시대 섀도 — DB 행은 보존(사료). 채점표는 「종료」 한 줄로만 보인다.
 RETIRED_SHADOWS = {"SHADOW_E2F2": "v1 R3 의 변형 — V1 안에서 의미가 끝남",
                    "SHADOW_X4NF": "SHADOW_V1X4 로 승계",
