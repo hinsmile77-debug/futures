@@ -48388,3 +48388,26 @@ G-7·G-8은 사용자 승인 필요(피터2 설계 취지와 충돌 가능) — 
 - 사이징·ProfitGuard **판정값은 무변경** — 사이징은 목표자본 5천만, 손실한도는 실운영금 1,500만, `PROFIT_GUARD_SYSTEM_ONLY_PNL=True`.
 
 **이번 추가 수정(원 dev `4d050d7`, MW0602 629차)**: ProfitGuard broker 추정 `idx6 − 엔진 수수료` 가 실계좌에서 **수수료 이중 차감**이었다(497차 P3 가 모의 gross 전제). `_broker_pnl_axis_seen` 으로 축을 판별(`[PnL] 브로커 금일매매손익 축 판별 = net` 1회 로그)해 net 축이면 다시 빼지 않는다. `PROFIT_GUARD_SYSTEM_ONLY_PNL=True` 라 `[DebugPnL] broker=` 표시값만 바뀐다. 테스트 `tests/test_629_profitguard_broker_axis.py`.
+
+## 2026-10-14 (MW0601 690차 — 장후 점검: 실계좌 2일차 · CREON 채널 첫날)
+
+- **증상**: ① 피터2 실주문 2건 브로커 거부 `12644 최소예탁총액이부족합니다`(10:11:48·10:12:22), 10:24:40 동일 주문은 체결 ② `[CybosDailyPnl] 12242` 16회 → `daily_broker_pnl` 10-14 `broker_net_krw`·예탁현금 NULL ③ `[Sizer]`/`[Capital]` 실제잔고 100,000,000 = `main.py:791·1259` 하드코딩 기본값(실측 예탁 약 3,361만) ④ 수집기 §5가 신동 가상 장부(`16c39f3`, `[Position]` 태그 공유)를 실포지션으로 조립 — 가상 진입에 실거래 +8.88pt 귀속, phantom 미청산 2건 ⑤ 피터2 트윗 수신 지연 최대 4분49초(X 페이지 오류 'Top'), CASE-2 지시가 대비 +0.58pt 추격 ⑥ 08:40 런처 CREON 세션 300초 대기 실패 → 사용자 재로그인 후 08:51 기동 ⑦ 15:55 수동 재기동 시 ForceFlatGuard 거짓 경보(낡은 하트비트 판정, 마감 마커 미참조) ⑧ `crash_fault.log` 재기동 덮어쓰기로 08:51 PID 기록 소실.
+- **원인**: ②③은 `8a5f782`(17:28 체리픽)가 이미 수정 — 오늘 프로세스 미적용. ①은 로그상 판별 불가(잔고가 기본값이라 예탁금 근거 없음). ④는 가상 장부 로그 태그 혼용. ⑦은 `scripts/force_flat_guard.py:main()` 「판정 시각 경과 → 즉시 1회 판정」 분기.
+- **결정**: 신규 Fix F-19(수집기 가상 분리, A) · F-19b(가상 태그 `[VPosition]`, C) · F-20(가드 마감마커·하트비트 유예, A) · F-21(`main.py:4371` 피터2 기각 사유에 브로커 msg, B) · F-22(crash_fault append/회전, A) · F-23(런처 CREON 세션 미준비 시 자동로그인 1회, C) · F-24(수집기 MAX_CONTRACTS 기대값 1, A) · F-25(12644 수신 시 예탁금 즉시 조회, C). 고도화 G-9(피터2 이익보호 트레일 섀도) · G-10(지연·추격 상한 섀도) · G-11(실계좌 기동 체크리스트) · G-12(본체 침묵일 집계). ②③ 신규 Fix 없음 — 내일 라이브 검증.
+- **Why**: 오늘 실거래 이익 +442,192원 전부가 사용자 수동 청산(CASE-1, 규칙상 반사실 약 −0.7pt)에서 나왔다 — 피터2가 실계좌 주체인 동안 수익 구조가 사람 개입에 의존한다. 실계좌 운영 축(예탁금·실측손익·잔고·무인기동) 4개가 같은 날 미확인이었다.
+- **How to apply**: 10-14 net +208,384원은 **엔진 net(CREON 요율 1.9e-05 가정)** 이다 — 브로커 실측 전이므로 전환기준 ① 근거로 인용 시 `source=engine` 명시. CREON 채널 실효 요율은 브로커 net 2거래일 적립 후 `commission_rate_recon.py --verify`로 확정. `MAX_CONTRACTS=1`은 `56cc917` 의도값(수집기 기대값 3이 낡음).
+- **검증**: 3원 대사(TRADE 체결 2 = 수집기 포지션 2 = trades.db id 644·645, net 합 +208,384) 일치. 15:10 FLAT 준수, EOD 5/6·P8 성공. 라이브 미검증: O-t1(일일손익 TR) · O-t2(잔고 미측정 표기) — 10-15 기한.
+- 리포트: `docs/정기점검/매일점검/MW0601-20261014-점검리포트.md`
+
+## 2026-10-14 (MW0601 690차 후속 — 피터2 이익보호 트레일 실거래 적용 + 기존 규칙 섀도) — 🟡 **구현 · 다음 기동(10-15)부터 적용 · 라이브 미검증**
+
+- **사용자 지시**: 「제안 규칙을 실거래로 하고 기존 규칙을 섀도로」. 제안서가 권한 「섀도 10거래일 선행」 순서를 **사용자가 뒤집었다** — 실거래가 트레일, 섀도가 기존 규칙.
+- **규칙**: 진입 시 1분 ATR14(`_manual_entry_ctx["atr"]`) 고정. MFE ≥ 4.5×ATR 무장 → 보호선 = 고점 − 3.5×ATR(유리 방향으로만). 무장 순간 최소 +1×ATR 잠금. 근거 `scripts/peter2_trail_backtest.py`(피터 73건/29일: +154.5→+200.0pt, 누적DD 74→29pt, 일자부트스트랩 P(Δ>0)=0.95, ⚠ 8월 −6.4·9월 −5.0·10월 +57.0).
+- **구현**:
+  - `strategy/peter2/trail.py`(신규, 순수 로직) — `Peter2Trail`(무장·보호선·피터손절 병합) · `NoTrailGhost`(기존 규칙 반사실: 피터 손절·목표·청산/반대/체결 트윗·15:10) · 영속 `data/peter2_live/trail_state_<date>.json` · 결과 `data/peter2_live/trail_shadow.jsonl`.
+  - `main.py` — `_p2trail_poll()`(기존 2초 QTimer 슬롯 `_peter2_tick_body` 안, `mode=="live"`에서만, 예외 격리) · 보호선은 `pos.set_external_levels(stop=…, src="trail")`로 **올리기만** 하고 터치 청산은 **기존 틱 하드스톱 경로**가 한다(주문 경로 신설 없음) · `SET_STOP`은 트레일 무장 중 피터 손절을 `base_stop`으로만 기록하고 실손절은 더 보호적인 값 · `_peter2_engine_state()`는 무장 중 follower 에 `base_stop`을 보인다(피터 tighten·체결근접 판정이 기존 규칙 세계와 같게) · 청산 후처리(`on_peter2_closed` 옆)에서 트레일 청산이면 섀도 시작, 아니면 Δ=0 기록.
+  - `config/settings.py` — `PETER2_TRAIL_MODE="live"` · `ARM_ATR=4.5` · `BACK_ATR=3.5` · `ATR_MIN/MAX=0.3/15`.
+- **의도적으로 안 한 것**: ① `exit_reason` 문자열 무변경(490차 — CB②·ExitCooldown·캠페인 소비처) → 트레일 청산도 `하드스톱(틱)`, 구분은 `[Peter2Trail] 보호선 청산` TRADE 로그·signals `TRAIL_EXIT`·`trail_shadow.jsonl`. ⚠ 그래서 `trades.exit_stage`가 이익 청산인데 `INITIAL_STOP`으로 찍힌다 — 분석 시 jsonl 과 조인할 것. ② COM 틱 콜백 무변경(절대원칙 §4) — 고점은 2초 폴링 가격으로 갱신(틱 스파이크 일부 미반영 = 보수 쪽). ③ 가상 장부(피터가 비선택 주체일 때) 미적용. ④ 폴백 ATR 금지 — ATR 비정상이면 그 포지션은 기존 규칙(`[Peter2Trail] 트레일 미적용` WARNING).
+- **Why**: 10-14 실거래 이익 전부가 사람의 수동 청산(CASE-1)이었고, 재생상 같은 경로에서 규칙이 +6.75pt(피터가) 청산을 냈다. 피터2가 실계좌 주체인 동안 수익이 사람 개입에 의존하는 구조를 줄인다.
+- **How to apply / 되돌리기**: `PETER2_TRAIL_MODE="off"` 한 줄(트레일·섀도 둘 다 정지, 기존 규칙 그대로). 판정은 `trail_shadow.jsonl` 의 `delta_pts`(실거래 − 기존 규칙) 누적 — 사전등록: 보호선 개입 8건 이상 적립 후 ① Δ 합계 > 0 ② Δ < −5pt 비율 ≤ 30% ③ 재생 스크립트 BACK 3.5 열 전부 양수 — 하나라도 실패면 off 로 되돌리는 안건. 문턱 사후 변경 금지(458차 D6).
+- **검증**: `tests/test_690_peter2_trail.py` 18 passed(py37_32) — 순수 로직 · 스텁 self 로 10-14 CASE-1 경로 end-to-end(무장→ext_stop 상향→보호선 청산→섀도→「949 손절」로 종료→Δ>0 기록) · ATR 비정상 · mode off · 소스 불변식(SET_STOP·배선·COM 콜백 미접촉). 관련 스위트 262 pass / 2 fail — 둘 다 기존 실패(`test_457` peter_paste · `test_virtual_book` 의 `ast.get_source_segment` 는 py3.8+). **라이브 미검증** — 10-15 첫 피터2 체결에서 `[Peter2Trail] 감시 시작` 로그 출현 확인.
