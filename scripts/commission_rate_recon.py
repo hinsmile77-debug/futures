@@ -200,6 +200,11 @@ def _joined():
                "actual_commission": gross - net,
                "deposit": dep, "next_deposit": nxt}
         row.update(t)
+        # [MW0602 628차] 실계좌는 gross(금일매매손익)가 이미 수수료 후라 gross − net = 0 이다.
+        # 그런 날을 넣으면 「실효 요율 0」이 되고, 실계좌 날이 과반이 되는 순간 중앙값이
+        # 0 근처로 끌려 **모의 정상일이 전부 오염일로 뒤집힌다**. 축을 표시해 추정에서 뺀다.
+        from utils.db_utils import broker_pnl_axis
+        row["pnl_axis"] = broker_pnl_axis(gross, net, t.get("engine_commission"))
         rows.append(row)
     return rows
 
@@ -241,6 +246,20 @@ def cmd_verify(args):
     if not rows:
         print("표본 없음 — logs/ 의 SYSTEM 로그(원본+월 zip)와 trades.db 를 확인할 것")
         return 1
+    # [628차] net 축(실계좌) 날은 브로커 수수료를 잴 수 없다 — 제외하되 조용히 버리지 않는다(③).
+    net_axis = [r for r in rows if r.get("pnl_axis") == "net"]
+    if net_axis:
+        print("요율 추정 제외 %d일 — 브로커 금일매매손익이 **수수료 후(net 축, 실계좌)** 라 "
+              "브로커 수수료 미측정:" % len(net_axis))
+        for r in sorted(net_axis, key=lambda x: x["date"]):
+            print("  {}  금일매매손익 {:+,.0f} = 예탁현금 축 net {:+,.0f}  (엔진 수수료 {:,.0f})".format(
+                r["date"], r["gross"], r["net"], r["engine_commission"]))
+        print("  → 실계좌 요율 재검증은 체결 단위 수수료 원천(확정/청산수수료 헤더 등)이 필요하다.")
+        print("")
+        rows = [r for r in rows if r.get("pnl_axis") != "net"]
+        if not rows:
+            print("모의(gross 축) 표본 없음 — 요율 추정 불가")
+            return 1
     clean, dirty, med = _split_clean(rows)
     if not clean:
         print("정상 표본 없음 — 전 일자가 중앙값에서 벗어난다. 원천을 먼저 점검할 것")
@@ -354,6 +373,10 @@ def cmd_backfill(args):
             continue
         n_new += 1
         eng = got["engine_commission_krw"]
+        if got.get("pnl_axis") == "net":   # [628차] 실계좌 — gross·수수료 미측정
+            print("%s  gross    (미측정)  net %+10.0f  실제수수료  (미측정)  (엔진 %s) [net 축]"
+                  % (date, got["net_krw"], ("%.0f" % eng) if eng is not None else "미기입"))
+            continue
         print("%s  gross %+10.0f  net %+10.0f  실제수수료 %9.0f  (엔진 %s)"
               % (date, got["gross_krw"], got["net_krw"], got["commission_krw"],
                  ("%.0f" % eng) if eng is not None else "미기입"))

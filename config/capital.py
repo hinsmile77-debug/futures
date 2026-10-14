@@ -122,7 +122,8 @@ def daily_loss_limit_krw(actual_balance=0.0) -> float:
 
 
 def check_consistency(actual_balance=0.0, index_price=0.0, pt_value=0.0,
-                      is_simulation=None, effective_max_qty=None):
+                      is_simulation=None, effective_max_qty=None,
+                      balance_measured=True):
     """자본 설정 정합성 점검. (level, message) 리스트를 반환한다.
 
     **자동 조치는 하지 않는다.** 어긋난 사실을 드러내기만 한다 — 자동 보정은
@@ -130,10 +131,26 @@ def check_consistency(actual_balance=0.0, index_price=0.0, pt_value=0.0,
 
     is_simulation:      True=모의 / False=실서버 / None=판정불가(경고 생략)
     effective_max_qty:  대시보드 ui_prefs 의 실효 상한(있으면 MAX_CONTRACTS 와 대조)
+    balance_measured:   [MW0602 628차] False 면 actual_balance 는 브로커 실측이 아니라
+                        **코드 기본값**이다. 그 값을 「실제 잔고」로 쓰지 않고, 그것으로
+                        괴리(②)를 계산하지 않는다 — 2026-10-14 기본값 1억으로 「괴리
+                        +566.7%」를 냈다(계측 4원칙 ②). 대신 미측정 사실을 WARNING 으로 남긴다.
     """
     out = []
     base = sizing_capital(actual_balance)
     bal = _f(actual_balance)
+    _bal_txt = (format(int(bal), ",") + "원") if balance_measured else "**미측정**(브로커 잔고 미수신)"
+
+    if not balance_measured:
+        out.append((
+            "WARNING",
+            "실제 잔고 미측정 — 브로커 잔고 조회가 아직 응답하지 않아 코드 기본값(%s원)이 "
+            "쓰이고 있다. 이 값은 실측이 아니므로 잔고 괴리 점검을 생략한다. "
+            "사이징 기준은 %s." % (
+                format(int(bal), ","),
+                ("목표자본 %s원(영향 없음)" % format(int(SIZING_TARGET_CAPITAL_KRW), ","))
+                if SIZING_TARGET_CAPITAL_ENABLED else "**이 기본값** — 실잔고 확인 전 진입 주의")
+        ))
 
     # ① 실서버인데 목표자본 모드 -- 실전에서 실제 잔고와 무관하게 사이징된다.
     #    실운영금이 명시돼 있으면 「사이징=목표자본 / 손실한도=실운영금」이 의도된 운영이므로
@@ -149,16 +166,17 @@ def check_consistency(actual_balance=0.0, index_price=0.0, pt_value=0.0,
             out.append((
                 "CRITICAL",
                 "실서버 접속인데 SIZING_TARGET_CAPITAL_ENABLED=True 입니다 — "
-                "실제 잔고(%s원)와 무관하게 목표자본(%s원)으로 사이징됩니다. "
+                "실제 잔고(%s)와 무관하게 목표자본(%s원)으로 사이징됩니다. "
                 "실전에서는 False 로 전환하거나 _KRW 를 실제 자본으로 맞추십시오."
-                % (format(int(bal), ","), format(int(SIZING_TARGET_CAPITAL_KRW), ","))
+                % (_bal_txt, format(int(SIZING_TARGET_CAPITAL_KRW), ","))
             ))
 
     # ② 실제잔고 vs 기준자본 괴리 -- 계좌 재발급/자본 변동 감지.
     #    실운영금이 있으면 그것과 대조한다(실계좌 잔고는 실운영금이어야 한다).
+    #    [MW0602 628차] 잔고가 미측정(기본값)이면 괴리를 계산하지 않는다.
     if operating_capital() > 0:
         base = operating_capital()
-    if base > 0 and bal > 0:
+    if balance_measured and base > 0 and bal > 0:
         gap = (bal - base) / base
         if abs(gap) >= BALANCE_GAP_WARN:
             out.append((
@@ -196,15 +214,21 @@ def check_consistency(actual_balance=0.0, index_price=0.0, pt_value=0.0,
     return out
 
 
-def capital_profile(actual_balance=0.0, index_price=0.0, pt_value=0.0) -> dict:
-    """기동 시 1회 로그용 자본 프로파일."""
+def capital_profile(actual_balance=0.0, index_price=0.0, pt_value=0.0,
+                    balance_measured=True) -> dict:
+    """기동 시 1회 로그용 자본 프로파일.
+
+    [628차] balance_measured=False 면 잔고는 기본값 — `gap_pct` 는 None(미측정)이다.
+    """
     base = sizing_capital(actual_balance)
     bal = _f(actual_balance)
     return {
         "mode": "target" if SIZING_TARGET_CAPITAL_ENABLED else "actual",
         "base_capital": base,
         "actual_balance": bal,
-        "gap_pct": ((bal - base) / base * 100.0) if (base > 0 and bal > 0) else 0.0,
+        "balance_measured": bool(balance_measured),
+        "gap_pct": (((bal - base) / base * 100.0) if (base > 0 and bal > 0) else 0.0)
+                   if balance_measured else None,
         "operating_capital": operating_capital(),
         "base_risk_krw": base_risk_krw(actual_balance),
         "daily_loss_limit_krw": daily_loss_limit_krw(actual_balance),
@@ -218,8 +242,12 @@ def format_profile(profile: dict) -> str:
     lev = ""
     if profile.get("base_capital", 0) > 0 and profile.get("max_exposure_krw", 0) > 0:
         lev = " (레버리지 %.2fx)" % (profile["max_exposure_krw"] / profile["base_capital"])
+    _measured = profile.get("balance_measured", True)
+    _bal_txt = (format(int(profile["actual_balance"]), ",") + "원") if _measured \
+        else "미측정(기본값 %s원)" % format(int(profile["actual_balance"]), ",")
+    _gap_txt = ("%+.1f%%" % profile["gap_pct"]) if profile.get("gap_pct") is not None else "미측정"
     return (
-        "[Capital] 기준자본=%s원(%s) | 실운영금=%s | 실제잔고=%s원 | 괴리=%+.1f%% | "
+        "[Capital] 기준자본=%s원(%s) | 실운영금=%s | 실제잔고=%s | 괴리=%s | "
         "base_risk=%s원(%.1f%%) | 일일한도=%s원(%.1f%%) | "
         "MAX_CONTRACTS=%d 최대노출=%s원%s"
         % (
@@ -227,8 +255,8 @@ def format_profile(profile: dict) -> str:
             profile["mode"],
             (format(int(profile.get("operating_capital") or 0), ",") + "원")
             if profile.get("operating_capital") else "미설정",
-            format(int(profile["actual_balance"]), ","),
-            profile["gap_pct"],
+            _bal_txt,
+            _gap_txt,
             format(int(profile["base_risk_krw"]), ","), _f(ACCOUNT_BASE_RISK) * 100.0,
             format(int(profile["daily_loss_limit_krw"]), ","), _f(DAILY_LOSS_LIMIT_PCT) * 100.0,
             profile["max_contracts"],

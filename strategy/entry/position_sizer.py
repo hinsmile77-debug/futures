@@ -78,6 +78,11 @@ class PositionSizer:
     def __init__(self, account_balance: float = 0, pt_value: float = FUTURES_PT_VALUE):
         self.account_balance = account_balance
         self._pt_value = float(pt_value)
+        # [MW0602 628차] 생성자 잔고는 **기본값**이다(main.py 는 1억을 넣는다) —
+        # 브로커 잔고로 `set_account_balance()` 가 한 번이라도 불려야 실측이다.
+        # 2026-10-14 실계좌 잔고 조회가 종일 실패해 기본값 1억이 `실제잔고=100,000,000`
+        # 으로 찍혔고, 그것이 「실잔고 1억 vs 목표 1,500만」 CRITICAL 로 이어졌다(계측 4원칙 ②).
+        self.balance_measured = False
 
     def set_pt_value(self, pt_value: float) -> None:
         self._pt_value = float(pt_value)
@@ -89,6 +94,7 @@ class PositionSizer:
             return
         if balance > 0:
             self.account_balance = balance
+            self.balance_measured = True
 
     def compute(
         self,
@@ -236,7 +242,10 @@ class PositionSizer:
             "[Sizer] %s선물 실효잔고=%s(실제잔고=%s) 기본리스크=%s 신뢰도배수=%s 레짐배수=%s "
             "안전배수=%.2f(%s) → %d계약 (최소=%d)%s",
             "미니" if is_mini else "일반",
-            f"{sizing_balance:,.0f}", f"{balance:,.0f}", f"{base_risk:,.0f}",
+            f"{sizing_balance:,.0f}",
+            (f"{balance:,.0f}" if self.balance_measured
+             else f"미측정·기본값 {balance:,.0f}"),   # [628차] 계측 4원칙 ②
+            f"{base_risk:,.0f}",
             conf_mult, regime_mult,
             safety_mults, safety_note,
             quantity, min_qty,

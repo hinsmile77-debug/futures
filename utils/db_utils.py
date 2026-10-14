@@ -3903,8 +3903,34 @@ def fetch_broker_dep_base(date: str) -> Optional[float]:
     return val if val > 0 else None
 
 
+def broker_pnl_axis(pnl_krw, broker_net_krw, engine_commission_krw) -> Optional[str]:
+    """[MW0602 628차] CpTd6197 「금일매매손익」(idx6, `pnl_krw`)이 어느 축인가.
+
+    🔴 **같은 키가 서버마다 다른 축이다.** 모의계좌는 수수료 **전**(gross)이었고
+    (493·497차가 그 전제로 설계), 실계좌 783293269 는 수수료 **후**(net)였다 —
+    2026-10-14 실측: idx6 −650,647 = 익일가예탁 − 예탁 −650,647(정확히 일치),
+    엔진 gross −647,000 · 수수료 3,661. 477차 후속2 「키 이름 ≠ 의미」의 재발.
+
+    서버 유형을 믿지 않고 **데이터로** 가른다: 그날 수수료가 있었는데(거래 있음)
+    idx6 이 브로커 net 과 1원 이내로 같으면 net 축이다.
+      · "net"   — idx6 = 수수료 후. 브로커 gross·수수료는 **미측정**(0 아님).
+      · "gross" — idx6 = 수수료 전. 브로커 수수료 = idx6 − net.
+      · None    — 판별 불가(브로커 net 없음 / 거래 없어 둘이 같음).
+    """
+    if pnl_krw is None or broker_net_krw is None:
+        return None
+    if not engine_commission_krw:
+        return None if abs(float(pnl_krw) - float(broker_net_krw)) <= 1.0 else "gross"
+    return "net" if abs(float(pnl_krw) - float(broker_net_krw)) <= 1.0 else "gross"
+
+
 def fetch_broker_net(date: str) -> Optional[dict]:
-    """그 날짜의 브로커 원천 손익 3축. 없으면 None."""
+    """그 날짜의 브로커 원천 손익 3축. 없으면 None.
+
+    [628차] `pnl_axis` 가 "net" 이면 `gross_krw`·`commission_krw` 는 **None**
+    (미측정)이다 — idx6 이 이미 수수료 후라 브로커 원천에서 gross 를 복원할 수
+    없다. 0 으로 채우면 「브로커 실측 수수료 0원」이 된다(계측 4원칙 ②).
+    """
     row = fetchone(
         TRADES_DB,
         """SELECT pnl_krw, broker_net_krw, deposit_cash_krw,
@@ -3915,9 +3941,24 @@ def fetch_broker_net(date: str) -> Optional[dict]:
         return None
     gross = float(row["pnl_krw"] or 0.0)
     net = float(row["broker_net_krw"])
+    axis = broker_pnl_axis(row["pnl_krw"], net, row["commission_krw"])
+    if axis == "net":
+        return {
+            "gross_krw": None,
+            "net_krw": net,
+            "commission_krw": None,
+            "pnl_axis": axis,
+            "deposit_cash_krw": row["deposit_cash_krw"],
+            "next_day_deposit_cash_krw": row["next_day_deposit_cash_krw"],
+            "engine_commission_krw": row["commission_krw"],
+            "engine_net_krw": row["pnl_net_krw"],
+            "net_source": row["broker_net_source"],
+            "deposit_snapshot_ts": row["deposit_snapshot_ts"],
+        }
     return {
         "gross_krw": gross,
         "net_krw": net,
+        "pnl_axis": axis,
         # 브로커 실측 수수료 — 엔진 가정이 전혀 개입하지 않은 값이다.
         "commission_krw": gross - net,
         "deposit_cash_krw": row["deposit_cash_krw"],
@@ -3948,10 +3989,13 @@ def reconcile_daily_net(date: str, engine_gross: float,
     if b is None:
         return {"status": "NO_BROKER", "date": date}
     resid = engine_net - b["net_krw"]
-    tol = max(NET_RECON_ABS_TOL_KRW, abs(b["commission_krw"]) * NET_RECON_REL_TOL)
-    ratio = (b["commission_krw"] / engine_commission) if engine_commission else None
+    _bc = b["commission_krw"]   # [628차] net 축(실계좌)이면 None = 미측정
+    tol = max(NET_RECON_ABS_TOL_KRW, abs(_bc) * NET_RECON_REL_TOL) if _bc is not None \
+        else NET_RECON_ABS_TOL_KRW
+    ratio = (_bc / engine_commission) if (engine_commission and _bc is not None) else None
     return {
         "status": "OK" if abs(resid) <= tol else "MISMATCH",
+        "pnl_axis": b.get("pnl_axis"),
         "date": date,
         "engine_gross": engine_gross,
         "broker_gross": b["gross_krw"],
@@ -3992,6 +4036,10 @@ def decompose_net_residual(rec: dict, broker_gross_measured: bool) -> dict:
                `dominant`("gross"/"commission"/None)
     """
     resid = float(rec["residual"])
+    if rec.get("broker_commission") is None:
+        # [MW0602 628차] 실계좌(net 축) — 브로커 수수료·gross 모두 미측정. 축 분해 불가.
+        return {"gross_axis": None, "comm_axis": None, "residual": resid,
+                "gross_share": None, "comm_share": None, "dominant": None}
     comm_axis = float(rec["broker_commission"]) - float(rec["engine_commission"])
     if not broker_gross_measured:
         return {"gross_axis": None, "comm_axis": comm_axis, "residual": resid,
@@ -4038,7 +4086,13 @@ def format_net_recon_mismatch(rec: dict, broker_gross_measured: bool,
     """
     d = decompose_net_residual(rec, broker_gross_measured)
     ratio = rec.get("commission_ratio")
-    if d["gross_axis"] is None:
+    if d["comm_axis"] is None:
+        # [MW0602 628차] 실계좌 net 축 — 금일매매손익이 이미 수수료 후라 gross·수수료 모두 미측정.
+        gross_txt = "브로커 gross **미측정**(실계좌 금일매매손익 = 수수료 후)"
+        comm_txt = "엔진 {:,.0f} vs 브로커 **미측정**(실계좌 net 축)".format(rec["engine_commission"])
+        verdict = ("⇒ 지배 축 판정 불가 — 실계좌는 브로커 원천에서 gross·수수료를 분리할 수 없다. "
+                   "체결 대사(trades vs 브로커 체결)로 원인을 좁힐 것")
+    elif d["gross_axis"] is None:
         gross_txt = ("브로커 gross 미수신 — **미측정**(0이 아니다). "
                      "이 잔차를 축으로 쪼갤 수 없다")
         comm_txt = ("엔진 {:,.0f} vs 브로커 {:,.0f} → 차 {:+,.0f}".format(
