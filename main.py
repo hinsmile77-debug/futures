@@ -6357,7 +6357,8 @@ class TradingSystem:
                     # 똑같이 하루 낡는다(10/14 08:50 이 무경고로 지나간 사례).
                     for _lv_w in row["warnings"]:
                         if (_lv_w.startswith(_LS.STALE_HISTORY_MARK)
-                                or _lv_w.startswith(_LS.PREV_EXCLUDED_MARK)):
+                                or _lv_w.startswith(_LS.PREV_EXCLUDED_MARK)
+                                or _lv_w.startswith(_LS.PREV_DAY_MISSING_MARK)):
                             log_manager.system(
                                 f"[LEVELS {stage[:2]}:{stage[2:]}] {_lv_w}", "WARNING")
         except Exception:

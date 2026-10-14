@@ -49625,3 +49625,20 @@ v9-dev 배포 시 MW0601 을 실계좌로 보고 실계좌 경로 영향을 평�
 - **충돌 해소(3곳, 양쪽 보존)**: `config/settings.py` 피터2 블록 — dev 의 DAILY_STOP 주석 유지 + 트레일 상수 추가 · `main.py` import — dev 의 `principal_mod` 유지 + 트레일 import · `_peter2_engine_state()` — dev 의 `self._peter2_last_price()` 유지(v9-dev 의 `_px` 계산은 가져오지 않음) + 트레일 무장 중 `base_stop` 노출.
 - **검증(dev 워크트리, py37_32)**: `tests/test_690_peter2_trail.py` 18 passed · 피터2/거래주체/Qt 슬롯/가상장부 관련 191 passed, 1 failed(`test_virtual_book::test_main_dispatch_is_isolated` — `ast.get_source_segment` 는 py3.8+, 기존 실패).
 - ⚠ **MW0602 확인 필요**: dev 의 `_manual_entry_ctx["atr"]` 가 1분 ATR14 인지(이 브랜치 `main.py` 11435행대 대입 확인함), 피터2 live 모드에서 `[Peter2Trail] 감시 시작` 로그 출현. 되돌리기 `PETER2_TRAIL_MODE="off"`.
+
+
+## 2026-10-15 (MW0601 → dev 이식: 08:50 맥점 전일 이력 경고 — 원 0ca2476, v9-dev 691차) — 🟡 **구현 · 다음 기동부터 적용 · 라이브 미검증**
+
+- **출처**: 원 커밋 `0ca2476` · 원 PC **MW0601**(`v9-dev`) · 사용자 지시 「dev 배포해」.
+- **체리픽이 아니라 선별 이식이다.** dev 에는 같은 날 06:25 MW0602 `8775ddf` 가 「전일 세션 품질 제외」(`PREV_EXCLUDED_MARK`)·
+  「이력 캐시 낡음」 경보 띠(깜박임)와 `session_bars` 이력 보완을 이미 넣었다. 691차의 「전일 이력 없음」을 그대로 가져오면
+  같은 사실이 두 번 경보된다 → **MW0602 두 경보가 침묵할 때만** 아래 둘을 더했다.
+  · `PREV_DAY_MISSING_MARK` — 직전 KRX 거래일(달력 기준)이 이력에 없음. 미륵이가 그날 아예 돌지 않아 `raw_candles` 에도
+    없으면 두 프로브(raw_candles 기준)가 못 잡는다. **MW0602 경보 띠에 합류**해 깜박이고 main 이 WARNING 으로 승격.
+  · `PREV_DAY_PARTIAL_MARK` — 전일은 이력에 있으나 08:45–15:08 분봉 일부 결손(session_bars 보완 뒤에도 남은 것 — 만기일·
+    session_bars 이전 구간 등). 08:50 메타 줄에 「△ 전일 부분 결손 ·」 **깜박이지 않는 주황 고정**, 해제 시 원 툴팁 복원.
+- **곁들인 수정**: MW0602 `_on_levels_alert_tick` 슬롯에 try/except 가드(617차 — 슬롯 예외는 프로세스를 죽인다).
+- **v9-dev 와의 차이**: v9-dev 는 session_bars 보완이 없어 「부분 결손」이 재기동 1봉에도 뜬다(10-15 08:50: 10-14 7봉).
+  dev 는 보완 덕에 훨씬 드물 것이다.
+- **검증(dev 워크트리, py37_32 offscreen)**: `tests/test_691_levels_prev_day_missing.py` 11건(중복 금지 케이스 포함) +
+  `test_levels_session_supplement_20261015`·534·538·542·597·617 = **105 passed**.

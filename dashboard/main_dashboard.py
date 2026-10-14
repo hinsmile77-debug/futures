@@ -4033,6 +4033,7 @@ class EntryPanel(QWidget):
         self._levels_alert_lbl.setVisible(False)
         left_lay.addWidget(self._levels_alert_lbl)
         self._levels_alert_on = False
+        self._levels_meta_tip0 = None   # [MW0601 691차] 08:50 메타 줄 원래 툴팁(복원용)
         self._levels_alert_timer = QTimer(self)
         self._levels_alert_timer.setInterval(600)
         self._levels_alert_timer.timeout.connect(self._on_levels_alert_tick)
@@ -4302,6 +4303,9 @@ class EntryPanel(QWidget):
                         _l.setText("고 ——" if _l is hi_l else "저 ——")
                         _l.setStyleSheet(f"color:{C['text2']};font-size:{S.f(10)}px;")
 
+            if _st == "0850":
+                self._sync_levels_partial(row)
+
             up_l, dn_l = self._levels_struct_labels.get(_st, (None, None))
             if up_l is not None:
                 st = row.get("structure") or {}
@@ -4324,6 +4328,7 @@ class EntryPanel(QWidget):
         """
         try:
             from features.levels.levels_store import PREV_EXCLUDED_MARK, STALE_HISTORY_MARK
+            from features.levels.levels_store import PREV_DAY_MISSING_MARK  # [MW0601 691차]
         except Exception as _e:
             logger.debug("[LEVELS] 경보 머리말 import 실패 — 경보 띠 생략: %s", _e)
             return
@@ -4331,7 +4336,8 @@ class EntryPanel(QWidget):
         for _st in ("0850", "0930"):
             for _w in ((stages or {}).get(_st) or {}).get("warnings") or []:
                 _w = str(_w)
-                if (_w.startswith(PREV_EXCLUDED_MARK) or _w.startswith(STALE_HISTORY_MARK)) \
+                if (_w.startswith(PREV_EXCLUDED_MARK) or _w.startswith(STALE_HISTORY_MARK)
+                        or _w.startswith(PREV_DAY_MISSING_MARK)) \
                         and _w not in hits:
                     hits.append(_w)
         if hits:
@@ -4360,8 +4366,43 @@ class EntryPanel(QWidget):
             f"border-radius:3px;padding:3px 5px;font-size:{S.f(10)}px;font-weight:bold;")
 
     def _on_levels_alert_tick(self) -> None:
-        self._levels_alert_on = not self._levels_alert_on
-        self._apply_levels_alert_style()
+        # [MW0601 691차 이식] 슬롯 가드 — PyQt5 는 슬롯 예외에서 프로세스를 죽인다(617차).
+        try:
+            self._levels_alert_on = not self._levels_alert_on
+            self._apply_levels_alert_style()
+        except Exception as _e:
+            logger.debug("[LEVELS] 경보 띠 깜박임 실패 (무해): %s", _e)
+
+    def _sync_levels_partial(self, row) -> None:
+        """[MW0601 691차 이식] 08:50 행에 「전일 부분 결손」이 있으면 메타 줄 앞에
+        「△ 전일 부분 결손 ·」을 **깜박이지 않는 주황**으로 붙인다(정보성).
+
+        「하루 낡은 맥점」 경보 띠와 성격이 다르다 — 전일은 맞는데 그날 봉 일부가
+        빠졌다는 뜻이다. 경고가 걷히면 원래 설명 툴팁으로 되돌린다.
+        """
+        try:
+            try:
+                from features.levels.levels_store import PREV_DAY_PARTIAL_MARK as _pk
+            except Exception:
+                _pk = "전일 부분 결손"
+            meta = self._levels_dist_labels.get("0850", (None, None, None))[0]
+            if meta is None:
+                return
+            if self._levels_meta_tip0 is None:
+                self._levels_meta_tip0 = meta.toolTip()
+            meta.setToolTip(self._levels_meta_tip0)
+            _p = [w for w in ((row or {}).get("warnings") or [])
+                  if isinstance(w, str) and w.startswith(_pk)]
+            if not _p:
+                return
+            _base = meta.text()
+            if not _base.startswith("△"):
+                meta.setText("△ 전일 부분 결손 · " + _base)
+            meta.setToolTip(_p[0])
+            meta.setStyleSheet(f"color:{C['orange']};background:transparent;"
+                               f"font-size:{S.f(9)}px;")
+        except Exception as _e:
+            logger.debug("[LEVELS] 전일 부분 결손 표시 실패 (무해): %s", _e)
 
     def _on_manual_levels_clicked(self):
         """[MW0601 542차 이식] 수동 산출 버튼 — 「산출 중」을 먼저 그리고 요청만 낸다.

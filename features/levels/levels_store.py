@@ -81,6 +81,16 @@ EXCLUDED_RECHECK_DAYS = 10      # 최근 이 달력일 안의 품질 제외일�
 # (스크립트·테스트가 `(sessions, excluded)` 2-튜플을 받는다).
 LAST_SESSION_SUPPLEMENT = {}    # type: Dict[str, int]
 
+# [MW0601 691차 → dev 이식] 위 두 경보가 못 잡는 나머지 두 경우.
+#   · PREV_DAY_MISSING_MARK — 직전 **KRX 거래일**(달력 기준)이 이력에 없다. 미륵이가 그날
+#     아예 돌지 않아 `raw_candles` 에도 없으면 `PREV_EXCLUDED_MARK`·`STALE_HISTORY_MARK`
+#     (둘 다 raw_candles 프로브 기준)가 침묵한다. 두 경보가 안 뜬 경우에만 낸다(중복 금지).
+#   · PREV_DAY_PARTIAL_MARK — 전일은 이력에 있으나 08:45–15:08 분봉 일부가 빠졌다
+#     (session_bars 보완 뒤에도 남은 결손 — 만기일·재기동 등). 08:45 가 빠지면 그날
+#     요약 시가가 첫 봉 기준으로 오염된다. 화면은 깜박이지 않는 주황으로만 표시한다.
+PREV_DAY_MISSING_MARK = "전일 이력 없음"
+PREV_DAY_PARTIAL_MARK = "전일 부분 결손"
+
 
 # ---------------------------------------------------------------- DB 읽기
 
@@ -289,6 +299,76 @@ def prev_session_excluded_warning(prev, target_date, excluded=None, db_path=None
         return None
     return ("%s — 직전 거래일(%s)이 품질 제외(%s)돼 전일 고·저 · ATR14 · 구조 후보가 "
             "%s 기준이다(하루 낡은 맥점)" % (PREV_EXCLUDED_MARK, latest, excluded[latest], prev.d))
+
+
+def expected_prev_trading_day(target_date):
+    # type: (str) -> Optional[str]
+    """target_date 직전 KRX 거래일(YYYY-MM-DD). 판정 실패면 None(경고를 지어내지 않는다)."""
+    try:
+        from utils.time_utils import is_trading_day
+        d = datetime.date(*[int(x) for x in target_date.split("-")])
+        for _ in range(15):
+            d -= datetime.timedelta(days=1)
+            if is_trading_day(d):
+                return d.isoformat()
+    except Exception:
+        logger.debug("[LEVELS] 전 거래일 판정 실패 — %s", target_date, exc_info=True)
+    return None
+
+
+def prev_day_missing_warning(history_last, target_date, excluded=None):
+    # type: (Optional[str], str, Optional[Dict[str, str]]) -> Optional[str]
+    """[MW0601 691차] 전 거래일이 이력에 없으면 경고(`PREV_DAY_MISSING_MARK` 로 시작)."""
+    exp = expected_prev_trading_day(target_date)
+    if not exp or not history_last or history_last >= exp:
+        return None
+    why = (excluded or {}).get(exp)
+    why_txt = ("품질 제외: %s" % why) if why else "봉 미수집 또는 EOD 이력 캐시 미갱신"
+    return ("%s — 전 거래일 %s 세션이 이력에 없어 %s 세션을 전일로 산출(%s)"
+            % (PREV_DAY_MISSING_MARK, exp, history_last, why_txt))
+
+
+def _minute_runs(mins):
+    # type: (List[str]) -> str
+    """정렬된 "HH:MM" → "08:45–08:51, 10:52" (범위는 대시 — 물결표 금지 규칙)."""
+    def _m(t):
+        return int(t[:2]) * 60 + int(t[3:])
+    runs = []
+    for t in sorted(mins):
+        if runs and _m(t) == _m(runs[-1][1]) + 1:
+            runs[-1][1] = t
+        else:
+            runs.append([t, t])
+    parts = [a if a == b else "%s–%s" % (a, b) for a, b in runs]
+    if len(parts) > 6:
+        return "%s … 외 %d구간" % (", ".join(parts[:6]), len(parts) - 6)
+    return ", ".join(parts)
+
+
+def prev_day_partial_warning(prev_date, bars):
+    # type: (str, Optional[Sequence[PL.Bar]]) -> Optional[str]
+    """[MW0601 691차] 전일 봉이 08:45–15:08 격자에서 빠졌으면 경고(`PREV_DAY_PARTIAL_MARK`).
+
+    봉이 캐시에 없으면(측정 불가) None — 결손 0 으로 위장하지도, 지어내지도 않는다.
+    """
+    if not bars:
+        return None
+    try:
+        from utils.time_utils import expected_raw_candle_minutes
+        exp = expected_raw_candle_minutes()
+    except Exception:
+        logger.debug("[LEVELS] 분 격자 판정 실패", exc_info=True)
+        return None
+    have = set(b.t for b in bars)
+    miss = sorted(exp - have)
+    if not miss:
+        return None
+    first = min(have) if have else None
+    open_txt = (" · 08:45 결손 — 그날 시가가 %s 봉 기준(오염)" % first
+                if "08:45" in miss and first else "")
+    return ("%s — %s %d/%d봉, 결손 %d봉 (%s)%s"
+            % (PREV_DAY_PARTIAL_MARK, prev_date, len(exp & have), len(exp),
+               len(miss), _minute_runs(miss), open_txt))
 
 
 def bars_from_candles(candles, until=None):
@@ -582,6 +662,16 @@ def prepare_params(summaries, bars_by_day, target_date, db_path=None, excluded=N
                                       db_path=db_path)
     if stale:
         warnings.append(stale)
+    # [MW0601 691차 이식] 위 두 경보가 침묵할 때만 — 같은 사실을 두 번 경고하지 않는다.
+    _pm = _pp = None
+    if not prev_ex and not stale:
+        _pm = prev_day_missing_warning(prev.d, target_date, excluded)
+        if _pm:
+            warnings.append(_pm)
+        else:
+            _pp = prev_day_partial_warning(prev.d, bars_by_day.get(prev.d))
+            if _pp:
+                warnings.append(_pp)
     if len(hist_bars) < PL.LOOKBACK:
         warnings.append("구조 후보 이력 %d세션(%d 필요)" % (len(hist_bars), PL.LOOKBACK))
     try:
@@ -611,7 +701,8 @@ def prepare_params(summaries, bars_by_day, target_date, db_path=None, excluded=N
     return dict(prev=prev, atr=atr, atr5=atr5, p1=p1, p2=p2, rhat1=rhat1, rhat2=rhat2,
                 p_at=p_at, rhat_at=rhat_at, at_key=at_key,
                 candidates=cands, warnings=warnings, history_sessions=len(past),
-                history_last=prev.d)
+                history_last=prev.d, prev_day_missing=bool(_pm),
+                prev_day_partial=bool(_pp))
 
 
 # ---------------------------------------------------------------- 단계 산출
