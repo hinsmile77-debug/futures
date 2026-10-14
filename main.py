@@ -16074,8 +16074,80 @@ class TradingSystem:
         self.dashboard.append_sys_log("자동 종료 예약 — %.0f초 후 프로그램 종료" % (_delay_ms / 1000.0))
         QTimer.singleShot(_delay_ms, self._auto_shutdown)
 
+    def _post_close_bar_sync(self, now: datetime.datetime) -> None:
+        """[MW0601 692차] 장후 봉 정합 — 당일 차트 보충 → 따라잡기 → `raw_candles` 창 안 보충.
+
+        각 단계는 독립 try 다 — 하나가 실패해도 나머지와 확정 판정은 돈다.
+        BlockRequest 는 COM 콜백 밖(스케줄러 틱)이다 — 절대원칙 §4.
+        """
+        from collection.cybos.chart_backfill import backfill_day as _bf_day, catchup_days
+        from utils.db_utils import fill_raw_candles_from_session_bars as _fill_raw
+        # ① 당일
+        try:
+            _stt = _bf_day(now.date())
+            if _stt is not None:
+                log_manager.system(
+                    "[SessionBackfill] 당일 마감구간 보충 — chart=%d existing=%d "
+                    "inserted=%d open_fixed=%d fixed=%d mismatch=%d (시가만 %d · 그 외 %d)"
+                    % (_stt["chart"], _stt["existing"], _stt["inserted"],
+                       _stt["open_fixed"], _stt.get("fixed", 0), _stt["mismatch"],
+                       _stt.get("mismatch_open", 0), _stt.get("mismatch_other", 0)),
+                    "WARNING" if _stt.get("mismatch_other") else "INFO",
+                )
+                if _stt["inserted"]:
+                    # 열려 있는 당일 차트가 스스로 15:45 를 집게 한다.
+                    self.dashboard.minute_chart_reload()
+        except Exception as _e1:
+            logger.warning("[SessionBackfill] 당일 보충 실패 (무해 — 익일 08:41 이 메운다): %s", _e1)
+        # ② 따라잡기 — 08:41 창을 놓친 날(늦은 기동)·전일 15:46 실패를 최근 5거래일에서 줍는다
+        _days = [now.date()]
+        try:
+            for _d in catchup_days(now.date()):
+                _st = _bf_day(_d)
+                log_manager.system(
+                    "[SessionBackfill] 따라잡기 %s — %s" % (
+                        _d, "조회 실패/건너뜀" if _st is None else
+                        "chart=%d inserted=%d fixed=%d" % (_st["chart"], _st["inserted"],
+                                                          _st.get("fixed", 0))),
+                    "INFO")
+                _days.append(_d)
+        except Exception as _e2:
+            logger.warning("[SessionBackfill] 따라잡기 실패 (무해): %s", _e2)
+        # ③ raw_candles 08:45–15:08 창 안 보충·보정 (618차 번복 — 사용자 승인 2026-10-15)
+        for _d in sorted(set(_days)):
+            try:
+                _fr = _fill_raw(_d.isoformat())
+                if _fr["inserted"] or _fr["fixed"]:
+                    log_manager.system(
+                        "[RawFill] %s raw_candles 창 안 보충 %d봉(bar_recovered=2) · "
+                        "차트 보정 %d봉(bar_recovered=3) — 보충 %s / 보정 %s" % (
+                            _d, _fr["inserted"], _fr["fixed"],
+                            ", ".join(_fr["inserted_ts"][:12]) or "—",
+                            ", ".join(_fr["fixed_ts"][:12]) or "—"),
+                        "INFO")
+            except Exception as _e3:
+                logger.warning("[RawFill] %s 실패 (무해): %s", _d, _e3)
+
+    def _run_bargap_confirm(self, now: datetime.datetime) -> None:
+        """[MW0601 692차] 당일 결손 확정 판정 1회 — 스케줄러와 종료 직전 양쪽에서 부른다."""
+        if self._bargap_confirm_done:
+            return
+        self._bargap_confirm_done = True
+        from utils.bar_gap import confirm_line as _bg_conf
+        from config.settings import RAW_DATA_DB as _bg_db2
+        _msg, _lv = _bg_conf(_bg_db2, now.date().isoformat())
+        log_manager.system(_msg, _lv)
+
     def _auto_shutdown(self) -> None:
         """일일 마감 완료 후 자동 프로그램 종료 — Qt 이벤트 루프 종료."""
+        # [MW0601 692차] 확정 판정을 **종료 전에 반드시** 남긴다. 2026-10-08(만기일)은
+        # 15:43 종료로 15:46 판정이 돌지 않아 결손 7봉이 기록 없이 지나갔다.
+        try:
+            _nw_c = datetime.datetime.now()
+            if is_trading_day(_nw_c) and _nw_c.time() >= datetime.time(15, 20):
+                self._run_bargap_confirm(_nw_c)
+        except Exception as _bgx:
+            logger.warning("[BarGap] 종료 전 확정 판정 실패 (무해): %s", _bgx)
         state = self._read_session_state()
         state["date"] = datetime.date.today().isoformat()
         state["auto_shutdown_done_date"] = datetime.date.today().isoformat()
@@ -17244,31 +17316,23 @@ class TradingSystem:
         # 실패해도 익일 08:41 보충(위 블록)이 그대로 메운다 — 순수 가산이다.
         # BlockRequest 는 COM 콜백 밖(스케줄러 틱)이다 — 절대원칙 §4.
         # ⚠ `is_expiry_day` 는 main.py 상단 import 에 없다 — 위 550차 블록과 같이 지역 import.
+        # [MW0601 692차] 만기일은 15:20 최종 체결 — 15:45 봉이 없고 daily_close(15:40) 뒤
+        #   15:43 에 종료하므로 15:46 창이 오지 않는다. 그날은 **15:22–15:39** 에 돈다.
+        #   만기 월물은 **익일** 조회가 거부되므로(565차) 당일이 유일한 기회다.
         try:
             from utils.time_utils import is_expiry_day as _is_exp_t
+            _pc_win = ((datetime.time(15, 22), datetime.time(15, 39)) if _is_exp_t(now)
+                       else (datetime.time(15, 46), datetime.time(15, 49)))
             if (
                 not self._chart_backfill_today_done
                 and is_trading_day(now)
-                and datetime.time(15, 46) <= now.time() < datetime.time(15, 49)
-                and not _is_exp_t(now)   # 만기일은 15:20 최종 체결 — 15:45 봉이 없다
+                and _pc_win[0] <= now.time() < _pc_win[1]
                 and self.broker is not None and self.broker.is_connected
             ):
                 self._chart_backfill_today_done = True
                 from config.settings import SESSION_BARS_ENABLED as _sb_on2
                 if _sb_on2:
-                    from collection.cybos.chart_backfill import backfill_day as _bf_day
-                    _stt = _bf_day(now.date())
-                    if _stt is not None:
-                        log_manager.system(
-                            "[SessionBackfill] 당일 마감구간 보충 — chart=%d existing=%d "
-                            "inserted=%d open_fixed=%d mismatch=%d"
-                            % (_stt["chart"], _stt["existing"], _stt["inserted"],
-                               _stt["open_fixed"], _stt["mismatch"]),
-                            "WARNING" if _stt["mismatch"] else "INFO",
-                        )
-                        if _stt["inserted"]:
-                            # 열려 있는 당일 차트가 스스로 15:45 를 집게 한다.
-                            self.dashboard.minute_chart_reload()
+                    self._post_close_bar_sync(now)
         except Exception as _cbt_e:
             logger.warning(
                 "[SessionBackfill] 당일 보충 실패 (무해 — 익일 08:41 이 메운다): %s", _cbt_e)
@@ -17284,16 +17348,14 @@ class TradingSystem:
         # ⚠ 보충이 스킵된 날(만기일·이미 완료)에도 판정은 돈다. 스킵을 결손으로
         #   위장시키지 않기 위해서다(계측 4원칙 ②).
         try:
+            from utils.time_utils import is_expiry_day as _is_exp_c
+            _cf_t = datetime.time(15, 22) if _is_exp_c(now) else datetime.time(15, 46)
             if (
                 not self._bargap_confirm_done
                 and is_trading_day(now)
-                and now.time() >= datetime.time(15, 46)
+                and now.time() >= _cf_t
             ):
-                self._bargap_confirm_done = True
-                from utils.bar_gap import confirm_line as _bg_conf
-                from config.settings import RAW_DATA_DB as _bg_db2
-                _msg, _lv = _bg_conf(_bg_db2, now.date().isoformat())
-                log_manager.system(_msg, _lv)
+                self._run_bargap_confirm(now)
         except Exception as _bgc_e:
             logger.warning("[BarGap] 당일 확정 판정 실패 (무해): %s", _bgc_e)
 

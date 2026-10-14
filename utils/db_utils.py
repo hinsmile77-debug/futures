@@ -2384,6 +2384,80 @@ def update_session_bar_ohlv_from_chart(ts: str, bar: dict, new_source: str) -> N
             )
 
 
+#: [MW0601 692차] `raw_candles.bar_recovered` 값 규약 — **1 은 쓰지 않는다**.
+#:   1 = 452차 「파이프라인 복구 재처리본」(CVD 앵커 리포트가 「새로 생기면 안 된다」로 감시)
+#:   2 = 장후 `session_bars`(차트 TR 보충)에서 옮겨 넣은 **결손 분** — 실시간 봉이 아니다
+#:   3 = 실시간 봉이지만 O/H/L/V 를 차트 값으로 **보정**(08:45 개장 체결 · 재기동 부분 봉)
+RAW_RECOVERED_FROM_SESSION = 2
+RAW_RECOVERED_CHART_FIX = 3
+
+
+def fill_raw_candles_from_session_bars(day: str) -> Dict[str, Any]:
+    """[MW0601 692차] 장후 — `session_bars` 를 정본으로 `raw_candles` 의 **창 안**만 맞춘다.
+
+    ① 08:45–15:08(`expected_raw_candle_minutes`) 중 `raw_candles` 에 없는 분을 삽입한다
+       (`bar_recovered=2`). 범위를 늘리지 않으므로 「최근 N행」 창이 밀리지 않는다(533차 우려).
+       buy/sell 은 원천 값 그대로(차트 보충본은 NULL — 소비처가 프록시로 처리, 0 을 지어내지 않는다).
+    ② `session_bars` 에서 차트로 보정된 실시간 봉(`rt_chart_open`·`rt_chart_fix`)은 `raw_candles`
+       의 O/H/L/V 도 같은 값으로 맞추고 `bar_recovered=3`. close·bid/ask·buy/sell 은 유지.
+    618차 「메우지 않는다」를 사용자 승인(2026-10-15)으로 번복한 경로다. 반환:
+    {"inserted": n, "inserted_ts": [...], "fixed": n, "fixed_ts": [...]}
+    """
+    from utils.time_utils import expected_raw_candle_minutes
+    exp = expected_raw_candle_minutes()
+    out = {"inserted": 0, "inserted_ts": [], "fixed": 0, "fixed_ts": []}  # type: Dict[str, Any]
+    with _lock:
+        with get_conn(RAW_DATA_DB) as conn:
+            conn.row_factory = sqlite3.Row
+            sb = conn.execute(
+                "SELECT ts, open, high, low, close, volume, buy_vol, sell_vol, bid1, ask1, oi, source "
+                "FROM session_bars WHERE ts >= ? AND ts <= ? ORDER BY ts",
+                (day + " 00:00:00", day + " 23:59:59")).fetchall()
+            raw = dict((r["ts"], r) for r in conn.execute(
+                "SELECT ts, open, high, low, volume, bar_recovered FROM raw_candles "
+                "WHERE ts >= ? AND ts <= ?", (day + " 00:00:00", day + " 23:59:59")).fetchall())
+            for r in sb:
+                hm = r["ts"][11:16]
+                if hm not in exp:
+                    continue
+                if r["open"] is None or r["high"] is None or r["low"] is None \
+                        or r["close"] is None or r["volume"] is None:
+                    continue    # OHLCV 가 없으면 지어내지 않는다(계측 4원칙 ②)
+                ex = raw.get(r["ts"])
+                if ex is None:
+                    cur = conn.execute(
+                        "INSERT OR IGNORE INTO raw_candles "
+                        "(ts, open, high, low, close, volume, bid1, ask1, oi, buy_vol, sell_vol, bar_recovered) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (r["ts"], r["open"], r["high"], r["low"], r["close"], r["volume"],
+                         r["bid1"], r["ask1"], r["oi"], r["buy_vol"], r["sell_vol"],
+                         RAW_RECOVERED_FROM_SESSION))
+                    if cur.rowcount:
+                        out["inserted"] += 1
+                        out["inserted_ts"].append(hm)
+                    continue
+                if r["source"] in ("rt_chart_open", "rt_chart_fix"):
+                    same = all(ex[k] is not None and abs(float(ex[k]) - float(r[k])) < 1e-6
+                               for k in ("open", "high", "low", "volume"))
+                    if not same:
+                        conn.execute(
+                            "UPDATE raw_candles SET open=?, high=?, low=?, volume=?, bar_recovered=? "
+                            "WHERE ts=?",
+                            (r["open"], r["high"], r["low"], r["volume"],
+                             RAW_RECOVERED_CHART_FIX, r["ts"]))
+                        out["fixed"] += 1
+                        out["fixed_ts"].append(hm)
+    return out
+
+
+def count_session_bars(day: str) -> int:
+    """[MW0601 692차] 그날 `session_bars` 행수 — 따라잡기 보충 대상 판정용(PK 범위 조회)."""
+    with get_conn(RAW_DATA_DB) as conn:
+        row = conn.execute("SELECT COUNT(*) FROM session_bars WHERE ts >= ? AND ts <= ?",
+                           (day + " 00:00:00", day + " 23:59:59")).fetchone()
+    return int(row[0] or 0)
+
+
 def fetch_session_bars_map(day_from: str, day_to: str) -> Dict[str, sqlite3.Row]:
     """[565차] `session_bars` ts → row (날짜 구간 포함). 대사용."""
     with get_conn(RAW_DATA_DB) as conn:

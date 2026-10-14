@@ -78,7 +78,10 @@ def test_insert_if_missing_never_overwrites_rt(monkeypatch):
         {"date": 20260911, "time": 1534, "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 3, "oi": 1},
     ])
     st = cb.reconcile_and_insert(bars)
-    assert st == {"chart": 2, "existing": 1, "inserted": 1, "mismatch": 0, "mismatch_ts": [], "open_fixed": 0}
+    # [692차] 반환 dict 에 mismatch_open·mismatch_other·fixed 가 더해졌다 — 기존 키만 고정한다.
+    assert {k: st[k] for k in ("chart", "existing", "inserted", "mismatch", "mismatch_ts", "open_fixed")} \
+        == {"chart": 2, "existing": 1, "inserted": 1, "mismatch": 0, "mismatch_ts": [], "open_fixed": 0}
+    assert st["fixed"] == 0 and st["mismatch_open"] == 0 and st["mismatch_other"] == 0
     bars2 = cb.chart_rows_to_bars([
         {"date": 20260911, "time": 1535, "open": 1085.44, "high": 1085.9, "low": 1085.16, "close": 1000.0, "volume": 125, "oi": 1},
     ])

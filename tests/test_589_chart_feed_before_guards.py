@@ -71,14 +71,20 @@ def test_chart_feed_called_exactly_once():
 def test_same_day_backfill_wired():
     src = _main_src()
     assert "self._chart_backfill_today_done: bool = False" in src, "명시 초기화 필요(계측 4원칙 ④)"
-    assert "datetime.time(15, 46) <= now.time() < datetime.time(15, 49)" in src
+    # [MW0601 692차] 창이 만기일/평일로 갈린다 — 평일 15:46–15:49, 만기일 15:22–15:39.
+    #   (589차는 만기일을 **제외**했으나, 만기 월물은 익일 조회가 거부돼 당일이 유일한 기회다)
     # 🔴 앵커는 **코드**로 잡는다 — 주석 문구로 잡으면 주석만 고쳐도 테스트가 깨진다.
-    # `_schedule_shutdown` 도 같은 플래그를 읽으므로 **시각 조건**으로 잡는다.
-    i_blk = src.index("datetime.time(15, 46) <= now.time() < datetime.time(15, 49)")
-    blk = src[i_blk - 600:i_blk + 2500]
-    assert "_is_exp_t(now)" in blk, "만기일 제외 — 15:20 최종 체결이라 15:45 봉이 없다"
-    assert "backfill_day" in blk
-    assert "minute_chart_reload" in blk, "보충 후 열린 차트를 갱신해야 한다"
+    anchor = "(datetime.time(15, 46), datetime.time(15, 49))"
+    assert anchor in src
+    i_blk = src.index(anchor)
+    blk = src[i_blk - 600:i_blk + 1200]
+    assert "_is_exp_t(now)" in blk and "(datetime.time(15, 22), datetime.time(15, 39))" in blk
+    assert "_pc_win[0] <= now.time() < _pc_win[1]" in blk
+    assert "self._post_close_bar_sync(now)" in blk
+    i_fn = src.index("def _post_close_bar_sync")
+    fn = src[i_fn:i_fn + 4000]
+    assert "backfill_day" in fn
+    assert "minute_chart_reload" in fn, "보충 후 열린 차트를 갱신해야 한다"
 
 
 def test_auto_shutdown_waits_for_backfill():
