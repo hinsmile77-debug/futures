@@ -49642,3 +49642,23 @@ v9-dev 배포 시 MW0601 을 실계좌로 보고 실계좌 경로 영향을 평�
   dev 는 보완 덕에 훨씬 드물 것이다.
 - **검증(dev 워크트리, py37_32 offscreen)**: `tests/test_691_levels_prev_day_missing.py` 11건(중복 금지 케이스 포함) +
   `test_levels_session_supplement_20261015`·534·538·542·597·617 = **105 passed**.
+
+
+## 2026-10-15 (MW0601 → dev 체리픽: 692차 장후 봉 정합 + 08:45 시가 당일 차트 보정 — 원 57155d1 · 6118658, v9-dev) — 🟡 **구현 · 다음 기동부터 적용 · 라이브 미검증**
+
+- **출처**: 원 커밋 `57155d1`(692차) · `6118658`(692차 후속) · 원 PC **MW0601**(`v9-dev`) · 사용자 지시 「dev에 배포해」.
+  dev 커밋 `ab55705` · `600516b`(cherry-pick -x).
+- **내용**: ① 만기일 장후 창 15:22–15:39 + `_auto_shutdown` 직전 `[BarGap]` 확정 판정 보장 ② `raw_candles` 08:45–15:08 창 안 결손을
+  `session_bars` 로 삽입(`bar_recovered=2`)·차트 보정 실시간 봉 O/H/L/V 동기(`=3`) — **618차 「메우지 않는다」 번복(사용자 승인)**,
+  `bar_recovered=1`(452차 복구 재처리본)은 쓰지 않음 ③ 따라잡기(최근 5거래일 <411봉, 만기일 제외) ④ 부분 봉 교정
+  (`rt_chart_fix`, 시가만 다름/그 외 분리 집계) ⑤ 08:50 맥점 08:45 시가를 당일 차트 개장 체결가로 보정(08:53 까지 대기, 09:30 전까지만 조회).
+- **충돌 해소**: 코드 충돌은 `levels_store.ensure_stage` 1곳 — dev 에는 `bars_source` 가 없어 그 줄만 빼고 `apply_chart_open` 을 넣었다.
+  dev_memory 두 파일은 dev 쪽 유지 + 이 항목 추가.
+- **dev 와의 관계**: MW0602 `8775ddf` 의 `load_sessions` session_bars **메모리 보완**과 겹치지 않는다 — 이 변경이 raw 를 채우면
+  보완할 분이 줄 뿐이다(결과 동일 방향).
+- ⚠ **MW0602 DB 과거분은 손대지 않았다**(별개 PC·별개 DB). 원하면 MW0602 장외에
+  `python scripts/raw_candles_fill_from_session_bars.py` (미리보기) → `--apply --rebuild-levels-cache`.
+  MW0601 은 10-15 07:38 적용(보충 37봉·08:45 보정 18봉). ⚠ dev 의 전량 재생성은 8775ddf 의 「raw 보존 범위 밖 세션 보존」 경로를 탄다.
+- **검증(dev 워크트리, py37_32 offscreen)**: test_692 12건 포함 177 passed. `test_533::test_on_candle_closed_persists_before_any_branch`
+  1건 실패는 **체리픽 전 c7bc745 에서도 동일**(`_on_candle_closed` 4000자 창 밖에 force-exit 분기) — 무관, 미수정.
+  `test_619_option_chain_watchdog` 은 워크트리에 `config/secrets.py` 가 없어 수집 제외.
