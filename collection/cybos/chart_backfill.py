@@ -164,10 +164,14 @@ def reconcile_and_insert(bars: List[Tuple[str, str, Dict]], source: str = SOURCE
         fetch_session_bars_map, insert_session_bar_if_missing, update_session_bar_ohlv_from_chart,
     )
     if not bars:
-        return {"chart": 0, "existing": 0, "inserted": 0, "mismatch": 0, "mismatch_ts": [], "open_fixed": 0}
+        return {"chart": 0, "existing": 0, "inserted": 0, "mismatch": 0, "mismatch_ts": [], "open_fixed": 0,
+                "mismatch_open": 0, "mismatch_other": 0, "fixed": 0}
     days = sorted({ts[:10] for ts, _, _ in bars})
     existing = fetch_session_bars_map(days[0], days[-1])
-    st = {"chart": len(bars), "existing": 0, "inserted": 0, "mismatch": 0, "mismatch_ts": [], "open_fixed": 0}
+    # [MW0601 692차] mismatch = mismatch_open(시가만 다름 — 틱 도착 순서, 보정 안 함)
+    #   + mismatch_other(그 외인데 보정하지 못한 것). fixed = 그 외를 차트로 교정한 수.
+    st = {"chart": len(bars), "existing": 0, "inserted": 0, "mismatch": 0, "mismatch_ts": [], "open_fixed": 0,
+          "mismatch_open": 0, "mismatch_other": 0, "fixed": 0}
     for ts, session, bar in bars:
         ex = existing.get(ts)
         if ex is not None:
@@ -185,6 +189,24 @@ def reconcile_and_insert(bars: List[Tuple[str, str, Dict]], source: str = SOURCE
                     sys_log.info("%s 08:45 개장 체결 보정 ts=%s rt O=%.2f/V=%s → chart O=%.2f/V=%s",
                                  log_prefix, ts, float(ex["open"]), ex["volume"], bar["open"], bar["volume"])
                     continue
+                if bad == ["open"]:
+                    # 시가만 다름 — 같은 분 안 틱 도착 순서 차이(565차). H/L/C/V 가 같으면 그대로 둔다.
+                    st["mismatch_open"] += 1
+                    st["mismatch"] += 1
+                    continue
+                # [MW0601 692차] 고·저·거래량까지 다르면 재기동 직후 **부분 봉**이다(분 중간부터 집계).
+                # 차트가 정본이므로 O/H/L/V 를 교정하고 source 로 그 사실을 남긴다. close 는 유지.
+                if (source == SOURCE_CHART and ex["source"] in ("rt", "rt_recovered")
+                        and any(k in bad for k in ("high", "low", "volume"))
+                        and not dry_run):
+                    update_session_bar_ohlv_from_chart(ts, bar, "rt_chart_fix")
+                    st["fixed"] += 1
+                    sys_log.info("%s 부분 봉 교정 ts=%s cols=%s rt O/H/L/V=%.2f/%.2f/%.2f/%s → chart %.2f/%.2f/%.2f/%s",
+                                 log_prefix, ts, bad, float(ex["open"]), float(ex["high"]),
+                                 float(ex["low"]), ex["volume"], bar["open"], bar["high"],
+                                 bar["low"], bar["volume"])
+                    continue
+                st["mismatch_other"] += 1
                 st["mismatch"] += 1
                 if len(st["mismatch_ts"]) < 20:
                     st["mismatch_ts"].append((ts, bad, ex["source"]))
@@ -195,9 +217,11 @@ def reconcile_and_insert(bars: List[Tuple[str, str, Dict]], source: str = SOURCE
         else:
             st["inserted"] += 1
     sys_log.info(
-        "%s %s~%s chart=%d existing=%d inserted=%d open_fixed=%d mismatch=%d%s",
+        "%s %s~%s chart=%d existing=%d inserted=%d open_fixed=%d fixed=%d mismatch=%d"
+        " (시가만 %d · 그 외 미교정 %d)%s",
         log_prefix, days[0], days[-1], st["chart"], st["existing"], st["inserted"], st["open_fixed"],
-        st["mismatch"], " (dry-run)" if dry_run else "",
+        st["fixed"], st["mismatch"], st["mismatch_open"], st["mismatch_other"],
+        " (dry-run)" if dry_run else "",
     )
     for ts, bad, src in st["mismatch_ts"][:5]:
         sys_log.warning("%s OHLCV 불일치 ts=%s cols=%s existing_source=%s", log_prefix, ts, bad, src)
@@ -219,3 +243,31 @@ def backfill_day(day: datetime.date, code: Optional[str] = None, dry_run: bool =
         return None
     rows = [r for r in rows if str(r["date"]) == day.strftime("%Y%m%d")]
     return reconcile_and_insert(chart_rows_to_bars(rows), dry_run=dry_run)
+
+
+# [MW0601 692차] 정상일 `session_bars` 기대 행수 — 08:45–15:34 410봉 + 15:45 마감 체결 1봉.
+SESSION_BARS_FULL_DAY = 411
+
+
+def catchup_days(today: datetime.date, lookback: int = 5, max_days: int = 3) -> List[datetime.date]:
+    """[MW0601 692차] 따라잡기 보충 대상 — 최근 `lookback` 거래일 중 `session_bars` 가
+    411봉 미만인 날(오래된 것부터 최대 `max_days`). **만기일은 제외**한다 — 만기 월물은
+    사후 조회가 거부된다(565차). 행수 조회 실패는 대상에서 뺀다(지어내지 않는다).
+    """
+    from utils.db_utils import count_session_bars
+    out = []
+    d = today
+    seen = 0
+    while seen < lookback:
+        d = prev_trading_day(d)
+        seen += 1
+        if is_expiry_day(datetime.datetime.combine(d, datetime.time(10, 0))):
+            continue
+        try:
+            n = count_session_bars(d.isoformat())
+        except Exception as exc:
+            sys_log.warning("[SessionBackfill] 따라잡기 행수 조회 실패 %s: %s", d, exc)
+            continue
+        if n < SESSION_BARS_FULL_DAY:
+            out.append(d)
+    return sorted(out)[:max_days]
