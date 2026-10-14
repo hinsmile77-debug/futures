@@ -65,6 +65,22 @@ STALE_HISTORY_MARK = "이력 캐시 낡음"
 #   (565차 실측 09-11: 차트 1076.06 vs 실시간 1072.72). 훈련 이력은 실시간 원천이다.
 CHART_SUPPLEMENT_MARK = "08:45 결손 — 차트 TR 보충"
 
+# [MW0602 2026-10-15] 이력 세션의 `session_bars` 보완 · 제외일 재판정 · 전일 제외 경고.
+# 계기: 2026-10-13 재기동 공백 109분 → `raw_candles` 275봉(<300) → 세션 통째 품질 제외 →
+#   10/14 08:50 맥점이 10/12 를 「전일」로 삼았는데 **경고가 없었다**(신선도 경고는
+#   제외일을 「캐시가 옳은 경우」로 건너뛴다). 그 109분은 15:46 차트 TR 보충으로 이미
+#   `session_bars` 에 보존돼 있었다(`[BarGap] 당일 확정` 로그) — 데이터가 없던 것이 아니라
+#   이 소비처가 `raw_candles` 만 읽은 것이다.
+# 🔴 `raw_candles` 에는 행을 더하지 않는다(533차 — 원천은 원천끼리, `utils/bar_gap.py`).
+#   보완은 **이 모듈이 세션을 요약할 때 메모리에서만** 한다.
+# 근거: `docs/신동거래_V2/신동_8일_종합평가_변형비교_MW0602-20261014.md` §5.
+PREV_EXCLUDED_MARK = "전일 세션 품질 제외"
+EXCLUDED_RECHECK_DAYS = 10      # 최근 이 달력일 안의 품질 제외일은 매 EOD 다시 판정한다
+# 직전 `load_sessions()` 호출이 `session_bars` 로 메운 분 수 {날짜: 봉수}. 호출측
+# (`refresh_history_cache`)이 호출마다 비우고 읽는다 — 반환형을 바꾸지 않기 위해서다
+# (스크립트·테스트가 `(sessions, excluded)` 2-튜플을 받는다).
+LAST_SESSION_SUPPLEMENT = {}    # type: Dict[str, int]
+
 
 # ---------------------------------------------------------------- DB 읽기
 
@@ -78,12 +94,38 @@ def _ro_conn(db_path=None):
         return sqlite3.connect(path, timeout=5.0)
 
 
-def load_sessions(since=HISTORY_SINCE, until=None, db_path=None, prev_close=None):
-    # type: (str, Optional[str], Optional[str], Optional[float]) -> Tuple[List[Tuple[str, List[PL.Bar]]], Dict[str, str]]
+def _session_bar_rows(since, until, db_path):
+    # type: (str, Optional[str], Optional[str]) -> Optional[list]
+    """`session_bars` 의 같은 범위 행. 테이블이 없거나 조회 실패면 **None**(미측정 — 0봉이 아니다)."""
+    sql = "SELECT ts, open, high, low, close, volume FROM session_bars WHERE ts >= ?"
+    params = [since]
+    if until:
+        sql += " AND ts < ?"
+        params.append(until)
+    con = _ro_conn(db_path)
+    try:
+        return con.execute(sql + " ORDER BY ts", tuple(params)).fetchall()
+    except sqlite3.Error:
+        logger.debug("[LEVELS] session_bars 조회 불가 — 보완 생략", exc_info=True)
+        return None
+    finally:
+        con.close()
+
+
+def load_sessions(since=HISTORY_SINCE, until=None, db_path=None, prev_close=None,
+                  session_supplement=True):
+    # type: (str, Optional[str], Optional[str], Optional[float], bool) -> Tuple[List[Tuple[str, List[PL.Bar]]], Dict[str, str]]
     """`raw_candles` 에서 날짜별 1분봉을 읽어 **품질 제외 규칙 적용 후** 돌려준다.
 
     반환: ([(날짜, [Bar])], {제외날짜: 사유}). 날짜 오름차순.
     ⚠ 전 구간 조회는 장중에 부르지 말 것 — EOD 캐시 갱신 경로 전용.
+
+    [MW0602 2026-10-15] `session_supplement=True`(기본)이면 `raw_candles` 에 **없는 분만**
+    `session_bars`(15:46 / 익일 08:41 차트 TR 보충분 포함)로 메운 뒤 품질 판정을 한다.
+    메우는 범위는 `raw_candles` 의 하루 정의(`expected_raw_candle_minutes`, 08:45~15:08)
+    안으로 한정한다 — 15:09 이후 봉을 더하면 정상일과 하루 길이가 달라진다.
+    같은 분의 `raw_candles` 봉이 있으면 그것을 쓴다(실시간 원천 우선).
+    메운 분 수는 `LAST_SESSION_SUPPLEMENT` 에 남긴다(계측 4원칙 ④).
     """
     sql = "SELECT ts, open, high, low, close, volume FROM raw_candles WHERE ts >= ?"
     params = [since]
@@ -105,6 +147,27 @@ def load_sessions(since=HISTORY_SINCE, until=None, db_path=None, prev_close=None
             order.append(d)
         by_day[d].append(PL.Bar(t=ts[11:16], o=float(o), h=float(h), l=float(l),
                                 c=float(c), v=int(v or 0)))
+    LAST_SESSION_SUPPLEMENT.clear()
+    if session_supplement:
+        sb_rows = _session_bar_rows(since, until, db_path)
+        if sb_rows:
+            from utils.time_utils import expected_raw_candle_minutes
+            grid = expected_raw_candle_minutes()
+            have = dict((d, set(b.t for b in bs)) for d, bs in by_day.items())
+            for ts, o, h, l, c, v in sb_rows:
+                d, t = ts[:10], ts[11:16]
+                if t not in grid or t in have.get(d, ()):
+                    continue
+                if d not in by_day:
+                    by_day[d] = []
+                    order.append(d)
+                    have[d] = set()
+                by_day[d].append(PL.Bar(t=t, o=float(o), h=float(h), l=float(l),
+                                        c=float(c), v=int(v or 0)))
+                have[d].add(t)
+                LAST_SESSION_SUPPLEMENT[d] = LAST_SESSION_SUPPLEMENT.get(d, 0) + 1
+            for d in LAST_SESSION_SUPPLEMENT:
+                by_day[d].sort(key=lambda b: b.t)
     clean = []      # type: List[Tuple[str, List[PL.Bar]]]
     excluded = {}   # type: Dict[str, str]
     pc = prev_close
@@ -200,6 +263,32 @@ def history_freshness_warning(summaries, target_date, excluded=None, db_path=Non
     return ("%s — 마지막 세션 %s 인데 raw_candles 에 %s 가 있다"
             "(EOD refresh_history_cache() 누락 의심)"
             % (STALE_HISTORY_MARK, past[-1].d, latest))
+
+
+def prev_session_excluded_warning(prev, target_date, excluded=None, db_path=None):
+    # type: (PL.SessionSummary, str, Optional[dict], Optional[str]) -> Optional[str]
+    """[MW0602 2026-10-15] **직전 거래일이 품질 제외**돼 산출 기준 「전일」이 그보다
+    앞 세션이면 그 사실을 문자열로 돌려준다. 아니면 None.
+
+    🔴 왜 필요한가. `history_freshness_warning()` 은 제외일을 「캐시가 옳은 경우」로
+    건너뛴다 — 캐시만 보면 옳다. 그러나 **산출 결과는 EOD 누락과 똑같이 하루 낡는다**
+    (전일 고·저 · ATR14 · 구조 후보가 전부 그 전 세션 기준). 2026-10-14 08:50 이 그
+    경우였고 로그·화면 어디에도 표시가 없었다(계측 4원칙 ④).
+
+    직전 거래일은 `raw_candles` 의 직전 세션 날짜로 정한다(PK 역방향 seek 1행).
+    프로브가 실패하면 **경고하지 않는다** — 없는 사실을 지어내지 않는다(②).
+    """
+    if not excluded or prev is None:
+        return None
+    try:
+        latest = latest_session_before(target_date, db_path=db_path, hops=1)
+    except Exception:
+        logger.debug("[LEVELS] 전일 제외 프로브 실패 — 경고 생략", exc_info=True)
+        return None
+    if not latest or latest <= prev.d or latest not in excluded:
+        return None
+    return ("%s — 직전 거래일(%s)이 품질 제외(%s)돼 전일 고·저 · ATR14 · 구조 후보가 "
+            "%s 기준이다(하루 낡은 맥점)" % (PREV_EXCLUDED_MARK, latest, excluded[latest], prev.d))
 
 
 def bars_from_candles(candles, until=None):
@@ -319,10 +408,24 @@ def refresh_history_cache(db_path=None, path=None, force_full=False):
     # type: (Optional[str], Optional[str], bool) -> dict
     """EOD 전용 — `raw_candles` 를 읽어 이력 캐시를 갱신한다(증분).
 
-    반환: {"sessions": n, "added": [...], "excluded": {...}, "last_date": "..."}.
+    반환: {"sessions": n, "added": [...], "excluded": {...}, "last_date": "...",
+           "readmitted": [...], "preserved": n, "supplemented": {날짜: 봉수}}.
     🔴 장중에 부르지 말 것(가이드 §11-6).
+
+    [MW0602 2026-10-15] 세 가지를 더 한다.
+      ① `load_sessions()` 가 `session_bars` 로 결손 분을 메운다(그 함수 docstring).
+      ② **최근 품질 제외일 재판정** — 증분은 `last_date` 이후만 읽으므로, 한 번 제외된
+         날은 익일 08:41 보충으로 데이터가 완전해져도 영영 돌아오지 못했다.
+         `EXCLUDED_RECHECK_DAYS` 안의 제외일을 매번 다시 판정해 통과하면 편입한다.
+      ③ **전량 재생성 시 과거 세션 보존** — `raw_candles` 는 보존 범위가 있다(2026-10-15
+         실측: 2025-10-14 부터). 그보다 오래된 세션은 이 캐시가 증분으로만 지켜 왔으므로
+         `{}` 에서 다시 만들면 사라진다(그날 실측 35세션 소실 + 이후 14세션 ATR None).
+         그래서 `raw_candles`(+session_bars) 범위보다 앞선 기존 요약은 그대로 둔다.
+         격자 세대가 바뀐 경우 그 세션들의 `paths` 는 **None(미측정)** 으로 비운다 —
+         옛 격자 경로를 새 격자 이름으로 남기면 그것이 오염이다.
     """
-    cache = {} if force_full else load_history_cache(path)
+    prior = load_history_cache(path)
+    cache = {} if force_full else prior
     # [MW0601 542차 이식] 경로 격자 세대가 다르면 **전량 재생성**한다. 증분으로는
     # 과거 세션의 격자 경로를 채울 수 없다 — 캐시가 보관하는 봉은 최근 7세션뿐이고,
     # 수동 산출의 재적합은 60세션 경로를 요구한다. 전량 재생성 실측 0.8초(EOD 전용).
@@ -341,7 +444,10 @@ def refresh_history_cache(db_path=None, path=None, force_full=False):
     if summaries and last_date:
         # 증분 시작점의 갭 판정 기준 = 마지막으로 채택한 세션의 종가
         prev_close = summaries[-1].c
+    supplemented = {}   # type: Dict[str, int]
+    LAST_SESSION_SUPPLEMENT.clear()
     sessions, excluded = load_sessions(since=since, db_path=db_path, prev_close=prev_close)
+    _sup_main = dict(LAST_SESSION_SUPPLEMENT)
     added = []
     for d, bars in sessions:
         if last_date and d <= last_date:
@@ -350,22 +456,83 @@ def refresh_history_cache(db_path=None, path=None, force_full=False):
         summaries.append(PL.summarize_session(d, bars))
         bars_by_day[d] = bars
         added.append(d)
+        if _sup_main.get(d):
+            supplemented[d] = _sup_main[d]
+
+    old_excluded = dict(cache.get("excluded", {}))
+
+    # ③ 전량 재생성 시 raw 범위 밖 과거 세션 보존
+    preserved = 0
+    if rebuilt and prior.get("summaries"):
+        covered = set(d for d, _ in sessions) | set(excluded)
+        first = min(covered) if covered else None
+        grid_changed = prior.get("path_grid") != PL.PATH_GRID_ID
+        have = set(x.d for x in summaries)
+        for sd in prior["summaries"]:
+            if sd["d"] in have or (first is not None and sd["d"] >= first):
+                continue
+            s = PL.summary_from_dict(sd)
+            if grid_changed:
+                s.paths = None
+            summaries.append(s)
+            preserved += 1
+        for d, why in (prior.get("excluded") or {}).items():
+            if first is None or d < first:
+                old_excluded.setdefault(d, why)
+        if preserved:
+            logger.info("[LEVELS] 전량 재생성 — raw_candles 범위(%s~) 밖 기존 세션 %d개 보존%s",
+                        first, preserved, " (격자 세대 변경 → 경로 None)" if grid_changed else "")
+
+    # ② 최근 품질 제외일 재판정
+    readmitted = []
+    if last_date and not rebuilt:
+        try:
+            _ld = datetime.date(*[int(x) for x in last_date.split("-")])
+            cutoff = (_ld - datetime.timedelta(days=EXCLUDED_RECHECK_DAYS)).isoformat()
+        except Exception:
+            cutoff = None
+        have = set(x.d for x in summaries)
+        for d in sorted(old_excluded):
+            if cutoff is None or d < cutoff or d in have:
+                continue
+            _prev = [x for x in summaries if x.d < d]
+            _nd = (datetime.date(*[int(x) for x in d.split("-")])
+                   + datetime.timedelta(days=1)).isoformat()
+            LAST_SESSION_SUPPLEMENT.clear()
+            ss, _ex = load_sessions(since=d, until=_nd, db_path=db_path,
+                                    prev_close=_prev[-1].c if _prev else None)
+            hit = [b for dd, b in ss if dd == d]
+            if not hit:
+                continue
+            summaries.append(PL.summarize_session(d, hit[0]))
+            bars_by_day[d] = hit[0]
+            readmitted.append(d)
+            if LAST_SESSION_SUPPLEMENT.get(d):
+                supplemented[d] = LAST_SESSION_SUPPLEMENT[d]
+        if readmitted:
+            logger.info("[LEVELS] 품질 제외일 재판정 — 편입 %s", ", ".join(readmitted))
+
     summaries.sort(key=lambda x: x.d)
     PL.fill_derived(summaries)
     keep = set(x.d for x in summaries[-(PL.LOOKBACK + 1):])
     bars_by_day = dict((k, v) for k, v in bars_by_day.items() if k in keep)
+    in_summary = set(x.d for x in summaries)
+    all_excluded = dict(list(old_excluded.items()) + list(excluded.items()))
     payload = dict(
         updated_at=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         path_grid=PL.PATH_GRID_ID,      # [542차] 격자 세대 — 다르면 다음 EOD 가 재생성
         last_date=summaries[-1].d if summaries else None,
         summaries=[PL.summary_to_dict(s) for s in summaries],
         bars=dict((d, [PL.bar_to_dict(b) for b in bs]) for d, bs in bars_by_day.items()),
-        excluded=dict(list(cache.get("excluded", {}).items()) + list(excluded.items())),
+        # 편입된 날은 제외 목록에서 뺀다 — 둘 다에 있으면 신선도 경고가 그날을 건너뛴다.
+        excluded=dict((k, v) for k, v in all_excluded.items() if k not in in_summary),
     )
     save_history_cache(payload, path)
     _grid_n = sum(1 for s in summaries if s.paths)
-    return dict(sessions=len(summaries), added=added, excluded=excluded,
-                last_date=payload["last_date"], rebuilt=rebuilt, grid_sessions=_grid_n)
+    return dict(sessions=len(summaries), added=added,
+                excluded=dict((k, v) for k, v in excluded.items() if k not in in_summary),
+                last_date=payload["last_date"], rebuilt=rebuilt, grid_sessions=_grid_n,
+                readmitted=readmitted, preserved=preserved, supplemented=supplemented)
 
 
 def history_from_cache(path=None):
@@ -407,6 +574,10 @@ def prepare_params(summaries, bars_by_day, target_date, db_path=None, excluded=N
     #   상수를 지우지는 않는다(그 사실도 기록이다). 순서만 바꿔 그날 달라진 것이
     #   앞에 오게 한다.
     warnings = []
+    prev_ex = prev_session_excluded_warning(prev, target_date, excluded=excluded,
+                                            db_path=db_path)
+    if prev_ex:
+        warnings.append(prev_ex)
     stale = history_freshness_warning(summaries, target_date, excluded=excluded,
                                       db_path=db_path)
     if stale:

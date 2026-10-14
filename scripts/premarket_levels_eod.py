@@ -59,6 +59,16 @@ def run_eod(date_str=None, refresh=True, log=None):
             if r["excluded"]:
                 say("[LEVELS] 품질 제외 %d일: %s", len(r["excluded"]),
                     ", ".join("%s(%s)" % kv for kv in sorted(r["excluded"].items())))
+            # [MW0602 2026-10-15] 보완·재편입·보존 — 기본값이 쓰인 사실을 남긴다(4원칙 ④).
+            if r.get("supplemented"):
+                say("[LEVELS] session_bars 보완: %s — raw_candles 결손 분을 차트 보충분으로"
+                    " 메워 요약했다(raw_candles 는 무변경)",
+                    ", ".join("%s(%d봉)" % kv for kv in sorted(r["supplemented"].items())))
+            if r.get("readmitted"):
+                say("[LEVELS] 품질 제외일 재판정 — 편입: %s", ", ".join(r["readmitted"]))
+            if r.get("preserved"):
+                say("[LEVELS] 전량 재생성 — raw_candles 범위 밖 기존 세션 %d개 보존",
+                    r["preserved"])
         except Exception as e:
             say("[LEVELS] 이력 캐시 갱신 실패 (무해): %s", e)
     try:

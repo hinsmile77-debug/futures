@@ -6353,8 +6353,11 @@ class TradingSystem:
                     # 뜻이라 다른 주의와 급이 다르다. 나머지(R̂ 절단 25~27%일 ·
                     # 구조 후보 0개)를 함께 올리면 대시보드 경보가 상시 켜져
                     # 333차 후속5 가 걷어낸 노이즈로 되돌아간다.
+                    # [MW0602 2026-10-15] 「전일 세션 품질 제외」도 같은 급이다 — 결과가
+                    # 똑같이 하루 낡는다(10/14 08:50 이 무경고로 지나간 사례).
                     for _lv_w in row["warnings"]:
-                        if _lv_w.startswith(_LS.STALE_HISTORY_MARK):
+                        if (_lv_w.startswith(_LS.STALE_HISTORY_MARK)
+                                or _lv_w.startswith(_LS.PREV_EXCLUDED_MARK)):
                             log_manager.system(
                                 f"[LEVELS {stage[:2]}:{stage[2:]}] {_lv_w}", "WARNING")
         except Exception:

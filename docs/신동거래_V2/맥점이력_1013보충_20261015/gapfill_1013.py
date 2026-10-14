@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""10/13 raw_candles 결측(12:51~14:06 · 14:11~14:41) 을 session_bars(chart_backfill/rt) OHLCV 로 보충.
+"""🔴 [2026-10-15 06:01 되돌림] 기록 보존용 — **다시 실행하지 말 것.**
+`raw_candles` 에 행을 더하는 것은 533차 원칙 위반이다(`utils/bar_gap.py` 「메우지 않는다」).
+이 스크립트로 넣은 109행은 같은 날 삭제했고, 맥점 이력은 `levels_store.load_sessions()` 의
+`session_bars` 보완(메모리 전용)으로 대체됐다. 경위: `신동_8일_종합평가_변형비교_MW0602-20261014.md` §5-1·§5-2.
+
+10/13 raw_candles 결측(12:51~14:06 · 14:11~14:41) 을 session_bars(chart_backfill/rt) OHLCV 로 보충.
 - 기존 행은 건드리지 않는다(INSERT 만, ts 가 이미 있으면 건너뜀).
 - OHLCV 외 열은 미계측 → NULL (buy_vol/sell_vol 도 DEFAULT 0 을 쓰지 않고 명시적 NULL — 계측 4원칙 ②).
 - bar_recovered = 1 (열화 복구봉 표시).

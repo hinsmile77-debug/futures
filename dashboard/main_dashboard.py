@@ -4020,6 +4020,22 @@ class EntryPanel(QWidget):
         self.btn_manual_levels.clicked.connect(self._on_manual_levels_clicked)
         _lv_head.addWidget(self.btn_manual_levels)
         left_lay.addLayout(_lv_head)
+        # ── [MW0602 2026-10-15] 「하루 낡은 맥점」 경보 띠 — 평소엔 숨긴다 ──────────
+        # 전일 세션이 품질 제외됐거나(`PREV_EXCLUDED_MARK`) 이력 캐시가 낡았으면
+        # (`STALE_HISTORY_MARK`) 08:50·09:30 값 전체가 그 전 세션 기준이다. 2026-10-14
+        # 08:50 이 그 경우였는데 화면에는 아무 표시가 없었다 → 깜박이는 띠로 띄운다.
+        # 다른 「주의」(R̂ 절단 · 구조 후보 0개)는 띄우지 않는다 — 상시 경보가 되면
+        # 333차 후속5 가 걷어낸 노이즈로 돌아간다.
+        # ⚠ 깜박임은 QTimer → setStyleSheet 뿐이다. paintEvent 를 오버라이드하지 않는다
+        #   (CLAUDE.md — paint 경로 예외는 프로세스를 죽인다).
+        self._levels_alert_lbl = QLabel("")
+        self._levels_alert_lbl.setWordWrap(True)
+        self._levels_alert_lbl.setVisible(False)
+        left_lay.addWidget(self._levels_alert_lbl)
+        self._levels_alert_on = False
+        self._levels_alert_timer = QTimer(self)
+        self._levels_alert_timer.setInterval(600)
+        self._levels_alert_timer.timeout.connect(self._on_levels_alert_tick)
         # 시점마다 3줄이다 — 메타(ATR·R̂) / 고점 / 저점.
         # 「각 시점 고·저 예측치」와 50%·80% 구간을 한 눈에 보려면 고·저를 한 줄에
         # 몰면 안 된다(구간 4개가 한 줄에 겹친다). 상방=적색 / 하방=녹색으로
@@ -4253,6 +4269,7 @@ class EntryPanel(QWidget):
           구분하지 못하면 계측 4원칙 ②를 화면 층에서 어기는 셈이다.
         """
         stages = stages or {}
+        self._update_levels_alert(stages)
         for _st in ("0850", "0930"):
             row = stages.get(_st) or {}
             meta, hi_l, lo_l = self._levels_dist_labels.get(_st, (None, None, None))
@@ -4298,6 +4315,53 @@ class EntryPanel(QWidget):
                 _dn_col = C['green'] if st.get("down") else C['text2']
                 up_l.setStyleSheet(f"color:{_up_col};font-size:{S.f(10)}px;")
                 dn_l.setStyleSheet(f"color:{_dn_col};font-size:{S.f(10)}px;")
+
+    def _update_levels_alert(self, stages: dict) -> None:
+        """[MW0602 2026-10-15] 「하루 낡은 맥점」 경고가 있으면 띠를 띄우고 깜박인다.
+
+        08:50·09:30 행의 `warnings` 에서 두 머리말만 찾는다. 없으면 띠를 숨기고 타이머를
+        멈춘다. 머리말 import 가 실패하면 띠를 띄우지 못한 사실을 debug 로 남긴다.
+        """
+        try:
+            from features.levels.levels_store import PREV_EXCLUDED_MARK, STALE_HISTORY_MARK
+        except Exception as _e:
+            logger.debug("[LEVELS] 경보 머리말 import 실패 — 경보 띠 생략: %s", _e)
+            return
+        hits = []
+        for _st in ("0850", "0930"):
+            for _w in ((stages or {}).get(_st) or {}).get("warnings") or []:
+                _w = str(_w)
+                if (_w.startswith(PREV_EXCLUDED_MARK) or _w.startswith(STALE_HISTORY_MARK)) \
+                        and _w not in hits:
+                    hits.append(_w)
+        if hits:
+            self._levels_alert_lbl.setText("⚠ " + "\n⚠ ".join(hits))
+            self._levels_alert_lbl.setToolTip(
+                "맥점 산출의 「전일」이 실제 직전 거래일이 아니다.\n"
+                "전일 고·저 · ATR14 · 구조 후보가 그 전 세션 기준이라 하루 낡은 값이다.\n"
+                "원인: 직전 거래일 세션의 raw_candles 결손(<300봉) 품질 제외 또는 EOD 캐시 갱신 누락.")
+            self._levels_alert_lbl.setVisible(True)
+            if not self._levels_alert_timer.isActive():
+                self._levels_alert_on = True
+                self._levels_alert_timer.start()
+            self._apply_levels_alert_style()
+        else:
+            self._levels_alert_timer.stop()
+            self._levels_alert_lbl.setVisible(False)
+            self._levels_alert_lbl.setText("")
+
+    def _apply_levels_alert_style(self) -> None:
+        if self._levels_alert_on:
+            col, bg = "#FFFFFF", "#B23A00"
+        else:
+            col, bg = C['orange'], C['bg3']
+        self._levels_alert_lbl.setStyleSheet(
+            f"color:{col};background:{bg};border:1px solid {C['orange']};"
+            f"border-radius:3px;padding:3px 5px;font-size:{S.f(10)}px;font-weight:bold;")
+
+    def _on_levels_alert_tick(self) -> None:
+        self._levels_alert_on = not self._levels_alert_on
+        self._apply_levels_alert_style()
 
     def _on_manual_levels_clicked(self):
         """[MW0601 542차 이식] 수동 산출 버튼 — 「산출 중」을 먼저 그리고 요청만 낸다.
