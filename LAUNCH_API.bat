@@ -345,7 +345,7 @@ IF EXIST "!WORKDIR!\scripts\cybos_plus_preflight.py" (
         GOTO :end_error
     )
     IF "!PREFLIGHT_ERR!"=="5" (
-        ECHO [ERROR] Preflight 워치독 타임아웃 -- TradeInit 응답 없음(판정 불능).
+        ECHO [ERROR] Preflight 워치독 타임아웃 -- TradeInit 응답 없음 -- 판정 불능.
         ECHO [HINT]  Cybos 창에 대화상자가 떠 있는지 확인 후 재시도하십시오.
         ECHO [ERROR] Preflight watchdog timeout. >> "!LOG!"
         SET "ERROR_FLAG=1"

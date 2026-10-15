@@ -56,7 +56,7 @@ def test_creon_real_loop_checks_session_before_killing():
     fn = _SRC[_SRC.index("def _creon_real_cmdline_login"):_SRC.index("def _autologin_impl")]
     loop = fn[fn.index("for real_attempt in range(MAX_LOGIN_ATTEMPTS):"):]
     i_check = loop.index("_session_probe()")
-    i_kill = loop.index("_kill_cybos_procs()")
+    i_kill = loop.index("_kill_cybos_procs(_REAL_KILL_NAMES)")
     assert i_check < i_kill
     assert "return True" in loop[i_check:i_kill]
     assert "_good(" in loop[i_check:i_kill], "이미 연결된 세션도 실서버·기대 계좌를 대조해야 한다"
@@ -83,3 +83,25 @@ def test_kill_reports_survivors():
     fn = _SRC[_SRC.index("def _kill_cybos_procs"):_SRC.index("def _dismiss_error_dialogs")]
     assert "종료 실패" in fn
     assert "except Exception:\n                pass" not in fn, "종료 예외를 다시 삼키고 있다"
+
+
+def test_creon_real_relogin_spares_hts_main():
+    """[MW0601 2026-10-15] 실거래 재로그인은 CREON HTS 본체(coMain)를 죽이지 않는다.
+    MW0601 은 HTS(Smart1na)와 API(smart7na)를 함께 쓰는 구성이다 — 08:47 재로그인이
+    HTS coMain 종료를 시도한 기록이 있었다."""
+    real = _SRC[_SRC.index("def _creon_real_cmdline_login"):_SRC.index("def _autologin_impl")]
+    assert "_kill_cybos_procs(_REAL_KILL_NAMES)" in real
+    assert "_kill_cybos_procs()" not in real, "실거래 경로가 기본 목록(coMain 포함)으로 죽이면 안 된다"
+    decl = _SRC[_SRC.index("_REAL_KILL_NAMES ="):]
+    decl = decl.splitlines()[0]
+    assert '"comain.exe"' in decl and "!=" in decl
+
+
+def test_kill_tries_plus_disconnect_first():
+    """[MW0601 2026-10-15 F-E1] 관리자 셸 kill 이 무효였던 CpStart 가 PlusDisconnect 로 내려갔다.
+    kill 루프보다 정상 종료 요청이 먼저 와야 한다."""
+    fn = _SRC[_SRC.index("def _kill_cybos_procs"):_SRC.index("def _dismiss_error_dialogs")]
+    assert fn.index("_plus_disconnect()") < fn.index("p.kill()")
+    pd = _SRC[_SRC.index("def _plus_disconnect"):_SRC.index("def _kill_cybos_procs")]
+    assert "timeout=" in pd, "PlusDisconnect 판독 프로세스가 영원히 멈추면 안 된다(TradeInit 모달 전례)"
+    assert "PlusDisconnect()" in _SRC

@@ -119,6 +119,9 @@ except ImportError:
 
 import win32cred
 import win32com.client
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import creon_acct_pw_dialog as _acct_pw  # noqa: E402  [MW0601 2026-10-15] 계좌 비밀번호 확인 창
 import win32gui
 import win32con
 import win32api
@@ -1239,10 +1242,61 @@ def _dump_children(parent_hwnd, label=""):
 
 # -- 프로세스 관리 --------------------------------------------------------------
 
-def _kill_cybos_procs():
-    """기존 Cybos 프로세스 종료 (ncStarter 먼저, CpStart 나중)"""
+_PLUS_DISCONNECT_CODE = (
+    "import win32com.client as w\n"
+    "c = w.Dispatch('CpUtil.CpCybos')\n"
+    "if c.IsConnect == 1:\n"
+    "    c.PlusDisconnect()\n"
+    "    print('DISCONNECTED')\n"
+    "else:\n"
+    "    print('NOT_CONNECTED')\n")
+
+
+def _plus_disconnect(wait_sec=8):
+    """CpCybos.PlusDisconnect() 를 새 프로세스에서 호출하고 CpStart 가 내려가길 기다린다.
+
+    CpStart 가 사라졌으면 True. 판독 실패·타임아웃·생존은 False (그 뒤 kill 경로로 간다).
+    """
     import psutil
-    names = set(CYBOS_PROC_NAMES)
+    try:
+        p = subprocess.Popen(
+            [sys.executable, "-c", _PLUS_DISCONNECT_CODE],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        try:
+            out, _ = p.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.communicate()
+            print("[WARN] PlusDisconnect 15초 무응답 -- kill 경로로 진행")
+            return False
+        res = out.decode("ascii", "ignore").strip() or "-"
+    except Exception as e:
+        print("[WARN] PlusDisconnect 호출 실패: %s -- kill 경로로 진행" % e)
+        return False
+    print("[INFO] PlusDisconnect 요청 결과: %s" % res)
+
+    def _cpstart_alive():
+        return any((q.info["name"] or "").lower() == "cpstart.exe"
+                   for q in psutil.process_iter(["name"]))
+
+    deadline = time.time() + wait_sec
+    while time.time() < deadline:
+        if not _cpstart_alive():
+            return True
+        time.sleep(0.5)
+    return not _cpstart_alive()
+
+
+def _kill_cybos_procs(proc_names=None):
+    """기존 Cybos 프로세스 종료 (PlusDisconnect 먼저 → ncStarter → CpStart 순 kill)
+
+    proc_names: 종료 대상 이름 목록(기본 CYBOS_PROC_NAMES). 실거래 CREON 경로는
+    HTS 본체(coMain)를 빼고 넘긴다 — 아래 _REAL_KILL_NAMES 참고.
+    """
+    import psutil
+    order = list(proc_names) if proc_names is not None else list(CYBOS_PROC_NAMES)
+    names = set(order)
 
     def _get():
         return [p for p in psutil.process_iter(["name", "pid"])
@@ -1253,7 +1307,18 @@ def _kill_cybos_procs():
         return
 
     print("[INFO] 기존 Cybos 프로세스 종료 중...")
-    for priority in CYBOS_PROC_NAMES:
+    # [MW0601 2026-10-15 F-E1] kill 전에 정상 종료부터 요청한다.
+    # 관리자 셸의 Stop-Process -Force 로도 CpStart·DibServer 가 「예외 없이 생존」했는데
+    # (13:41:57 실측) CpCybos.PlusDisconnect() 한 번에 CpStart 가 내려갔다.
+    # kill 이 무효인 채 coStarter 를 띄우면 「CPSTART 이미 실행중」 → '예' → coStarter
+    # 크래시로 이어졌다(같은 날 08:35 연쇄). 판독과 같은 이유로 새 프로세스에서 부른다.
+    if _plus_disconnect():
+        procs = _get()
+        if not procs:
+            print("[INFO] PlusDisconnect 로 Cybos 프로세스 종료 확인")
+            time.sleep(2)
+            return
+    for priority in order:
         for p in procs:
             if p.info["name"] and p.info["name"].lower() == priority:
                 try:
@@ -2339,6 +2404,12 @@ def _updater_running():
                for p in psutil.process_iter(["name"]))
 
 
+# [MW0601 2026-10-15] 실거래 재로그인은 CREON HTS 본체(coMain)를 죽이지 않는다.
+# MW0601 은 HTS(Smart1na, CREON_AutoStart)와 API(smart7na)를 함께 쓰는 것이 의도된
+# 구성이다(사용자 확인). API 세션은 HTS 생존 여부와 무관하게 붙었다(08:47·13:42 실측).
+_REAL_KILL_NAMES = [n for n in CYBOS_PROC_NAMES if n != "comain.exe"]
+
+
 def _creon_real_cmdline_login():
     """CREON Plus 실거래 로그인 — coStarter 명령줄 자동기동 (GUI 클릭 없음).
 
@@ -2375,7 +2446,7 @@ def _creon_real_cmdline_login():
         if conn == 1:
             print("[WARN] 연결돼 있으나 ServerType=%d 계좌=%s -- 기대(실서버·%s)와 다름, 종료 후 재로그인"
                   % (st, accs, want))
-        _kill_cybos_procs()
+        _kill_cybos_procs(_REAL_KILL_NAMES)
         # kill 이 실패하면 옛 세션이 살아 있다. 그 판독을 새 로그인 결과로 읽지 않도록,
         # 연결 끊김(conn!=1)을 한 번 본 뒤에만 계좌를 판정한다 (2026-10-13 리허설 1차 오판).
         seen_drop = _session_probe()[0] != 1
@@ -2387,6 +2458,12 @@ def _creon_real_cmdline_login():
         extended = False
         while time.time() < deadline:
             time.sleep(5)
+            # [MW0601 2026-10-15] 「종합계좌 비밀번호 확인 입력」 창 — 언제 뜨는지 예측이
+            # 안 돼(자동입력 최초 사용·비번 변경 뒤 등) 매 주기 확인한다. 창마다 1회만 입력.
+            try:
+                _acct_pw.handle_once()
+            except Exception as _e:
+                print("[WARN] 계좌 비밀번호 확인 창 처리 중 예외: %s" % _e)
             if _click_already_running_yes():
                 time.sleep(5)
                 continue   # 옛 세션이 내려가는 중 — 이 시점 판독은 옛 세션일 수 있다

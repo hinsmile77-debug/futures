@@ -166,7 +166,7 @@ IF NOT EXIST "config\secrets.py" (
     copy "config\secrets_example.py" "config\secrets.py"
     ECHO.
     ECHO [ACTION REQUIRED] Edit config\secrets.py with your account info:
-    ECHO   - FUTURES_CODE_PREFIX ("A01" for mock, "A05" for real)
+    ECHO   - FUTURES_CODE_PREFIX ^("A01" for mock, "A05" for real^)
     ECHO   - ACCOUNT_NO
     ECHO   - ACCOUNT_PWD
     ECHO.

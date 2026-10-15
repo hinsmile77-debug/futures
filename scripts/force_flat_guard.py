@@ -368,6 +368,31 @@ def judge_and_emit(root, day, stale, popup, manual):
     return verdict["rc"]
 
 
+_SINGLE_INSTANCE_HANDLE = []   # 프로세스 수명 동안 뮤텍스 핸들을 붙잡아 둔다
+
+
+def _acquire_single_instance(name="Global\\Mireuk_ForceFlatGuard"):
+    """이름 붙은 뮤텍스를 잡으면 True, 이미 다른 프로세스가 쥐고 있으면 False.
+
+    win32event 를 못 쓰는 환경이면 판정 불능 — 감시를 포기하지 않도록 True 를 돌려준다
+    (중복 경보가 무감시보다 낫다).
+    """
+    try:
+        import win32api
+        import win32event
+        import winerror
+    except Exception:
+        return True
+    try:
+        h = win32event.CreateMutex(None, False, name)
+    except Exception:
+        return True
+    if win32api.GetLastError() == winerror.ERROR_ALREADY_EXISTS:
+        return False
+    _SINGLE_INSTANCE_HANDLE.append(h)
+    return True
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="15:12 프로세스 밖 FLAT 가드 (F-2)")
     ap.add_argument("--at", default=None, help="판정 시각 HH:MM (기본: FORCE_FLAT_GUARD_AT)")
@@ -409,6 +434,16 @@ def main(argv=None):
         trading = now.weekday() < 5
     if not trading:
         print("[ForceFlatGuard] 비거래일 — 판정 대상 아님")
+        return RC_NOT_APPLICABLE
+
+    # [MW0601 2026-10-15] 상주 가드 단일 인스턴스. 가드는 메인이 죽어도 살아남도록
+    # 설계됐으므로(위 F-2), 장중에 미륵이를 재기동하면 런처가 새 가드를 또 띄워
+    # 같은 날 가드가 2개가 됐다(13:43 기동분이 13:51 user_close 뒤에도 생존 실측).
+    # 그러면 15:12 경보가 중복된다. 먼저 뜬 가드가 감시를 계속하고 새 것은 물러난다.
+    # `--once`(수동 진단)는 막지 않는다.
+    if not args.once and not _acquire_single_instance():
+        print("[ForceFlatGuard] 다른 상주 가드가 이미 감시 중 — 이 실행(pid=%d)은 종료"
+              % os.getpid())
         return RC_NOT_APPLICABLE
 
     if not args.once:

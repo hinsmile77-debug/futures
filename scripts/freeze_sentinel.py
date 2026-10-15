@@ -557,6 +557,44 @@ def _in_window(now, window):
     return datetime.time(h0, m0) <= t <= datetime.time(h1, m1)
 
 
+_SINGLE_INSTANCE_HANDLE = []   # 프로세스 수명 동안 뮤텍스 핸들을 붙잡아 둔다
+
+
+def _acquire_single_instance(name="Global\\Mireuk_FreezeSentinel"):
+    """이름 붙은 뮤텍스를 잡으면 True, 다른 프로세스가 쥐고 있으면 False.
+    win32event 를 못 쓰면 True — 무감시보다 중복 경보가 낫다."""
+    try:
+        import win32api
+        import win32event
+        import winerror
+    except Exception:
+        return True
+    try:
+        h = win32event.CreateMutex(None, False, name)
+    except Exception:
+        return True
+    if win32api.GetLastError() == winerror.ERROR_ALREADY_EXISTS:
+        return False
+    _SINGLE_INSTANCE_HANDLE.append(h)
+    return True
+
+
+def _exit_marker_predates(root, now, armed_at):
+    """정상 종료 근거(`_exit_normally` · `shutdown_normal_<date>`)가 전부 센티넬 무장
+    **이전**에 찍혔으면 True — 직전 세션의 종료이지 이번 세션의 종료가 아니다.
+
+    무장 이후에 찍힌 근거가 하나라도 있으면 False(이번 세션이 정상 종료했다).
+    근거가 하나도 측정되지 않으면 False — EXITED 가 나왔다는 것 자체가 근거가 있다는
+    뜻이므로 이 경우는 생기지 않지만, 생기면 종전 동작(감시 종료)을 따른다.
+    """
+    uptime = (now - armed_at).total_seconds()
+    ages = [a for a in (exit_flag_age(root, now),
+                        shutdown_marker_age(root, now, now.date())) if a is not None]
+    if not ages:
+        return False
+    return all(a > uptime for a in ages)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="프로세스 밖 동결 센티넬 FZ-2 (F-M, 알림 전용)")
     ap.add_argument("--once", action="store_true", help="주기 감시 없이 즉시 1회 판정")
@@ -622,6 +660,16 @@ def main(argv=None):
         emit(root, now.date(), verdict, popup=popup, manual=True)
         return verdict["rc"]
 
+    # [MW0601 2026-10-15] 상주 센티넬 단일 인스턴스. 장중 재기동이면 직전 센티넬이 아직
+    # 살아 있다(정체 판정까지 300초가 걸리고, 그 사이 새 세션 신호가 신선해지면 계속 감시한다).
+    # 그 위에 런처가 새 센티넬을 또 띄우면 같은 동결에 경보가 두 번 나간다.
+    # 먼저 뜬 센티넬이 감시를 계속하고 새 것은 물러난다(force_flat_guard 와 같은 방식).
+    if not _acquire_single_instance():
+        log_line(root, now.date(),
+                 "[FreezeSentinel] %s 다른 상주 센티넬이 이미 감시 중 — 이 실행(pid=%d)은 종료"
+                 % (now.strftime("%Y-%m-%d %H:%M:%S"), os.getpid()))
+        return RC_NOT_APPLICABLE
+
     log_armed(root, now.date(), window, stall, check)
     print("[FreezeSentinel] 감시 시작 pid=%d 창=%s~%s (알림 전용)"
           % (os.getpid(), window[0], window[1]))
@@ -629,6 +677,8 @@ def main(argv=None):
     last_rc = RC_NOT_APPLICABLE
     alerted = False
     close_logged = False   # [498차 F-10] NORMAL_CLOSE 는 상태 전이 시 1회만 남긴다
+    armed_at = datetime.datetime.now()
+    prior_exit_logged = False
     while True:
         now = datetime.datetime.now()
         if not _in_window(now, window):
@@ -663,6 +713,24 @@ def main(argv=None):
             time.sleep(check)
             continue
         close_logged = False
+        if verdict.get("state") == "EXITED" and _exit_marker_predates(
+                root, now, armed_at):
+            # [MW0601 2026-10-15] 장중 재기동이면 센티넬은 새 main.py 가 신호를 쓰기
+            # **전에** 뜬다. 그 순간 3신호는 직전 세션 것이라 전부 정체이고, 직전 세션의
+            # 종료 마커가 그보다 뒤라 EXITED 가 나온다 — 판정은 맞다(직전 세션은 정상
+            # 종료했다). 그런데 여기서 return 하면 **새 세션을 하루 종일 무감시**로 둔다.
+            # 실측: 13:43:57·13:58:13 재기동 두 번 모두 무장 0초 만에 「정상 종료 확인 —
+            # 감시 종료」. 08:48 첫 기동만 살아 있었다.
+            # → 센티넬 무장 **전에** 찍힌 마커는 이번 세션의 종료가 아니다. 감시를 계속한다.
+            #   새 세션이 신호를 쓰기 시작하면 그 신호가 마커보다 새것이므로 judge() 는
+            #   다시 WATCHING/FROZEN 을 정상 판정한다(08-19 형 보존).
+            if not prior_exit_logged:
+                log_line(root, now.date(),
+                         "[FreezeSentinel] %s 직전 세션 종료 마커(무장 전) — 새 세션 신호 대기, "
+                         "감시 계속" % now.strftime("%Y-%m-%d %H:%M:%S"))
+                prior_exit_logged = True
+            time.sleep(check)
+            continue
         if verdict.get("state") == "EXITED":
             # [MW0601 493차 후속5 / F-Z 변경 ②] 정상 종료가 확인되면 **창 종료를
             # 기다리지 않고 빠져나온다.** 종전에는 15:45~16:30 동안 매 주기 가짜
