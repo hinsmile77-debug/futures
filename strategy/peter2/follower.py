@@ -377,13 +377,23 @@ class Peter2Follower(object):
         if self.offset is None:
             self._ev('REJECT', tt, sig=tid, why='no_offset')
             return None
+        base = max(tt, datetime.datetime.combine(tt.date(), datetime.time(9, 0)))
+        # [MW0601 2026-10-15] 도착 시점에 이미 만료된 지시는 대기로 열지 않는다.
+        #   · 재기동 복원(replay)은 가격이 아직 없어 아래 거리 검사를 건너뛴다 — 13:12 지시가
+        #     14:20 재기동에서 「대기」로 살아났다가 첫 틱에 EXPIRE 됐다(실시간에선 too_far 로
+        #     기각된 지시였다). 트윗 10분 안에 재기동하면 기각됐던 지시가 거리 검사 없이 열린다.
+        #   · 실시간에서도 수집 지연(12:16–14:03 X 페이지 중단)으로 52분 늦게 온 지시는
+        #     「멀다」가 아니라 「이미 지났다」가 정확한 사유다(계측 4원칙 ③).
+        #   진입 판정(on_price)은 원래 만료를 먼저 보므로 진입 동작은 바뀌지 않는다.
+        if now is not None and now >= base + datetime.timedelta(minutes=self.cfg['arm_expire_min']):
+            self._ev('REJECT', tt, sig=tid, why='stale', age_min=int((now - tt).total_seconds() // 60))
+            return None
         side = f['side']
         lo_m, hi_m = self._m(f['lo']), self._m(f['hi'])
         lvl_m = self._m(f['level'])
         if price is not None and abs(lvl_m - price) > self.cfg['arm_max_dist']:
             self._ev('REJECT', tt, sig=tid, why='too_far', level=lvl_m, price=price)
             return None
-        base = max(tt, datetime.datetime.combine(tt.date(), datetime.time(9, 0)))
         stop_m, stop_src = None, 'default'
         # 같은 트윗의 손절은 ingest 가 이어서 넣는다 — 여기선 기본값으로 연다
         stop_m = self._default_stop(side, lvl_m)

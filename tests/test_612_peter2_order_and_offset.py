@@ -76,7 +76,9 @@ class TestOrdering(unittest.TestCase):
         batch = [_tw('04:02', '1056 매수체결', 'T1302'),          # 13:02 KST
                  _tw('04:00', '1056 상방돌파시 매수. 손절 1052', 'T1300'),
                  _tw('03:38', '1060 손절', 'T1238')]              # 12:38 KST — 가장 낡음
-        fw, now = _mk()
+        # [MW0601 2026-10-15] 기준 시각 13:30 → 13:05. 만료(10분)가 지난 지시는 이제 대기로
+        # 열지 않으므로(test_692_peter2_stale_arm), 순서 검증은 지시가 유효한 시각에서 한다.
+        fw, now = _mk(now_hm='13:05')
         for tw in p2store.by_time(batch):
             fw.ingest(tw, _engine(1051.0), now)
         kinds = [e['kind'] for e in fw.events]
@@ -89,7 +91,7 @@ class TestOrdering(unittest.TestCase):
         batch = [_tw('04:02', '1056 매수체결', 'T1302'),
                  _tw('04:00', '1056 상방돌파시 매수. 손절 1052', 'T1300'),
                  _tw('03:38', '1060 손절', 'T1238')]
-        fw, now = _mk()
+        fw, now = _mk(now_hm='13:05')         # test_4 와 같은 이유(만료 전 시각)
         for tw in batch:                      # 정렬하지 않고 수신 순서 그대로
             fw.ingest(tw, _engine(1051.0), now)
         whys = [e.get('why') for e in fw.events if e['kind'] == 'DISARM']
