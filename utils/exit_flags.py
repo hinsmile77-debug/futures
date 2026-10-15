@@ -45,7 +45,34 @@ def _data_dir(root=None):
     return os.path.join(root or _ROOT, "data")
 
 
-def write_exit_flags(reason, keep_alive=False, root=None, log_fn=None):
+# [MW0601 696차 / 장후 자동조치 F-X1] 「종료 직전 메인 스레드 정지」 연관 창(초).
+# 판정이 아니라 **표기**다 — `within_window` 플래그 하나만 바꾼다. 경과초는 창과 무관하게
+# 항상 남긴다: 2026-10-15 사례(12:12:04 7,750ms 정지 → 12:14:13 사용자 종료)는 129초
+# 간격이라 리포트가 제안한 60초 창이었으면 흔적 자체가 안 남았다.
+STALL_LINK_WINDOW_SEC = 300.0
+
+
+def format_recent_stall(last_stall_ms, last_stall_mono, now_mono,
+                        window_s=STALL_LINK_WINDOW_SEC):
+    """종료 로그에 덧붙일 「직전 메인 스레드 정지」 꼬리를 만든다.
+
+    - 이 프로세스에서 WARN 이상 정지를 한 번도 못 봤으면 `recent_stall=none`.
+      ⚠ 「0ms」로 쓰지 않는다 — 계측 4원칙 ②(미측정 ≠ 0)의 반대 방향으로,
+      **측정했는데 없었다**는 뜻을 문자열로 구분한다.
+    - 봤으면 `recent_stall_ms=<ms> stall_age_s=<s> within_window=<bool>(<창>s)`.
+    - 어떤 입력이 와도 예외를 던지지 않는다 — 종료 경로를 막으면 안 된다.
+    """
+    try:
+        if last_stall_ms is None or last_stall_mono is None:
+            return "recent_stall=none"
+        age = max(0.0, float(now_mono) - float(last_stall_mono))
+        return "recent_stall_ms=%.0f stall_age_s=%.1f within_window=%s(%.0fs)" % (
+            float(last_stall_ms), age, age <= float(window_s), float(window_s))
+    except Exception as e:  # pragma: no cover — 방어
+        return "recent_stall=unknown(%s)" % type(e).__name__
+
+
+def write_exit_flags(reason, keep_alive=False, root=None, log_fn=None, extra=None):
     """종료 의도를 기록한다 — 반환: 실제로 쓴 경로 목록.
 
     `keep_alive=True` 면 **파일을 하나도 쓰지 않는다**. 런처가 재시작해야 하기
@@ -53,6 +80,9 @@ def write_exit_flags(reason, keep_alive=False, root=None, log_fn=None):
     그 자체가 죽은 산출물이 된다(FP-CRITICAL 계열).
 
     `log_fn(msg, level)` 을 주면 그쪽으로도 한 줄 보낸다(`log_manager.system`).
+
+    `extra` 를 주면 `[Shutdown] intent=…` 줄 **끝에** 덧붙인다(696차 F-X1 —
+    `format_recent_stall()` 꼬리). 앞머리 문구는 그대로라 기존 문자열 집계는 안 깨진다.
     """
     written = []
     now = datetime.datetime.now()
@@ -89,6 +119,8 @@ def write_exit_flags(reason, keep_alive=False, root=None, log_fn=None):
     # 「재시작이었나 하드킬이었나」를 구분하지 못한다. 이쪽이 그 질문에 답한다.
     msg = "[Shutdown] intent=%s keep_alive=%s files=%d" % (
         reason, bool(keep_alive), len(written))
+    if extra:
+        msg = "%s %s" % (msg, extra)
     logger.info(msg)
     if log_fn is not None:
         try:

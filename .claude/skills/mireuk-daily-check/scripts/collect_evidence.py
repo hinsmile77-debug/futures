@@ -177,6 +177,13 @@ DEFAULT_CONFIG = {
         #   `[Position] 진입` 과 **같은 초**(±2초)에 TRADE 로그에 찍힌다(2026-10-13 6/6 실측).
         #   이 줄이 있으면 그 자리는 엔진 판단이 아니다 — 엔진 성적에 넣지 말 것.
         "peter2_entry": r"\[Peter2\] 진입 (?P<dir>\w+) (?P<qty>\d+)계약",
+        # [MW0601 696차 / 장후 자동조치 E-2] 가상 장부 진입 표식 — 신동·미륵 가상 레그도
+        #   같은 초에 `[Position] 진입` 을 남긴다(2026-10-15 3/3 실측: 09:41:59 · 09:48:59
+        #   신동, 11:32:00 미륵 — 마지막 것은 `horizon=3m` 까지 붙어 「엔진」으로 세어졌다).
+        #   **실주문이 없는 자리다** — 엔진 성적·계좌 손익 어디에도 넣지 말 것.
+        "virtual_entry": r"\[Virtual\] (?P<who>\S+) 가상진입 (?P<dir>\w+) (?P<qty>\d+)계약",
+        # 가상 청산 — 가상 포지션의 손익은 이 줄로만 닫힌다(`체결청산` 이 없다).
+        "virtual_exit": r"\[Virtual\] (?P<who>\S+) 가상청산 (?P<dir>\w+) (?P<qty>\d+)계약 @(?P<px>[\d.]+) (?P<reason>\S+) \| (?P<pt>[+-][\d.]+)pt (?P<won>[+-][\d,]+)원",
         # [MW0601 507차 후속 / F-8] 체결진입은 **두 형식**으로 찍힌다.
         #   · `[체결진입]`          — main.py:15272 · :17804 (log_manager.trade)
         #   · `[Position] 체결진입`  — position_tracker.py:752 (logger.info)
@@ -1326,15 +1333,37 @@ def _peter2_secs(merged):
     return [_rec_seconds(r) for r in merged.get("peter2_entry", [])]
 
 
-def entry_source_of(rec, peter2_secs):
-    """`[Position] 진입` 한 줄의 출처 — 「엔진」 / 「피터2」 / 「추정」.
+def _virtual_secs(merged):
+    """[696차 / E-2] 가상진입 표식의 (초, 주체, 방향) 목록."""
+    return [(_rec_seconds(r), r.get("who") or "?", r.get("dir"))
+            for r in merged.get("virtual_entry", [])]
 
+
+def _virtual_who(rec, virtual_secs):
+    """`[Position] 진입` 과 같은 초(±2초)·같은 방향의 가상진입 주체 — 없으면 None."""
+    if not virtual_secs:
+        return None
+    sec = _rec_seconds(rec)
+    for s, who, d in virtual_secs:
+        if abs(sec - s) <= _PETER2_PAIR_TOL_SEC and (d is None or d == rec.get("dir")):
+            return who
+    return None
+
+
+def entry_source_of(rec, peter2_secs, virtual_secs=None):
+    """`[Position] 진입` 한 줄의 출처 — 「가상」 / 「엔진」 / 「피터2」 / 「추정」.
+
+    - [696차 / E-2] 같은 초(±2초)·같은 방향에 `[Virtual] … 가상진입` 이 있으면
+      **가상** — 실주문이 없는 장부 레그다. `horizon=` 이 붙어 있어도 가상이 이긴다
+      (2026-10-15 11:32:00 미륵 가상이 `horizon=3m` 으로 「엔진」에 세어졌다).
     - 같은 초(±2초)에 `[Peter2] 진입` 이 있으면 **피터2** (보조 로직, 엔진 판단 아님).
     - 아니면 `horizon=` 이 있으면 **엔진** — 엔진 진입은 `select_entry_horizon()` 이
       정한 호라이즌을 반드시 넘긴다.
     - 둘 다 없으면 **추정** — 로그만으로 판별 불가(미측정). 「엔진 아님」이 아니다
       (계측 4원칙 ②).
     """
+    if _virtual_who(rec, virtual_secs) is not None:
+        return "가상"
     sec = _rec_seconds(rec)
     if any(abs(sec - s) <= _PETER2_PAIR_TOL_SEC for s in peter2_secs):
         return "피터2"
@@ -1344,15 +1373,17 @@ def entry_source_of(rec, peter2_secs):
 
 
 def count_entry_sources(merged):
-    """`[Position] 진입` 을 출처별로 센다 → {"엔진": n, "피터2": n, "추정": n}.
+    """`[Position] 진입` 을 출처별로 센다 → {"엔진", "피터2", "가상", "추정"} 건수.
 
     [689차 / G-6] 「엔진 진입 0건」 판정은 이 값의 「엔진」으로 한다. `len(entry)` 로
     하면 F-5 확장 뒤에는 피터2 진입이 엔진으로 세어져 적신호가 침묵한다.
+    [696차 / E-2] 가상 레그도 같은 이유로 따로 센다.
     """
     p2 = _peter2_secs(merged)
-    out = {"엔진": 0, "피터2": 0, "추정": 0}
+    vs = _virtual_secs(merged)
+    out = {"엔진": 0, "피터2": 0, "가상": 0, "추정": 0}
     for rec in merged.get("entry", []):
-        out[entry_source_of(rec, p2)] += 1
+        out[entry_source_of(rec, p2, vs)] += 1
     return out
 
 
@@ -1454,6 +1485,13 @@ def assemble_positions(merged):
         ext_secs.add(_rec_seconds(rec))
     # [MW0601 689차 / F-5 확장] 피터2 진입 표식 — `[Position] 진입` 의 출처 판정용.
     p2_secs = _peter2_secs(merged)
+    # [MW0601 696차 / E-2] 가상 장부 진입 — 실주문이 없으므로 **열린 실포지션(cur)을
+    # 건드리지 않는다.** 종전에는 가상 `[Position] 진입` 이 cur 를 열어, 뒤이은 실체결
+    # 레그가 가상 포지션에 붙거나(체결 FLAT→보유는 cur 가 있으면 열리지 않는다) 보유 중인
+    # 실포지션이 「안 닫힌 채」 밀려날 수 있었다. 가상 포지션은 `[Virtual] … 가상청산`
+    # 으로만 닫는다(아래 후처리).
+    v_secs = _virtual_secs(merged)
+    virtual_positions = []
     for _sec, _q, _h, rec in dedup_fill_entries(merged)[0]:
         if _q > 0 and _q == _h:
             ev.append((_sec, 1, "fill_open", rec))
@@ -1468,6 +1506,20 @@ def assemble_positions(merged):
     positions, orphans, cur = [], [], None
     for _sec, _ord, kind, rec in ev:
         if kind == "entry":
+            _vwho = _virtual_who(rec, v_secs)
+            if _vwho is not None:
+                try:
+                    _veq = int(rec.get("qty") or 0)
+                except (TypeError, ValueError):
+                    _veq = 0
+                virtual_positions.append({
+                    "open_hhmm": rec.get("hhmm"), "dir": rec.get("dir"),
+                    "entry_qty": _veq, "hz": rec.get("hz"), "grade": None,
+                    "legs": [], "net_won": 0, "net_pt": 0.0,
+                    "closed": False, "exit_reason": None, "_rem": _veq,
+                    "inferred": False, "virtual": True, "who": _vwho,
+                    "_open_sec": _sec, "src": "가상(%s)" % _vwho})
+                continue
             if cur is not None:              # 직전 포지션이 안 닫혔다 — 그대로 보존
                 positions.append(cur)
             try:
@@ -1482,7 +1534,7 @@ def assemble_positions(merged):
                    # [F-8] `[Position] 진입`이 있으면 엔진이 낸 자리다.
                    # [689차 / F-5 확장] 단, 같은 초에 `[Peter2] 진입`이 있으면
                    # 피터2, horizon= 도 없으면 추정(판별 불가)이다.
-                   "src": entry_source_of(rec, p2_secs)}
+                   "src": entry_source_of(rec, p2_secs, v_secs)}
             continue
         if kind in ("fill_open", "fill_add"):
             # [F-X] 체결 기반 보조 경로.
@@ -1538,7 +1590,73 @@ def assemble_positions(merged):
             cur = None
     if cur is not None:
         positions.append(cur)
+    # [696차 / E-2] 가상 포지션은 `[Virtual] <주체> 가상청산` 으로 닫는다 —
+    # 같은 주체·같은 방향의 가장 이른 열린 가상 포지션에 붙인다(FIFO).
+    # 장부에 짝이 없는 가상청산(전일 이월 가상 등)은 버리지 않고 별도 행으로 남긴다
+    # (계측 4원칙 ③ — 탈락 가시화).
+    for rec in sorted(merged.get("virtual_exit", []), key=_rec_seconds):
+        _vsec = _rec_seconds(rec)
+        tgt = None
+        for vp in virtual_positions:
+            if (not vp["closed"] and vp["who"] == (rec.get("who") or "?")
+                    and vp["dir"] == rec.get("dir") and vp["_open_sec"] <= _vsec):
+                tgt = vp
+                break
+        if tgt is None:
+            tgt = {"open_hhmm": "(진입 로그 없음)", "dir": rec.get("dir"),
+                   "entry_qty": rec.get("qty"), "hz": None, "grade": None,
+                   "legs": [], "net_won": 0, "net_pt": 0.0,
+                   "closed": False, "exit_reason": None, "_rem": 0,
+                   "inferred": True, "virtual": True, "who": rec.get("who") or "?",
+                   "_open_sec": _vsec, "src": "가상(%s)" % (rec.get("who") or "?")}
+            virtual_positions.append(tgt)
+        try:
+            _vq = int(rec.get("qty") or 1)
+        except (TypeError, ValueError):
+            _vq = 1
+        _reason = (rec.get("reason") or "?").strip()
+        tgt["legs"].append({"hhmm": rec.get("hhmm"), "qty": _vq, "pt": _pt(rec),
+                            "won": _won(rec), "reason": _reason, "kind": "virtual"})
+        tgt["net_won"] += _won(rec)
+        tgt["net_pt"] += _pt(rec) * _vq
+        tgt["closed"] = True
+        tgt["exit_reason"] = _reason
+    if virtual_positions:
+        positions = sorted(positions + virtual_positions,
+                           key=lambda q: q.get("open_hhmm") or "")
     return positions, orphans
+
+
+def is_virtual_position(q):
+    """[696차 / E-2] 가상 장부 포지션인가 — 실주문이 없어 손익 집계에서 뺀다."""
+    return bool(q.get("virtual"))
+
+
+def _render_virtual_positions(A, vlist):
+    """[696차 / E-2] 가상 장부 포지션 표 — 실계좌 손익과 **합산하지 않고 병기**한다.
+
+    2026-10-15 3원 대사가 「1=1≠4」로 불일치처럼 보였는데 실제로는 가상 3건이 섞인
+    것뿐이었고, 사람이 15:40 로그를 직접 대조해야 판별됐다(장후 리포트 E-2).
+    """
+    if not vlist:
+        return
+    _vc = [q for q in vlist if q["closed"]]
+    A("**가상 장부 %d건(청산 %d · 합계 %s원) — 실주문 없음, 엔진·계좌 손익 아님**"
+      % (len(vlist), len(_vc), format(sum(q["net_won"] for q in _vc), "+,d")))
+    A("")
+    A("| 진입 | 주체 | 방향 | 수량 | hz | 가상 pt | 가상 net(원) | 가상 청산사유 |")
+    A("|---|---|---|---|---|---|---|---|")
+    for q in vlist:
+        A("| %s | %s | %s | %s | %s | %+.2f | %s | %s |" % (
+            q["open_hhmm"], q.get("who") or "?", q.get("dir"), q.get("entry_qty"),
+            q.get("hz") or "—", q["net_pt"], format(q["net_won"], "+,d"),
+            q["exit_reason"] if q["closed"]
+            else "가상청산 로그 없음(장후 일괄평가 대기일 수 있음)"))
+    A("")
+    A("> ⚠ 이 표는 `[Virtual] … 가상진입`/`가상청산` 로그로 조립한 **가상 장부**다."
+      " 같은 초에 `[Position] 진입` 이 찍혀 진입 건수에는 잡히지만 체결이 없다 —"
+      " 3원 대사(로그·DB·브로커)에서 로그 쪽이 더 많아 보이면 먼저 이 표를 뺄 것.")
+    A("")
 
 
 def day_summary(digests, cfg, out):
@@ -1597,6 +1715,7 @@ def day_summary(digests, cfg, out):
     A("| 진입 등록(`[Position] 진입`) | %d |" % len(en))
     A("| └ 그중 **엔진**(`horizon=` 동반) | %d |" % _en_engine)
     A("| └ 그중 피터2(`[Peter2] 진입` 동반) — 보조 로직 | %d |" % _src_n["피터2"])
+    A("| └ 그중 가상(`[Virtual] … 가상진입` 동반) — **실주문 없음** | %d |" % _src_n["가상"])
     A("| └ 그중 판별불가(둘 다 없음 — 미측정) | %d |" % _src_n["추정"])
     A("| 체결(`[체결진입]`·`[Position] 체결진입`) | %d%s |"
       % (len(_fi_kept),
@@ -1614,6 +1733,11 @@ def day_summary(digests, cfg, out):
         A("> 🔴 **엔진 진입 0건인데 계좌 체결 %d건**(외부표식 %d · 피터2 %d · 판별불가 %d)"
           " — 이 날의 손익은 엔진 성적이 아니다. 아래 포지션 표의 「출처」 칸을 반드시 볼 것."
           % (len(_fi_kept), len(_ext), _src_n["피터2"], _src_n["추정"]))
+        # [696차 / E-2] 가상 레그는 체결이 없으므로 위 「계좌 체결」에 들어 있지 않다.
+        if _src_n["가상"]:
+            A(">")
+            A("> 별도로 **가상 장부 진입 %d건**이 `[Position] 진입` 에 섞여 있다 — 실주문이"
+              " 없으므로 계좌 체결·손익과 무관하다(아래 「가상 장부」 표)." % _src_n["가상"])
         A("")
 
     # --- 손익 — **포지션 단위가 기본**(계측 4원칙 ①) [MW0601 482차 / F-4] ---
@@ -1621,6 +1745,9 @@ def day_summary(digests, cfg, out):
     pd = merged.get("pos_done", [])
     if ex or pe:
         positions, orphans = assemble_positions(merged)
+        # [696차 / E-2] 가상 포지션은 헤드라인·레그표·승률에서 뺀다 — 아래 따로 보인다.
+        _virt = [q for q in positions if is_virtual_position(q)]
+        positions = [q for q in positions if not is_virtual_position(q)]
         closed = [q for q in positions if q["closed"]]
         wins = sum(1 for q in closed if q["net_won"] > 0)
         tot_won = sum(q["net_won"] for q in closed)
@@ -1666,6 +1793,7 @@ def day_summary(digests, cfg, out):
               " `[Peter2] 진입`이 동반된 보조 로직 자리로 역시 엔진 성적이 아니다. 「추정」은"
               " 판별 불가(미측정)이지 「외부 아님」이 아니다(계측 4원칙 ②).")
             A("")
+        _render_virtual_positions(A, _virt)
         # ── [MW0601 518차 / G-4] 이월 포지션(전일 이전 진입)의 손익을 드러낸다 ──
         #
         # **증상**: 2026-09-02 다이제스트가 실재하는 **-5,299,668원**을 손익 표
@@ -1829,10 +1957,11 @@ def day_summary(digests, cfg, out):
         A("| 시각 | 출처 | 방향 | 계약 | 진입가 | 호라이즌 | Hurst |")
         A("|---|---|---|---|---|---|---|")
         _p2s = _peter2_secs(merged)
+        _vss = _virtual_secs(merged)
         for e in en:
             # [689차 / F-5 확장] 접미사가 선택이 됐으므로 빈 값은 `—`(미기재)로 찍는다.
             A("| %s | %s | %s | %s | %s | %s | %s |" % (
-                e["hhmm"], entry_source_of(e, _p2s), e.get("dir"), e.get("qty"),
+                e["hhmm"], entry_source_of(e, _p2s, _vss), e.get("dir"), e.get("qty"),
                 e.get("px"), e.get("hz") or "—", e.get("hurst") or "—"))
         A("")
         qd = {}
@@ -3392,15 +3521,17 @@ def build(root, day, phase, cfg, discover_only=False):
                 top_bl = " 최다 차단 사유: `%s`" % sorted(bd.items(), key=lambda kv: -kv[1])[0][0]
             flags.append(
                 "**엔진 진입 0건 / 계좌 진입 %d건**(그중 외부표식 %d건 · 피터2 %d건 · "
-                "판별불가 %d건) — 차단 %d건.%s "
+                "판별불가 %d건 · 별도 가상 장부 %d건) — 차단 %d건.%s "
                 "(진입0 딥다이브 절차를 따르라. 계좌 진입이 있으면 그 손익을 "
                 "**엔진 성적으로 집계하지 말 것**)"
-                % (_acct_n, _ext_n, _src_n["피터2"], _src_n["추정"], len(bl), top_bl))
+                % (_acct_n, _ext_n, _src_n["피터2"], _src_n["추정"], _src_n["가상"],
+                   len(bl), top_bl))
         # [MW0601 482차 / F-4] 포지션 단위로 센다. 종전은 `체결청산` 레그만 세어
         # 2026-08-20에 "4건 100% 하드스톱"이라 찍었으나 실제는 하드스톱 4 ·
         # 손절1차 조기축소 2 · TP1 부분청산 1(레그 7 / 포지션 4)이었다.
         _pos_all, _ = assemble_positions(merged)
-        _pos = [q for q in _pos_all if q["closed"]]
+        # [696차 / E-2] 가상 장부는 손절 준수율·다레그 집계에서 뺀다(실주문 없음).
+        _pos = [q for q in _pos_all if q["closed"] and not is_virtual_position(q)]
         if _pos:
             stops = sum(1 for q in _pos
                         if "스톱" in (q["exit_reason"] or "") or "손절" in (q["exit_reason"] or ""))
@@ -3417,7 +3548,8 @@ def build(root, day, phase, cfg, discover_only=False):
     try:
         # [689차] 사이저와 비교할 진입은 **엔진 진입만**이다 — 피터2 는 사이저를 거치지 않는다.
         _p2s = _peter2_secs(merged)
-        _en_eng = [e for e in en if entry_source_of(e, _p2s) == "엔진"]
+        _en_eng = [e for e in en
+                   if entry_source_of(e, _p2s, _virtual_secs(merged)) == "엔진"]
         if sz and _en_eng:
             smax = max(int(s["qty"]) for s in sz if s.get("qty"))
             emax = max(int(e["qty"]) for e in _en_eng if e.get("qty"))

@@ -117,7 +117,8 @@ def test_2a_peter2_position_is_not_engine_and_not_inferred(mod, pats):
     assert q["src"] == "피터2"
     assert q["inferred"] is False
     assert q["closed"] and q["net_won"] == -240549
-    assert mod.count_entry_sources(merged) == {"엔진": 0, "피터2": 1, "추정": 0}
+    # [696차 / E-2] 「가상」 출처가 추가됐다 — 가상 표식이 없으므로 0.
+    assert mod.count_entry_sources(merged) == {"엔진": 0, "피터2": 1, "가상": 0, "추정": 0}
 
 
 def test_2b_engine_entry_stays_engine(mod, pats):

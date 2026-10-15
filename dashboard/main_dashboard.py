@@ -15833,6 +15833,10 @@ class MireukDashboard(QMainWindow):
         # `getattr(self, "_x", 기본값)` 으로 런타임 상태를 읽지 않는다(계측 4원칙 ④).
         self._stall_alert_day = ""     # 상한 리셋 기준 날짜(YYYYMMDD)
         self._stall_alert_count = 0    # 오늘 경보 탭에 띄운 횟수
+        # [MW0601 696차 / F-X1] 마지막 WARN 이상 정지 — 종료 로그에 동반 기록한다.
+        # None = 이 프로세스에서 아직 못 봤다(「0ms」가 아니다 — 계측 4원칙 ②).
+        self._last_stall_ms = None
+        self._last_stall_mono = None
         # 마지막 파이프라인 **완료** 시각(monotonic). None = 아직 한 번도 안 돎(미측정).
         # `_pipe_elapsed_s`는 초 단위 정수라 5초짜리 정지의 잔차를 재기엔 해상도가 없다.
         self._pipe_last_done_mono = None
@@ -17231,6 +17235,10 @@ class MireukDashboard(QMainWindow):
                     #   — 계측 4원칙 ②. 문자열 `NA`로 남긴다.
                     ("%.1f" % _since_pipe) if _since_pipe is not None else "NA",
                 )
+                # [MW0601 696차 / F-X1] 종료 핸들러가 읽을 직전 정지 — 기록만 한다.
+                if _gap_ms >= _MT_WARN_MS:
+                    self._last_stall_ms = _gap_ms
+                    self._last_stall_mono = _now_mono
                 # ── [MW0601 519차 / 사용자 지시] ALERT 밴드를 「2 경보」 탭으로 ──
                 #
                 # 🔴 **경보만 한다. 매매 경로는 건드리지 않는다.**
@@ -17465,6 +17473,17 @@ class MireukDashboard(QMainWindow):
             if _root not in _sys.path:
                 _sys.path.insert(0, _root)
             from utils.exit_flags import write_exit_flags as _wef
+            # [MW0601 696차 / F-X1] 직전 메인 스레드 정지를 같은 줄에 남긴다.
+            #   2026-10-15 12:12:04 정지(7,750ms) → 12:14:13 사용자 종료의 인과를 로그만으로
+            #   가를 수 없어 판정 보류(O-i2)가 됐다. 판정은 사람 몫이고 여기는 재료만 남긴다.
+            #   ⚠ 함수 import·포맷 실패가 종료를 막으면 안 된다 — 꼬리만 포기한다.
+            try:
+                import time as _tm
+                from utils.exit_flags import format_recent_stall as _frs
+                _stall_tail = _frs(self._last_stall_ms, self._last_stall_mono,
+                                   _tm.monotonic())
+            except Exception:
+                _stall_tail = None
             # [MW0601 684차 / F-18 재진단] 로그 경로를 **명시**한다.
             #   `write_exit_flags` 의 모듈 로거(`utils.exit_flags`)는 어떤 파일 핸들러에도
             #   연결돼 있지 않다 — 618차 이래 SYSTEM 로그의 `intent=user_*` 는 **0건**이었고
@@ -17477,10 +17496,12 @@ class MireukDashboard(QMainWindow):
             except Exception:
                 _log_fn = None
             if _clicked == _btn_full:
-                _wef("user_close", keep_alive=False, root=_root, log_fn=_log_fn)
+                _wef("user_close", keep_alive=False, root=_root, log_fn=_log_fn,
+                     extra=_stall_tail)
             else:
                 # 재시작: 파일을 쓰지 않는다 → 런처가 10초 후 AUTO-RESTART.
-                _wef("user_restart", keep_alive=True, root=_root, log_fn=_log_fn)
+                _wef("user_restart", keep_alive=True, root=_root, log_fn=_log_fn,
+                     extra=_stall_tail)
         except Exception:
             # 폴백 — 헬퍼를 못 불러도 완전 종료 계약(플래그 파일)은 지킨다.
             if _clicked == _btn_full:
