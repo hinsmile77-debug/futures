@@ -2,7 +2,7 @@
 //
 // 하는 일
 //   1) 평일 08:30–15:45(KST) 동안 오늘 장중 구간으로 좁힌 X 검색 탭을 하나 유지한다(고정 탭, 비활성).
-//   2) 그 탭을 RELOAD_SEC(45초) 마다 새로고침한다 — 백그라운드 탭의 페이지 타이머는 Chrome 이 분당 1회로
+//   2) 그 탭을 RELOAD_SEC(80초) 마다 새로고침한다 — 백그라운드 탭의 페이지 타이머는 Chrome 이 분당 1회로
 //      묶어 버리므로(intensive throttling), 갱신 주기는 여기(알람)가 쥔다.
 //   3) content.js 가 모은 트윗을 127.0.0.1:8766/peter 로 보낸다(확장 출처라 CORS 제약이 없다).
 //
@@ -24,8 +24,27 @@ const HANDLE = "PeterLeejoa";
 // PAGE_ERROR 791건이 :07–:10 · :22–:25 · :37–:40 · :52–:55 에 3–4분씩 몰렸다(15분 창 한도 패턴).
 // 게다가 오류 하트비트가 5초마다 백오프를 15분씩 연장해 하루 종일 30초 모드였고, 그 사각에 들어온
 // 트윗은 지연 98–200초로 잡혔다(평시 지연 중앙 ~20초). 한도 아래로 일정하게 도는 쪽이 낫다.
-const RELOAD_SEC = 45;           // 평시 — 15분에 20회
-const BACKOFF_SEC = 120;         // 오류 화면이면 새로고침을 멈추고 기다린다(창이 풀릴 시간)
+// [2026-10-16] 45초로도 한도를 매 창 소진했다 — 10-12–10-16 오류 군집이 14–17분 주기로 4–8분씩,
+// 10-16 은 세션 분의 41%. 45초에서 약 9분(≈12회) 뒤 소진되므로 창당 예산 ≈ 12회로 추정 → 80초(창당 11회).
+// ⚠ 추정이다. ratelimit_hook.js 가 실제 헤더(x-rate-limit-*)를 재서 수신기 로그 RATE 줄에 남긴다 —
+//   그 실측으로 이 값을 다시 정할 것. 근거·절차: docs/피터2수집/.
+const RELOAD_SEC = 80;           // 평시 — 15분에 약 11회
+const BACKOFF_SEC = 120;         // 오류 화면인데 한도 헤더가 없을 때의 대기(종전 동작)
+const RESET_PAD_SEC = 5;         // 한도 reset 시각 뒤 여유
+const BACKOFF_MAX_SEC = 16 * 60; // reset 값이 이상해도 이보다 오래 멈추지 않는다(창 15분 + 여유)
+
+// 오류 화면에서 얼마나 물러날지. 한도 헤더가 「소진(rem=0 또는 429)」을 말하면 **reset 시각까지**
+// 기다린다 — 소진된 창에서 120초마다 재시도해 봐야 오류 화면만 다시 받는다(F-3).
+// 헤더가 없으면(미측정) 종전 120초 그대로 — 모르는 값으로 길게 멈추지 않는다.
+function backoffMsFor(meta, now) {
+  const rl = meta && meta.rl;
+  const spent = rl && (rl.status === 429 || rl.rem === 0);
+  if (spent && rl.reset > 0) {
+    const until = rl.reset * 1000 + RESET_PAD_SEC * 1000;
+    return Math.min(Math.max(until - now, 30 * 1000), BACKOFF_MAX_SEC * 1000);
+  }
+  return BACKOFF_SEC * 1000;
+}
 
 function kstNow() {
   const d = new Date(Date.now() + 9 * 3600 * 1000);
@@ -153,7 +172,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // 연장하면 새로고침이 영영 재개되지 않는다(종전 코드가 하루 종일 저속 모드였던 이유).
       const { backoffUntil = 0 } = await chrome.storage.local.get("backoffUntil");
       if (Date.now() >= backoffUntil) {
-        await chrome.storage.local.set({ backoffUntil: Date.now() + BACKOFF_SEC * 1000 });
+        const now = Date.now();
+        await chrome.storage.local.set({ backoffUntil: now + backoffMsFor(msg.meta, now) });
       }
     }
     try {

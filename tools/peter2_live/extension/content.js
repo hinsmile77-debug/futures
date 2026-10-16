@@ -112,21 +112,36 @@
     const all = collect();
     const fresh = all.filter((t) => !sent.has(t.id + ":" + t.text.length));
     const meta = { url: location.href, articles: all.length, cycle: cycle,
-                   error: pageError(), off_search: false };
+                   error: pageError(), off_search: false, rl: rl };
     if (!fresh.length && !force) return;
     post({ type: "peter2_tweets", tweets: fresh, meta: meta },
          (r) => { if (r && r.ok) for (const t of fresh) sent.add(t.id + ":" + t.text.length); });
   }
 
-  // 「새 게시물 보기」 알약이 뜨면 누른다(새로고침 사이에 들어온 글)
-  function clickPill() {
-    if (offSearch()) return;
-    const pill = document.querySelector('[data-testid="pillLabel"]');
-    if (pill) { try { pill.click(); } catch (e) {} }
+  // [2026-10-16] 「새 게시물 보기」 알약 자동 클릭을 뺐다. 누를 때마다 타임라인 요청이 한 번 더
+  //   나가 검색 한도(15분 창)를 먹는데, 80초 새로고침이 어차피 최신을 가져오므로 정보 이득이 없다.
+  //   그 예산 소진이 PAGE_ERROR 군집(세션의 18–41% 분)의 원인 축이었다 — docs/피터2수집/.
+
+  // X 요청 한도 실측 — ratelimit_hook.js(MAIN world)가 응답 헤더를 넘긴다.
+  //   받지 못했으면 null 그대로 보낸다(미측정 ≠ 0, 계측 4원칙 ②).
+  let rl = null;
+  function takeRl(d) {
+    if (!d || d.source !== "peter2-rl") return false;
+    if (rl && rl.at === d.at && rl.n_page === d.n_page) return false;   // 같은 관측
+    rl = { op: d.op, status: d.status, lim: d.lim, rem: d.rem, reset: d.reset,
+           phase: d.phase, at: d.at, n_page: d.n_page };
+    return true;
   }
+  // 이 스크립트가 붙기 전에 온 응답(새로고침 직후 첫 요청)은 DOM 속성에 남아 있다
+  try { takeRl(JSON.parse(document.documentElement.getAttribute("data-peter2-rl") || "null")); }
+  catch (e) { /* 없거나 깨졌다 — 미측정 */ }
+  window.addEventListener("message", (e) => {
+    if (e.source !== window || !e.data) return;
+    // 한도 변화는 바로 알린다 — 다음 하트비트(백그라운드에선 분당 1회)를 기다리지 않는다
+    if (takeRl(e.data)) send(true);
+  });
 
   const obs = new MutationObserver(() => {
-    clickPill();
     if (timer) return;
     // 같은 틱의 연쇄 변경을 한 번으로 묶는다(마이크로태스크 — 타이머 스로틀 영향 없음)
     timer = Promise.resolve().then(() => { timer = null; send(false); });

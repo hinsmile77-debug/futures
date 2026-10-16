@@ -117,6 +117,8 @@ def _heartbeat(meta, n_new):
         # 장중 전수 보장이 없다 — 「정상 수집」과 같은 모양으로 적으면 안 된다(계측 4원칙 ②).
         'off_search': bool(meta.get('off_search')),
         'cycle': meta.get('cycle'),
+        # [2026-10-16] X 타임라인 응답의 한도 헤더(ratelimit_hook.js). 없으면 None — 미측정이지 0 이 아니다.
+        'rl': meta.get('rl') if isinstance(meta.get('rl'), dict) else None,
         'posts': _stat['posts'],
         'new_total': _stat['new_total'],
         'new_last': n_new,
@@ -125,6 +127,34 @@ def _heartbeat(meta, n_new):
     with io.open(tmp, 'w', encoding='utf-8') as f:
         json.dump(info, f, ensure_ascii=False)
     _replace_retry(tmp, os.path.join(d, 'collector.json'))
+
+
+def _fmt_reset(v):
+    try:
+        return datetime.datetime.fromtimestamp(int(v)).strftime('%H:%M:%S')
+    except Exception:
+        return '-'
+
+
+def _log_rate(rl):
+    """[2026-10-16] 한도 관측이 바뀔 때만 `RATE` 한 줄을 남긴다(하트비트마다 같은 값을 반복하지 않는다).
+
+    줄 형식: `RATE SearchTimeline st=200 rem=7/50 reset=12:45:00 phase=load n=1`
+      phase=load  새로고침이 부른 요청(로드 8초 안) / poll  X 웹앱 자체 폴링
+      n           그 페이지에서 본 타임라인 응답 순번
+    재생: docs/피터2수집/ 의 예산 추정이 이 줄로 대체된다.
+    """
+    if not isinstance(rl, dict):
+        return
+    key = (rl.get('at'), rl.get('n_page'))
+    if key == _stat.get('rl_key'):
+        return
+    _stat['rl_key'] = key
+    rem, lim = rl.get('rem'), rl.get('lim')
+    _log('RATE %s st=%s rem=%s/%s reset=%s phase=%s n=%s' % (
+        rl.get('op'), rl.get('status'),
+        '-' if rem is None else rem, '-' if lim is None else lim,
+        _fmt_reset(rl.get('reset')), rl.get('phase'), rl.get('n_page')))
 
 
 def ingest(payload):
@@ -158,7 +188,9 @@ def ingest(payload):
         _stat['last_post'] = seen_at
         _heartbeat(meta, n_new)
     if meta.get('error'):
-        _log('PAGE_ERROR %s' % meta.get('error'))
+        # 오류 문구는 본문 칸 innerText 라 여러 줄이다(Top/Latest/…) — 한 줄로 접어 로그 한 건 = 한 줄로 둔다
+        _log('PAGE_ERROR %s' % ' '.join(str(meta.get('error')).split())[:80])
+    _log_rate(meta.get('rl'))
     off = bool(meta.get('off_search'))
     if off != _stat.get('off_search'):          # 상태가 바뀔 때만 적는다 — 30초마다 도배하지 않는다
         _stat['off_search'] = off

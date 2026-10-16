@@ -28,6 +28,9 @@ P90_LIMIT_SEC = 90
 SLOW_SEC = 90
 KST = D.timezone(D.timedelta(hours=9))
 _ERR_RE = re.compile(r'^(\d\d):(\d\d):(\d\d) PAGE_ERROR')
+# [MW0601 697차] 수신기가 X 한도 헤더 관측을 남긴다(ratelimit_hook.js → meta.rl → receiver `RATE`).
+_RATE_RE = re.compile(r'^(\d\d:\d\d:\d\d) RATE (\S+) st=(\S+) rem=(\S+)/(\S+) reset=(\S+) phase=(\S+)')
+SESSION_MIN = (D.time(9, 0), D.time(15, 20))   # 오류 분 비율의 분모 구간(380분)
 
 
 def _pct(vals, q):
@@ -86,6 +89,44 @@ def load_errors(date):
     return out, True
 
 
+def load_rates(date):
+    """`RATE` 줄 — 없으면 빈 목록(훅 미적용·확장 미갱신 = **미측정**, 한도가 0 이라는 뜻이 아니다)."""
+    p = os.path.join(ROOT, 'logs', 'peter2_receiver_%s.log' % date.replace('-', ''))
+    out = []
+    if not os.path.exists(p):
+        return out
+    with io.open(p, encoding='utf-8', errors='replace') as f:
+        for line in f:
+            m = _RATE_RE.match(line)
+            if m:
+                out.append({'t': m.group(1), 'op': m.group(2), 'st': m.group(3), 'rem': m.group(4),
+                            'lim': m.group(5), 'reset': m.group(6), 'phase': m.group(7)})
+    return out
+
+
+def rate_summary(rates):
+    """한도 창(같은 reset 값) 별로 몇 번 불렸고 남은 예산이 어디까지 내려갔는가.
+
+    load = 확장의 새로고침이 부른 요청, poll = X 웹앱 자체 폴링. 창 하나에서 rem 이 우리 호출 수보다
+    더 많이 줄었다면 **다른 소비자**(같은 계정의 다른 PC·사람의 열람)가 있다는 뜻이다.
+    """
+    if not rates:
+        return None
+    wins = {}
+    for x in rates:
+        wins.setdefault((x['op'], x['reset']), []).append(x)
+    rows = []
+    for (op, reset), v in sorted(wins.items(), key=lambda kv: (kv[0][0], kv[1][0]['t'])):
+        rems = [int(x['rem']) for x in v if x['rem'].isdigit()]
+        rows.append({'op': op, 'reset': reset, 'first': v[0]['t'], 'n': len(v),
+                     'load': sum(1 for x in v if x['phase'] == 'load'),
+                     'poll': sum(1 for x in v if x['phase'] == 'poll'),
+                     'rem_max': max(rems) if rems else None, 'rem_min': min(rems) if rems else None,
+                     'n429': sum(1 for x in v if x['st'] == '429')})
+    return {'n': len(rates), 'limits': sorted(set(x['lim'] for x in rates if x['lim'] != '-')),
+            'n429': sum(1 for x in rates if x['st'] == '429'), 'windows': rows}
+
+
 def collector_version(date):
     p = os.path.join(ROOT, 'data', 'peter2_live', date, 'collector.json')
     try:
@@ -111,6 +152,8 @@ def build(date):
         n_err = sum(1 for e in errs if t['posted'] <= e <= t['seen'])
         slow.append({'posted': t['posted'].strftime('%H:%M:%S'), 'lat': t['lat'],
                      'errors_between': n_err, 'text': t['text']})
+    err_min = len(set((e.hour, e.minute) for e in errs
+                      if SESSION_MIN[0] <= e.time() <= SESSION_MIN[1]))
     p90 = _pct(lats, 0.9)
     verdict = ('INSUFFICIENT' if len(lats) < 10 else
                ('PASS' if p90 <= P90_LIMIT_SEC else 'FAIL'))
@@ -118,7 +161,8 @@ def build(date):
             'max': max(lats) if lats else None, 'p90_limit': P90_LIMIT_SEC,
             'verdict': verdict, 'page_errors': len(errs), 'receiver_log': have_log,
             'collector_has_last_ok': collector_version(date),
-            'errors_per_15m': dict(sorted(win.items())), 'slow': slow}
+            'errors_per_15m': dict(sorted(win.items())), 'slow': slow,
+            'error_minutes': err_min, 'rate': rate_summary(load_rates(date))}
 
 
 def render(r):
@@ -128,6 +172,8 @@ def render(r):
          '| 지연 p50 / p90 / max (초) | %s / %s / %s |' % (r['p50'], r['p90'], r['max']),
          '| 판정 (p90 ≤ %d초, n≥10) | **%s** |' % (r['p90_limit'], r['verdict']),
          '| PAGE_ERROR | %d%s |' % (r['page_errors'], '' if r['receiver_log'] else ' (수신기 로그 없음)'),
+         '| 오류 있는 분 (09:00–15:20) | %d/380 (%.0f%%) |' % (r['error_minutes'],
+                                                              100.0 * r['error_minutes'] / 380),
          '| 수신기 last_ok (후속8) | %s |' % {True: '있음', False: '**없음 — 옛 수신기**',
                                            None: '미확인'}[r['collector_has_last_ok']],
          '', '## 15분 창별 PAGE_ERROR', '']
@@ -135,6 +181,17 @@ def render(r):
         L.append(' · '.join('%s %d' % kv for kv in r['errors_per_15m'].items()))
     else:
         L.append('(없음)')
+    L += ['', '## X 한도 실측 (697차 RATE)', '']
+    rt = r.get('rate')
+    if not rt:
+        L.append('미측정 — 수신기 로그에 RATE 줄이 없다(확장 1.1.0 미적용 또는 수신기 구버전). 0 으로 읽지 말 것.')
+    else:
+        L.append('관측 %d건 · 한도(lim) %s · 429 %d건' % (rt['n'], ','.join(rt['limits']) or '-', rt['n429']))
+        L += ['', '| 대상 | 창 첫 관측 | reset | 관측 | load | poll | rem 최대→최소 | 429 |',
+              '|---|---|---|---|---|---|---|---|']
+        L += ['| %s | %s | %s | %d | %d | %d | %s→%s | %d |' % (
+            w['op'], w['first'], w['reset'], w['n'], w['load'], w['poll'],
+            w['rem_max'], w['rem_min'], w['n429']) for w in rt['windows']]
     L += ['', '## 지연 > %d초 트윗' % SLOW_SEC, '']
     if r['slow']:
         L += ['| 게시 | 지연(초) | 그 사이 PAGE_ERROR | 원문 |', '|---|---|---|---|']
