@@ -84,6 +84,8 @@ def test_4_루프는_동결당_한_통_회복당_한_통(monkeypatch, tmp_path):
     monkeypatch.setattr(FS, "judge", lambda *a, **k: next(it))
     monkeypatch.setattr(FS, "collect", lambda *a, **k: {})
     monkeypatch.setattr(FS, "_in_window", lambda now, w: True)
+    # v9-dev 의 상주 센티넬 단일 인스턴스 잠금 — 테스트가 실제 뮤텍스를 잡지 않게(dev 엔 없음)
+    monkeypatch.setattr(FS, "_acquire_single_instance", lambda: True, raising=False)
     monkeypatch.setattr(FS, "_pc_id", lambda: "MW0602")
     monkeypatch.setattr(FS, "_popup", lambda v: None)
     monkeypatch.setattr(FS, "send_mail_async",
@@ -114,6 +116,8 @@ def test_5_메일_꺼지면_보내지_않는다(monkeypatch, tmp_path):
     monkeypatch.setattr(FS, "judge", lambda *a, **k: next(it))
     monkeypatch.setattr(FS, "collect", lambda *a, **k: {})
     monkeypatch.setattr(FS, "_in_window", lambda now, w: True)
+    # v9-dev 의 상주 센티넬 단일 인스턴스 잠금 — 테스트가 실제 뮤텍스를 잡지 않게(dev 엔 없음)
+    monkeypatch.setattr(FS, "_acquire_single_instance", lambda: True, raising=False)
     monkeypatch.setattr(FS, "send_mail_async",
                         lambda root, day, s, b, sender=None: sent.append(s))
     cfg = {"FREEZE_SENTINEL_MAIL_ENABLED": False, "FREEZE_SENTINEL_POPUP": False}

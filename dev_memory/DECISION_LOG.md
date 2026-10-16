@@ -49675,3 +49675,10 @@ v9-dev 배포 시 MW0601 을 실계좌로 보고 실계좌 경로 영향을 평�
 - **함정(잡음)**: 초안이 closeEvent 안에서 맨 `time.time()` 을 썼는데 `main_dashboard.py` 상단에 `import time` 이 **없다** — NameError 가 Qt 가상 메서드 안에서 나면 대시보드 즉사(557차 후속3). 지역 import(`_time_ce`)로 고치고 회귀 테스트(test_9)로 고정. 두 로깅은 try 로 감쌌다.
 - **How to apply**: 메일이 안 오면 먼저 `logs/freeze_sentinel_<date>.log` 의 `메일 경보 ON/OFF` 줄과 `메일 발송 성공/실패` 줄을 볼 것. 재기동 사유 판독은 `[CloseEvent] 진입` 유무 → 없으면 closeEvent 밖 경로(크래시·하드킬·lastWindowClosed 직행), 있으면 결과 줄과 `spontaneous` 로 가른다.
 - **검증**: `tests/test_636_freeze_mail_and_close_log.py` 9건 + `test_490` 11건 통과(base anaconda pytest — py37_32 엔 pytest 없음). py37_32 offscreen 스모크: 가벼운 QMainWindow 에 `MireukDashboard.closeEvent` 를 붙여 「취소」 클릭 → 진입·결과 두 줄 출력, 프로세스 생존. 실제 SMTP 발송 시험은 하지 않았다(사용자 확인 대기).
+
+### 636차 후속 — v9-dev 배포 (사용자 지시 2026-10-17)
+
+- `f5ff9cb` → v9-dev `af1e961` (별도 워크트리 체리픽, dev_memory 제외). settings.py 충돌: v9-dev 의 FREEZE_* 블록 위치가 달라 dev 쪽 대형 블록이 딸려 옴 → v9-dev 쪽 유지 + `FREEZE_SENTINEL_KILL_ENABLED` 뒤에 2키만(+9줄). freeze_sentinel.py 는 v9-dev 의 단일 인스턴스 잠금·무장 전 종료 마커 분기와 자동 병합.
+- 테스트 보강(양 브랜치): 루프 테스트가 v9-dev `_acquire_single_instance` 실제 뮤텍스를 잡지 않게 `raising=False` 스텁.
+- 검증(v9-dev 워크트리): test_636+test_490 20 passed · 래칫/감사기 포함 115 passed, 1 failed(test_501 d3 — 워크트리에 trades DB 없음, 본 저장소 통과, 무관) · py37_32 closeEvent 스모크 통과.
+- MW0601(실계좌) 영향: 그 PC 의 `MIREUK_SMTP_*`/`MIREUK_REPORT_MAIL_TO` 가 없으면 기동 로그 「메일 경보 OFF(SMTP 미설정)」 후 종전 동작.
