@@ -105,3 +105,23 @@ def test_kill_tries_plus_disconnect_first():
     pd = _SRC[_SRC.index("def _plus_disconnect"):_SRC.index("def _kill_cybos_procs")]
     assert "timeout=" in pd, "PlusDisconnect 판독 프로세스가 영원히 멈추면 안 된다(TradeInit 모달 전례)"
     assert "PlusDisconnect()" in _SRC
+
+
+def test_real_loop_dismisses_costarter_crash_and_moves_on():
+    """[MW0601 2026-10-16 M-3] coStarter 크래시 팝업(모달)이 떠 있으면 kill 도 안 먹고 남은 대기·
+    재시도가 헛돈다(10-15·10-16 아침). 대기 루프가 팝업을 닫고 즉시 다음 시도로 넘어가야 한다."""
+    real = _SRC[_SRC.index("def _creon_real_cmdline_login"):_SRC.index("def _autologin_impl")]
+    loop = real[real.index("while time.time() < deadline:"):]
+    i_crash = loop.index("_dismiss_costarter_crash()")
+    assert i_crash < loop.index("_click_already_running_yes()")
+    assert "break" in loop[i_crash:i_crash + 400]
+    fn = _SRC[_SRC.index("def _dismiss_costarter_crash"):_SRC.index("def _click_already_running_yes")]
+    assert '"costarter.exe"' in fn, "coStarter 소유 창만 닫아야 한다"
+    assert "Unhandled exception" in fn and "ACCESS_VIOLATION" in fn
+
+
+def test_plus_disconnect_is_asked_even_when_not_connected():
+    """[MW0601 2026-10-16 M-2] 좀비(IsConnect=0, CpStart 생존)에도 PlusDisconnect 를 요청한다."""
+    code = _SRC[_SRC.index("_PLUS_DISCONNECT_CODE = ("):_SRC.index("def _plus_disconnect")]
+    assert "if c.IsConnect == 1" not in code
+    assert "c.PlusDisconnect()" in code and "was_connected" in code

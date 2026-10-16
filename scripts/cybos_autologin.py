@@ -1242,14 +1242,18 @@ def _dump_children(parent_hwnd, label=""):
 
 # -- 프로세스 관리 --------------------------------------------------------------
 
+# [MW0601 2026-10-16 M-2] 연결이 끊긴 좀비(IsConnect=0 인데 CpStart 생존)에도 한 번 요청한다.
+# 10-16 08:35 은 NOT_CONNECTED 라 건너뛰었고, 그 좀비가 coStarter 크래시의 출발점이었다.
+# 좀비에 대한 효과는 미검증 — 출력에 연결 상태를 남겨 다음 아침에 판정한다.
 _PLUS_DISCONNECT_CODE = (
     "import win32com.client as w\n"
     "c = w.Dispatch('CpUtil.CpCybos')\n"
-    "if c.IsConnect == 1:\n"
+    "conn = c.IsConnect\n"
+    "try:\n"
     "    c.PlusDisconnect()\n"
-    "    print('DISCONNECTED')\n"
-    "else:\n"
-    "    print('NOT_CONNECTED')\n")
+    "    print('DISCONNECT_ASKED was_connected=%d' % conn)\n"
+    "except Exception as e:\n"
+    "    print('DISCONNECT_ERR was_connected=%d' % conn)\n")
 
 
 def _plus_disconnect(wait_sec=8):
@@ -2336,6 +2340,45 @@ def _expected_account():
         return ""
 
 
+def _dismiss_costarter_crash():
+    """coStarter 「Unhandled exception has occured … ACCESS_VIOLATION」 팝업을 닫는다.
+
+    [MW0601 2026-10-16 M-3] 이 팝업(모달)이 떠 있는 동안 크래시한 coStarter 는 종료되지 않고
+    kill 도 안 먹어(이상점 E), 남은 대기 240초와 다음 시도가 전부 헛돌았다(10-15 · 10-16 아침).
+    닫으면 coStarter 가 내려가므로 즉시 다음 시도로 넘어갈 수 있다. 닫은 팝업 문구를 반환(없으면 None).
+    """
+    import psutil
+    import win32process
+    hits = []
+
+    def _enum(h, _):
+        try:
+            if not win32gui.IsWindowVisible(h) or win32gui.GetWindowText(h) != u"coStarter":
+                return
+            kids = _enum_children(h)
+            texts = [win32gui.GetWindowText(c) for c in kids]
+            joined = u" ".join(t for t in texts if t)
+            if u"Unhandled exception" not in joined and u"ACCESS_VIOLATION" not in joined:
+                return
+            _, pid = win32process.GetWindowThreadProcessId(h)
+            if (psutil.Process(pid).name() or "").lower() != "costarter.exe":
+                return
+            btns = [c for c in kids if win32gui.GetClassName(c) == "Button"]
+            hits.append((h, joined, btns))
+        except Exception:
+            pass
+    try:
+        win32gui.EnumWindows(_enum, None)
+    except Exception:
+        pass
+    for h, joined, btns in hits:
+        if btns:
+            _post_button_click(btns[0])
+        else:
+            win32gui.PostMessage(h, win32con.WM_CLOSE, 0, 0)
+    return hits[0][1] if hits else None
+
+
 def _click_already_running_yes():
     """「동일한 프로그램(CPSTART.EXE)이 이미 실행중입니다. 종료하시겠습니까?」 → 예.
 
@@ -2456,6 +2499,7 @@ def _creon_real_cmdline_login():
 
         deadline = time.time() + CREON_REAL_LOGIN_WAIT
         extended = False
+        crashed = False
         while time.time() < deadline:
             time.sleep(5)
             # [MW0601 2026-10-15] 「종합계좌 비밀번호 확인 입력」 창 — 언제 뜨는지 예측이
@@ -2464,6 +2508,15 @@ def _creon_real_cmdline_login():
                 _acct_pw.handle_once()
             except Exception as _e:
                 print("[WARN] 계좌 비밀번호 확인 창 처리 중 예외: %s" % _e)
+            # [MW0601 2026-10-16 M-3] coStarter 크래시 팝업 — 닫고 남은 대기를 버린다.
+            # (좀비 CpStart 에 「이미 실행중 → 예」 를 누른 직후 3/3 재현. '예' 자체는 좀비를
+            #  내리므로 유지하고, 크래시 뒤처리만 빠르게 한다.)
+            _crash = _dismiss_costarter_crash()
+            if _crash:
+                print("[ERROR] coStarter 크래시 팝업 닫음: %s -- 남은 대기 생략, 다음 시도로"
+                      % _crash.replace("\n", " ")[:160])
+                crashed = True
+                break
             if _click_already_running_yes():
                 time.sleep(5)
                 continue   # 옛 세션이 내려가는 중 — 이 시점 판독은 옛 세션일 수 있다
@@ -2498,7 +2551,9 @@ def _creon_real_cmdline_login():
                 print("[INFO] CREON 업데이트 진행 중 -- 300초 추가 대기")
                 deadline += 300
                 extended = True
-        print("[WARN] %d초 안에 연결 안 됨" % CREON_REAL_LOGIN_WAIT)
+        if not crashed:
+            print("[WARN] %d초 안에 연결 안 됨" % CREON_REAL_LOGIN_WAIT)
+        time.sleep(3)   # 크래시한 coStarter 가 내려갈 시간
 
     print("[ERROR] CREON 실거래 자동로그인 실패")
     return False
