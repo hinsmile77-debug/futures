@@ -24960,3 +24960,10 @@ SizerMatch로 설명됨(기존 관측 연속). P0 없음 · P1 신규 0건 · P2
 - [x] F-6 잔고 미측정 표기(PositionSizer.balance_measured · capital.balance_measured)
 - [ ] O-107 (2026-10-15) 기동 `[Capital]` 실잔고 표기 · 15:40 `[BrokerPnl] … net 축 … 일치` + `[NetRecon] net 대사 일치`
 - [ ] (26주 WFA) 실계좌 수수료 요율 재검증 원천 확보 — CpTd6197 idx3/idx4(10/14 실계좌 공란) 또는 체결 단위 수수료
+
+## 2026-10-17 (MW0602 636차 — F-1009 · G-1i 구현, 라이브 검증 대기)
+
+- [ ] F-1009 라이브 확인: 다음 거래일 logs/freeze_sentinel_<date>.log 에 `[FreezeSentinel] 메일 경보 ON → smart1na@naver.com` 줄이 있는가(없거나 OFF면 사유 확인).
+- [ ] F-1009 실발송 1회 확인 — 사용자 승인 시 테스트 메일 1통(`[긴급이상][MW0602] (시험)`)으로 수신함·스팸함 확인.
+- [ ] G-1i 라이브 확인: 다음 재기동(O-84) 때 `[CloseEvent] 진입` 유무로 closeEvent 경로 여부를 가르고 `spontaneous` 값을 기록.
+- [ ] (사용자) 커밋 — `dashboard/main_dashboard.py`·`config/settings.py` 에 다른 세션 미커밋분이 섞여 있어 hunk 단위로 나눌 것.

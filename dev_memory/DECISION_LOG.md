@@ -49662,3 +49662,16 @@ v9-dev 배포 시 MW0601 을 실계좌로 보고 실계좌 경로 영향을 평�
 - **검증(dev 워크트리, py37_32 offscreen)**: test_692 12건 포함 177 passed. `test_533::test_on_candle_closed_persists_before_any_branch`
   1건 실패는 **체리픽 전 c7bc745 에서도 동일**(`_on_candle_closed` 4000자 창 밖에 force-exit 분기) — 무관, 미수정.
   `test_619_option_chain_watchdog` 은 워크트리에 `config/secrets.py` 가 없어 수집 제외.
+
+## 2026-10-17 (MW0602 636차 — F-1009 동결 경보 메일 · G-1i closeEvent 진입/결과 로그: 사용자 지시)
+
+- **증상**: ① FZ-2 동결 센티넬의 CRITICAL 이 로그·마커·팝업에만 남아 PC 앞에 없으면 아무도 몰랐다(실계좌 전환 10-13 이후 비용 증가). ② 원인 불명 재기동(O-84, 10-12 10:05 등 5회)에서 `[Shutdown] intent=…` 가 없을 때 「closeEvent 에 아예 안 들어왔다」와 「확인창은 떴다」를 가를 수 없었다 — 그 줄은 버튼 선택 **뒤에만** 찍힌다.
+- **결정(사용자 2026-10-17)**: F-1009 = 신동 일일리포트처럼 메일(smart1na@naver.com), 제목 `[긴급이상][<PC>] 짤막한 제목`. G-1i = 제안대로 구현.
+- **구현**:
+  - `scripts/freeze_sentinel.py` — `build_alert_mail`·`build_recovery_mail`(순수) · `send_mail_async`(별도 스레드, 결과를 센티넬 로그 한 줄). 감시 루프에서 **동결 첫 확정 때 1통**(`[긴급이상][MW0602] 미륵이 동결 — 5분 이상 무응답 HH:MM`), **회복 때 1통**(`[이상해소][MW0602] 미륵이 동결 회복 HH:MM (N분간)`). 기동 시 `[FreezeSentinel] 메일 경보 ON → … / OFF(사유)` 를 남긴다. `--once` 수동 진단은 보내지 않는다. 수신·계정은 `utils/mailer.py` 환경변수(신동과 같은 경로, `MIREUK_REPORT_MAIL_TO=smart1na@naver.com` 확인).
+  - `config/settings.py` — `FREEZE_SENTINEL_MAIL_ENABLED = True` · `FREEZE_SENTINEL_MAIL_RECOVERY = True`. `KILL_ENABLED` 무변경(알림 전용 유지).
+  - `dashboard/main_dashboard.py:MireukDashboard.closeEvent` — 확인창 전 `[CloseEvent] 진입 — 종료 확인창 표시 (spontaneous=… visible=…)`, 후 `[CloseEvent] 확인창 결과=완전종료|재시작|취소|선택없음 (대기 Ns)`. `spontaneous` = 창 시스템발(X·Alt+F4·OS) vs 코드발 `close()`.
+- **Why 제목에 시각**: 같은 날 두 번 얼면 휴대폰 알림 목록에서 구분돼야 한다. 회복 메일을 따로 둔 이유: 경보만 오면 「아직 얼어 있나」를 알 길이 없다.
+- **함정(잡음)**: 초안이 closeEvent 안에서 맨 `time.time()` 을 썼는데 `main_dashboard.py` 상단에 `import time` 이 **없다** — NameError 가 Qt 가상 메서드 안에서 나면 대시보드 즉사(557차 후속3). 지역 import(`_time_ce`)로 고치고 회귀 테스트(test_9)로 고정. 두 로깅은 try 로 감쌌다.
+- **How to apply**: 메일이 안 오면 먼저 `logs/freeze_sentinel_<date>.log` 의 `메일 경보 ON/OFF` 줄과 `메일 발송 성공/실패` 줄을 볼 것. 재기동 사유 판독은 `[CloseEvent] 진입` 유무 → 없으면 closeEvent 밖 경로(크래시·하드킬·lastWindowClosed 직행), 있으면 결과 줄과 `spontaneous` 로 가른다.
+- **검증**: `tests/test_636_freeze_mail_and_close_log.py` 9건 + `test_490` 11건 통과(base anaconda pytest — py37_32 엔 pytest 없음). py37_32 offscreen 스모크: 가벼운 QMainWindow 에 `MireukDashboard.closeEvent` 를 붙여 「취소」 클릭 → 진입·결과 두 줄 출력, 프로세스 생존. 실제 SMTP 발송 시험은 하지 않았다(사용자 확인 대기).

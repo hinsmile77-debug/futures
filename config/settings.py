@@ -7002,6 +7002,15 @@ FREEZE_SENTINEL_STALL_SEC = 300.0       # [524차] 3신호 복원으로 원본�
 FREEZE_SENTINEL_WINDOW = ("09:00", "16:30")
 FREEZE_SENTINEL_POPUP = True            # 동결 확정 시 Windows 메시지박스
 FREEZE_SENTINEL_KILL_ENABLED = False    # ⚠ 2단계(하드 종료) — 미구현. 주간회의 승인 전 금지
+# ── [MW0602 F-1009 / 2026-10-17 사용자 결정] 동결 경보를 메일로 사람에게 보낸다 ──
+#   종전에는 CRITICAL 이 로그·마커·팝업에만 남았다 — 트레이딩 PC 앞에 없으면 아무도
+#   몰랐다(실계좌 전환 2026-10-13 이후 그 공백의 비용이 커졌다).
+#   제목 `[긴급이상][<PC>] …` / 회복 시 `[이상해소][<PC>] …`. 받는 주소·계정은
+#   `utils/mailer.py` 환경변수(신동 일일리포트와 같은 경로). **알림 전용** — 판정·
+#   차단·주문 경로와 무관하고, 발송 실패가 센티넬을 멈추지 않는다.
+#   동결 1회당 1통(첫 확정 때만)이며 같은 동결의 반복 주기에는 보내지 않는다.
+FREEZE_SENTINEL_MAIL_ENABLED = True
+FREEZE_SENTINEL_MAIL_RECOVERY = True    # 신호가 다시 신선해지면 [이상해소] 1통
 # 과신(conf>=0.85) 오류 N회 연속 시 CB③ 임계값을 0.35→0.50으로 상향
 CB_HIGH_CONF_WRONG_LIMIT = 5  # 연속 과신 오류 횟수
 CB_HIGH_CONF_THRESHOLD = 0.85  # 과신 판정 confidence 하한
