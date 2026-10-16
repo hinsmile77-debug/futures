@@ -17418,6 +17418,24 @@ class MireukDashboard(QMainWindow):
         Qt 부모-자식 소멸 경로에서는 자식 closeEvent가 호출되지 않으므로,
         메인 윈도우 closeEvent에서 차트 다이얼로그를 먼저 닫아 geometry를 저장한다.
         """
+        # ── [MW0602 G-1i] closeEvent **진입 자체**를 남긴다 (O-84 후속) ──────────
+        # `[Shutdown] intent=…` 는 확인창에서 버튼을 고른 **뒤에만** 찍힌다. 그래서
+        # 원인 불명 재기동(2026-10-12 10:05 등 5회)에서 그 줄이 없을 때
+        #   (a) 이 함수에 아예 들어오지 않았다(다른 경로로 창이 죽었다) 와
+        #   (b) 들어와서 확인창을 띄웠는데 결과가 남지 않았다
+        # 를 가를 수 없었다. 진입 줄과 결과 줄을 따로 남긴다.
+        # `spontaneous=True` = 창 시스템이 보낸 닫기(X 버튼·Alt+F4·OS 종료) /
+        # `False` = 코드가 부른 `close()`. 이 한 비트가 사람 탓·코드 탓을 가른다.
+        # 🔴 Qt 가상 메서드 안이다 — 여기서 예외가 나면 PyQt5 가 프로세스를 죽인다
+        #   (CLAUDE.md 557차 후속3). 로깅은 전부 감싼다.
+        import time as _time_ce   # 모듈 상단에 time import 가 없다 — 지역 import
+        _t_close0 = _time_ce.time()
+        try:
+            logger.info("[CloseEvent] 진입 — 종료 확인창 표시 (spontaneous=%s visible=%s)",
+                        bool(event.spontaneous()), bool(self.isVisible()))
+        except Exception:
+            pass
+
         from PyQt5.QtWidgets import QMessageBox as _MB
         _dlg = _MB(self)
         _dlg.setWindowTitle("미륵이 종료")
@@ -17432,6 +17450,24 @@ class MireukDashboard(QMainWindow):
         _dlg.setDefaultButton(_btn_cancel)
         _dlg.exec_()
         _clicked = _dlg.clickedButton()
+
+        # [G-1i] 결과 줄 — 취소도 남긴다(종전에는 취소가 아무 흔적도 없었다).
+        # 버튼 없이 닫혔으면(`None`) 그것도 그대로 적는다 — 미측정을 「취소」로 뭉개지 않는다.
+        try:
+            if _clicked == _btn_full:
+                _choice = "완전종료"
+            elif _clicked == _btn_restart:
+                _choice = "재시작"
+            elif _clicked == _btn_cancel:
+                _choice = "취소"
+            elif _clicked is None:
+                _choice = "선택없음"
+            else:
+                _choice = "기타"
+            logger.info("[CloseEvent] 확인창 결과=%s (대기 %.1fs)",
+                        _choice, _time_ce.time() - _t_close0)
+        except Exception:
+            pass
 
         if _clicked == _btn_cancel:
             event.ignore()

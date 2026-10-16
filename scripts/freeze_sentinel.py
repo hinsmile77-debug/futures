@@ -489,6 +489,8 @@ def emit(root, day, verdict, popup=True, manual=False):
     """경보를 남긴다 — 로그 · (경보 시)마커 파일 · (옵션)메시지박스.
 
     Slack은 쓰지 않는다(사용자 결정: 개발단계 직접 모니터링).
+    메일은 여기서 보내지 않는다 — 주기 감시 루프가 **동결 첫 확정 때만** 따로 부른다
+    (`build_alert_mail` · `send_mail_async`, MW0602 F-1009).
     ⚠ `manual=True`(`--once` 수동 실행)면 **마커를 남기지 않는다.** 점검 중에 손으로
     돌린 진단이 다음날 증거 인벤토리에 「경보」로 섞이면 진짜 발화와 구분되지 않는다
     (F-2 가드가 개발 중 실제로 그렇게 오염시킨 전례).
@@ -535,6 +537,86 @@ def _popup(verdict):
         )
     except Exception as exc:
         print("[FreezeSentinel] 팝업 실패(무해): %s" % exc, file=sys.stderr)
+
+
+# ── 메일 (MW0602 F-1009) ──────────────────────────────────────────────────
+#
+# 종전 경보는 로그 · 마커 · 팝업뿐이라 **트레이딩 PC 앞에 사람이 없으면 아무도
+# 몰랐다.** 실계좌 전환(2026-10-13) 뒤로는 포지션을 든 채 얼어붙어도 15:10 강제청산이
+# 돌지 않는다는 점이 그대로 손실 위험이다. 그래서 동결 첫 확정 때 메일 1통, 회복 때
+# 1통을 보낸다. 형식은 신동 일일리포트(`[신동][<PC>] …`)에 맞춘다.
+#
+# ⚠ 제목·본문 생성은 순수 함수다(테스트가 고정). 발송은 별도 스레드 — SMTP 가
+#   최대 30초 막혀도 감시 주기가 밀리지 않게 한다. 실패는 로그 한 줄로 남기고
+#   센티넬은 계속 돈다(계측 4원칙 ④ — 「안 보냈다」를 조용히 넘기지 않는다).
+
+MAIL_TAG_ALERT = "[긴급이상]"
+MAIL_TAG_RECOVER = "[이상해소]"
+
+
+def build_alert_mail(verdict, pc, now, stall_sec):
+    """동결 경보 메일의 (제목, 본문). 파일 IO 없음."""
+    hhmm = now.strftime("%H:%M")
+    mins = int(round(float(stall_sec) / 60.0))
+    subject = "%s[%s] 미륵이 동결 — %d분 이상 무응답 %s" % (MAIL_TAG_ALERT, pc, mins, hhmm)
+    lines = [
+        "%s PC 의 미륵이가 %s 기준으로 얼어붙은 것으로 보입니다." % (pc, now.strftime("%Y-%m-%d %H:%M:%S")),
+        "프로세스는 살아 있을 수 있으나 아무 일도 하지 않으며, 런처의 자동 재시작도 걸리지 않습니다.",
+        "",
+        "지금 확인할 것",
+        "  1. 트레이딩 PC 화면 — 미륵이 창이 응답하는지",
+        "  2. 증권사 HTS — 보유 포지션이 있는지 (동결 중에는 손절·15:10 강제청산이 돌지 않습니다)",
+        "  3. 응답이 없으면 미륵이를 재시작하세요",
+        "",
+        "판정 근거",
+        "  " + str(verdict.get("headline", "")),
+    ]
+    lines += ["  · " + str(d) for d in verdict.get("details", [])]
+    lines += ["", "— 미륵이 %s 동결 센티넬(FZ-2) 자동 발송. 같은 동결로는 다시 보내지 않고, "
+                  "회복되면 %s 메일을 보냅니다." % (pc, MAIL_TAG_RECOVER)]
+    return subject, chr(10).join(lines)
+
+
+def build_recovery_mail(pc, since, now):
+    """회복 메일의 (제목, 본문). `since` 는 경보 시각(None 이면 지속시간 생략)."""
+    dur = ""
+    if since is not None:
+        dur = " (%d분간)" % max(0, int(round((now - since).total_seconds() / 60.0)))
+    subject = "%s[%s] 미륵이 동결 회복 %s%s" % (MAIL_TAG_RECOVER, pc, now.strftime("%H:%M"), dur)
+    body = chr(10).join([
+        "%s PC 의 미륵이 신호가 %s 에 다시 들어오기 시작했습니다%s."
+        % (pc, now.strftime("%Y-%m-%d %H:%M:%S"), dur),
+        "동결 동안 놓친 손절·청산이 없었는지 증권사 HTS 의 포지션과 체결 내역을 확인하세요.",
+        "",
+        "— 미륵이 %s 동결 센티넬(FZ-2) 자동 발송." % pc,
+    ])
+    return subject, body
+
+
+def send_mail_async(root, day, subject, body, sender=None):
+    """별도 스레드로 보낸다 — 반환: 시작한 스레드. 결과는 센티넬 로그에 한 줄."""
+    import threading
+
+    def _run():
+        try:
+            if sender is None:
+                from utils import mailer
+                rcpt = mailer.send_mail(subject, body)
+            else:
+                rcpt = sender(subject, body)
+            log_line(root, day, "[FreezeSentinel] %s 메일 발송 성공 → %s | %s"
+                     % (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        ", ".join(rcpt or []), subject))
+        except Exception as exc:
+            # 예외 메시지에 비밀번호는 실리지 않는다(mailer 규약) — 종류와 문구만 남긴다.
+            log_line(root, day, "[FreezeSentinel] %s 메일 발송 실패(%s: %s) | %s"
+                     % (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        type(exc).__name__, exc, subject))
+
+    th = threading.Thread(target=_run, name="FreezeSentinelMail")
+    th.daemon = False   # 감시 창이 끝나 main 이 반환해도 보내던 메일은 마저 보낸다
+    th.start()
+    return th
 
 
 # ── 진입점 ────────────────────────────────────────────────────────────────
@@ -623,6 +705,8 @@ def main(argv=None):
     check = args.check_sec if args.check_sec is not None else _cfg("FREEZE_SENTINEL_CHECK_SEC", 60.0)
     window = _cfg("FREEZE_SENTINEL_WINDOW", ("09:00", "16:30"))
     popup = (not args.no_popup) and bool(_cfg("FREEZE_SENTINEL_POPUP", True))
+    mail_on = bool(_cfg("FREEZE_SENTINEL_MAIL_ENABLED", False))
+    mail_recover = mail_on and bool(_cfg("FREEZE_SENTINEL_MAIL_RECOVERY", True))
 
     if not _cfg("FREEZE_SENTINEL_ENABLED", True):
         print("[FreezeSentinel] 설정 비활성(FREEZE_SENTINEL_ENABLED=False) — 종료")
@@ -671,11 +755,23 @@ def main(argv=None):
         return RC_NOT_APPLICABLE
 
     log_armed(root, now.date(), window, stall, check)
+    # [F-1009] 메일 상태도 생존 증거와 함께 남긴다 — 「켜져 있는 줄 알았는데 꺼져
+    # 있었다」를 사후에 가를 수 있게(계측 4원칙 ④).
+    try:
+        from utils import mailer as _ml
+        _mcfg, _missing = _ml.smtp_config()
+        _mail_state = ("ON → " + ", ".join(_mcfg["to"])) if (mail_on and _mcfg) else (
+            "OFF(설정 비활성)" if not mail_on else "OFF(SMTP 미설정: " + ", ".join(_missing) + ")")
+    except Exception as exc:
+        _mail_state = "OFF(메일 모듈 로드 실패: %s)" % type(exc).__name__
+    log_line(root, now.date(), "[FreezeSentinel] 메일 경보 %s" % _mail_state)
     print("[FreezeSentinel] 감시 시작 pid=%d 창=%s~%s (알림 전용)"
           % (os.getpid(), window[0], window[1]))
 
+    pc = _pc_id()
     last_rc = RC_NOT_APPLICABLE
     alerted = False
+    alerted_at = None      # [F-1009] 회복 메일의 지속시간 계산용
     close_logged = False   # [498차 F-10] NORMAL_CLOSE 는 상태 전이 시 1회만 남긴다
     armed_at = datetime.datetime.now()
     prior_exit_logged = False
@@ -743,12 +839,22 @@ def main(argv=None):
             # 같은 동결로 매 주기 팝업을 띄우면 사람이 화면을 못 쓴다 — 첫 확정에만
             # 팝업·마커를 내고 이후는 로그만 남긴다(경보 피로 방지).
             emit(root, now.date(), verdict, popup=(popup and not alerted), manual=alerted)
+            if not alerted:
+                alerted_at = now
+                if mail_on:
+                    # 같은 동결의 반복 주기에는 보내지 않는다 — 팝업과 같은 경보 피로 규칙.
+                    _s, _b = build_alert_mail(verdict, pc, now, stall)
+                    send_mail_async(root, now.date(), _s, _b)
             alerted = True
         elif verdict["level"] == "OK" and alerted:
             alerted = False
             log_line(root, now.date(),
                      "[FreezeSentinel] %s 회복 — 신호가 다시 신선해졌다"
                      % now.strftime("%Y-%m-%d %H:%M:%S"))
+            if mail_recover:
+                _s, _b = build_recovery_mail(pc, alerted_at, now)
+                send_mail_async(root, now.date(), _s, _b)
+            alerted_at = None
         time.sleep(check)
 
 
