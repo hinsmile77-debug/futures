@@ -1114,6 +1114,59 @@ class CybosAPI:
         )
         return 0
 
+    def query_order_rows(self, *, account_no: str, max_rows: int = 30,
+                         max_fields: int = 30) -> Optional[List[Dict[int, Any]]]:
+        """[MW0602 2026-10-17] 당일 주문/체결 내역(CpTd5371) — **진단 전용**(접수 후 거부 사유 탐색).
+
+        체결통보(CpFConclusion)에는 거부 사유 필드가 없다. 10/15 HTS 는 거부 행에
+        「0707: 실시간가격제한 해제중 호가유형 오류」를 보여 줬다 — 그 값이 이 TR 의 어느
+        반복 필드에 실리는지는 문서(docs/CyBos ref §17)에 빈 인덱스가 있어 미확정이다.
+        그래서 행의 필드를 **인덱스째 전부** 돌려준다(값을 해석하지 않는다).
+        실패하면 None(미측정 — 계측 4원칙 ②). 주문 경로·판정에는 쓰지 않는다.
+        """
+        if not account_no:
+            return None
+        import datetime   # 이 모듈은 함수 지역 import 관례(653·690행)를 쓴다
+        self._ensure_trade_init()
+
+        def _reader(obj):
+            try:
+                n = int(obj.GetHeaderValue(6) or 0)
+            except Exception:
+                n = 0
+            rows = []
+            for r in range(min(max(n, 0), int(max_rows))):
+                row = {}
+                for i in range(int(max_fields)):
+                    try:
+                        v = obj.GetDataValue(i, r)
+                    except Exception:
+                        continue
+                    if v not in (None, ""):
+                        row[i] = v
+                rows.append(row)
+            return rows
+
+        try:
+            ret, status, msg, rows = _run_block_request(
+                progid="CpTrade.CpTd5371",
+                input_pairs=[
+                    (0, account_no),
+                    (1, CYBOS_GOODS_CODE_FUTURES),
+                    (5, datetime.date.today().strftime("%Y%m%d")),
+                    (7, int(max_rows)),
+                ],
+                data_reader=_reader,
+            )
+        except Exception as exc:
+            system_logger.warning("[CybosOrderRows] 조회 예외(진단 전용, 무해): %s", exc)
+            return None
+        if ret not in (0, None) or status != 0:
+            system_logger.warning("[CybosOrderRows] 조회 실패 ret=%s status=%s msg=%s (진단 전용)",
+                                  ret, status, msg)
+            return None
+        return list(rows or [])
+
     def get_last_order_error(self) -> Optional[Dict[str, Any]]:
         """가장 최근 실패한 주문의 상세 정보(ret/status/msg). 성공 시 None."""
         return self._last_order_error

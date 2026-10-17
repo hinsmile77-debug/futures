@@ -3500,6 +3500,19 @@ class EntryPanel(QWidget):
 
         lay.addWidget(mk_label("자동 진입관리 패널", C['green'], 10, True))
 
+        # ── [MW0602 2026-10-17] 청산 거부 경보 띠 — 평소엔 숨긴다 ──────────────────────
+        # 10/15 실계좌 청산 주문이 113분간 거부(0707)됐는데 화면에 아무 표시가 없었다.
+        # main 의 `_ts_on_exit_order_reject` 가 첫 거부에 켜고, 청산 체결·FLAT 확인 때 끈다.
+        # ⚠ 깜박임은 QTimer → setStyleSheet 뿐이다(paintEvent 오버라이드 없음 — CLAUDE.md).
+        self._exit_alert_lbl = QLabel("")
+        self._exit_alert_lbl.setWordWrap(True)
+        self._exit_alert_lbl.setVisible(False)
+        lay.addWidget(self._exit_alert_lbl)
+        self._exit_alert_on = False
+        self._exit_alert_timer = QTimer(self)
+        self._exit_alert_timer.setInterval(500)
+        self._exit_alert_timer.timeout.connect(self._on_exit_alert_tick)
+
         # Auto On/Off + 모드 선택
         mode_lay = QHBoxLayout()
 
@@ -4396,6 +4409,38 @@ class EntryPanel(QWidget):
                 if _note:
                     up_l.setToolTip(_note)
                     dn_l.setToolTip(_note)
+
+    def set_exit_reject_alert(self, active: bool, text: str = "") -> None:
+        """[MW0602 2026-10-17] 청산 거부 경보 띠 켜기/끄기 — 켜지면 0.5초 간격 깜박임."""
+        if active:
+            self._exit_alert_lbl.setText("🚨 " + str(text or "청산 주문 거부 — 포지션 미청산"))
+            self._exit_alert_lbl.setVisible(True)
+            if not self._exit_alert_timer.isActive():
+                self._exit_alert_on = True
+                self._exit_alert_timer.start()
+            self._apply_exit_alert_style()
+        else:
+            self._exit_alert_timer.stop()
+            self._exit_alert_lbl.setVisible(False)
+            self._exit_alert_lbl.setText("")
+
+    def _apply_exit_alert_style(self) -> None:
+        if self._exit_alert_on:
+            col, bg = "#FFFFFF", "#C0001A"
+        else:
+            col, bg = C['red'], C['bg3']
+        self._exit_alert_lbl.setStyleSheet(
+            f"color:{col};background:{bg};border:2px solid {C['red']};"
+            f"border-radius:3px;padding:4px 6px;font-size:{S.f(11)}px;font-weight:bold;")
+
+    def _on_exit_alert_tick(self) -> None:
+        # QTimer 슬롯 — 예외가 새면 PyQt5 가 프로세스를 죽인다(617차). 표시 전용이라 삼켜도
+        # 깜박임만 멈출 뿐이다(경보 자체는 main 이 로그·Slack 으로 이미 냈다).
+        try:
+            self._exit_alert_on = not self._exit_alert_on
+            self._apply_exit_alert_style()
+        except Exception as _xa_e:
+            logger.debug("[ExitRejectAlert] 깜박임 갱신 실패 (무해): %s", _xa_e)
 
     def _sync_levels_prev_warn(self, row) -> None:
         """[2026-10-15] 08:50 행 warnings 에 「전일 이력 없음」이 있으면 깜박임을 켠다.
@@ -18303,6 +18348,10 @@ class DashboardAdapter:
         row=None 이면 「산출 중…」. 정시 두 행은 건드리지 않는다.
         """
         self._win.entry_panel.update_manual_levels(row)
+
+    def set_exit_reject_alert(self, active: bool, text: str = "") -> None:
+        """[MW0602 2026-10-17] 청산 거부 경보 띠(진입 패널 최상단, 깜박임)."""
+        self._win.entry_panel.set_exit_reject_alert(active, text)
 
     def update_entry_stats(self, trades: int, wins: int, pnl_pts: float,
                            stats: dict = None):

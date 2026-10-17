@@ -90,6 +90,9 @@ class _StubSelf(object):
         self._exit_retry_block_until = None
         self._broker_closable_qty = None
         self._broker_closable_qty_at = None
+        # [MW0602 2026-10-17] 10/15 청산 거부 대응 — main.TradingSystem.__init__ 와 같은 초기값
+        self._exit_limit_mode_reason = None
+        self._exit_reject_episode_at = None
 
 
 class _LogSpy(object):
@@ -268,7 +271,11 @@ def _t5():
         _reject(s)
         check("T5 창 경과 후 연속 카운터 리셋", s._exit_reject_streak == 1,
               s._exit_reject_streak)
-        check("T5b 리셋되면 경보도 다시 무장된다", s._exit_reject_alerted is False)
+        # [MW0602 2026-10-17] 경보 문턱이 1이 되면(첫 거부 경보) 새 연쇄의 첫 거부에서 곧바로
+        #   다시 울린다 — 「다시 무장」의 증거가 「아직 안 울림」이 아니라 「다시 울림」이 된다.
+        check("T5b 리셋되면 경보도 다시 무장된다",
+              s._exit_reject_alerted is (main.EXIT_REJECT_ALERT_STREAK <= 1),
+              (s._exit_reject_alerted, main.EXIT_REJECT_ALERT_STREAK))
     finally:
         spy.restore()
 
@@ -378,8 +385,11 @@ def _t9_t12():
           "throttle: bool = True" in _send_src, _send_src[:200])
     check("T9b 보류 시 브로커로 나가지 않고 -98을 돌려준다",
           "return EXIT_RET_THROTTLED" in _send_src)
-    check("T9c 정상 전송이 거부 상태를 리셋한다",
-          "_ts_reset_exit_reject_state" in _send_src)
+    # [MW0602 2026-10-17] **의도적으로 뒤집었다.** 10/15 거부는 송신 성공(접수) **뒤** 체결통보로
+    #   왔다 — 송신마다 연쇄를 리셋하면 경보가 영영 못 뜬다. 연쇄는 청산 체결·FLAT 확인 때
+    #   `_ts_exit_reject_episode_close()` 가 끊는다(tests/test_exit_reject_1015.py 가 고정).
+    check("T9c 정상 전송만으로는 거부 상태를 리셋하지 않는다 (10/15 접수 후 거부)",
+          "_ts_reset_exit_reject_state" not in _send_src)
 
     _tick_src = inspect.getsource(main.TradingSystem._process_tick_stop)
     _gate_at = _tick_src.find("_ts_exit_retry_block_remaining")

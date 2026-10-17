@@ -78,6 +78,9 @@ from config.settings import (
     EXIT_REJECT_BACKOFF_SEC, EXIT_REJECT_WINDOW_SEC,      # [511차 F-21] 청산 거부 백오프
     EXIT_REJECT_ALERT_STREAK, EXIT_REJECT_QTY_REDUCE_SHADOW,
     EXIT_CLOSABLE_QTY_FRESH_SEC,
+    EXIT_ASYNC_REJECT_HANDLE, EXIT_LIMIT_FALLBACK_ENABLED,  # [MW0602 2026-10-17] 10/15 청산 거부
+    EXIT_LIMIT_SLIP_TICKS, EXIT_LIMIT_UNFILLED_SEC,
+    EXIT_REJECT_DETAIL_QUERY, EXIT_REJECT_BLOCK_ENTRIES,
     TP1_TICK_ENABLED,                     # [403차 종합 P1-5] tick-level TP1 킬스위치
     TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED, TOXICITY_SEVERE_SPREAD_BLOCK_TICKS,
     TOXICITY_REDUCE_MULT_SHADOW_HI, TOXICITY_REDUCE_MULT_SHADOW_LO,
@@ -1284,6 +1287,11 @@ class TradingSystem:
         self._exit_retry_block_until:  object = None
         self._broker_closable_qty:     object = None   # None = 미측정 (0과 구분)
         self._broker_closable_qty_at:  object = None
+        # [MW0602 2026-10-17] 청산 지정가 래치 — 청산 거부가 한 번 나면 그날 청산은 지정가.
+        #   None = 래치 안 걸림(평소 = 시장가). 값 = 걸린 사유 문자열.
+        self._exit_limit_mode_reason:  object = None
+        # 청산 거부 에피소드 시작 시각 — 열려 있으면 신규 실주문 차단(⑤) · 해소 시 회복 알림.
+        self._exit_reject_episode_at:  object = None
 
         # ── P1-a: Restart Armistice ────────────────────────────────────────────
         # 재시작 직후 90초간 + broker sync 2회 clean 전까지 신규 진입 차단.
@@ -3543,7 +3551,7 @@ class TradingSystem:
         _secrets.ACCOUNT_NO = account_no
         if getattr(self, "_futures_code", ""):
             self.emergency_exit.set_order_manager(
-                _BrokerOrderAdapter(self.broker, self._futures_code, account_no)
+                _BrokerOrderAdapter(self.broker, self._futures_code, account_no, owner=self)
             )
 
     def _get_active_account_no(self) -> str:
@@ -4514,6 +4522,12 @@ class TradingSystem:
                 return self._peter2_reject(date, now, it, "collector_stale")
             if pos.status != "FLAT" or self._has_pending_order():
                 return self._peter2_reject(date, now, it, "engine_busy(%s)" % pos.status)
+            _xr = _ts_exit_reject_entry_block(self)  # [MW0602 2026-10-17] ⑤
+            if _xr:
+                return self._peter2_reject(date, now, it, _xr)
+            _ecb = _ts_exchange_cb_entry_block(self)  # [MW0602 2026-10-17] CB 조사 C1
+            if _ecb:
+                return self._peter2_reject(date, now, it, _ecb)
             if not self.circuit_breaker.is_entry_allowed():
                 return self._peter2_reject(date, now, it, "CB %s" % self.circuit_breaker.state)
             if self.kill_switch.is_active:      # property — 668차 `is_active()` 로 진입 전량 증발
@@ -4623,6 +4637,11 @@ class TradingSystem:
                 return self._peter2_reject(date, now, it, "time(신규진입 마감)(가상)")
             if is_force_exit_time():
                 return self._peter2_reject(date, now, it, "force_exit_time(가상)")
+            # [MW0602 2026-10-17 / CB 조사 C1] 거래소 CB 는 시장 상태라 가상에도 건다
+            #   (10/15 13:13:25 피터 가상진입이 CB 해제 후 관망 시간 안이었다).
+            _ecb = _ts_exchange_cb_entry_block(self)
+            if _ecb:
+                return self._peter2_reject(date, now, it, _ecb + "(가상)")
             qty = max(1, int(getattr(runtime_settings, "PETER2_QTY", 1) or 1))
             _ctx = self._manual_entry_ctx or {}
             atr = float(_ctx.get("atr") or 0.0) or 1.0
@@ -5478,7 +5497,7 @@ class TradingSystem:
 
         self.emergency_exit.set_futures_code(code)
         self.emergency_exit.set_order_manager(
-            _BrokerOrderAdapter(self.broker, code, selected_account)
+            _BrokerOrderAdapter(self.broker, code, selected_account, owner=self)
         )
         # [234차] 기동 시 확정 코드 → 대시보드에 등록 (UI 변경 시 재시작 배지 기준)
         try:
@@ -5950,6 +5969,12 @@ class TradingSystem:
         pos = self.position
         if pos.status != "FLAT" or self._has_pending_order():
             return "engine_busy(%s)" % pos.status
+        _xr = _ts_exit_reject_entry_block(self)      # [MW0602 2026-10-17] ⑤ 청산 거부 미해결
+        if _xr:
+            return _xr
+        _ecb = _ts_exchange_cb_entry_block(self)     # [MW0602 2026-10-17] CB 조사 C1
+        if _ecb:
+            return _ecb
         if not self.circuit_breaker.is_entry_allowed():
             return "CB %s" % self.circuit_breaker.state
         if self.kill_switch.is_active:
@@ -6110,6 +6135,10 @@ class TradingSystem:
             why = "time(신규진입 마감)"
         if why is None and is_force_exit_time():
             why = "force_exit_time"
+        if why is None and _ts_exchange_cb_entry_block(self):
+            # [MW0602 2026-10-17 / CB 조사 C1] 시장 상태라 가상에도 건다 — 중단 중엔 실제로
+            #   체결이 불가능하므로, 가상만 들어가면 가상 성과가 현실과 어긋난다.
+            why = _ts_exchange_cb_entry_block(self) + "(가상)"
         if why is None:
             qty = int(getattr(runtime_settings, "SHINDONG_LIVE_QTY", 2) or 2)
             _ctx = self._manual_entry_ctx or {}
@@ -11652,6 +11681,7 @@ class TradingSystem:
             and not _intraday_block
             and not self.system_health.kill_switch_active   # [SHS-EKS] 당일 관망일
             and _ecb_observation_ok                         # 거래소 CB 해제 후 관망 기간
+            and not _ts_exit_reject_entry_block(self)       # [MW0602 2026-10-17] ⑤ 청산 거부 미해결
         )
 
         # [297차, P1-4] Hurst 게이트 counterfactual 섀도우 — "Hurst만 아니었으면
@@ -12011,7 +12041,10 @@ class TradingSystem:
         _entry_block_reason = ""
         if direction != 0 and _mireuk_flat:
             _cb_state = self.circuit_breaker.state
-            if not _ecb_observation_ok:
+            if _ts_exit_reject_entry_block(self):       # [MW0602 2026-10-17] ⑤
+                _entry_block_reason = "[차단] %s — 청산이 해결될 때까지 신규 진입 금지" % (
+                    _ts_exit_reject_entry_block(self))
+            elif not _ecb_observation_ok:
                 _obs_remain = int((self._ecb_observation_until - datetime.datetime.now()).total_seconds() / 60) + 1
                 _entry_block_reason = (
                     f"[차단] 거래소 CB 해제 후 관망 중 — 약 {_obs_remain}분 후 진입 재개 "
@@ -13723,13 +13756,10 @@ class TradingSystem:
                 )
                 return EXIT_RET_THROTTLED
         side = "SELL" if self.position.status == "LONG" else "BUY"
-        ret = self.broker.send_market_order(
-            account_no=account_no,
-            code=code,
-            side=side,
-            qty=qty,
-            rqname="청산",
-            screen_no="1001",
+        # [MW0602 2026-10-17] 단일 송신점 — 평소 시장가 · 청산 거부가 난 날은 지정가(②).
+        ret = _ts_send_exit_order_core(
+            self, account_no=account_no, code=code, side=side, qty=qty,
+            rqname="청산", screen_no="1001",
         )
         # -99: BlockRequest 타임아웃 — 청산 주문 상태 불명, CB API지연 트리거 발동
         if ret == -99:
@@ -13742,9 +13772,10 @@ class TradingSystem:
                 self.circuit_breaker.check_api_delay(10.0)  # CB 트리거 ⑤
             except Exception as _cb_delay_e:
                 logger.warning("[CB] check_api_delay 예외 (스킵): %s", _cb_delay_e)
-        # [511차 F-21] 한 번이라도 정상 전송되면 거부 연쇄를 끊는다.
-        if ret == 0:
-            _ts_reset_exit_reject_state(self, reason="qty=%s" % (qty,))
+        # [MW0602 2026-10-17] 종전 「정상 전송 1회 = 거부 연쇄 리셋」(511차)을 걷어냈다.
+        #   10/15 거부는 송신이 성공(접수)한 **뒤** 체결통보로 왔다 — 송신마다 연쇄가 0으로
+        #   돌아가 경보가 영영 뜰 수 없었다. 연쇄는 이제 **청산 체결 또는 FLAT 확인** 때
+        #   `_ts_exit_reject_episode_close()` 가 끊는다.
         return ret
 
     def _log_exec_1m_shadow(
@@ -17103,6 +17134,8 @@ class TradingSystem:
         self._limit_entry_timer = QTimer()
         self._limit_entry_timer.setInterval(2_000)
         self._limit_entry_timer.timeout.connect(self._check_limit_entry_timeout)
+        # [MW0602 2026-10-17] 같은 2초 주기 — 지정가 청산 미체결 취소 · 청산 거부 에피소드 FLAT 해소.
+        self._limit_entry_timer.timeout.connect(lambda: _ts_check_exit_order_health(self))
         self._limit_entry_timer.start()
 
         # [MW0601 668차] 피터2 폴링 — 2초. 수신기가 적은 `_raw/<날짜>.jsonl` 새 줄을 읽어
@@ -18328,6 +18361,8 @@ def _ts_record_loss_tier2_shadow(self, price: float) -> None:
 #      스스로 유발했다.
 # 아래 세 함수가 그 두 가지를 한곳에서 처리한다. 성공 경로는 건드리지 않는다.
 EXIT_RET_THROTTLED = -98   # 우리가 스스로 보류한 것 — **브로커 거부가 아니다**
+# [MW0602 2026-10-17] 송신은 성공(접수)했는데 체결통보가 「거부」로 온 경우 — 10/15 0707 113분.
+EXIT_RET_BROKER_REJECT_ASYNC = -97
 
 # ⚠ 음수(-1/-98/-99)는 이 저장소 코드가 정의한 값이라 확정이다.
 #   양수 1~4는 Cybos BlockRequest 규약으로 알려진 값이나 **이 저장소에 근거가 없다**
@@ -18336,6 +18371,7 @@ EXIT_RET_THROTTLED = -98   # 우리가 스스로 보류한 것 — **브로커 �
 EXIT_ORDER_RET_MEANING = {
     0:   "정상",
     -1:  "브로커 거부",
+    -97: "브로커 접수 후 거부(체결통보 — 예: 0707 실시간가격제한 해제중 시장가 불가)",
     -98: "자체 백오프 보류(브로커 거부 아님)",
     -99: "BlockRequest 타임아웃",
     1:   "통신 오류(⚠미검증)",
@@ -18427,6 +18463,12 @@ def _ts_on_exit_order_reject(self, *, kind: str, direction: str, qty: int, ret) 
     self._exit_reject_last_at = now
     self._exit_reject_streak += 1
     streak = self._exit_reject_streak
+    # [MW0602 2026-10-17] 에피소드 시작 — 청산 체결·FLAT 확인 때 `_ts_exit_reject_episode_close`
+    #   가 닫는다. 열려 있는 동안 신규 실주문을 막는다(⑤). 그리고 그날 남은 청산은 지정가로(②).
+    if self._exit_reject_episode_at is None:
+        self._exit_reject_episode_at = now
+    _ts_latch_exit_limit_mode(
+        self, "%s 거부 %s ret=%s" % (kind, now.strftime("%H:%M:%S"), _ts_exit_ret_text(ret)))
 
     # 백오프 — 상한이 있고 **영구 차단은 없다**(마지막 값을 계속 쓴다).
     backoff = 0.0
@@ -18481,6 +18523,249 @@ def _ts_on_exit_order_reject(self, *, kind: str, direction: str, qty: int, ret) 
             "[청산경보] 청산 주문 %d회 연속 거부 — 사람이 확인해야 한다. %s %s계약 미청산"
             % (streak, direction, qty)
         )
+        # [MW0602 2026-10-17] 10/15 113분 동안 사람에게 닿은 알림이 0건이었다 — 로그만으로는
+        #   PC 앞에 없으면 모른다. Slack(CRITICAL) + 대시보드 깜박임 띠를 함께 띄운다.
+        #   둘 다 실패해도 청산 경로를 막지 않는다.
+        _alert_txt = ("청산 주문 거부 — %s %s계약 미청산 · %s · 사유 %s · "
+                      "HTS에서 지정가로 직접 청산할 것(시장가는 거부될 수 있다)"
+                      % (direction, qty, kind, (_msg or _ts_exit_ret_text(ret))))
+        try:
+            from utils.notify import notify as _ntf
+            _ntf("🚨 " + _alert_txt, "CRITICAL")
+        except Exception as _ntf_e:
+            logger.warning("[ExitRejectAlert] Slack 알림 실패 (무해): %s", _ntf_e)
+        try:
+            self.dashboard.set_exit_reject_alert(True, _alert_txt)
+        except Exception as _dash_e:
+            logger.debug("[ExitRejectAlert] 대시보드 경보 실패 (무해): %s", _dash_e)
+
+
+# ── [MW0602 2026-10-17] 청산 거부 113분(10/15) 재발 방지 ①~⑥ ─────────────────────────
+# 근거: docs/정기점검/매일점검/MW0602-20261015-청산거부113분-딥다이브.md
+#   10/15 하한가 → 가격제한폭 2단계 확대 → 실시간 가격제한 해제 중에는 시장가가
+#   「0707 실시간가격제한 해제중 호가유형 오류」로 **접수 후 거부**된다. 시스템 청산은 전부
+#   시장가였고, 그 거부를 「아직 체결 전」으로 읽어 미결을 318초씩 붙잡았다. 경보는 0건.
+
+def _ts_latch_exit_limit_mode(self, why: str) -> None:
+    """② 청산 지정가 래치 — 그날 남은 청산을 체결 가능한 지정가로 보낸다. 이미 걸렸으면 무동작."""
+    if not EXIT_LIMIT_FALLBACK_ENABLED or self._exit_limit_mode_reason:
+        return
+    self._exit_limit_mode_reason = str(why)
+    log_manager.system(
+        "[청산지정가] 래치 — 오늘 남은 청산은 체결 가능한 지정가로 보낸다 (사유: %s)" % why, "ERROR")
+    log_manager.trade("[청산지정가] 래치 — 이후 청산은 지정가(상대 최우선 ± %d틱) · 사유: %s"
+                      % (EXIT_LIMIT_SLIP_TICKS, why))
+
+
+def _ts_exit_limit_price(self, side: str, code: str):
+    """체결 가능한 청산 지정가. (가격, 기준) — 산출 불가면 (None, 사유).
+
+    매수 청산(BUY) = 매도 최우선 호가 + n틱 / 매도 청산(SELL) = 매수 최우선 호가 − n틱.
+    호가가 없으면 직전 파이프라인 가격을 기준으로 쓴다(그 사실을 기준 문자열에 남긴다 — 원칙 ④).
+    """
+    _rd = getattr(self, "realtime_data", None)
+    bid1 = float(getattr(_rd, "_last_bid1", 0.0) or 0.0)
+    ask1 = float(getattr(_rd, "_last_ask1", 0.0) or 0.0)
+    try:
+        tick = float(get_contract_spec(code).get("tick_size", 0.0) or 0.0)
+    except Exception:
+        tick = 0.0
+    if tick <= 0:
+        return None, "호가단위 미확보"
+    ref = ask1 if side == "BUY" else bid1
+    src = "최우선호가 %s=%.2f" % ("매도" if side == "BUY" else "매수", ref)
+    if ref <= 0:
+        # `_last_pipeline_price` 는 __init__ 에서 만들지 않는 속성이라 기존 안전 접근자를 쓴다.
+        ref = float(self._peter2_last_price() or 0.0)
+        src = "직전가 %.2f(호가 미확보)" % ref
+    if ref <= 0:
+        return None, "기준가 미확보"
+    raw = ref + EXIT_LIMIT_SLIP_TICKS * tick if side == "BUY" else ref - EXIT_LIMIT_SLIP_TICKS * tick
+    price = round(round(raw / tick) * tick, 2)
+    if price <= 0:
+        return None, "가격 비정상 %.2f" % price
+    return price, src
+
+
+def _ts_send_exit_order_core(self, *, account_no: str, code: str, side: str, qty: int,
+                             rqname: str, screen_no: str) -> int:
+    """모든 청산 주문의 단일 송신점(일반·브로커 직접·긴급). 0=송신 성공.
+
+    평소에는 종전과 같은 **시장가**다. ② 래치가 걸린 날만 체결 가능한 지정가로 보낸다.
+    지정가 송신이면 미결(`_pending_order`)에 표시를 남겨 미체결 시 취소·재가격(2초 타이머)이 걸린다.
+    """
+    if EXIT_LIMIT_FALLBACK_ENABLED and self._exit_limit_mode_reason:
+        price, src = _ts_exit_limit_price(self, side, code)
+        if price:
+            res = self.broker.send_limit_order(
+                account_no=account_no, code=code, side=side, qty=qty, price=price,
+                rqname=rqname + "(지정가)", screen_no=screen_no,
+            ) or {}
+            ret = int(res.get("ret", -1))
+            order_no = str(res.get("order_no", "") or "")
+            log_manager.trade(
+                "[청산지정가] %s %d계약 @ %.2f (%s · +%d틱) ret=%s order_no=%s"
+                % (side, qty, price, src, EXIT_LIMIT_SLIP_TICKS, ret, order_no or "?"))
+            po = self._pending_order
+            if ret == 0 and po is not None and str(po.get("kind", "")).startswith("EXIT"):
+                po["exit_limit"] = True
+                po["exit_limit_price"] = price
+                po["exit_limit_sent_at"] = datetime.datetime.now()
+                if order_no and not po.get("order_no"):
+                    po["order_no"] = order_no
+            return ret
+        log_manager.system("[청산지정가] 가격 산출 불가(%s) — 시장가로 보낸다" % src, "WARNING")
+    return self.broker.send_market_order(
+        account_no=account_no, code=code, side=side, qty=qty,
+        rqname=rqname, screen_no=screen_no,
+    )
+
+
+def _ts_exit_reject_entry_block(self):
+    """⑤ 청산 거부 에피소드가 열려 있으면 신규 실주문 차단 사유. 아니면 None."""
+    if EXIT_REJECT_BLOCK_ENTRIES and self._exit_reject_episode_at is not None:
+        return "청산 거부 미해결(%s~)" % self._exit_reject_episode_at.strftime("%H:%M:%S")
+    return None
+
+
+def _ts_exchange_cb_entry_block(self):
+    """[MW0602 2026-10-17 / CB 조사 C1] 거래소 CB 중단 중 · 해제 후 관망 중이면 차단 사유. 아니면 None.
+
+    종전에는 `_ecb_observation_until` 을 **미륵 진입 경로에서만** 봤다. 신동·피터2 게이트는 CB 를
+    몰랐다 — 10/15 13:13:25 피터 가상진입이 관망 시간(~13:18) 안에 일어났다. CB 재개 직후는
+    단일가·급변 구간이고 가격제한폭이 확대돼 시장가가 0707 로 거부되는 구간이기도 하다.
+    근거: docs/정기점검/매일점검/MW0602-20261015-청산거부113분-딥다이브.md §6.
+    ⚠ 여기서는 관망 만료를 **해제하지 않는다** — 만료 처리(배지 리셋)는 미륵 경로가 맡는다.
+    """
+    if self._exchange_cb_mode:
+        _st = self._exchange_cb_start
+        return "거래소 CB 중단(재개 대기%s)" % (
+            " %s~" % _st.strftime("%H:%M") if _st is not None else "")
+    _obs = self._ecb_observation_until
+    if _obs is not None and datetime.datetime.now() < _obs:
+        return "거래소 CB 해제 후 관망(~%s)" % _obs.strftime("%H:%M")
+    return None
+
+
+def _ts_exit_reject_episode_close(self, reason: str) -> None:
+    """청산 거부 에피소드 종료 — 청산 체결 또는 FLAT 확인. 회복 알림 1회 + 거부 연쇄 리셋.
+
+    ② 래치(지정가 청산)는 **풀지 않는다** — 그날의 시장 상태(가격제한 확대)는 그대로다.
+    """
+    at = self._exit_reject_episode_at
+    if at is None:
+        return
+    _dur = int((datetime.datetime.now() - at).total_seconds())
+    _txt = "청산 거부 해소 — %s (지속 %d분 %d초)" % (reason, _dur // 60, _dur % 60)
+    log_manager.system("[ExitRejectResolved] " + _txt, "WARNING")
+    log_manager.trade("[청산경보해소] " + _txt)
+    try:
+        from utils.notify import notify as _ntf
+        _ntf("✅ " + _txt, "WARNING")
+    except Exception as _ntf_e:
+        logger.warning("[ExitRejectResolved] Slack 알림 실패 (무해): %s", _ntf_e)
+    try:
+        self.dashboard.set_exit_reject_alert(False, "")
+    except Exception as _dash_e:
+        logger.debug("[ExitRejectResolved] 대시보드 해제 실패 (무해): %s", _dash_e)
+    self._exit_reject_episode_at = None
+    _ts_reset_exit_reject_state(self, reason=reason)
+
+
+def _ts_query_reject_detail(self, order_no: str) -> None:
+    """④ 거부된 주문의 브로커 행을 주문/체결 조회(CpTd5371)로 덤프 — 사유 필드 탐색용.
+
+    COM 콜백 밖(QTimer)에서만 부른다(절대원칙 §4). 실패해도 무해 — 로그만 남긴다.
+    """
+    try:
+        fn = getattr(self.broker, "query_order_rows", None)
+        if fn is None:
+            log_manager.system("[주문거부상세] 브로커가 주문 조회를 지원하지 않는다 — 미측정", "INFO")
+            return
+        rows = fn(account_no=self._get_active_account_no())
+        if rows is None:
+            log_manager.system("[주문거부상세] 조회 실패 — 미측정 order_no=%s" % order_no, "WARNING")
+            return
+        _key = str(order_no or "").strip().lstrip("0")
+        hit = [r for r in rows
+               if any(str(v).strip().lstrip("0") == _key and _key for v in r.values())]
+        if not hit:
+            log_manager.system("[주문거부상세] order_no=%s 행 없음 (수신 %d행)" % (order_no, len(rows)),
+                               "WARNING")
+            return
+        log_manager.system("[주문거부상세] order_no=%s 행=%s" % (order_no, hit[0]), "WARNING")
+    except Exception as _qd_e:
+        logger.warning("[주문거부상세] 조회 예외 (무해): %s", _qd_e)
+
+
+def _ts_on_async_order_reject(self, payload: dict, pending, matched: bool) -> None:
+    """① 접수 후 거부(체결통보 상태 `거부`)를 **종결**로 처리한다.
+
+    종전에는 「아직 체결 전」으로 읽어 미결을 붙잡았다가 318초 타임아웃 뒤에야 다음 청산을 냈다
+    (10/15 6분 주기 20회). 이제:
+      · 청산 거부 → 미결 즉시 해제 → 거부 훅(백오프 1~30초 · 첫 거부 경보) → 래치(지정가 청산)
+      · 진입 거부 → 낙관적으로 연 포지션을 즉시 FLAT 복원(⑥ 유령 포지션 방지) → 미결 해제(2분 쿨다운)
+    """
+    order_no = str(payload.get("order_no", "") or "")
+    kind = str((pending or {}).get("kind", "") or "") if matched else ""
+    log_manager.trade("[주문거부] 브로커 접수 후 거부 — 주문번호=%s kind=%s %s %s계약"
+                      % (order_no or "?", kind or "미매칭",
+                         (pending or {}).get("direction", "?"), (pending or {}).get("qty", "?")))
+    if EXIT_REJECT_DETAIL_QUERY and order_no:
+        QTimer.singleShot(300, lambda _o=order_no: _ts_query_reject_detail(self, _o))
+    if not matched or pending is None:
+        log_manager.system(
+            "[주문거부] 미결과 매칭되지 않은 거부 — 브로커 직접청산·긴급청산·외부 주문일 수 있다 "
+            "order_no=%s 포지션=%s" % (order_no or "?", self.position.status), "ERROR")
+        if self.position.status != "FLAT":
+            _ts_latch_exit_limit_mode(self, "미매칭 거부 order_no=%s" % order_no)
+        return
+    if kind == "ENTRY":
+        if getattr(self.position, "_optimistic", False):
+            log_manager.system(
+                "[EntryReject] 진입 접수 후 거부 → 낙관적 포지션 FLAT 복원(유령 포지션 방지) "
+                "%s %s @ %.2f order_no=%s" % (self.position.status, self.position.quantity,
+                                              float(self.position.entry_price or 0.0), order_no),
+                "WARNING")
+            self.position._reset_position()
+        self._pending_limit_is_active = False
+        self._clear_pending_order()            # ENTRY 미체결 소멸 → 2분 재진입 금지(B56)
+        log_manager.trade("[진입거부] 주문번호=%s — 포지션을 열지 않았다(2분 재진입 금지)" % order_no)
+        return
+    if kind.startswith("EXIT"):
+        direction = pending.get("direction", self.position.status)
+        qty = max(int(pending.get("qty", 0) or 0) - int(pending.get("filled_qty", 0) or 0), 0)
+        reason = str(pending.get("reason", "") or kind)
+        self._clear_pending_order()
+        _ts_on_exit_order_reject(self, kind="%s(접수후거부)" % reason, direction=direction,
+                                 qty=qty, ret=EXIT_RET_BROKER_REJECT_ASYNC)
+        return
+    log_manager.system("[주문거부] kind=%s 거부 — 미결 해제" % kind, "WARNING")
+    self._clear_pending_order()
+
+
+def _ts_check_exit_order_health(self) -> None:
+    """2초 타이머 — ③ 지정가 청산 미체결 취소 · 거부 에피소드의 FLAT 해소 감지."""
+    try:
+        po = self._pending_order
+        now = datetime.datetime.now()
+        if (po is not None and str(po.get("kind", "")).startswith("EXIT") and po.get("exit_limit")
+                and int(po.get("filled_qty", 0) or 0) == 0 and not po.get("exit_limit_cancel_at")
+                and po.get("order_no") and po.get("exit_limit_sent_at") is not None
+                and (now - po["exit_limit_sent_at"]).total_seconds() >= EXIT_LIMIT_UNFILLED_SEC):
+            po["exit_limit_cancel_at"] = now
+            _cret = self.broker.cancel_order(
+                account_no=self._get_active_account_no(), order_no=str(po["order_no"]),
+                code=getattr(self, "_futures_code", ""), qty=int(po.get("qty", 0) or 0),
+            )
+            log_manager.trade(
+                "[청산지정가] %.0f초 미체결 → 취소 요청 order_no=%s ret=%s — 취소확인(또는 체결) 후 새 호가로 재송신"
+                % (EXIT_LIMIT_UNFILLED_SEC, po["order_no"], _cret))
+        if (self._exit_reject_episode_at is not None and self.position.status == "FLAT"
+                and self._pending_order is None):
+            _ts_exit_reject_episode_close(self, "포지션 FLAT 확인")
+    except Exception as _hc_e:
+        logger.warning("[ExitHealth] 점검 예외 (무해): %s", _hc_e)
 
 
 def _ts_check_exit_triggers(self, price: float, features: dict, decision: dict, bar: dict = None):
@@ -20291,16 +20576,13 @@ def _ts_broker_direct_force_exit(self, price: float, reason: str = "강제청산
         f"[BrokerDirectExit] {reason} — broker {broker_side} {broker_qty}계약 → {close_side} 직접주문",
         "ERROR",
     )
-    ret = self.broker.send_market_order(
-        account_no=account_no,
-        code=code,
-        side=close_side,
-        qty=broker_qty,
-        rqname="강제청산",
-        screen_no="1001",
+    # [MW0602 2026-10-17] 단일 송신점 — 래치가 걸린 날(시장가 거부일)은 15:18 최종청산도 지정가.
+    ret = _ts_send_exit_order_core(
+        self, account_no=account_no, code=code, side=close_side, qty=broker_qty,
+        rqname="강제청산", screen_no="1001",
     )
     log_manager.system(
-        f"[BrokerDirectExit] send_market_order ret={ret} {broker_side} {broker_qty}계약 reason={reason}",
+        f"[BrokerDirectExit] 청산 송신 ret={ret} {broker_side} {broker_qty}계약 reason={reason}",
         "ERROR" if ret != 0 else "WARNING",
     )
     # [511차 F-19] 최후 방어선(15:18 FINAL_CLOSE 등)이 실패하면 그 사실이 TRADE에
@@ -20310,8 +20592,7 @@ def _ts_broker_direct_force_exit(self, price: float, reason: str = "강제청산
             self, kind=f"브로커직접청산({reason})", direction=broker_side,
             qty=broker_qty, ret=ret,
         )
-    else:
-        _ts_reset_exit_reject_state(self, reason="BrokerDirectExit")
+    # [MW0602 2026-10-17] 송신 성공으로 거부 연쇄를 리셋하지 않는다 — 체결·FLAT 확인 때 끊는다.
     return ret == 0
 
 
@@ -22563,6 +22844,21 @@ def _ts_on_chejan_event_cybos_safe(self, payload: dict) -> None:
         pending=_ts_get_pending_snapshot(self),
     )
 
+    # [MW0602 2026-10-17] ① 접수 후 거부는 **종결**이다 — 미결을 붙잡지 않는다(10/15 318초×20회).
+    if EXIT_ASYNC_REJECT_HANDLE and status == "거부":
+        _ts_on_async_order_reject(self, payload, pending if pending_matched else None, pending_matched)
+        return
+
+    # [MW0602 2026-10-17] ② 지정가 청산 미체결 취소의 확인 — 취소 주문은 새 주문번호를 받고
+    #   원주문번호에 우리 주문을 싣는다. 확인을 받은 **뒤에만** 미결을 풀어, 취소 직전 체결과
+    #   재송신이 겹쳐 반대 포지션이 생기는 경로를 막는다. 새 호가 재송신은 다음 청산 트리거가 한다.
+    if status == "취소확인" and pending is not None and pending.get("exit_limit_cancel_at"):
+        _po_no = str(pending.get("order_no") or "")
+        if _po_no and _po_no in (str(order_no or ""), str(payload.get("original_order_no") or "")):
+            log_manager.trade("[청산지정가] 취소확인 order_no=%s — 미결 해제, 새 호가로 재송신 대기" % _po_no)
+            self._clear_pending_order()
+            return
+
     if not is_final_fill:
         if pending_matched:
             if not pending.get("accepted_at"):
@@ -22616,6 +22912,9 @@ def _ts_on_chejan_event_cybos_safe(self, payload: dict) -> None:
 
     if pending["filled_qty"] >= pending["qty"]:
         self._clear_pending_order()
+        # [MW0602 2026-10-17] 청산 체결로 FLAT 이 되면 거부 에피소드를 닫는다(회복 알림 1회).
+        if str(pending.get("kind", "")).startswith("EXIT") and self.position.status == "FLAT":
+            _ts_exit_reject_episode_close(self, "청산 체결")
 
 
 TradingSystem._on_order_message = _ts_on_order_message
@@ -22641,20 +22940,29 @@ TradingSystem._intrabar_tp_check = _ts_intrabar_tp_check
 class _BrokerOrderAdapter:
     """EmergencyExit.set_order_manager()용 어댑터."""
 
-    def __init__(self, broker, futures_code: str, acc_no: str):
+    def __init__(self, broker, futures_code: str, acc_no: str, owner=None):
         self._broker = broker
         self._code  = futures_code
         self._acc   = acc_no
+        # [MW0602 2026-10-17] owner(TradingSystem)가 있으면 청산 단일 송신점을 탄다 —
+        #   시장가 거부일(래치)에는 긴급청산(CB⑤ 등)도 지정가로 나간다.
+        self._owner = owner
 
     def send_market_order(self, code: str, side: str, qty: int, reason: str = "") -> int:
-        ret = self._broker.send_market_order(
-            account_no=self._acc,
-            code=code or self._code,
-            side=side,
-            qty=qty,
-            rqname=reason or "긴급청산",
-            screen_no="1002",
-        )
+        if self._owner is not None:
+            ret = _ts_send_exit_order_core(
+                self._owner, account_no=self._acc, code=code or self._code, side=side,
+                qty=qty, rqname=reason or "긴급청산", screen_no="1002",
+            )
+        else:
+            ret = self._broker.send_market_order(
+                account_no=self._acc,
+                code=code or self._code,
+                side=side,
+                qty=qty,
+                rqname=reason or "긴급청산",
+                screen_no="1002",
+            )
         return ret if ret == 0 else None
 
 
