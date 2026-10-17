@@ -120,6 +120,7 @@ def test_send_mail_builds_attachment_and_hides_password(monkeypatch, tmp_path):
             sent["msg"], sent["to"] = msg, to_addrs
 
     monkeypatch.setattr(mailer.smtplib, "SMTP_SSL", FakeSSL)
+    monkeypatch.setattr(mailer, "_PREFS_FILE", str(tmp_path / "no_prefs.json"))  # PC 의 [메일] 상태와 무관하게
     pdf = tmp_path / "r.pdf"
     pdf.write_bytes(b"%PDF-1.4 test")
     cfg = {"user": "a@naver.com", "password": "s3cret-pw", "to": ["b@naver.com"],

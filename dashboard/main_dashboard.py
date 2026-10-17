@@ -15195,17 +15195,25 @@ class MireukDashboard(QMainWindow):
             f"QCheckBox::indicator:unchecked{{background:{C['bg2']};"
             f"border:1px solid {C['border']};}}"
         )
-        self.chk_slack  = QCheckBox("슬랙 알림")
+        self.chk_slack  = QCheckBox("슬랙")
         self.chk_slack.setChecked(True)
         self.chk_slack.setCursor(Qt.PointingHandCursor)
         self.chk_slack.setToolTip("슬랙 알림 On/Off (체크 해제 시 모든 슬랙 발송 중단)")
         self.chk_slack.setStyleSheet(_chk_style)
-        self.chk_mid_auto = QCheckBox("중패널_Auto")
+        # [MW0601 2026-10-17] 메일 On/Off — ui_prefs.json `mail_enabled` 를 utils/mailer 가 직접 읽는다
+        #   (동결 센티넬은 별도 프로세스라 파일이 유일한 공유 경로).
+        self.chk_mail = QCheckBox("메일")
+        self.chk_mail.setChecked(True)
+        self.chk_mail.setCursor(Qt.PointingHandCursor)
+        self.chk_mail.setToolTip(
+            "메일 발송 On/Off (체크 해제 시 동결 경보·신동 일일 리포트 등 모든 메일 발송 중단)")
+        self.chk_mail.setStyleSheet(_chk_style)
+        self.chk_mid_auto = QCheckBox("중_Auto")
         self.chk_mid_auto.setChecked(True)
         self.chk_mid_auto.setCursor(Qt.PointingHandCursor)
         self.chk_mid_auto.setToolTip("가운데 패널 탭 자동 이동 On/Off")
         self.chk_mid_auto.setStyleSheet(_chk_style)
-        self.chk_right_auto = QCheckBox("우패널_Auto")
+        self.chk_right_auto = QCheckBox("우_Auto")
         self.chk_right_auto.setChecked(True)
         self.chk_right_auto.setCursor(Qt.PointingHandCursor)
         self.chk_right_auto.setToolTip("오른쪽 패널 탭 자동 이동 On/Off")
@@ -15407,6 +15415,7 @@ class MireukDashboard(QMainWindow):
         _chk_row.setContentsMargins(0, 0, 0, 0)
         _chk_row.setSpacing(S.p(8))
         _chk_row.addWidget(self.chk_slack)
+        _chk_row.addWidget(self.chk_mail)
         _chk_row.addWidget(self.chk_mid_auto)
         _chk_row.addWidget(self.chk_right_auto)
         _lbl_chart = mk_label("봉차트", C['text2'], 9, align=Qt.AlignRight)
@@ -15686,6 +15695,7 @@ class MireukDashboard(QMainWindow):
         self.ui_auto_tabs.set_right_auto(self.chk_right_auto.isChecked())
         # 체크박스 토글 시 즉시 저장 (슬랙 포함 — 종목/서버 변경에만 의존하던 문제 해소)
         self.chk_slack.toggled.connect(lambda _: self._save_ui_prefs())
+        self.chk_mail.toggled.connect(lambda _: self._save_ui_prefs())
         self.chk_mid_auto.toggled.connect(lambda _: self._save_ui_prefs())
         self.chk_right_auto.toggled.connect(lambda _: self._save_ui_prefs())
         self.chk_state_persist.toggled.connect(lambda _: self._save_ui_prefs())
@@ -16135,6 +16145,7 @@ class MireukDashboard(QMainWindow):
                 "symbol_code": _extract_symbol_code(symbol_text),
                 "symbol_text": symbol_text,
                 "slack_enabled": self.chk_slack.isChecked(),
+                "mail_enabled": self.chk_mail.isChecked(),
                 "mid_auto_enabled": self.chk_mid_auto.isChecked(),
                 "right_auto_enabled": self.chk_right_auto.isChecked(),
                 "state_persist_enabled": self.chk_state_persist.isChecked(),
@@ -16186,6 +16197,12 @@ class MireukDashboard(QMainWindow):
             self.chk_slack.blockSignals(True)
             self.chk_slack.setChecked(slack_on)
             self.chk_slack.blockSignals(False)
+
+            # 메일 On/Off 복원 (기본 True)
+            mail_on = bool(prefs.get("mail_enabled", True))
+            self.chk_mail.blockSignals(True)
+            self.chk_mail.setChecked(mail_on)
+            self.chk_mail.blockSignals(False)
 
             # 탭 자동 이동 On/Off 복원 (기본 True) — ui_auto_tabs 연결 전이므로 blockSignals
             mid_auto = bool(prefs.get("mid_auto_enabled", True))
@@ -16918,6 +16935,7 @@ class DashboardAdapter:
         self.btn_kill = self._win._make_kill_btn()
         self.btn_save_account = self._win.btn_save_account
         self.chk_slack = self._win.chk_slack
+        self.chk_mail = self._win.chk_mail
         self.sig_position_restore = self._win.account_info_panel.sig_position_restore
         self.sig_balance_refresh_requested = self._win.account_info_panel.sig_balance_refresh_requested
         self.sig_reverse_entry_toggled    = self._win.entry_panel.sig_reverse_entry_toggled

@@ -13,7 +13,13 @@
 
 설정이 빠졌으면 `smtp_config()` 가 None 과 빠진 이름을 돌려준다 — 조용히 건너뛰지 않고 이유를 남긴다
 (계측 4원칙 ④). 비밀번호는 로그·예외 메시지에 절대 싣지 않는다.
+
+[MW0601 2026-10-17] 대시보드 [메일] 체크박스 = `data/ui_prefs.json` 의 `mail_enabled`.
+프로세스 밖 동결 센티넬도 이 모듈로 보내므로 **파일에서 읽는다**(인프로세스 플래그로는 못 막는다).
+꺼져 있으면 `MailDisabled`(RuntimeError) — 호출부의 기존 실패 로그에 사유가 그대로 남는다.
+키가 없거나 파일을 못 읽으면 켜진 것으로 본다(기본 동작 유지).
 """
+import json
 import mimetypes
 import os
 import smtplib
@@ -23,6 +29,21 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 _HOSTS = {"naver.com": "smtp.naver.com", "gmail.com": "smtp.gmail.com",
           "daum.net": "smtp.daum.net", "hanmail.net": "smtp.daum.net"}
+
+_PREFS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "data", "ui_prefs.json")
+
+
+class MailDisabled(RuntimeError):
+    """대시보드 [메일] 체크 해제로 발송을 건너뛰었다."""
+
+
+def mail_enabled() -> bool:
+    try:
+        with open(_PREFS_FILE, "r", encoding="utf-8") as f:
+            return bool(json.load(f).get("mail_enabled", True))
+    except Exception:
+        return True
 
 
 def smtp_config() -> Tuple[Optional[Dict[str, object]], List[str]]:
@@ -45,7 +66,10 @@ def smtp_config() -> Tuple[Optional[Dict[str, object]], List[str]]:
 def send_mail(subject: str, body: str, attachments: Sequence[str] = (),
               to: Optional[Sequence[str]] = None, cfg: Optional[Dict[str, object]] = None,
               timeout: float = 30.0) -> List[str]:
-    """보내고 받는 사람 목록을 돌려준다. 설정이 없으면 RuntimeError(빠진 이름만 — 값은 싣지 않는다)."""
+    """보내고 받는 사람 목록을 돌려준다. 설정이 없으면 RuntimeError(빠진 이름만 — 값은 싣지 않는다).
+    대시보드 [메일]이 꺼져 있으면 MailDisabled."""
+    if not mail_enabled():
+        raise MailDisabled("메일 비활성(대시보드 [메일] 체크 해제)")
     if cfg is None:
         cfg, missing = smtp_config()
         if cfg is None:
