@@ -81,6 +81,8 @@ from config.settings import (
     EXIT_ASYNC_REJECT_HANDLE, EXIT_LIMIT_FALLBACK_ENABLED,  # [MW0602 2026-10-17] 10/15 청산 거부
     EXIT_LIMIT_SLIP_TICKS, EXIT_LIMIT_UNFILLED_SEC,
     EXIT_REJECT_DETAIL_QUERY, EXIT_REJECT_BLOCK_ENTRIES,
+    ALERT_FORCE_EXIT_CHECK_HM, ALERT_LOSS_TRADE_KRW, ALERT_LOSS_DAY_PCT,   # [MW0602 2026-10-17] 긴급 알림
+    ALERT_BROKER_LOST_SEC, ALERT_MARGINQTY_FAIL_MIN, SIZING_TARGET_CAPITAL_KRW,
     TP1_TICK_ENABLED,                     # [403차 종합 P1-5] tick-level TP1 킬스위치
     TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED, TOXICITY_SEVERE_SPREAD_BLOCK_TICKS,
     TOXICITY_REDUCE_MULT_SHADOW_HI, TOXICITY_REDUCE_MULT_SHADOW_LO,
@@ -1292,6 +1294,11 @@ class TradingSystem:
         self._exit_limit_mode_reason:  object = None
         # 청산 거부 에피소드 시작 시각 — 열려 있으면 신규 실주문 차단(⑤) · 해소 시 회복 알림.
         self._exit_reject_episode_at:  object = None
+        # [MW0602 2026-10-17] 긴급 알림 메일 — 서버 라벨(기동 시 1회 캐시) · A-04 당일 누적 · S-06 끊김 시각
+        self._alert_server_label:      object = None
+        self._alert_day:               object = None
+        self._alert_day_net:           float  = 0.0
+        self._alert_broker_lost_at:    object = None
 
         # ── P1-a: Restart Armistice ────────────────────────────────────────────
         # 재시작 직후 90초간 + broker sync 2회 clean 전까지 신규 진입 차단.
@@ -4929,6 +4936,9 @@ class TradingSystem:
             )
             return
         executed_metrics, forward_metrics = self._trade_metrics_pair(result)
+        # [MW0602 2026-10-17] A-04 큰 손실 — 거래 1건 · 당일 실현(순손익 기준). 알림 전용.
+        _ts_alert_trade_loss(self, dict(result, pnl_net_krw=executed_metrics.get("net_pnl_krw"),
+                                        exit_ts=now_str))
         # [MW0601 546차] 이 레그의 진입 출처 — DB INSERT 와 ProfitGuard 누적이
         # **같은 값**을 쓰도록 한 번만 읽어 지역변수로 고정한다. 둘이 갈리면
         # "배지가 말하는 손익"과 "DB 가 말하는 손익"이 어긋난다.
@@ -7186,6 +7196,17 @@ class TradingSystem:
                     log_manager.system(
                         f"[LEVELS {stage[:2]}:{stage[2:]}] 주의 — "
                         f"{' / '.join(row['warnings'])}", "INFO")
+                    # [MW0602 2026-10-17 / v9-dev 체리픽] B-03 — 하루 낡은 맥점(1일 1통).
+                    #   이 브랜치의 levels_store 에 있는 표식만 쓴다(dev 의 STALE/PREV_EXCLUDED 는 없음).
+                    _lv_marks = tuple(_mk for _mk in (
+                        getattr(_LS, "STALE_HISTORY_MARK", None),
+                        getattr(_LS, "PREV_EXCLUDED_MARK", None),
+                        getattr(_LS, "PREV_DAY_MISSING_MARK", None)) if _mk)
+                    for _lv_w in row["warnings"]:
+                        if _lv_marks and str(_lv_w).startswith(_lv_marks):
+                            _ts_alert(self, "B-03", "맥점이 하루 낡은 기준으로 산출됨",
+                                      ["[%s:%s] %s" % (stage[:2], stage[2:], _lv_w)],
+                                      key="levels", kind="notice")
         except Exception:
             pass
         self._push_premarket_levels()
@@ -14597,6 +14618,17 @@ class TradingSystem:
             )
             return
 
+        # ── [MW0602 2026-10-17] B-02 주문가능수량 조회 실패 지속 — 장후 1통 ──────────────
+        try:
+            _mq_fail = int(getattr(self.broker, "margin_qty_fail_count", 0) or 0)
+            if _mq_fail >= int(ALERT_MARGINQTY_FAIL_MIN):
+                _ts_alert(self, "B-02", "오늘 주문가능수량 조회 실패 %d회" % _mq_fail,
+                          ["증거금 상한(MarginCap)이 측정되지 않았다",
+                           "실계좌 전환(10/13) 이후 `msg=11298 시장가/…단가를 입력하지 않습니다` 반복"],
+                          key="day", kind="notice")
+        except Exception as _b02_e:
+            logger.warning("[AlertMail] B-02 판정 예외 (무해): %s", _b02_e)
+
         # ── [MW0601 514차 / 장후 Fix P1-3] 마감 진입 직전 잔여 포지션 경보 ────────
         # 🔴 **경보만 한다. 청산하지 않는다.** 마감 절차에 자동 청산을 통합하는 것은
         #    Fix P0-2 이고, 그것은 주문·청산 실행 경로 변경이라 주간회의 승인 대상이다.
@@ -16179,6 +16211,18 @@ class TradingSystem:
         from config.settings import RAW_DATA_DB as _bg_db2
         _msg, _lv = _bg_conf(_bg_db2, now.date().isoformat())
         log_manager.system(_msg, _lv)
+        # [MW0602 2026-10-17] B-03 — 영구 결손이 있으면 장후 1통. 단 거래소 CB 가 난 날은 그 공백이
+        #   데이터 손실이 아니라 거래 중단이다(10/15 29분) — 그날은 보내지 않고 로그만 남긴다.
+        try:
+            if "영구 결손" in str(_msg):
+                from utils import alert_mail as _am
+                if _am.happened_today("A-01"):
+                    logger.info("[AlertMail] B-03 생략 — 오늘 거래소 CB(A-01) 중단 공백일 수 있다")
+                else:
+                    _ts_alert(self, "B-03", "분봉 영구 결손 — session_bars 에도 없음",
+                              [str(_msg)[:300]], key="bargap", kind="notice")
+        except Exception as _b03_e:
+            logger.warning("[AlertMail] B-03 판정 예외 (무해): %s", _b03_e)
 
     def _auto_shutdown(self) -> None:
         """일일 마감 완료 후 자동 프로그램 종료 — Qt 이벤트 루프 종료."""
@@ -16996,6 +17040,25 @@ class TradingSystem:
         )
         logger.info(msg)
         self.dashboard.append_sys_log(msg)
+        # [MW0602 2026-10-17] 긴급 알림 메일 문맥용 서버 라벨(1회 캐시 — 경보 때 COM 재조회를 피한다)
+        #   + B-04 실거래 설정 상태 이상(이상할 때만 1통). 두 PC 모두 2026-10-13 부터 실계좌다.
+        try:
+            _srv = str(summary["server_label"]["value"])
+            self._alert_server_label = _srv + ("" if "모의" in _srv else "(실계좌)")
+            _b04 = []
+            if "모의" in _srv:
+                _b04.append("모의투자 서버에 접속했다 — 실계좌 운영 중이면 로그인 서버를 확인")
+            # [v9-dev 체리픽] dev 의 「실서버인데 자동주문 잠김」 판정은 없다 — 이 브랜치에는
+            #   실서버 자동주문 잠금(REAL_TRADING_ARMED) 자체가 없다(2026-10-14 사용자 결정).
+            if _b04:
+                _ts_alert(self, "B-04", _b04[0], _b04[1:] + [msg], key="startup", kind="notice")
+        except Exception as _b04_e:
+            logger.warning("[AlertMail] B-04 판정 예외 (무해): %s", _b04_e)
+        try:
+            from utils import alert_mail as _am_st
+            log_manager.system(_am_st.status_line(), "INFO")   # ON/OFF·수신자 수 — 계측 4원칙 ④
+        except Exception as _ams_e:
+            logger.warning("[AlertMail] 상태 줄 기록 실패 (무해): %s", _ams_e)
 
     # 오케스트레이션 진입점: 서비스 경계 호출 순서만 관리
     # ── 메인 루프 (Qt 이벤트 루프 기반) ──────────────────────────
@@ -17009,6 +17072,11 @@ class TradingSystem:
         if not self.connect_kiwoom():
             logger.critical("[System] 키움 연결 실패 — 종료")
             notify("🚨 미륵이 기동 실패 — 브로커 연결 불가\n수동 재시작 필요", "CRITICAL")
+            # [MW0602 2026-10-17] S-05 기동 실패 — SYSTEM.log 는 생겼으므로 센티넬의 「미기동」
+            #   판정에는 걸리지 않는다. 그래서 여기서 직접 1통(종료하므로 해소 메일은 없다).
+            _ts_alert(self, "S-05", "브로커 연결 실패로 기동 중단",
+                      ["Cybos Plus 로그인·관리자 권한·계좌 만료(preflight exit 4)를 확인"],
+                      key="login", kind="notice")
             return
 
         # 기동 완료 슬랙 알림
@@ -17691,11 +17759,21 @@ class TradingSystem:
             import threading as _threading
             _threading.Thread(target=_run_daily_close, daemon=True, name="DailyClose").start()
 
+        # [MW0602 2026-10-17] S-06 해소 — 연결이 돌아왔으면 끊김 에피소드를 닫는다
+        if self.broker.is_connected and self._alert_broker_lost_at is not None:
+            self._alert_broker_lost_at = None
+            _ts_alert_resolve(self, "S-06", note="브로커 재연결")
         # 연결 감시 — 끊김 시 슬랙 CRITICAL 알림 후 재연결
         if not self.broker.is_connected:
             logger.error("[System] %s 연결 끊김 — 재연결 시도",
                          getattr(self.broker, "name", "브로커"))
             notify_connection_lost(getattr(self.broker, "name", "브로커"))
+            # [MW0602 2026-10-17] S-06 — 순간 끊김·자동 재연결은 빼고 ALERT_BROKER_LOST_SEC 이상만
+            if self._alert_broker_lost_at is None:
+                self._alert_broker_lost_at = now
+            elif (now - self._alert_broker_lost_at).total_seconds() >= float(ALERT_BROKER_LOST_SEC):
+                _ts_alert(self, "S-06", "%s~ 연결 끊김 지속" % self._alert_broker_lost_at.strftime("%H:%M:%S"),
+                          ["자동 재연결 시도 중 — 끊긴 동안 청산 주문이 나가지 않는다"])
             self._restart_cause = "AUTO_DISCONNECT"
             self.connect_broker()
         elif is_market_open(now):
@@ -17722,6 +17800,8 @@ class TradingSystem:
                 if not getattr(self, "_broker_sync_critical_notified", False):
                     self._broker_sync_critical_notified = True
                     notify_broker_sync_blocked(self._broker_sync_last_error)
+                    _ts_alert(self, "S-03", "브로커 잔고 동기화 미검증 — 신규 진입 차단 중",   # [MW0602 2026-10-17]
+                              ["사유 %s" % self._broker_sync_last_error], key="sync")
 
             # 장중 롤오버 감시 — 60 tick(30분)마다 근월물 재확인
             # 롤오버가 감지되면 WARNING 로그 + UI 갱신만 수행; 재구독은 재기동 시 자동 처리
@@ -18538,6 +18618,13 @@ def _ts_on_exit_order_reject(self, *, kind: str, direction: str, qty: int, ret) 
             self.dashboard.set_exit_reject_alert(True, _alert_txt)
         except Exception as _dash_e:
             logger.debug("[ExitRejectAlert] 대시보드 경보 실패 (무해): %s", _dash_e)
+        # [MW0602 2026-10-17] S-01 긴급 메일(+Slack) — 에피소드 1통, 청산 체결·FLAT 때 [이상해소]
+        try:
+            _ts_alert(self, "S-01", "%s %s계약 미청산" % (direction, qty),
+                      ["청산 종류 %s" % kind, "사유 %s" % (_msg or _ts_exit_ret_text(ret)),
+                       "연속 거부 %d회 · 다음 시도 %.0f초 뒤" % (streak, backoff)])
+        except Exception as _alw_e:
+            logger.debug("[AlertMail] 배선 인자 산출 실패 (무해): %s", _alw_e)
 
 
 # ── [MW0602 2026-10-17] 청산 거부 113분(10/15) 재발 방지 ①~⑥ ─────────────────────────
@@ -18555,6 +18642,10 @@ def _ts_latch_exit_limit_mode(self, why: str) -> None:
         "[청산지정가] 래치 — 오늘 남은 청산은 체결 가능한 지정가로 보낸다 (사유: %s)" % why, "ERROR")
     log_manager.trade("[청산지정가] 래치 — 이후 청산은 지정가(상대 최우선 ± %d틱) · 사유: %s"
                       % (EXIT_LIMIT_SLIP_TICKS, why))
+    # [MW0602 2026-10-17] A-02 — 시장가가 거부되는 구간(가격제한폭 확대 등)에 들어왔다는 사실을 사람에게
+    _ts_alert(self, "A-02", "청산을 지정가로 전환", ["사유 %s" % why,
+              "가격제한폭 확대(하·상한가 도달 5분) 또는 CB 재개 뒤에는 시장가가 0707 로 거부된다"],
+              key="day", kind="notice")
 
 
 def _ts_exit_limit_price(self, side: str, code: str):
@@ -18647,6 +18738,136 @@ def _ts_exchange_cb_entry_block(self):
     return None
 
 
+# ── [MW0602 2026-10-17 사용자 결정] 긴급 이상 알림 메일 배선 — `utils/alert_mail.py` ───────────
+# 코드 S(실계좌 손실·오버나이트) · A(즉시 인지) · B(다음 거래일 위험). 메일 + Slack 병행.
+# ⚠ 알림 전용 — 이 함수들은 어떤 예외도 호출부로 내보내지 않고 판정·주문을 바꾸지 않는다.
+# 근거: docs/정기점검/매일점검/MW0602-20261017-긴급알림메일-종합검토.md
+
+def _ts_alert_context(self) -> dict:
+    """메일 본문 머리 — 서버(기동 시 캐시)와 포지션·평가손익. 실패해도 「미측정」으로 채운다."""
+    ctx = {"server": str(self._alert_server_label or "미측정"), "position": "미측정"}
+    try:
+        pos = self.position
+        if pos.status == "FLAT":
+            ctx["position"] = "FLAT"
+        else:
+            txt = "%s %s계약 @%.2f" % (pos.status, pos.quantity, float(pos.entry_price or 0.0))
+            px = self._peter2_last_price()
+            if px:
+                pts = float(pos.unrealized_pnl_pts(px))
+                txt += " · 현재가 %.2f · 평가 %+.2fpt(%s원)" % (
+                    px, pts, format(pts * float(self._pt_value) * float(pos.quantity or 0), "+,.0f"))
+            src = str(getattr(pos, "entry_source", "") or "")
+            ctx["position"] = txt + (" · 주체 %s" % src if src else "")
+    except Exception as _ac_e:
+        logger.debug("[AlertMail] 포지션 문맥 산출 실패 (무해): %s", _ac_e)
+    return ctx
+
+
+def _ts_alert(self, code: str, summary: str, details=None, key: str = "", kind: str = "raise") -> None:
+    """kind = raise(에피소드 시작) / notice(일회성)."""
+    try:
+        from utils import alert_mail as _am
+        ctx = _ts_alert_context(self)
+        if kind == "notice":
+            _am.notice(code, summary, details, key, ctx)
+        else:
+            _am.raise_alert(code, summary, details, key, ctx)
+    except Exception as _al_e:
+        logger.warning("[AlertMail] %s 배선 예외 (무해): %s", code, _al_e)
+
+
+def _ts_alert_resolve(self, code: str, key: str = "", note: str = "") -> None:
+    try:
+        from utils import alert_mail as _am
+        _am.resolve(code, key, note)
+    except Exception as _ar_e:
+        logger.warning("[AlertMail] %s 해소 배선 예외 (무해): %s", code, _ar_e)
+
+
+def _ts_alert_is_open(code: str, key: str = "") -> bool:
+    try:
+        from utils import alert_mail as _am
+        return _am.is_open(code, key)
+    except Exception:
+        return False
+
+
+def _ts_alert_state_tick(self, now=None) -> None:
+    """상태형 사건의 발생·해소를 한곳에서 판정한다(2초 타이머) — 해소를 빠뜨리지 않기 위해서다.
+
+      S-02  15:12 이후 포지션 잔존(오버나이트 위험) ↔ FLAT
+      A-01  거래소 CB 중단(재개 대기) ↔ 재개
+      A-03  미륵 서킷브레이커 PAUSED/HALTED ↔ NORMAL
+    """
+    try:
+        now = now or datetime.datetime.now()
+        # S-02
+        try:
+            _hh, _mm = [int(x) for x in str(ALERT_FORCE_EXIT_CHECK_HM).split(":")]
+        except Exception:
+            _hh, _mm = 15, 12
+        if (now.time() >= datetime.time(_hh, _mm) and now.time() < datetime.time(15, 45)
+                and is_trading_day(now) and self.position.status != "FLAT"):
+            _ts_alert(self, "S-02", "%s 이후에도 %s %s계약 보유" % (
+                ALERT_FORCE_EXIT_CHECK_HM, self.position.status, self.position.quantity),
+                ["15:10 강제청산이 체결되지 않았다 — 오버나이트 위험",
+                 "청산 거부 에피소드: %s" % ("열림" if self._exit_reject_episode_at else "없음"),
+                 "청산 지정가 래치: %s" % (self._exit_limit_mode_reason or "없음")])
+        elif self.position.status == "FLAT" and _ts_alert_is_open("S-02"):
+            _ts_alert_resolve(self, "S-02", note="포지션 FLAT 확인")
+        # A-01
+        if self._exchange_cb_mode:
+            _st = self._exchange_cb_start
+            _ts_alert(self, "A-01", "거래 중단 %s~ · 재개 대기" % (
+                _st.strftime("%H:%M") if _st is not None else "?"),
+                ["KRX: 20분 중단 → 10분 단일가 → 재개", "재개 후 10분 관망(모든 주체 신규 진입 차단)"])
+        elif _ts_alert_is_open("A-01"):
+            _ts_alert_resolve(self, "A-01", note="분봉 재개")
+        # A-03
+        _cbs = str(self.circuit_breaker.state)
+        if _cbs != "NORMAL":
+            _ts_alert(self, "A-03", "미륵 CB %s" % _cbs,
+                      ["사유 %s" % (getattr(self.circuit_breaker, "_halt_cause", "") or "로그 [CB] 참조")],
+                      key=_cbs)
+        else:
+            for _k in ("PAUSED", "HALTED"):
+                if _ts_alert_is_open("A-03", _k):
+                    _ts_alert_resolve(self, "A-03", key=_k, note="CB NORMAL 복귀")
+    except Exception as _st_e:
+        logger.warning("[AlertMail] 상태 점검 예외 (무해): %s", _st_e)
+
+
+def _ts_alert_trade_loss(self, result: dict) -> None:
+    """A-04 큰 손실 — 거래 1건 순손실 · 당일 실현 순손실(자본 대비)."""
+    try:
+        net = result.get("pnl_net_krw")
+        if net is None:
+            net = result.get("net_pnl_krw")
+        if net is None:
+            net = result.get("pnl_krw")
+        net = float(net or 0.0)
+        today = datetime.date.today().isoformat()
+        if self._alert_day != today:
+            self._alert_day, self._alert_day_net = today, 0.0
+        self._alert_day_net += net
+        cap = float(SIZING_TARGET_CAPITAL_KRW or 0.0)
+        if net <= -float(ALERT_LOSS_TRADE_KRW):
+            _ts_alert(self, "A-04", "거래 1건 %s원 (기준 −%s원)" % (format(net, "+,.0f"), format(int(ALERT_LOSS_TRADE_KRW), ",")),
+                      ["%s %s계약 %.2f→%.2f · 사유 %s" % (
+                          result.get("direction", "?"), result.get("quantity", "?"),
+                          float(result.get("entry_price") or 0.0), float(result.get("exit_price") or 0.0),
+                          result.get("exit_reason", "?"))],
+                      key="trade:%s" % result.get("exit_ts", datetime.datetime.now().strftime("%H%M%S")),
+                      kind="notice")
+        if cap > 0 and self._alert_day_net <= -cap * float(ALERT_LOSS_DAY_PCT):
+            _ts_alert(self, "A-04", "당일 실현 %s원 (자본 %.0f%% 초과)" % (
+                format(self._alert_day_net, "+,.0f"), float(ALERT_LOSS_DAY_PCT) * 100.0),
+                ["실전 자본 %s원 기준" % format(int(cap), ",")], key="day", kind="notice")
+    except Exception as _tl_e:
+        logger.warning("[AlertMail] A-04 판정 예외 (무해): %s", _tl_e)
+
+
 def _ts_exit_reject_episode_close(self, reason: str) -> None:
     """청산 거부 에피소드 종료 — 청산 체결 또는 FLAT 확인. 회복 알림 1회 + 거부 연쇄 리셋.
 
@@ -18670,6 +18891,7 @@ def _ts_exit_reject_episode_close(self, reason: str) -> None:
         logger.debug("[ExitRejectResolved] 대시보드 해제 실패 (무해): %s", _dash_e)
     self._exit_reject_episode_at = None
     _ts_reset_exit_reject_state(self, reason=reason)
+    _ts_alert_resolve(self, "S-01", note=reason)          # [MW0602 2026-10-17] 긴급 메일 해소
 
 
 def _ts_query_reject_detail(self, order_no: str) -> None:
@@ -18764,6 +18986,7 @@ def _ts_check_exit_order_health(self) -> None:
         if (self._exit_reject_episode_at is not None and self.position.status == "FLAT"
                 and self._pending_order is None):
             _ts_exit_reject_episode_close(self, "포지션 FLAT 확인")
+        _ts_alert_state_tick(self, now)            # [MW0602 2026-10-17] S-02 · A-01 · A-03
     except Exception as _hc_e:
         logger.warning("[ExitHealth] 점검 예외 (무해): %s", _hc_e)
 
@@ -19262,6 +19485,12 @@ def _ts_check_position_integrity(self) -> bool:
                 )
             except Exception:
                 pass
+            try:
+                _ts_alert(self, "S-03", "엔진·브로커 수량 불일치 %d회" % self._integrity_fail_count,  # [MW0602 2026-10-17]
+                          ["engine=%s broker=%s pending=%s" % (engine_qty, broker_qty, pending_qty)],
+                          key="integrity", kind="notice")
+            except Exception as _alw_e:
+                logger.debug("[AlertMail] 배선 인자 산출 실패 (무해): %s", _alw_e)
         if self._integrity_fail_count >= 3:
             self._broker_sync_block_new_entries = True
             log_manager.system(
@@ -19802,6 +20031,13 @@ def _ts_handle_external_fill(
 
     before = _ts_get_position_snapshot(self)
     reason_label = "미추적체결(pending_miss)"
+    # [MW0602 2026-10-17] S-03 — 미륵이가 내지 않은 체결(HTS 수동 · 유령 경로). 10/15 12:17 이 이 경로였다.
+    try:
+        _ts_alert(self, "S-03", "미추적 체결 %s %s계약 @ %.2f" % (side, fill_qty, float(fill_price or 0.0)),
+                  ["주문번호 %s — 미륵이가 낸 주문이 아니다(HTS 수동 청산이면 정상)" % (payload.get("order_no") or "?")],
+                  key="fill:%s" % (payload.get("order_no") or "?"), kind="notice")
+    except Exception as _alw_e:
+        logger.debug("[AlertMail] 배선 인자 산출 실패 (무해): %s", _alw_e)
     atr = _ts_get_reference_atr(self)
 
     log_manager.system(
@@ -20504,6 +20740,12 @@ def _ts_scheduler_force_exit_net(self, now: datetime.datetime = None) -> bool:
         )
     if _n == 1:
         notify("🚨 미륵이 시간청산 안전망 발동 — 파이프라인 미경유, 브로커 직접 청산 시도")
+        try:
+            _ts_alert(self, "S-02", "15:10 경과에도 미청산 — 브로커 직접 청산 시도",   # [MW0602 2026-10-17]
+                      ["%s engine=%s계약 broker_cached=%s계약" % (
+                          self.position.status, self.position.quantity, _broker_cached)])
+        except Exception as _alw_e:
+            logger.debug("[AlertMail] 배선 인자 산출 실패 (무해): %s", _alw_e)
     return _ts_broker_direct_force_exit(self, price, "15:10 스케줄러 안전망")
 
 
@@ -20899,6 +21141,8 @@ def _ts_set_broker_sync_status(self, verified: bool, reason: str, block_new_entr
         "[BrokerSync] status verified=%s block_new_entries=%s reason=%s",
         verified, block_new_entries, self._broker_sync_last_error,
     )
+    if verified and not block_new_entries and _ts_alert_is_open("S-03", "sync"):   # [MW0602 2026-10-17]
+        _ts_alert_resolve(self, "S-03", key="sync", note="브로커 동기화 검증")
 
 
 def _ts_safe_float_text(value) -> float:
