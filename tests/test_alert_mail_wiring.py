@@ -158,7 +158,7 @@ def test_4_a01_exchange_cb_and_a03_mireuk_cb(mail, monkeypatch):
 
 def test_5_a04_trade_threshold(mail, monkeypatch):
     mails, _ = mail
-    monkeypatch.setattr(main, "SIZING_TARGET_CAPITAL_KRW", 15_000_000)
+    monkeypatch.setattr(main, "ALERT_LOSS_CAPITAL_KRW", 15_000_000)
     me = _Self()
     main._ts_alert_trade_loss(me, {"pnl_net_krw": -749_999, "exit_ts": "10:00:00"})
     assert mails == []
@@ -172,7 +172,7 @@ def test_5_a04_trade_threshold(mail, monkeypatch):
 
 def test_6_a04_daily_cumulative_once(mail, monkeypatch):
     mails, _ = mail
-    monkeypatch.setattr(main, "SIZING_TARGET_CAPITAL_KRW", 15_000_000)
+    monkeypatch.setattr(main, "ALERT_LOSS_CAPITAL_KRW", 15_000_000)
     me = _Self()
     for i in range(5):
         main._ts_alert_trade_loss(me, {"pnl_net_krw": -300_000, "exit_ts": "1%d:00:00" % i})
@@ -212,6 +212,8 @@ def test_10_settings_defaults():
     assert st.ALERT_MAIL_ENABLED is True and st.ALERT_MAIL_SLACK_TOO is True
     assert st.ALERT_MAIL_DAILY_CAP == 30
     assert st.ALERT_LOSS_TRADE_KRW == 750_000 and st.ALERT_LOSS_DAY_PCT == 0.05
+    # [2026-10-17 사용자 결정] A-04 당일 기준은 사이징 자본이 아니라 1,500만원 고정 — 두 PC 동일
+    assert st.ALERT_LOSS_CAPITAL_KRW == 15_000_000
     assert st.ALERT_FORCE_EXIT_CHECK_HM == "15:12" and st.ALERT_PREMARKET_START_HM == "08:52"
 
 

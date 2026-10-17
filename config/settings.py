@@ -2113,11 +2113,12 @@ FREEZE_SENTINEL_MAIL_RECOVERY = True    # 신호가 다시 신선해지면 [이�
 ALERT_MAIL_ENABLED = True
 ALERT_MAIL_DAILY_CAP = 30               # 하루 상한(통). 넘으면 「상한 도달」 1통 후 로그만
 ALERT_MAIL_SLACK_TOO = True             # 메일과 Slack 병행
-# A-04 큰 손실 — 실전 자본(SIZING_TARGET_CAPITAL_KRW) 기준
+# A-04 큰 손실 — 기준 자본 ALERT_LOSS_CAPITAL_KRW(1,500만원 고정)
+#   [2026-10-17 사용자 결정] 사이징 자본(SIZING_TARGET_CAPITAL_KRW)과 분리한다 — MW0601(v9-dev) 은
+#   사이징 자본이 5천만원이라 그 값을 쓰면 PC마다 당일 기준이 달라진다. 두 PC 모두 당일 75만원.
+ALERT_LOSS_CAPITAL_KRW = 15_000_000
 ALERT_LOSS_TRADE_KRW = 750_000          # 거래 1건 순손실 ≥ 75만원(자본 1,500만원의 5%)
-ALERT_LOSS_DAY_PCT = 0.05               # 당일 실현 순손실 ≥ 자본의 5%
-#   ⚠ [v9-dev] 이 브랜치의 SIZING_TARGET_CAPITAL_KRW 는 5천만원이라 당일 기준은 250만원이 된다
-#     (거래 1건 75만원은 절대값이라 그대로). 자본 재설정 시 함께 볼 것.
+ALERT_LOSS_DAY_PCT = 0.05               # 당일 실현 순손실 ≥ ALERT_LOSS_CAPITAL_KRW 의 5%(75만원)
 # S-02 15:10 강제청산 뒤 이 시각 이후에도 포지션이 남아 있으면 오버나이트 위험 경보
 ALERT_FORCE_EXIT_CHECK_HM = "15:12"
 # S-06 브로커 연결 끊김이 이 초 넘게 이어지면 경보(순간 끊김·자동 재연결은 제외)
