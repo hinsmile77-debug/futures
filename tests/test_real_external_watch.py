@@ -37,12 +37,16 @@ class _Log(object):
     def critical(self, msg, *a):
         self.lines.append(("CRITICAL", msg))
 
+    def debug(self, msg, *a):
+        self.lines.append(("DEBUG", msg))
+
 
 def _load(settings=None):
     tree = ast.parse(_src())
     nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in FNS]
     assert len(nodes) == len(FNS)
     status = []
+    alerts = []
     ns = {
         "datetime": datetime,
         "runtime_settings": settings or types.SimpleNamespace(
@@ -50,9 +54,13 @@ def _load(settings=None):
         "log_manager": _Log(),
         "logger": _Log(),
         "_ts_set_broker_sync_status": lambda self, v, r, b: status.append((v, r, b)),
+        # [MW0602 2026-10-17] 긴급 알림 메일(S-03) 배선 — 이 테스트 대상이 아니므로 기록만
+        "_ts_alert": lambda self, code, *a, **k: alerts.append(("ALERT", code, k.get("key"))),
+        "_ts_alert_resolve": lambda self, code, **k: alerts.append(("RESOLVE", code, k.get("key"))),
     }
     exec(compile(ast.Module(body=nodes, type_ignores=[]), MAIN, "exec"), ns)
     ns["_status"] = status
+    ns["_alerts"] = alerts
     return ns
 
 
@@ -129,6 +137,7 @@ def test_start_blocks_entries_and_clear_unblocks():
     ns["_ts_clear_external_watch"](s, "qty=0")
     assert s._external_watch is None
     assert ns["_status"][-1][2] is False
+    assert ns["_alerts"] == [("ALERT", "S-03", "external"), ("RESOLVE", "S-03", "external")]
     # 대시보드 수동 청산 버튼: 감시 시작에 열리고 해제에 닫힌다
     assert s.dashboard.targets == [("LONG", 2), ("", 0)]
 

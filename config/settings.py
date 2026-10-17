@@ -7042,6 +7042,28 @@ FREEZE_SENTINEL_KILL_ENABLED = False    # ⚠ 2단계(하드 종료) — 미구�
 #   동결 1회당 1통(첫 확정 때만)이며 같은 동결의 반복 주기에는 보내지 않는다.
 FREEZE_SENTINEL_MAIL_ENABLED = True
 FREEZE_SENTINEL_MAIL_RECOVERY = True    # 신호가 다시 신선해지면 [이상해소] 1통
+
+# ── [MW0602 2026-10-17 사용자 결정] 긴급 이상 알림 메일 — `utils/alert_mail.py` ─────────────
+#   계기: 10/15 실계좌 청산 거부 113분 동안 사람에게 닿은 알림이 0건이었다.
+#   코드 = 등급 머리글자 + 번호(S 실계좌 손실·오버나이트 위험 / A 즉시 인지 / B 다음 거래일 위험).
+#   제목 `[긴급이상][<PC>][<코드>] …` / `[이상해소][<PC>][<코드>] … 해소 — 지속 N분`(F-1009 형식 통일).
+#   수신자 = 신동 일일리포트와 같은 주소(`utils/mailer.py` 환경변수) · 메일과 Slack 둘 다 보낸다.
+#   **알림 전용** — 판정·차단·주문 경로와 무관하고, 발송 실패가 아무것도 멈추지 않는다.
+#   근거: docs/정기점검/매일점검/MW0602-20261017-긴급알림메일-종합검토.md
+ALERT_MAIL_ENABLED = True
+ALERT_MAIL_DAILY_CAP = 30               # 하루 상한(통). 넘으면 「상한 도달」 1통 후 로그만
+ALERT_MAIL_SLACK_TOO = True             # 메일과 Slack 병행
+# A-04 큰 손실 — 실전 자본(SIZING_TARGET_CAPITAL_KRW) 기준
+ALERT_LOSS_TRADE_KRW = 750_000          # 거래 1건 순손실 ≥ 75만원(자본 1,500만원의 5%)
+ALERT_LOSS_DAY_PCT = 0.05               # 당일 실현 순손실 ≥ 자본의 5%
+# S-02 15:10 강제청산 뒤 이 시각 이후에도 포지션이 남아 있으면 오버나이트 위험 경보
+ALERT_FORCE_EXIT_CHECK_HM = "15:12"
+# S-06 브로커 연결 끊김이 이 초 넘게 이어지면 경보(순간 끊김·자동 재연결은 제외)
+ALERT_BROKER_LOST_SEC = 60.0
+# B-02 주문가능수량 조회 실패가 하루 이 횟수 이상이면 장후 1통
+ALERT_MARGINQTY_FAIL_MIN = 5
+# S-05 장전 미기동 — 센티넬이 이 시각까지 그날 SYSTEM.log 가 신선하지 않으면 경보
+ALERT_PREMARKET_START_HM = "08:52"
 # 과신(conf>=0.85) 오류 N회 연속 시 CB③ 임계값을 0.35→0.50으로 상향
 CB_HIGH_CONF_WRONG_LIMIT = 5  # 연속 과신 오류 횟수
 CB_HIGH_CONF_THRESHOLD = 0.85  # 과신 판정 confidence 하한

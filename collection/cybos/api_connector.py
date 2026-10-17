@@ -550,6 +550,8 @@ class CybosAPI:
 
         self._fill_callbacks = []
         self._msg_callbacks = []
+        # [MW0602 2026-10-17] B-02 — 주문가능수량 조회(CpTd6722) 실패 횟수(장후 알림 판정용)
+        self.margin_qty_fail_count = 0
         self._investor_mapping_warned = set()
         self._last_order_error: Optional[Dict[str, Any]] = None
         # [308차 후속] fill 콜백 경량화 — OnReceived(COM 콜백) 안에서는 payload
@@ -1322,6 +1324,7 @@ class CybosAPI:
                 timeout_sec=5,
             )
         except TimeoutError as exc:
+            self.margin_qty_fail_count += 1
             system_logger.warning(
                 "[CybosMarginQty] BlockRequest 타임아웃: %s account=%s code=%s",
                 exc, account_no, _code,
@@ -1329,6 +1332,7 @@ class CybosAPI:
             return None
 
         if ret not in (0, None) or status != 0:
+            self.margin_qty_fail_count += 1
             system_logger.warning(
                 "[CybosMarginQty] 조회 실패 ret=%s status=%s msg=%s account=%s code=%s",
                 ret, status, msg, account_no, _code,

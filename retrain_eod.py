@@ -87,6 +87,7 @@ def _check_env():
 
     if bits != "64-bit":
         log.error("32-bit Python 감지 — py310_64 환경으로 실행해야 합니다. 종료.")
+        _notify_fail("32-bit Python 으로 실행됨 — py310_64 환경이 아니다")
         sys.exit(2)
 
 
@@ -95,6 +96,19 @@ def _notify_fail(msg: str):
     try:
         from utils.notify import notify as _nfy
         _nfy(f"[EOD재학습] 실패: {msg}", "ERROR")
+    except Exception:
+        pass
+    # [MW0602 2026-10-17 / B-01] 긴급 알림 메일 — 재학습 프로세스가 직접 보낸다
+    #   (main 은 이 서브프로세스의 실패를 알 길이 마땅치 않다). Slack 은 위 한 줄이 이미
+    #   보냈으므로 메일만 — 메일이 실패하면 alert_mail 이 Slack 에 실패 한 줄을 남긴다.
+    try:
+        from utils.alert_mail import AlertMailer
+        _am = AlertMailer(proc="retrain")
+        _am.slack_too = False
+        _am.notice("B-01", str(msg)[:160],
+                   ["실패 마커: %s" % _FAIL_PATH,
+                    "기존 모델이 그대로 쓰인다 — 내일 장전 모델 나이를 확인하세요"],
+                   key="eod")
     except Exception:
         pass
 
