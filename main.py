@@ -84,7 +84,7 @@ from config.settings import (
     EXIT_LIMIT_SLIP_TICKS, EXIT_LIMIT_UNFILLED_SEC,
     EXIT_REJECT_DETAIL_QUERY, EXIT_REJECT_BLOCK_ENTRIES,
     ALERT_FORCE_EXIT_CHECK_HM, ALERT_LOSS_TRADE_KRW, ALERT_LOSS_DAY_PCT,   # [MW0602 2026-10-17] 긴급 알림
-    ALERT_BROKER_LOST_SEC, ALERT_MARGINQTY_FAIL_MIN, SIZING_TARGET_CAPITAL_KRW,
+    ALERT_BROKER_LOST_SEC, ALERT_MARGINQTY_FAIL_MIN, ALERT_LOSS_CAPITAL_KRW,
     TP1_TICK_ENABLED,                     # [403차 종합 P1-5] tick-level TP1 킬스위치
     TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED, TOXICITY_SEVERE_SPREAD_BLOCK_TICKS,
     TOXICITY_REDUCE_MULT_SHADOW_HI, TOXICITY_REDUCE_MULT_SHADOW_LO,
@@ -17557,7 +17557,7 @@ def _ts_alert_trade_loss(self, result: dict) -> None:
         if self._alert_day != today:
             self._alert_day, self._alert_day_net = today, 0.0
         self._alert_day_net += net
-        cap = float(SIZING_TARGET_CAPITAL_KRW or 0.0)
+        cap = float(ALERT_LOSS_CAPITAL_KRW or 0.0)   # 사이징 자본과 분리 — 두 PC 같은 기준
         if net <= -float(ALERT_LOSS_TRADE_KRW):
             _ts_alert(self, "A-04", "거래 1건 %s원 (기준 −%s원)" % (format(net, "+,.0f"), format(int(ALERT_LOSS_TRADE_KRW), ",")),
                       ["%s %s계약 %.2f→%.2f · 사유 %s" % (
