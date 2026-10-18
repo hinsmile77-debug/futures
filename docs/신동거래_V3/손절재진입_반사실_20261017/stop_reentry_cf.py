@@ -15,7 +15,9 @@ v2.2 R1 반대 재진입 금지는 「기록 그대로」(10/15~ 켬)가 기본�
 사용: conda run -n py37_32 python stop_reentry_cf.py
 """
 import os, sys, collections, itertools
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+ROOT = os.path.dirname(os.path.abspath(__file__))
+while not os.path.isdir(os.path.join(ROOT, "strategy")):   # 폴더를 옮겨도 깨지지 않게 위로 찾는다
+    ROOT = os.path.dirname(ROOT)
 sys.path.insert(0, ROOT); os.chdir(ROOT)
 from config.settings import PREMARKET_LEVELS_DB, RAW_DATA_DB, WEEKLY_OPTION_FLOW_DB
 from strategy.shindong import daily_report as DR, families as F, spec as S, engine as E

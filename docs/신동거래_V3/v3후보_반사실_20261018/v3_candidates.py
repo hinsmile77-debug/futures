@@ -21,7 +21,7 @@ sys.argv = [sys.argv[0]] + [a for a in sys.argv[1:]]
 GUARD_MODE = "all" if "--guard-all" in sys.argv else "rec"
 sys.argv = [sys.argv[0]]
 import lead_reentry_cf as M
-from strategy.shindong import families as F, spec as S, daily_report as DR
+from strategy.shindong import families as F, spec as S, daily_report as DR, engine as E
 
 
 def run(d, L, bias, day, route, after, slp, guard_r60=False):
@@ -87,7 +87,10 @@ if __name__ == "__main__":
             continue
         data[day] = (o["d"], o["L"], F._r1_bias(o["d"])[1])
         for v in ("SHADOW_FLOWF", "SHADOW_BRKC", "SHADOW_V1", "SHADOW_V1X4"):
-            shadow[v][day] = sum(sum(g.get("net") or 0 for g in t["legs"]) for t in o["results"][v]["trades"]
+            res = o["results"].get(v)
+            if res is None:            # [v3] 종료된 섀도는 결과에 없다 — 엔진으로 직접 재생(엔진은 이름을 계속 안다)
+                res = F.run_family_day(o["d"], o["L"], "flowf") if v == "SHADOW_FLOWF" else E.run_day(o["d"], o["L"], v)
+            shadow[v][day] = sum(sum(g.get("net") or 0 for g in t["legs"]) for t in res["trades"]
                                  if t["status"] == "CLOSED")
     C = [("현행 v2.2 (FLOWC·halt)", "flowc", None, "halt"),
          ("v2.2 + 손절방향금지", "flowc", None, "same"),

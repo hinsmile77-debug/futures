@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """v3 배포 검증 — 공식 경로(daily_report.load_day → runner.run_variant)로 16일 재생해 반사실과 대조."""
 import os, sys
-ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", ".."))
+ROOT = os.path.dirname(os.path.abspath(__file__))
+while not os.path.isdir(os.path.join(ROOT, "strategy")):   # 폴더를 옮겨도 깨지지 않게 위로 찾는다
+    ROOT = os.path.dirname(ROOT)
 sys.path.insert(0, ROOT); os.chdir(ROOT)
 from config.settings import PREMARKET_LEVELS_DB, RAW_DATA_DB, WEEKLY_OPTION_FLOW_DB
 from strategy.shindong import daily_report as DR, spec as S, engine as E

@@ -23,7 +23,9 @@
 사용: py37_32 python lead_reentry_cf.py [--diff] [--guard-all] [--cmin 0.3]
 """
 import os, sys, math, collections
-ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", ".."))
+ROOT = os.path.dirname(os.path.abspath(__file__))
+while not os.path.isdir(os.path.join(ROOT, "strategy")):   # 폴더를 옮겨도 깨지지 않게 위로 찾는다
+    ROOT = os.path.dirname(ROOT)
 sys.path.insert(0, ROOT); os.chdir(ROOT)
 from config.settings import PREMARKET_LEVELS_DB, RAW_DATA_DB, WEEKLY_OPTION_FLOW_DB
 from strategy.shindong import daily_report as DR, families as F, spec as S, engine as E
