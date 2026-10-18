@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""[MW0602 604차] 신동 v2 「계열」 규칙 — MAIN(FLOWC) · SHADOW_FLOWF · SHADOW_BRKC.
+"""[MW0602 604차] 신동 v2 「계열」 규칙 — FLOWC · FLOWF · BRKC · FLOWR60 · [v3] HYBR60(MAIN) · HYBL · FLOWC_S.
 
 `engine.run_day` 는 v1(R1/R2/R3)의 변형만 안다. v2 규칙은 R2·R3 가 없는 **별개 규칙**이라
 같은 함수에 넣으면 분기가 폭발한다 — 그래서 여기 둔다. 반환 형식은 `run_day` 와 같아
@@ -9,6 +9,9 @@
   FLOWC : 개인 위클리 콜−풋 누적(09:00 대비)이 +K 이상 → 매도 / −K 이하 → 매수(역방향)
   FLOWF : 외국인 선물 순매수 누적(09:00 이후 첫 수신 대비)이 −K 이하 → 매도 / +K 이상 → 매수(순방향)
   BRKC  : R1 방향일 = 종가가 구조맥점을 R1 방향으로 새로 넘으면 진입(손절 = 깬 맥점 ∓ 2) / 보류일 = FLOWC
+  [v3] HYBR60 : 첫 거래 = FLOWC · 2·3번째 = FLOWR60(최근 60분 변화) · 재난 손절 뒤 손절 방향 누적 금지 — MAIN
+  [v3] HYBL   : 첫 거래 = FLOWC · 2·3번째 = 주도 지표(CP·FX 중 가격 추종 상관 높은 쪽) · 손절 방향 누적 금지
+  [v3] FLOWC_S: FLOWC(v2.2 R1 가드 포함) · 손절 방향 누적 금지(당일 전면 중단 대신)
   청산  : 손절(BRK 만) → 트레일(유리 act pt → 극값 ∓ dist, 그 봉 극값은 다음 봉부터) → 익절 지정가 →
           15:05 시간 청산. 한 봉에서 손절·익절이 함께 닿으면 **손절**(보수적). 신규 진입 14:50 까지.
   수량  : 2계약 일괄 — 두 다리가 같은 가격·같은 사유로 닫힌다(legs 형식 유지).
@@ -24,6 +27,8 @@ from strategy.shindong import spec as S
 
 RULE_FLOW = "FLOW"
 RULE_BRK = "BRK"
+RULE_R60 = "R60"                  # [v3] HYBR60 의 2·3번째 진입(FLOWR60 신호)
+RULE_LEAD = "LEAD"                # [v3] HYBL 의 2·3번째 진입(주도 지표 신호)
 
 
 def _r1_bias(d: "E.DayFrame") -> Tuple[Optional[float], Optional[int]]:
@@ -81,6 +86,57 @@ def _roll_signal(series: Dict[str, float], win_min: int, k_thr: float, sign: int
         dv = v - r
         return sign * (1 if dv >= k_thr else (-1 if dv <= -k_thr else 0))
     return sig
+
+
+def _pearson(a: List[float], b: List[float]) -> Optional[float]:
+    n = len(a)
+    if n < 5:
+        return None
+    ma, mb = sum(a) / n, sum(b) / n
+    va = sum((x - ma) ** 2 for x in a)
+    vb = sum((y - mb) ** 2 for y in b)
+    if va <= 0 or vb <= 0:
+        return None
+    return sum((x - ma) * (y - mb) for x, y in zip(a, b)) / (va * vb) ** 0.5
+
+
+def _lead_signal(d: "E.DayFrame") -> Tuple[Callable[[str], int], Dict[str, Any]]:
+    """[v3 SHADOW_HYBL] 「가격이 따라가는 지표」의 최근 LEAD_WIN_MIN 분 변화로 방향.
+    정렬 시계열: CP = −개인 콜−풋(역추종) · FX = +외국인 선물 순매수 누적(순추종).
+    분 k 에서 k−W ~ k 의 가격 종가와 각 시계열의 피어슨 상관 → 높은 쪽이 주도(둘 다 LEAD_C_MIN 미만이면 0).
+    주도 지표의 같은 창 변화 ≥ +K → 매수 / ≤ −K → 매도. k−W 가 09:00 이전이면 0(첫 신호 10:00).
+    st["lead"] 에 마지막으로 신호를 낸 주도 지표 이름을 남긴다(기록용). 미래 참조 없음 — k 까지의 값만 쓴다."""
+    keys = [k for k in d.idx if k >= S.FLOW_BASE and k in d.c]
+    pos = {k: i for i, k in enumerate(keys)}
+    ser = {"CP": {k: -d.sp[k] for k in keys if k in d.sp}, "FX": {k: d.fx[k] for k in keys if k in d.fx}}
+    kk = {"CP": S.LEAD_K_CP, "FX": S.LEAD_K_FX}
+    st: Dict[str, Any] = {"lead": None}
+    cache: Dict[str, Tuple[int, Optional[str]]] = {}
+
+    def sig(k: str) -> int:
+        if k not in cache:
+            out: Tuple[int, Optional[str]] = (0, None)
+            i = pos.get(k)
+            rk = _minus_min(k, S.LEAD_WIN_MIN)
+            if i is not None and rk >= S.FLOW_BASE:
+                ks = [x for x in keys[:i + 1] if x >= rk]
+                px = [d.c[x] for x in ks]
+                cand = []
+                for nm, s in ser.items():
+                    if all(x in s for x in ks):
+                        r = _pearson(px, [s[x] for x in ks])
+                        if r is not None and r >= S.LEAD_C_MIN:
+                            cand.append((r, nm))
+                if cand:
+                    _r, lead = max(cand)
+                    dv = ser[lead][k] - ser[lead][ks[0]]
+                    out = ((1 if dv >= kk[lead] else (-1 if dv <= -kk[lead] else 0)), lead)
+            cache[k] = out
+        side, lead = cache[k]
+        if side:
+            st["lead"] = lead
+        return side
+    return sig, st
 
 
 def _brk_signal(d: "E.DayFrame", L, bias: int) -> Tuple[Callable[[str], int], Dict[str, Any]]:
@@ -147,9 +203,14 @@ def _run_position(d: "E.DayFrame", side: int, t0: str, stop: Optional[float],
 def _run_signal(d: "E.DayFrame", sig: Callable[[str], int], rule: str, stop_fn, trail, tp, max_trades: int,
                 start: str = "09:00", level_of=None, halt_on_sl: bool = False,
                 notes: Optional[List[str]] = None, halt_mode: Optional[str] = None,
-                r1_bias: int = 0, ctr_max: Optional[int] = None) -> List[Dict[str, Any]]:
+                r1_bias: int = 0, ctr_max: Optional[int] = None,
+                sig_after: Optional[Callable[[str], int]] = None, rule_after: Optional[str] = None
+                ) -> List[Dict[str, Any]]:
     """stop_fn(side, entry_px) -> 손절가 또는 None.
-    halt_mode: "all"(손절 뒤 당일 전면 중단 — v2.1 규격) · "same"(손절 난 방향만 중단 — [605차] 반사실 계측용) · None.
+    halt_mode: "all"(손절 뒤 당일 전면 중단 — v2.1 규격) · "same"(손절 난 방향만 중단 — [605차] 반사실 계측용,
+               마지막 손절 방향으로 덮어쓴다) · "sticky"([v3] 손절 난 방향을 **누적** 금지 — 양방향 손절이면 당일 끝) · None.
+    sig_after: [v3] 주어지면 하루 **두 번째 거래부터** 이 신호로 진입한다(첫 거래는 sig). rule 표기는 rule_after.
+               sig 는 그 뒤에도 매분 불러 상태(BRK 직전 종가 등)를 잇는다.
     halt_on_sl=True 는 halt_mode="all" 과 같다(호환).
     halt_on_sl=True (v2.1 재난 손절): 손절(SL)이 한 번 발동하면 **그날 신규 진입을 멈춘다** —
     신호가 살아 있어 곧바로 같은 방향으로 재진입하는 것을 끊는다(9/29 실측: 손절 8·12pt 가 재진입으로 손실을 키웠다)."""
@@ -157,6 +218,8 @@ def _run_signal(d: "E.DayFrame", sig: Callable[[str], int], rule: str, stop_fn, 
     busy = None
     halted = False
     blocked = 0                       # halt_mode="same": 손절 난 방향만 그날 막는다
+    banned = set()                    # [v3] halt_mode="sticky": 손절 난 방향을 누적해 막는다
+    ban_hits = 0                      # 금지 방향 신호로 막힌 분(탈락 가시화 — 계측 4원칙 ③)
     mode = halt_mode or ("all" if halt_on_sl else None)
     # [v2.2] R1 반대 방향 재진입 금지 — ctr_max 가 None 이면 꺼짐(섀도·반사실은 종전과 같다)
     ctr_n = 0
@@ -170,8 +233,14 @@ def _run_signal(d: "E.DayFrame", sig: Callable[[str], int], rule: str, stop_fn, 
         if halted or k > S.FLOW_LAST_ENTRY or len(trades) >= max_trades:
             sig(k)
             continue
+        after = sig_after is not None and len(trades) >= 1
         side = sig(k)
+        if after:
+            side = sig_after(k)
         if not side or side == blocked:
+            continue
+        if side in banned:
+            ban_hits += 1
             continue
         ctr = bool(r1_bias) and side == -r1_bias
         if ctr and ctr_max is not None and ctr_n >= ctr_max:
@@ -180,13 +249,22 @@ def _run_signal(d: "E.DayFrame", sig: Callable[[str], int], rule: str, stop_fn, 
         e = d.c[k]
         stop = stop_fn(side, e) if stop_fn else None
         tr = _run_position(d, side, k, stop, trail, tp)
-        tr.update(rule=rule, touch_level=(level_of() if level_of else None), touch_ts=None)
+        tr.update(rule=(rule_after or rule) if after else rule,
+                  touch_level=(level_of() if level_of else None), touch_ts=None)
         trades.append(tr)
         busy = tr["exit_ts"] or "99:99"
         if ctr:
             ctr_n += 1
-        if mode in ("all", "same") and tr["status"] == "CLOSED" and tr["legs"][0].get("reason") == "SL":
-            if mode == "all":
+        if mode in ("all", "same", "sticky") and tr["status"] == "CLOSED" and tr["legs"][0].get("reason") == "SL":
+            if mode == "sticky":
+                banned.add(side)
+                if len(banned) >= 2:
+                    halted = True
+                if notes is not None:
+                    notes.append("재난 손절 발동(%s) — %s 당일 금지%s" % (
+                        tr["exit_ts"], "매수" if side > 0 else "매도",
+                        " · 양방향 손절 — 당일 신규 진입 종료" if halted else " · 반대 방향은 진입 가능"))
+            elif mode == "all":
                 halted = True
                 if notes is not None:
                     notes.append("재난 손절 발동(%s) — 당일 신규 진입 중단" % tr["exit_ts"])
@@ -194,6 +272,9 @@ def _run_signal(d: "E.DayFrame", sig: Callable[[str], int], rule: str, stop_fn, 
                 blocked = side
                 if notes is not None:
                     notes.append("재난 손절 발동(%s) — 같은 방향만 당일 중단" % tr["exit_ts"])
+    if ban_hits and notes is not None:
+        notes.append("[v3] 손절 방향 금지로 막힌 신호 %d분 (금지 %s)" % (
+            ban_hits, "·".join("매수" if x > 0 else "매도" for x in sorted(banned))))
     if ctr_blocked and notes is not None:
         # 신호가 켜져 있던 분마다 세면 수십 개라 첫 시각·분 수만 남긴다(…외 N 형식 — 계측 4원칙 ③).
         notes.append("[v2.2] R1 반대 재진입 차단 — 첫 %s · 신호 %d분 (R1 %s · 허용 %d건 소진)"
@@ -244,9 +325,37 @@ def run_family_day(d: "E.DayFrame", L, family: str,
                            ctr_max=S.FLOW_R1_CTR_MAX if r1_guard else None)
 
     if family == "flowc":
-        # [v2.2] MAIN 의 FLOWC 만 R1 반대 재진입 금지를 쓴다. BRKC 보류일 대체(아래)는 R1=0 이라
-        # 어차피 무영향이지만 규격을 섞지 않으려 명시적으로 끈다.
+        # [v2.2] v2.2 MAIN(= v3 의 SHADOW_V22)의 FLOWC 만 R1 반대 재진입 금지를 쓴다. BRKC 보류일 대체(아래)는
+        # R1=0 이라 어차피 무영향이지만 규격을 섞지 않으려 명시적으로 끈다.
         trades = flowc(r1_guard=S.FLOW_R1_CTR_REENTRY_BLOCK)
+    elif family == "flowc_s":
+        # [v3 SHADOW_V22S] v2.2 MAIN 에서 손절 뒤 처리만 「손절 방향 누적 금지」로 바꾼다.
+        sig, why = _flow_signal(d, d.sp, S.FLOWC_K, -1)
+        if sig is None:
+            dec["notes"].append("FLOWC %s — 거래 없음(미측정)" % why)
+        else:
+            trades = _run_signal(d, sig, RULE_FLOW, cat_stop, S.FLOW_TRAIL, S.FLOW_TP, S.FLOW_MAX_TRADES,
+                                 notes=dec["notes"], halt_mode=S.SL_BAN_STICKY,
+                                 r1_bias=bias if S.FLOW_R1_CTR_REENTRY_BLOCK else 0,
+                                 ctr_max=S.FLOW_R1_CTR_MAX if S.FLOW_R1_CTR_REENTRY_BLOCK else None)
+    elif family in ("hybr60", "hybl"):
+        # [v3] 첫 거래 = FLOWC · 2·3번째 = FLOWR60(hybr60 = MAIN) / 주도 지표(hybl). 손절 방향 누적 금지.
+        #   R1 반대 재진입 금지는 쓰지 않는다 — FLOWC 는 첫 거래만이라 재진입이 없고, 후반 신호에 걸면
+        #   R1 오판일의 반대 전환을 막는다(spec 「v3」 절).
+        sig, why = _flow_signal(d, d.sp, S.FLOWC_K, -1)
+        if sig is None:
+            dec["notes"].append("FLOWC %s — 거래 없음(미측정)" % why)
+        elif family == "hybr60":
+            trades = _run_signal(d, sig, RULE_FLOW, cat_stop, S.FLOW_TRAIL, S.FLOW_TP, S.FLOW_MAX_TRADES,
+                                 notes=dec["notes"], halt_mode=S.HYB_SL_HALT_MODE,
+                                 sig_after=_roll_signal(d.sp, S.FLOWR_WIN_MIN, S.FLOWR_K, -1), rule_after=RULE_R60)
+        else:
+            if not d.fx:
+                dec["notes"].append("HYBL 외국인 선물 원천 없음 — 주도 지표는 CP 만으로 판정(미측정 ≠ 0)")
+            lsig, _lst = _lead_signal(d)
+            trades = _run_signal(d, sig, RULE_FLOW, cat_stop, S.FLOW_TRAIL, S.FLOW_TP, S.FLOW_MAX_TRADES,
+                                 notes=dec["notes"], halt_mode=S.HYB_SL_HALT_MODE,
+                                 sig_after=lsig, rule_after=RULE_LEAD)
     elif family == "flowr60":
         if not d.sp:
             dec["notes"].append("FLOWR60 원천 없음 — 거래 없음(미측정)")

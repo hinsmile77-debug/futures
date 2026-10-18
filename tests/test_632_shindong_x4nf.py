@@ -26,8 +26,10 @@ from strategy.shindong import engine, spec  # noqa: E402
 
 # ── A ────────────────────────────────────────────────────────────────────
 def test_x4nf_preregistration():
-    # [604차] X4NF 는 SHADOW_V1X4 로 승계(종료) — 엔진 플래그는 그대로
-    assert "SHADOW_X4NF" in spec.RETIRED_SHADOWS and spec.SHADOW_META_D["SHADOW_V1X4"]["x4nf"] is True
+    # [604차] X4NF 는 SHADOW_V1X4 로 승계(종료) · [v3] V1X4 도 종료 — 엔진은 두 이름 모두 계속 알아듣는다
+    assert {"SHADOW_X4NF", "SHADOW_V1X4"} <= set(spec.RETIRED_SHADOWS) and "SHADOW_V1X4" not in spec.VARIANTS
+    import inspect
+    assert '"SHADOW_V1X4"' in inspect.getsource(engine.run_day)
     assert spec.VARIANTS[0] == "MAIN"
     assert (spec.X4NF_SCORING_START, spec.X4NF_JUDGE_AFTER_DAYS) == ("2026-09-29", 10)   # v1 시대 값(사료)
     assert spec.V1_SPEC_VERSION == "SD-2026-09-24-v1"   # v1 값 무변경
@@ -141,11 +143,11 @@ def test_scorecard_excludes_build_day_and_waits(tmp_path):
     res = {"decision": {"pm_sp": 279.0, "bias": -1, "r2": "CONFIRMED", "r2_ts": "09:03", "notes": []},
            "trades": [tr]}
     for day in ("2026-09-28", "2026-09-29"):
-        for v in spec.VARIANTS:
+        for v in spec.VARIANTS + ("SHADOW_V1",):      # [v3] V1 은 종료됐지만 그 시절 행은 DB 에 남아 있다
             store.save_day(db, day, v, "wk_mon", "", res, "15:08", spec.SPEC_VERSION, source="backfill")
     txt = sc.build(db, spec.SCORING_START)
     # [604차] 9/28·9/29 행은 v2 창(10/01~) 밖 — v2 는 0일, v1 레거시 창(SHADOW_V1 의 R3)만 센다
-    assert "v2 판정 기록 거래일: **0일**" in txt
+    assert "MAIN 판정 기록 거래일: **0일**" in txt
     assert "v1 R3 닫힌 거래 2건" in txt and "판정: **대기** — 2/10 거래일" in txt
 
 

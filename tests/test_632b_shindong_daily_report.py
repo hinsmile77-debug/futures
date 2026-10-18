@@ -38,16 +38,15 @@ def test_report_matches_engine_and_attributes_causes(tmp_path):
     r = _build("2026-09-28", tmp_path)
     if not r["ok"]:
         pytest.skip("그날 봉이 이 PC DB 에 없다")
-    # [604차] v2 변형 · MW0602 DB 실측(2026-09-30). MAIN = FLOWC, V1 = v1 전체, V1X4 = R2+X4NF
-    net = {v: round(s["net"]) for v, s in r["sums"].items() if v in ("MAIN", "SHADOW_V1", "SHADOW_V1X4")}
-    assert net == pytest.approx({"MAIN": 2711319, "SHADOW_V1": 330407, "SHADOW_V1X4": 161010}, abs=2)
+    # [v3] MW0602 DB 실측(2026-10-18). MAIN = HYBR60, V22 = v2.2 MAIN(= v2 시절 MAIN 값 2,711,319 그대로)
+    net = {v: round(s["net"]) for v, s in r["sums"].items() if v in ("MAIN", "SHADOW_V22")}
+    assert net == pytest.approx({"MAIN": 2491259, "SHADOW_V22": 2711319}, abs=2)
     md = open(r["md_path"], encoding="utf-8").read()
     for sec in ("## 0. 한눈에", "## 1. 차트", "## 2. 거래 흐름", "## 3. 섀도 흐름",
                 "## 4. 누적 채점", "## 5. 러너 섀도", "## 6. 개선 방향"):
         assert sec in md
-    assert "flip 금지(같은 맥점 1090.0 반대 방향)" in md          # V1X4 vs V1(9/28 은 1090 에서 뒤집었다)
-    assert "V1 진입" in md and "V1 손익" in md                       # [604차] v1 계열 대조 기준은 V1
-    assert "별개 규칙(family)" in md and "v1 대조" in md
+    # [v3] v1 계열 섀도가 모두 종료돼 V1 대조 귀속(flip 금지 등)은 더 그리지 않는다
+    assert "별개 규칙(family)" in md and "되돌림 대조" in md
     root = ET.parse(r["svg_path"]).getroot()
     assert root.tag.endswith("svg")
     assert sum(1 for e in root.iter() if e.tag.endswith("polyline")) == len(spec.VARIANTS) + 1   # + 흐름

@@ -239,7 +239,8 @@ def run_day(d: DayFrame, L, variant: str = "MAIN") -> Dict[str, Any]:
     # [632차] X4NF — R3 만 바꾼다: 1차 목표 X4 + 같은 맥점 방향 뒤집기(flip) 금지. R2 는 MAIN 과 같다.
     # [MW0602 598차] X4NFA — X4NF 전부 + 깨진 맥점 진입 금지(A). R2 는 MAIN 과 같다.
     broken_guard = variant == "SHADOW_X4NFA" or bool(meta.get("broken"))
-    x4nf = variant == "SHADOW_X4NF" or broken_guard or bool(meta.get("x4nf"))
+    # [v3] SHADOW_V1X4 는 종료돼 SHADOW_META 에서 빠졌다 — 재현 테스트가 부르므로 이름으로 계속 알아듣는다.
+    x4nf = variant in ("SHADOW_X4NF", "SHADOW_V1X4") or broken_guard or bool(meta.get("x4nf"))
     # [632차 후속] TR44 — MAIN 과 같은 진입·목표에 R3 만 트레일(+4pt 발동 · 4pt 간격). 비교 기록용.
     tr44 = (S.TR44_ACT, S.TR44_DIST) if (variant == "SHADOW_TR44" or meta.get("tr44")) else None
     lvl_side: Dict[float, int] = {}     # 맥점 → 그 맥점에서 마지막으로 **진입한** 방향

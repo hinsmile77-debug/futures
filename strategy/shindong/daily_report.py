@@ -35,9 +35,11 @@ from strategy.shindong import spec as S
 from strategy.shindong.calendar import select_flow_product
 
 # [604차] 라벨은 spec.SHADOW_META 가 준다. v1 시대 이름은 종료됐지만 옛 리포트 재생성을 위해 남긴다.
-VLABEL = {"MAIN": "MAIN(v2 FLOWC)", "SHADOW_E2F2": "E2F2(흐름순응)",
+VLABEL = {"MAIN": "MAIN(v3 HYBR60)", "SHADOW_E2F2": "E2F2(흐름순응)",
           "SHADOW_X4NF": "X4NF(가까운목표·flip금지)", "SHADOW_TR44": "TR44(R3 트레일 4/4)",
-          "SHADOW_X4NFA": "X4NFA(X4NF+깨진맥점금지)"}
+          "SHADOW_X4NFA": "X4NFA(X4NF+깨진맥점금지)",
+          # [v3] 종료 — 옛 리포트 재생성용 라벨
+          "SHADOW_V1": "V1(현행 R1/R2/R3)", "SHADOW_V1X4": "V1X4(R2+X4NF)", "SHADOW_FLOWF": "FLOWF(외국인선물 추종)"}
 VLABEL.update({k: m["label"] for k, m in S.SHADOW_META})
 
 
@@ -294,9 +296,10 @@ def observations(day: Dict[str, Any], rows: Dict[str, List[Dict]], sums: Dict[st
                    % (VLABEL[best], _man(sums[best]["net"]), _man(sums[best]["net"] - sums["MAIN"]["net"]), S.JUDGE_AFTER_DAYS))
     else:
         obs.append("**오늘은 MAIN 이 최선** (%s)." % _man(sums["MAIN"]["net"]))
-    if "SHADOW_V1" in sums:
-        obs.append("**v1 대조** — V1 %s vs MAIN %s (차 %s). 되돌림 판정은 20거래일 누적으로만." % (
-            _man(sums["SHADOW_V1"]["net"]), _man(sums["MAIN"]["net"]), _man(sums["MAIN"]["net"] - sums["SHADOW_V1"]["net"])))
+    rb = getattr(S, "ROLLBACK_VARIANT", "SHADOW_V1")          # [v3] 되돌림 기준 = SHADOW_V22
+    if rb in sums:
+        obs.append("**되돌림 대조** — %s %s vs MAIN %s (차 %s). 되돌림 판정은 20거래일 누적으로만." % (
+            VLABEL.get(rb, rb), _man(sums[rb]["net"]), _man(sums["MAIN"]["net"]), _man(sums["MAIN"]["net"] - sums[rb]["net"])))
     obs.append("⚠ 규격 변경은 사전등록 §6(새 버전 · 재채점)으로만. 이 절은 관찰이다.")
     return obs
 
@@ -527,7 +530,9 @@ def build(trade_date: str, raw_db: str, flow_db: str, levels_db: str, sd_db: str
                 w("| %s | %s | 0 | - | - | - | - | - | 기록 전 |" % (VLABEL[v], c.get("start", "-")))
                 continue
             if v == "MAIN":
-                jd = "v2 vs V1 되돌림 판정 %d/%d일" % (c["days"], S.JUDGE_AFTER_DAYS)
+                jd = "v3 vs %s 되돌림 판정 %d/%d일" % (S.ROLLBACK_VARIANT.replace("SHADOW_", ""), c["days"], S.JUDGE_AFTER_DAYS)
+            elif v == S.ROLLBACK_VARIANT:
+                jd = "되돌림 기준 %d/%d일" % (c["days"], S.JUDGE_AFTER_DAYS)
             elif v == "SHADOW_V1":
                 jd = "대조군 %d/%d일 (v1 R3 중단 판정은 채점표)" % (c["days"], S.JUDGE_AFTER_DAYS)
             else:
@@ -537,7 +542,8 @@ def build(trade_date: str, raw_db: str, flow_db: str, levels_db: str, sd_db: str
                 ("%.0f%%" % (100.0 * c["win"] / c["n"])) if c["n"] else "-", _man(c["net"]), _man(c["worst_day"]),
                 c["r3n"], ("%.0f%%" % (100.0 * c["r3win"] / c["r3n"])) if c["r3n"] else "-", _man(c["r3net"]), jd))
         w("")
-        w("> 판정 전 집계다 — 인용·규격 변경 근거로 쓰지 말 것. 되돌림: V1 이 MAIN 보다 순손익·최악일 **둘 다** 나으면 v1 복귀. "
+        w("> 판정 전 집계다 — 인용·규격 변경 근거로 쓰지 말 것. 되돌림: %s 가 MAIN 보다 순손익·최악일 **둘 다** 나으면 v2.2 복귀. "
+          % S.ROLLBACK_VARIANT.replace("SHADOW_", "") +
           "섀도: MAIN 대비 순손익 우위 **그리고** 최악일 개선 → 채택 후보(자동 승격 없음).")
     else:
         w("- 기록 DB 없음(미배선 — 0건이 아니다)")

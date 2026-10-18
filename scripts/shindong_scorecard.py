@@ -204,7 +204,7 @@ def build(db=SHINDONG_DB, since=spec.SCORING_START, raw_db=RAW_DATA_DB, levels_d
     w = lines.append
     w("# 신동 채점표 (%s 기준)" % _dt.date.today().isoformat())
     w("")
-    w("- 규격: `%s`(MAIN = %s) · v2 채점 시작 %s · v1 창(SHADOW_V1 · R3 중단 판정) %s 부터 · DB `%s`" % (
+    w("- 규격: `%s`(MAIN = %s) · MAIN 채점 시작 %s · v1 창(SHADOW_V1 · R3 중단 판정 · v3 에서 종료) %s 부터 · DB `%s`" % (
         spec.SPEC_VERSION, spec.MAIN_FAMILY.upper(), since, spec.V1_SCORING_START, db))
     if not os.path.exists(db):
         w("- **미배선** — DB 가 없다(0건이 아니다)")
@@ -213,7 +213,7 @@ def build(db=SHINDONG_DB, since=spec.SCORING_START, raw_db=RAW_DATA_DB, levels_d
     trades = [t for t in trades_all if t["trade_date"] >= since]
     days = [d for d in days_all if d["trade_date"] >= since]
     main_days = sorted({d["trade_date"] for d in days if d["variant"] == "MAIN"})
-    w("- v2 판정 기록 거래일: **%d일**" % len(main_days))
+    w("- MAIN 판정 기록 거래일: **%d일**" % len(main_days))
     for v, st in sorted(spec.LATE_SHADOW_START.items()):
         pre = [t for t in trades if t["variant"] == v and t["trade_date"] < st]
         if pre:
@@ -231,7 +231,7 @@ def build(db=SHINDONG_DB, since=spec.SCORING_START, raw_db=RAW_DATA_DB, levels_d
         w("- 종료된 섀도(DB 행 보존 · 판정 없음): " + " · ".join(
             "%s %d행(%s)" % (v, n, spec.RETIRED_SHADOWS[v]) for v, n in sorted(retired.items()) if n))
     w("")
-    w("## 1. 변형 × 규칙 (v2 창)")
+    w("## 1. 변형 × 규칙 (MAIN 채점 창)")
     w("")
     w("| 변형 | 규칙 | 거래 | 승 | 승률 | 순손익(원) | 거래당 | 실현가능가 순손익* |")
     w("|---|---|---|---|---|---|---|---|")
@@ -253,19 +253,19 @@ def build(db=SHINDONG_DB, since=spec.SCORING_START, raw_db=RAW_DATA_DB, levels_d
     w("\\* 실현가능가 = 처음 알아챈 시각(`detected_at`)의 최신 종가로 진입했다고 보고 같은 청산가로 다시 잰 값. "
       "백필·보유 중 행은 재지 못한다(미측정 ≠ 0).")
     w("")
-    w("## 2. 일별 (MAIN v2)")
+    w("## 2. 일별 (MAIN)")
     w("")
     ctxs = {}                                      # [605차] 날짜 → (DayFrame, 맥점) — 일별 계측·재난 손절 반사실이 같이 쓴다
     w("\n".join(_daily_section(live, days, raw_db, flow_db, levels_db, ctxs)))
     w("")
     sec = 3
-    w("## %d. v2 vs V1 되돌림 판정 (사전등록 V2 §4)" % sec)
+    w("## %d. v3 vs %s 되돌림 판정 (사전등록 V3 §3)" % (sec, spec.ROLLBACK_VARIANT))
     w("")
     w("\n".join(_rollback_judge(live, days)))
     w("")
     sec += 1
     for v, m in spec.SHADOW_META:
-        if v == "SHADOW_V1":
+        if v in ("SHADOW_V1", spec.ROLLBACK_VARIANT):
             continue
         w("## %d. %s 판정 (%s 사전등록)" % (sec, v, m.get("origin", "")))
         w("")
@@ -299,13 +299,14 @@ def build(db=SHINDONG_DB, since=spec.SCORING_START, raw_db=RAW_DATA_DB, levels_d
             if _con is not None:
                 _con.close()
     w("")
+    if "SHADOW_FLOWF" in spec.VARIANTS:              # [v3] FLOWF 종료 — 다시 켜면 절도 돌아온다
+        sec += 1
+        w("## %d. FLOWC ↔ FLOWF 대조 — 같은 규칙 · 다른 원천 (표시 — 판정 아님)" % sec)
+        w("")
+        w("\n".join(_flow_pair_section(live, days)))
+        w("")
     sec += 1
-    w("## %d. FLOWC ↔ FLOWF 대조 — 같은 규칙 · 다른 원천 (표시 — 판정 아님)" % sec)
-    w("")
-    w("\n".join(_flow_pair_section(live, days)))
-    w("")
-    sec += 1
-    w("## %d. 재난 손절 발동일 — 실제 vs 반사실 (MAIN, 표시 — 판정 아님)" % sec)
+    w("## %d. 재난 손절 발동일 — 실제 vs 반사실 (MAIN 의 FLOWC 거래, 표시 — 판정 아님)" % sec)
     w("")
     w("\n".join(_cat_stop_section(live, days, raw_db, flow_db, levels_db, ctxs)))
     w("")
@@ -554,20 +555,22 @@ def _by_day(live, xdays, v):
 
 
 def _rollback_judge(live, days):
-    """[604차] v2 되돌림 — SHADOW_V1 이 MAIN(v2)보다 순손익이 크고 **그리고** 최악일도 덜 나쁘면 v1 복귀."""
+    """[v3] 되돌림 — ROLLBACK_VARIANT(SHADOW_V22)가 MAIN(v3)보다 순손익이 크고 **그리고** 최악일도 덜 나쁘면 v2.2 복귀.
+    ([604차] v2 시절 기준은 SHADOW_V1 이었다 — 같은 형식.)"""
+    rb = spec.ROLLBACK_VARIANT
     xdays = sorted({d["trade_date"] for d in days if d["variant"] == "MAIN"})
     if not xdays:
-        return ["- 기록 없음 — v2 채점 시작 %s 이후 MAIN 판정 행이 없다(미측정 ≠ 0)" % spec.SCORING_START]
-    mm, vv = _by_day(live, xdays, "MAIN"), _by_day(live, xdays, "SHADOW_V1")
+        return ["- 기록 없음 — MAIN 채점 시작 %s 이후 MAIN 판정 행이 없다(미측정 ≠ 0)" % spec.SCORING_START]
+    mm, vv = _by_day(live, xdays, "MAIN"), _by_day(live, xdays, rb)
     out = ["| 변형 | 거래일 | 순손익(원) | 최악일(원) |", "|---|---|---|---|"]
-    for v, m in (("MAIN(v2)", mm), ("SHADOW_V1", vv)):
+    for v, m in (("MAIN(v3)", mm), (rb, vv)):
         out.append("| %s | %d | %s | %s |" % (v, len(m), _fmt(sum(m.values())), _fmt(min(m.values()))))
     if len(xdays) < spec.JUDGE_AFTER_DAYS:
         out.append("- 판정: **대기** — %d/%d 거래일" % (len(xdays), spec.JUDGE_AFTER_DAYS))
     else:
         back = sum(vv.values()) > sum(mm.values()) and min(vv.values()) > min(mm.values())
-        out.append("- 판정: **%s** (기준: V1 이 순손익 우위 **그리고** 최악일 개선이면 복귀)" % (
-            "v1 복귀 — v3 로 재사전등록" if back else "v2 유지"))
+        out.append("- 판정: **%s** (기준: %s 가 순손익 우위 **그리고** 최악일 개선이면 복귀)" % (
+            "v2.2 복귀 — v4 로 재사전등록" if back else "v3 유지", rb))
     return out
 
 

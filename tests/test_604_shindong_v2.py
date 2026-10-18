@@ -43,25 +43,24 @@ def _scorecard():
 
 # ── A. 사전등록 값 ────────────────────────────────────────────────────────
 def test_v2_spec_is_preregistered():
-    assert spec.SPEC_VERSION == "SD-2026-10-15-v2.2"                 # [2026-10-15] v2.2 = R1 반대 재진입 금지
+    # [v3] 현행 MAIN·섀도 구성은 test_shindong_v3_hybr60 이 고정한다. 여기는 v2 시절 값(사료·섀도가 쓰는 규칙)만.
+    assert (spec.V22_SPEC_VERSION, spec.V22_SCORING_START) == ("SD-2026-10-15-v2.2", "2026-10-15")
     assert (spec.V21_SPEC_VERSION, spec.V21_SCORING_START) == ("SD-2026-09-30-v2.1", "2026-10-01")
     assert (spec.FLOW_R1_CTR_REENTRY_BLOCK, spec.FLOW_R1_CTR_MAX) == (True, 1)
     assert (spec.FLOW_CAT_STOP_ATR, spec.FLOW_CAT_STOP_FALLBACK_PT, spec.FLOW_CAT_STOP_HALT_DAY) == (0.6, 20.0, True)
     assert spec.V1_SPEC_VERSION == "SD-2026-09-24-v1"
-    assert (spec.SCORING_START, spec.V1_SCORING_START) == ("2026-10-15", "2026-09-28")   # [v2.2] 창 재시작
-    assert (spec.MAIN_KIND, spec.MAIN_FAMILY) == ("family", "flowc")
+    assert spec.V1_SCORING_START == "2026-09-28"
+    assert spec.SHADOW_META_D["SHADOW_V22"]["family"] == "flowc"     # [v3] v2.2 MAIN 규칙은 SHADOW_V22 가 그대로 기록
     assert (spec.FLOW_BASE, spec.FLOWC_K, spec.FLOW_TRAIL, spec.FLOW_TP, spec.FLOW_MAX_TRADES, spec.FLOW_LAST_ENTRY) == \
         ("09:00", 300, (6.0, 4.0), 12.0, 3, "14:50")
     assert spec.FLOWF_K == 800
     assert (spec.BRK_STOP_BUF, spec.BRK_TRAIL, spec.BRK_TP, spec.BRK_MAX_TRADES) == (2.0, (6.0, 3.0), 8.0, 5)
     assert spec.JUDGE_AFTER_DAYS == 20
-    assert spec.VARIANTS == ("MAIN", "SHADOW_V1", "SHADOW_V1X4", "SHADOW_FLOWF", "SHADOW_BRKC", "SHADOW_FLOWR60")
-    # [v2.2] MAIN 규칙이 바뀌어 섀도 비교 창도 10/15 부터 다시 연다. FLOWR60 등록 시작(10/02)은 META 에 사료로 남는다
-    assert spec.LATE_SHADOW_START == {"SHADOW_V1": "2026-10-15", "SHADOW_V1X4": "2026-10-15", "SHADOW_FLOWF": "2026-10-15",
-                                      "SHADOW_BRKC": "2026-10-15", "SHADOW_FLOWR60": "2026-10-15"}
+    # FLOWR60 등록 시작(10/02)은 META 에 사료로 남는다
     assert spec.SHADOW_META_D["SHADOW_FLOWR60"]["start"] == "2026-10-02"
     assert (spec.FLOWR_WIN_MIN, spec.FLOWR_K) == (60, 150)
-    assert set(spec.RETIRED_SHADOWS) == {"SHADOW_E2F2", "SHADOW_X4NF", "SHADOW_TR44", "SHADOW_X4NFA"}
+    assert set(spec.RETIRED_SHADOWS) == {"SHADOW_E2F2", "SHADOW_X4NF", "SHADOW_TR44", "SHADOW_X4NFA",
+                                         "SHADOW_V1", "SHADOW_V1X4", "SHADOW_FLOWF"}   # [v3] 셋 추가 종료
     assert not (set(spec.RETIRED_SHADOWS) & set(spec.VARIANTS))
     assert len(spec.VARIANTS) - 1 <= 5                       # 상시 섀도 5개 상한
 
@@ -223,15 +222,18 @@ def test_runner_compute_dispatches_by_kind(tmp_path):
     r = runner.compute(DAY, raw, fl, lv)
     assert tuple(r["results"]) == spec.VARIANTS
     main = r["results"]["MAIN"]
-    assert main["decision"]["bias"] == -1 and main["decision"]["family"] == "flowc"   # v1 R1 판정을 실어 받는다
-    assert {t["rule"] for t in main["trades"]} == {"FLOW"} and main["trades"]
-    assert {t["rule"] for t in r["results"]["SHADOW_FLOWF"]["trades"]} == {"FLOW"}
-    assert all(t["rule"] in ("R2", "R3") for t in r["results"]["SHADOW_V1"]["trades"])
-    # FLOWF 원천 테이블이 없으면 미측정(거래 0 · 노트)
+    assert main["decision"]["bias"] == -1 and main["decision"]["family"] == "hybr60"  # v1 R1 판정을 실어 받는다
+    assert main["trades"] and main["trades"][0]["rule"] == "FLOW"                   # [v3] 첫 거래는 FLOWC
+    assert {t["rule"] for t in main["trades"]} <= {"FLOW", "R60"}
+    assert {t["rule"] for t in r["results"]["SHADOW_V22"]["trades"]} == {"FLOW"}
+    assert "SHADOW_V1" not in r["results"] and "SHADOW_FLOWF" not in r["results"]   # [v3] 종료
+    # [v3] HYBL 은 외국인 선물 원천이 없으면 CP 만으로 판정하고 그 사실을 남긴다(미측정 ≠ 0)
     raw2, fl2, lv2 = _write_dbs(tmp_path / "nofx", with_fx=False) if (tmp_path / "nofx").mkdir() is None else (None,) * 3
     r2 = runner.compute(DAY, raw2, fl2, lv2)
-    assert r2["results"]["SHADOW_FLOWF"]["trades"] == []
-    assert any("FLOWF" in n for n in r2["results"]["SHADOW_FLOWF"]["decision"]["notes"])
+    assert any("HYBL 외국인 선물 원천 없음" in n for n in r2["results"]["SHADOW_HYBL"]["decision"]["notes"])
+    # 종료된 FLOWF 규칙 자체는 families 에 남아 있다(재현용)
+    rf = families.run_family_day(engine.DayFrame(_flat(), _flow(lambda k: 0.0)), _levels(), "flowf")
+    assert rf["trades"] == [] and any("FLOWF" in n for n in rf["decision"]["notes"])
 
 
 def _v21_window(monkeypatch):
@@ -254,7 +256,8 @@ def test_run_and_store_then_report_and_scorecard(tmp_path, monkeypatch):
     rows = con.execute("SELECT variant, rule, spec_version, count(*) FROM shindong_trades GROUP BY 1,2,3").fetchall()
     con.close()
     assert any(v == "MAIN" and rule == "FLOW" and sv == spec.SPEC_VERSION and n >= 1 for v, rule, sv, n in rows)
-    assert any(v == "SHADOW_V1" and rule in ("R2", "R3") for v, rule, _sv, _n in rows)
+    assert any(v == "SHADOW_V22" and rule == "FLOW" for v, rule, _sv, _n in rows)
+    assert not any(v == "SHADOW_V1" for v, _r, _sv, _n in rows)                    # [v3] 종료 — 새 행 없음
     # 일일 리포트
     from strategy.shindong import daily_report
     r = daily_report.build(DAY, raw, fl, lv, sd, out_dir=str(tmp_path / "out"), pc="TEST")
@@ -262,16 +265,17 @@ def test_run_and_store_then_report_and_scorecard(tmp_path, monkeypatch):
     md = open(r["md_path"], encoding="utf-8").read()
     for sec in ("## 0. 한눈에", "## 1. 차트", "## 2. 거래 흐름 — MAIN", "## 3. 섀도 흐름", "## 4. 누적 채점"):
         assert sec in md
-    assert "MAIN(v2 FLOWC)" in md and "V1(현행 R1/R2/R3)" in md and "FLOWF(외국인선물 추종)" in md
-    assert "v2 vs V1 되돌림 판정 1/20일" in md
+    assert "MAIN(v3 HYBR60)" in md and "V22(v2.2 MAIN 그대로)" in md and "HYBL(첫 FLOWC → 주도 지표)" in md
+    assert "v3 vs V22 되돌림 판정 1/20일" in md
     assert "| FLOW " in md                      # 규칙별 열
     # 채점표
     sc = _scorecard()
     txt = sc.build(sd, spec.SCORING_START, raw, lv)
-    assert "## 3. v2 vs V1 되돌림 판정" in txt and "판정: **대기** — 1/20 거래일" in txt
-    assert "SHADOW_FLOWF 판정" in txt and "SHADOW_BRKC 판정" in txt
+    assert "## 3. v3 vs SHADOW_V22 되돌림 판정" in txt and "판정: **대기** — 1/20 거래일" in txt
+    assert "SHADOW_HYBL 판정" in txt and "SHADOW_BRKC 판정" in txt and "SHADOW_V22S 판정" in txt
+    assert "SHADOW_V22 판정" not in txt                  # 되돌림 기준은 §3 에서 따로 본다
     assert "V1 레거시 — R3 중단 판정" in txt
-    assert "FLOWC ↔ FLOWF 대조" in txt and "첫 진입 방향 일치 **1 / 1**" in txt
+    assert "FLOWC ↔ FLOWF 대조" not in txt              # [v3] FLOWF 종료 — 절도 빠진다
 
 
 def test_scorecard_is_v1_helper():
