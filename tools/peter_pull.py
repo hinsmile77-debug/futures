@@ -300,6 +300,7 @@ def _self_build():
     받기(MW0601 공급)가 없거나 늦은 날에도 확정본이 생기게 하는 자체 경로다.
       1. `peter2_eod` — 일일 복기 md(삭제 탐지는 받은 eod_ids 반영) · `_tr.txt` 가 없으면 초안
       2. `peter_build_day --date 오늘` — `_lv` 초안 + **이 PC 캔들 오프셋 실측** → peter_paste
+      3. [2026-10-20] 실시간 수집 정지 중이면 `peter2_backfill` — 장후 재생 원장(_eod_replay_ledger)
     🔴 MW0601 사료가 이미 왔으면 그쪽(사람이 검증한 `_lv`/`_tr`)이 이긴다 — build_day 는
       다른 `_lv` 를 덮지 않고, peter2_eod 는 있는 `_tr.txt` 를 덮지 않는다.
     🔴 도착 판정(_check_today) **뒤에** 돈다 — 자체로 만든 `_lv` 를 「MW0601 도착」으로
@@ -308,13 +309,36 @@ def _self_build():
     iso = datetime.date.today().isoformat()
     raw = os.path.join(_ROOT, RAW_PREFIX.replace('/', os.sep), '%s.jsonl' % iso)
     if not os.path.exists(raw):
-        print('  자체 확정: 오늘 원본 없음 — 건너뜀(수집기 미가동 또는 휴장).')
+        print('  자체 확정: 오늘 원본 없음 — 건너뜀(수집기 미가동·공급 미도착 또는 휴장).')
+    else:
+        for args in (['tools/peter2_eod.py', '--date', iso],
+                     ['tools/peter_build_day.py', '--date', iso]):
+            p = subprocess.Popen([sys.executable] + args, cwd=_ROOT)
+            p.communicate()
+            print('  자체 확정: %s rc=%s' % (os.path.basename(args[0]), p.returncode))
+    _eod_replay_ledger()
+
+
+def _eod_replay_ledger():
+    """[2026-10-20 MW0602] 실시간 수집 정지 중 — 「피터였다면」 가상 손익을 장후 재생으로 채운다.
+
+    실시간이 돌 때는 VirtualBook 이 장중에 하던 일이다. 정지(PETER2_COLLECT_MODE=eod) 중에만
+    `tools/peter2_backfill.py` 를 돌린다(전량 재빌드 · 멱등 · origin=eod_replay 구간 포함).
+    오늘 원본이 없어도 돈다 — 그날은 NO_RAW 로 남는다(미측정이지 0 이 아니다).
+    """
+    try:
+        sys.path.insert(0, _ROOT)
+        from config import settings as _s
+        mode = str(getattr(_s, 'PETER2_COLLECT_MODE', 'live') or 'live').lower()
+    except Exception as e:
+        print('  장후 재생 원장: 설정 읽기 실패 — 건너뜀(%s)' % e)
         return
-    for args in (['tools/peter2_eod.py', '--date', iso],
-                 ['tools/peter_build_day.py', '--date', iso]):
-        p = subprocess.Popen([sys.executable] + args, cwd=_ROOT)
-        p.communicate()
-        print('  자체 확정: %s rc=%s' % (os.path.basename(args[0]), p.returncode))
+    if mode == 'live':
+        print('  장후 재생 원장: COLLECT_MODE=live — 실시간 가상장부가 원천이라 건너뜀.')
+        return
+    p = subprocess.Popen([sys.executable, os.path.join('tools', 'peter2_backfill.py')], cwd=_ROOT)
+    p.communicate()
+    print('  장후 재생 원장: peter2_backfill.py rc=%s (COLLECT_MODE=%s)' % (p.returncode, mode))
 
 
 def _rebuild():

@@ -204,6 +204,14 @@ DEFAULT_CONFIG = {
          "why": "CB② 복원값(2026-10-13 실거래 전환, 9999 → 2 → 3 같은 날 재결정 — 피터 재진입 "
                 "패턴과 충돌). ⑧ 해제(SIZING_TARGET_CAPITAL_KRW 1,500만원)와 같은 커밋. "
                 "모의 시절 9999 는 이력 — 9999 로 돌아가면 그것이 사건이다"},
+        # [2026-10-20 MW0602] 피터2 실시간 수집 정지 — 두 값은 **한 쌍**으로만 바뀐다.
+        #   정지 중에는 `[Peter2] 수집기 하트비트` 경보가 안 나오는 것이 정상이다(O-113 종결).
+        {"name": "PETER2_COLLECT_MODE", "expect": '"eod"',
+         "why": "피터2 실시간 수집 정지(2026-10-20 사용자 결정) — 사료는 16:30 peter_pull(MW0601 "
+                "peter-feed). 되돌리기 = COLLECT·FOLLOW 둘 다 live + Chrome 확장 재활성 + RESUME_DATE"},
+        {"name": "PETER2_FOLLOW_MODE", "expect": '"off"',
+         "why": "COLLECT_MODE=eod 이면 off 여야 한다(피드 없는 추종 = 매 신호 collector_stale 기각). "
+                "피터 가상 손익은 장후 재생(peter2_backfill origin=eod_replay)"},
         {"name": "CB3_P4_GRADE_BLOCK_ENABLED", "expect": "False",
          "why": "30m 퇴역으로 CB③-P4 상시 RESTRICTED 고착 → 차단만 비활성 (296·297차)"},
         {"name": "FP_CRITICAL_GRADE_BLOCK_ENABLED", "expect": "False",

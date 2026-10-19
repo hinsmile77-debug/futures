@@ -41,7 +41,10 @@ def test_no_start_means_no_gate():
 
 def test_settings_single_boundary():
     import config.settings as s
-    assert s.PETER2_FOLLOW_MODE == 'live'
+    # [2026-10-20 MW0602] 실시간 수집 정지로 live → off. 두 값은 한 쌍이다 — test_700 이 고정한다.
+    assert s.PETER2_FOLLOW_MODE in ('live', 'off')
+    if s.PETER2_COLLECT_MODE == 'eod':
+        assert s.PETER2_FOLLOW_MODE == 'off'
     assert s.PETER2_LIVE_START == '2026-10-12'
     assert s.PETER2_BACKFILL_UNTIL == s.PETER2_LIVE_START, \
         '백필 끝과 실거래 시작이 갈렸다 — 그 사이 날짜가 이중계상되거나 빠진다'

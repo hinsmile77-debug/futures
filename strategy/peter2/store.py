@@ -72,6 +72,21 @@ def effective_mode(mode, date, live_start=None):
     return m
 
 
+def peter_principal_block_reason(follow_mode, collect_mode):
+    """[2026-10-20 MW0602] 거래주체 「피터」를 고를 수 없는 사유. 고를 수 있으면 None.
+
+    실시간 피드(수집 live)도, 추종(follow ≠ off)도 없으면 피터 주체는 진입을 한 건도 낼 수 없다 —
+    그런 주체를 고르면 계좌가 「거래 중」처럼 보이지만 실제로는 아무도 거래하지 않는다.
+    """
+    f = str(follow_mode or 'off').lower()
+    c = str(collect_mode or 'live').lower()
+    if c != 'live':
+        return '피터2 실시간 수집 정지(PETER2_COLLECT_MODE=%s) — 장후 수집 모드' % c
+    if f == 'off':
+        return '피터2 추종 꺼짐(PETER2_FOLLOW_MODE=off)'
+    return None
+
+
 def tweet_kst(dt_iso):
     """X 의 UTC ISO → KST datetime(naive). 실패 시 None."""
     try:

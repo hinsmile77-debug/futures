@@ -25089,3 +25089,12 @@ SizerMatch로 설명됨(기존 관측 연속). P0 없음 · P1 신규 0건 · P2
 ## 2026-10-20 (MW0602 638차 후속 — 점검 예약 프롬프트 rev 설명 갱신: 사용자 지시, 미완)
 
 - [ ] 장전·장중·장후 점검 예약 3종(Cowork 원격 루틴 trig_01JTdWEd2EqbK2ugCocL4CiZ / trig_01F8x6dMpNXhs65TYxteXZdE / trig_0131aLqrbhCQSiEC27VSYdPZ, 2026-09-23 원격 이관 — 로컬 `C:\Users\pc1\Claude\Scheduled\mireuk-daily-check-*\SKILL.md` 는 enabled=false 사본) 프롬프트 §0-① 의 「`rev: 2026-08-26 (494차)`(558줄)」 문단을 정본 `rev: 2026-08-26e`(664줄, `53c665f`)로 교체. 세션에서 미수행 사유: 프롬프트가 `job_config.ccr.events[2]` 안에 있어 부분 갱신 불가 — job_config 전체(custom_system_prompt 77KB 포함) 재전송이 필요해 08:55 장전 실행 전 루틴 파손 위험. → Cowork 예약 화면에서 사용자가 수정.
+
+
+## 2026-10-20 (MW0602 639차 — 피터2 실시간 수집 정지 → 장후 사료 흐름)
+- [ ] **639-O1 (2026-10-20 장중)** `logs/peter2_receiver_20261020.log` 에 `DISABLED` 만 있고 8766 미청취 · SYSTEM 로그 `[Peter2] 모드=off` 1회 · `[Peter2] 수집기 하트비트` 경보 0건 · 대시보드 버튼 「피터2 꺼짐」.
+- [ ] **639-O2 (2026-10-20 16:30 이후)** `logs/peter_pull_20261020.log`: 「오늘 사료 도착」 · 원본 병합 `src=pull` · 자체 확정 rc=0 ×2 · `장후 재생 원장: peter2_backfill.py rc=0`. `peter2_backfill.db` `bf_days` 2026-10-20 행 `origin=eod_replay`.
+- [ ] **639-O3** `docs/미륵이고도화3/피터2/일일/피터2_일일_MW0602_20261020.md` 지연·삭제 = 「미측정 — 장후 수집 모드」.
+- [ ] (사용자) MW0602 Chrome `chrome://extensions` 에서 **피터2 확장 비활성화** — 안 끄면 X 검색 탭이 계속 새로고침된다(수신기가 없어 POST 만 실패).
+- [x] O-113(피터2 하트비트 간헐지연) **종결** — 실시간 수집 정지로 관측 대상 소멸(2026-10-20 사용자 결정).
+- 되돌리기: `PETER2_COLLECT_MODE`·`PETER2_FOLLOW_MODE` = `"live"` + Chrome 확장 재활성 + `PETER2_COLLECT_RESUME_DATE` 기록.

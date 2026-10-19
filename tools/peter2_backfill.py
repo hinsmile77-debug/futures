@@ -5,6 +5,8 @@
     A  peter_levels.db · peter_paste(raw_tr · 그날 실측 offset)   — 1분봉 차트 「거래피터」 확정본
     B  tools/peter2_replay.py · replay_day()                       — 라이브와 같은 cfg 로 재생
     거래일 = raw_data.db · raw_candles 에 분봉이 있는 날, [첫 피터 사료일, PETER2_BACKFILL_UNTIL)
+           + [2026-10-20 MW0602] [PETER2_COLLECT_STOP_DATE, 재개일|내일) — 실시간 수집 정지 후 장후 재생
+             (행마다 origin = pre_live | eod_replay. 그 사이 구간은 실시간 가상장부가 원천이라 뺀다)
 출력
     data/db/peter2_backfill.db (전량 교체) → main.py `_refresh_pnl_history()` 가 읽어 패널에 넘긴다.
 
@@ -89,7 +91,7 @@ def load_bars(date):
 
 
 def live_peter2_days(until):
-    """trades 에 PETER2 실거래가 있는 날 — 백필하면 이중계상이다."""
+    """trades 에 PETER2 실거래가 있는 날(< until) — 백필하면 이중계상이다."""
     if not os.path.exists(TRADES_DB):
         return set()
     con = _ro(TRADES_DB)
@@ -116,16 +118,31 @@ def run_b(date, latency):
     return 'OK', bf.b_trades_from_replay(date, res, MINI_FUTURES_PT_VALUE)
 
 
-def build(latency=20, until=None):
+def build(latency=20, until=None, today=None):
     until = until or settings.PETER2_BACKFILL_UNTIL
     pastes = load_pastes()
     if not pastes:
         raise SystemExit('peter_paste 가 비었다 — 백필 원천 없음')
     start = min(pastes)
     unmeasured = bf.read_unmeasured(settings.PETER2_BACKFILL_UNMEASURED)
-    live = live_peter2_days(until)
     trades, days, warn = [], [], []
-    for d in trading_days(start, until):
+    # [2026-10-20 MW0602] 두 구간 — [첫 사료일, UNTIL) 실거래 개시 전 · [STOP, 재개일|내일) 실시간 수집 정지 후.
+    #   🔴 그 사이 [UNTIL, STOP) 는 실시간 가상장부(VirtualBook)가 원천이라 넣지 않는다(이중계상 방지).
+    today = today or datetime.date.today().isoformat()
+    win = bf.eod_window(getattr(settings, 'PETER2_COLLECT_STOP_DATE', None),
+                        getattr(settings, 'PETER2_COLLECT_RESUME_DATE', None), today)
+    if win and win[0] < until:
+        raise SystemExit('PETER2_COLLECT_STOP_DATE(%s) < PETER2_BACKFILL_UNTIL(%s) — 구간이 겹친다'
+                         % (win[0], until))
+    if (win and str(getattr(settings, 'PETER2_COLLECT_MODE', 'live')).lower() == 'live'
+            and not getattr(settings, 'PETER2_COLLECT_RESUME_DATE', None)):
+        warn.append('COLLECT_MODE=live 인데 PETER2_COLLECT_RESUME_DATE 미기록 — 재개 이후 날이 '
+                    '장후 재생으로도 들어가 실시간 가상장부와 겹칠 수 있다')
+    span = [(d, bf.ORIGIN_PRE_LIVE) for d in trading_days(start, until)]
+    if win:
+        span += [(d, bf.ORIGIN_EOD_REPLAY) for d in trading_days(max(win[0], start), win[1])]
+    live = live_peter2_days(win[1] if win else until)
+    for d, origin in span:
         has = d in pastes
         off, raw_tr = pastes.get(d, (None, ''))
         a = []
@@ -137,6 +154,8 @@ def build(latency=20, until=None):
             b_st, b = 'SKIP', []
         else:
             b_st, b = run_b(d, latency)
+        for t in a + b:
+            t['origin'] = origin
         trades += a + b
         a_ok = st in (bf.ST_TRADED, bf.ST_NO_TRADE)
         days.append({
@@ -148,9 +167,11 @@ def build(latency=20, until=None):
             'b_pts': round(sum(t['pnl_pts'] for t in b), 2) if b_st == 'OK' else None,
             'offset': off,
             'note': unmeasured.get(d) if st == bf.ST_UNMEASURED else None,
+            'origin': origin,
         })
     meta = {'built_at': datetime.datetime.now().isoformat(timespec='seconds'),
             'until': until, 'start': start, 'latency_sec': latency,
+            'eod_from': win[0] if win else '', 'eod_until': win[1] if win else '',
             'pt_value': MINI_FUTURES_PT_VALUE}
     return trades, days, meta, warn
 
@@ -159,6 +180,10 @@ def summary(trades, days, meta, warn):
     from collections import Counter
     st = Counter(d['status'] for d in days)
     print('피터2 백필 %s – %s(배타) · 거래일 %d' % (meta['start'], meta['until'], len(days)))
+    if meta.get('eod_from'):
+        ed = [d for d in days if d.get('origin') == bf.ORIGIN_EOD_REPLAY]
+        print('  + 장후 재생 구간 %s – %s(배타) · %d일 (origin=%s — 정지 전 구간과 직접 비교 금지)'
+              % (meta['eod_from'], meta['eod_until'], len(ed), bf.ORIGIN_EOD_REPLAY))
     print('  상태: ' + ' · '.join('%s %d' % kv for kv in sorted(st.items())))
     for src in (bf.SRC_A, bf.SRC_B):
         xs = [t for t in trades if t['src'] == src]

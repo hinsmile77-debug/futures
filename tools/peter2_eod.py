@@ -159,6 +159,17 @@ def build(date, write_tr=True, shadow=True):
     res['lat_max'] = max(lat) if lat else None
     res['lat_n'] = len(lat)
     res['n_live'] = sum(1 for r in rows if r.get('src') == 'live')
+    # [2026-10-20 MW0602] 이 PC 수신기가 하나도 안 받은 날 — 삭제·지연은 「0건」이 아니라 미측정이다
+    #   (실시간 수집 정지 PETER2_COLLECT_MODE=eod, 또는 수신기 미가동). 계측 4원칙 ②.
+    res['live_unmeasured'] = None
+    if res['n_live'] == 0:
+        res['deleted'] = None
+        try:
+            from config.settings import PETER2_COLLECT_MODE as _cm
+        except Exception:
+            _cm = '?'
+        res['live_unmeasured'] = ('장후 수집 모드(PETER2_COLLECT_MODE=%s) — 이 PC 수신기 정지' % _cm
+                                  if str(_cm).lower() != 'live' else '이 PC 수신기 기록 0건(미가동?)')
     sig = store.read_signals(date)
     res['sig_counts'] = Counter(s.get('kind') for s in sig)
     res['rejects'] = Counter('%s' % (s.get('why') or '?') for s in sig
@@ -209,12 +220,16 @@ def write_md(r):
     eff = (f_pts / r['peter_pts']) if (fol and r['peter_pts']) else None
     L.append('| 추종 효율(실추종/피터) | %s |' % ('—' if eff is None else '%.2f' % eff))
     L.append('| 트윗 | 전체 %d · 장중 수신(live) %d |' % (r['n_tweets'], r['n_live']))
-    L.append('| 수신 지연(게시→기록) | 중앙 %s초 · 최대 %s초 (n=%d) |' % (
-        _f(r['lat_med'], '%.0f'), _f(r['lat_max'], '%.0f'), r['lat_n']))
-    if r['deleted'] is None:
-        L.append('| 삭제 트윗 | 미측정 — 장후 캡처(eod_ids) 없음 |')
+    if r.get('live_unmeasured'):
+        L.append('| 수신 지연(게시→기록) | 미측정 — %s |' % r['live_unmeasured'])
+        L.append('| 삭제 트윗 | 미측정 — %s |' % r['live_unmeasured'])
     else:
-        L.append('| 삭제 트윗 | **%d건** |' % len(r['deleted']))
+        L.append('| 수신 지연(게시→기록) | 중앙 %s초 · 최대 %s초 (n=%d) |' % (
+            _f(r['lat_med'], '%.0f'), _f(r['lat_max'], '%.0f'), r['lat_n']))
+        if r['deleted'] is None:
+            L.append('| 삭제 트윗 | 미측정 — 장후 캡처(eod_ids) 없음 |')
+        else:
+            L.append('| 삭제 트윗 | **%d건** |' % len(r['deleted']))
     ini = r.get('init') or {}
     L.append('| 오프셋 | %s (%s · safe=%s) |' % (ini.get('offset'), ini.get('offset_src'), ini.get('safe')))
     L.append('')

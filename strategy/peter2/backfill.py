@@ -53,6 +53,22 @@ SRC_B = "B"      # 재생(peter2_replay) — 비교 열
 ST_TRADED, ST_NO_TRADE = "TRADED", "NO_TRADE"
 ST_UNMEASURED, ST_UNRESOLVED, ST_LIVE = "UNMEASURED", "UNRESOLVED", "LIVE"
 
+# [2026-10-20 MW0602] 행의 출처 구간 — 두 구간은 **다른 측정**이라 앞뒤를 직접 비교하지 말 것.
+ORIGIN_PRE_LIVE = "pre_live"       # 실거래 개시(PETER2_LIVE_START) 이전 — 677차 원래 백필
+ORIGIN_EOD_REPLAY = "eod_replay"   # 실시간 수집 정지(PETER2_COLLECT_STOP_DATE) 이후 — 장후 사료 재생
+
+
+def eod_window(stop_date, resume_date, today):
+    """장후 재생 구간 [stop, end) — end = 재개일 또는 내일(오늘 포함). stop 이 없으면 None."""
+    if not stop_date:
+        return None
+    end = (_dt.date.fromisoformat(today) + _dt.timedelta(days=1)).isoformat()
+    if resume_date and str(resume_date) < end:
+        end = str(resume_date)
+    if end <= str(stop_date):
+        return None
+    return str(stop_date), end
+
 DDL = """
 CREATE TABLE IF NOT EXISTS bf_trades (
     src          TEXT NOT NULL,          -- 'A' | 'B'
@@ -255,6 +271,11 @@ def connect(db_path):
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     con.executescript(DDL)
+    # [2026-10-20 MW0602] origin 열 — 기존 DB 는 ALTER 로 덧붙인다(NULL = 이 열 도입 전 = pre_live).
+    for tbl in ('bf_trades', 'bf_days'):
+        cols = {r[1] for r in con.execute('PRAGMA table_info(%s)' % tbl)}
+        if 'origin' not in cols:
+            con.execute('ALTER TABLE %s ADD COLUMN origin TEXT' % tbl)
     return con
 
 
@@ -269,13 +290,15 @@ def save(db_path, trades, days, meta):
             con.execute('DELETE FROM bf_meta')
             con.executemany(
                 'INSERT INTO bf_trades(src,trade_date,seq,side,entry_ts,exit_ts,entry_px,exit_px,'
-                'pnl_pts,qty,gross_krw,notional_krw,exit_reason,clipped,note) VALUES '
+                'pnl_pts,qty,gross_krw,notional_krw,exit_reason,clipped,note,origin) VALUES '
                 '(:src,:trade_date,:seq,:side,:entry_ts,:exit_ts,:entry_px,:exit_px,:pnl_pts,'
-                ':qty,:gross_krw,:notional_krw,:exit_reason,:clipped,:note)', trades)
+                ':qty,:gross_krw,:notional_krw,:exit_reason,:clipped,:note,:origin)',
+                [dict(t, origin=t.get('origin') or ORIGIN_PRE_LIVE) for t in trades])
             con.executemany(
-                'INSERT INTO bf_days(trade_date,status,a_n,a_pts,b_status,b_n,b_pts,offset,note)'
-                ' VALUES (:trade_date,:status,:a_n,:a_pts,:b_status,:b_n,:b_pts,:offset,:note)',
-                days)
+                'INSERT INTO bf_days(trade_date,status,a_n,a_pts,b_status,b_n,b_pts,offset,note,'
+                'origin) VALUES (:trade_date,:status,:a_n,:a_pts,:b_status,:b_n,:b_pts,:offset,'
+                ':note,:origin)',
+                [dict(d, origin=d.get('origin') or ORIGIN_PRE_LIVE) for d in days])
             con.executemany('INSERT INTO bf_meta(k,v) VALUES (?,?)',
                             [(k, str(v)) for k, v in meta.items()])
     finally:

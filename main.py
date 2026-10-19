@@ -676,6 +676,15 @@ class TradingSystem:
         # [MW0602 거래주체분리] 현재 거래주체 — 파일(data/trade_principal.json)이 정본이고 이것은 캐시다.
         #   전환은 `_on_principal_change_requested` 한 곳에서만 일어나며 그때 둘을 함께 바꾼다.
         self._principal_state = principal_mod.load()
+        # [2026-10-20 MW0602] 저장된 주체가 피터인데 피터2 수집·추종이 꺼져 있으면 알린다.
+        #   주체를 몰래 바꾸지 않는다(파일이 정본) — 사람이 대시보드에서 고르게 둔다.
+        if self._principal_state["principal"] == principal_mod.PETER:
+            _p2why0 = peter2_store.peter_principal_block_reason(
+                getattr(runtime_settings, "PETER2_FOLLOW_MODE", "off"),
+                getattr(runtime_settings, "PETER2_COLLECT_MODE", "live"))
+            if _p2why0:
+                logger.error("[Principal] 거래주체=피터인데 %s — 진입이 나가지 않는다. "
+                             "대시보드에서 주체를 바꾸거나 설정을 되돌릴 것", _p2why0)
         # [MW0602 거래주체분리 2단계] 가상 장부 — 실주문이 안 나가는 주체의 실시간 가상 포지션.
         #   None = 오늘 아직 안 만듦(`_ts_vbook` 이 날짜별로 만들고 저장본을 복원한다).
         self._vbook = None
@@ -3216,6 +3225,13 @@ class TradingSystem:
             self._push_principal_ui()
             return
         ok, why = principal_mod.can_switch(self.position.status, self._has_pending_order())
+        # [2026-10-20 MW0602] 피터2 실시간 수집·추종이 꺼져 있으면 피터 주체는 진입을 낼 수 없다.
+        if ok and principal == principal_mod.PETER:
+            _p2why = peter2_store.peter_principal_block_reason(
+                getattr(runtime_settings, "PETER2_FOLLOW_MODE", "off"),
+                getattr(runtime_settings, "PETER2_COLLECT_MODE", "live"))
+            if _p2why:
+                ok, why = False, _p2why + " — 되돌리려면 COLLECT_MODE·FOLLOW_MODE=live + Chrome 확장"
         if not ok:
             log_manager.system("[Principal] 전환 거부 %s → %s — %s"
                                % (principal_mod.label(cur), principal_mod.label(principal), why),
@@ -3705,6 +3721,12 @@ class TradingSystem:
             log_manager.system(f"[Peter2] 모드={mode} (거래주체=%s)"
                                % principal_mod.label(self._principal_state["principal"]), "INFO")
             self._peter2_last_mode = mode
+            if mode == "off":
+                _cm = str(getattr(runtime_settings, "PETER2_COLLECT_MODE", "live") or "live").lower()
+                try:
+                    self.dashboard.set_peter2_off("장후 수집(16:30)" if _cm != "live" else "추종 off")
+                except Exception as _be:
+                    logger.debug("[Peter2] 꺼짐 표기 실패(무해): %s", _be)
         if mode == "off":
             return
         now = datetime.datetime.now()
@@ -13981,6 +14003,12 @@ class TradingSystem:
             except Exception as _p2e:
                 logger.warning("[Peter2EOD] 장후 정리 실패 (스킵 — `python tools/peter2_eod.py` 로 재생성): %s",
                                _p2e)
+        else:
+            # [2026-10-20 MW0602] 폴백 가시화(계측 4원칙 ④) — 건너뛴 사실과 대신 맡는 경로를 남긴다.
+            logger.info("[Peter2EOD] 15:40 정리 건너뜀 — PETER2_FOLLOW_MODE=off(COLLECT_MODE=%s). "
+                        "16:30 scripts\\peter_pull_MW0602.bat 가 사료 수신 → peter2_eod → "
+                        "peter_build_day → peter2_backfill(장후 재생) 으로 확정한다",
+                        getattr(runtime_settings, "PETER2_COLLECT_MODE", "live"))
 
         # ── [MW0601 632차 후속] 신동 일일 리포트 — 러너 섀도 기록 직후 1회 ──────
         # 「거래 흐름 + 손익 vs 섀도 흐름 + 손익」 md + SVG. 읽기 전용(주문·기록 무변경).

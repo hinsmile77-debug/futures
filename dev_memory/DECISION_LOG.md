@@ -49945,3 +49945,35 @@ v9-dev 배포 시 MW0601 을 실계좌로 보고 실계좌 경로 영향을 평�
 
 **검증** — `tests/test_638_margin_qty_market_price.py` 5건 통과. 전체 스위트 2,559 통과 / 17 실패(10/19 목록과 동일, 신규 0). py37_32 구문 파싱 OK.
 라이브 확인 기준(2026-10-20 장중): ① `[CybosMarginQty] 조회 실패` 0건 ② `[MarginCap] state=OK|CAP|BLOCK` 출현 ③ `state=UNMEASURED` 고착 아님.
+
+
+## 2026-10-20 (MW0602 639차 — 피터2 실시간 수집 정지 → 장후 사료 흐름 전환: 사용자 결정) — ✅ 구현 · 라이브 검증 대기
+
+**결정(사용자 2026-10-20 장전)** — MW0602 의 피터2 실시간 수집(Chrome 확장 + `tools/peter2_live/receiver.py`)을
+**오늘(2026-10-20)부터 정지**하고, 사료는 16:30 장후 흐름(`scripts\peter_pull_MW0602.bat` → `tools/peter_pull.py`,
+MW0601 `peter-feed`)으로만 받는다. 추종은 끄고(FOLLOW off) 「피터였다면」 가상 손익은 **장후 재생**으로 대체한다.
+On/Off 로 되돌릴 수 있어야 한다.
+
+**스위치(한 쌍)** — `config/settings.py`
+- 정지(현재): `PETER2_COLLECT_MODE = "eod"` · `PETER2_FOLLOW_MODE = "off"`(종전 `"live"`)
+- 되돌리기: 둘 다 `"live"` + MW0602 Chrome 피터2 확장 재활성 (+ 권장 `PETER2_COLLECT_RESUME_DATE = <재개일>`)
+- 경계: `PETER2_COLLECT_STOP_DATE = "2026-10-20"`(되돌려도 지우지 않는다 — 과거 경계)
+
+**바뀐 것**
+1. 수신기: `COLLECT_MODE != live` 면 포트를 열지 않고 `DISABLED` 1줄 남기고 종료(실기동 확인 07:52). `start_mireuk.bat` 는 주석만.
+2. 엔진: FOLLOW off → `_peter2_tick_body` 즉시 return(하트비트 경보·장중 오프셋·가상 진입 정지). 대시보드 버튼 「피터2 꺼짐 / 장후 수집(16:30)」.
+   거래주체 「피터」 전환 거부(`store.peter_principal_block_reason`), 기동 시 주체=피터면 ERROR. 15:40 `peter2_eod` 건너뜀을 INFO 로 남김.
+3. 장후 재생 원장: `peter_pull._self_build` → `_eod_replay_ledger()` 가 정지 중에만 `tools/peter2_backfill.py` 실행.
+   백필 구간 = [첫 사료일, `PETER2_BACKFILL_UNTIL`) **+ [STOP, RESUME|내일)**. 🔴 그 사이 [2026-10-12, 2026-10-20) 은
+   실시간 가상장부(VirtualBook)가 원천이라 **넣지 않는다**(이중계상 방지). 행마다 `origin = pre_live | eod_replay`
+   (`bf_trades`·`bf_days` 열 신설, 기존 DB 는 ALTER). 🔴 **실시간 섀도와 장후 재생은 다른 측정**이다 — 정지 전후 피터 가상 손익 직접 비교 금지.
+4. `peter2_eod`: 이 PC live 0건인 날 수신 지연·삭제 트윗 = 「미측정 — 장후 수집 모드」(종전엔 삭제 0건으로 둔갑).
+5. 일일점검 불변식에 `PETER2_COLLECT_MODE="eod"`·`PETER2_FOLLOW_MODE="off"` 등록. 정지 중 하트비트 경보 부재는 정상 → **O-113 종결**.
+
+**잃는 것(수용)** — MW0602 자체 수신 지연·삭제 탐지 계측(MW0601 쪽만 남음) · 장중 차트 피터맥점(16:30 확정본만) ·
+정지 중 피터 실거래 옵션 · MW0602 2차 원천(이제 MW0601 공급 단일 의존 — 미도착은 `peter_pull` rc=2 로 드러남).
+
+**검증** — `tests/test_700_peter2_collect_mode.py` 신설(12건), `test_615` 갱신(FOLLOW live 고정 → 한 쌍 불변식).
+피터2·주체·가상장부 관련 스위트 341 통과 / 1 실패(`test_457::test_db_fallback_columns_have_measured_flag` — HEAD 에서도 동일 실패, 본 변경 무관).
+offscreen 스모크로 버튼 렌더 확인. `peter2_backfill --dry-run` 실데이터: 기존 45거래일 결과 불변 + 장후 재생 구간 2026-10-20– 개시.
+계획서: `docs/미륵이고도화3/피터2/피터2_실시간수집정지_장후사료전환_구현계획_MW0602-20261020.md`

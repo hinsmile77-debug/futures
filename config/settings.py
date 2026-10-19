@@ -7898,7 +7898,28 @@ SHINDONG_LIVE_MAX_AGE_MIN = 2      # 진입봉이 끝난 뒤 이 분 수가 지�
 #     수집기 X 검색 한도(45초·120초 비연장). 계획서: docs/미륵이고도화3/피터2/
 #     피터2_실거래전환_백필_구현계획_MW0602-20261009.md
 #   장중에 멈추려면 이 값을 "shadow"/"off" 로(핫리로드 — 보유 포지션 관리는 계속).
-PETER2_FOLLOW_MODE = "live"          # "off" | "shadow"(해석·기록만) | "live"(모의 주문)
+#
+# 🔴 [2026-10-20 MW0602 사용자 결정] **실시간 수집 정지 → 장후 사료 흐름으로 전환.**
+#   수집 스위치 PETER2_COLLECT_MODE 와 추종 PETER2_FOLLOW_MODE 를 **한 쌍**으로 바꾼다:
+#     정지(현재)   PETER2_COLLECT_MODE = "eod"  · PETER2_FOLLOW_MODE = "off"
+#     되돌리기     PETER2_COLLECT_MODE = "live" · PETER2_FOLLOW_MODE = "live"  + Chrome 피터2 확장 재활성
+#   "eod" 에서는 수신기(tools/peter2_live/receiver.py)가 기동하지 않고, 엔진은 피터2 폴링을 하지 않으며,
+#   거래주체 「피터」 선택을 거부한다(피드 없이 추종은 매 신호 collector_stale 기각 — 켜진 척하는 게이트).
+#   사료는 16:30 tools/peter_pull.py(MW0601 peter-feed)가 받고, 「피터였다면」 가상 손익은
+#   같은 실행이 tools/peter2_backfill.py 장후 재생으로 채운다(PETER2_COLLECT_STOP_DATE 부터).
+#   불변식(eod ⇒ follow off)은 tests/test_700_peter2_collect_mode.py 가 고정한다.
+#   계획서: docs/미륵이고도화3/피터2/피터2_실시간수집정지_장후사료전환_구현계획_MW0602-20261020.md
+PETER2_COLLECT_MODE = "eod"          # "live"(Chrome 확장 + 수신기) | "eod"(장후 peter-feed 만)
+PETER2_FOLLOW_MODE = "off"           # "off" | "shadow"(해석·기록만) | "live"(주문) — 2026-10-20 live → off
+# 장부 경계: 이 날짜 **부터**는 장후 재생(peter2_backfill, origin=eod_replay)이 피터 가상 손익의 원천이다.
+#   [PETER2_LIVE_START, 이 날짜) 는 실시간 가상장부(VirtualBook)가 원천이라 백필하지 않는다(이중계상 방지).
+#   🔴 되돌릴 때 이 값은 **지우지 말 것** — 과거 경계다. 다시 정지하면 그때 새 날짜로 바꾸고
+#     DECISION_LOG 에 남긴다.
+PETER2_COLLECT_STOP_DATE = "2026-10-20"
+# 실시간 수집을 다시 켠 날(배타 끝). None = 아직 정지 중 → 장후 재생 구간은 「오늘까지」.
+#   되돌릴 때 함께 적으면 그날부터는 실시간 가상장부가 원천이 되어 이중계상이 생기지 않는다.
+#   안 적고 live 로 돌리면 peter2_backfill 요약에 경고가 뜬다(조용히 겹치지 않게).
+PETER2_COLLECT_RESUME_DATE = None
 PETER2_LIVE_START = "2026-10-12"     # 이 날짜 **이전**의 live 는 shadow 로 돈다(None = 관문 없음)
 PETER2_QTY = 1                       # 고정 1계약 — MAX_CONTRACTS 와 무관
 PETER2_POLL_MS = 2000                # main.py 폴링 주기

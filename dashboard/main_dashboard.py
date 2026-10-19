@@ -7177,6 +7177,8 @@ class PnlHistoryPanel(QWidget):
         self._cb_p2bf.setStyleSheet(_cb_style.replace(C['cyan'], C['purple']))
         self._cb_p2bf.setToolTip(
             "피터2 백필(가상) — 실거래 개시 **이전** 피터2 손익(677차).\n"
+            "· [2026-10-20~] 실시간 수집 정지 뒤 날도 장후 재생으로 채운다(origin=eod_replay)\n"
+            "  — 그 사이(10/12~정지 전날)는 실시간 가상장부가 원천이라 여기 없다. 두 구간 직접 비교 금지\n"
             "· 표의 값 = 원천 A: 1분봉 차트 「거래피터」(peter_paste.raw_tr)를 미니 1계약으로 환산\n"
             "  15:10 이후 청산은 15:10 강제청산 가격으로 재측정 · 14:50 이후 진입 제외 · 슬리피지 0\n"
             "· 「B 재생」 열 = 원천 B: 추종 규칙 재생(tools/peter2_replay.py) — 낙관 편향이 있다\n"
@@ -8375,6 +8377,14 @@ class LogPanel(QWidget):
         else:
             act_lbl.setText("○ 대기")
             act_lbl.setStyleSheet(f"color:{C['text2']};font-size:{S.f(13)}px;font-weight:bold;")
+
+    def set_peter2_off(self, why=""):
+        """[2026-10-20 MW0602] 피터2 꺼짐 — 「—」(미기동)와 구분해 꺼진 이유를 버튼에 박는다."""
+        try:
+            btn = self._peter2_btn
+        except AttributeError:
+            return
+        btn.setText("피터2 꺼짐\n%s" % (why or "FOLLOW_MODE=off"))
 
     def update_peter2_metrics(self, realized_krw, closed_n, open_side=None,
                               unrealized_krw=None, status_txt=""):

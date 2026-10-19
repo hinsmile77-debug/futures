@@ -449,6 +449,9 @@ REM  - 127.0.0.1:8766 only. Receives @PeterLeejoa tweets from the Chrome
 REM    extension (tools\peter2_live\extension) and appends them to
 REM    data\peter_feed\_raw\<date>.jsonl. Never sends orders.
 REM  - Singleton: a second start exits immediately (exclusive port bind).
+REM  - [2026-10-20 MW0602] ON/OFF = config\settings.py PETER2_COLLECT_MODE.
+REM    "eod" -> receiver.py logs DISABLED and exits at once (no port bind).
+REM    Revert: COLLECT_MODE="live" + FOLLOW_MODE="live" + re-enable Chrome extension.
 REM ============================================================
 IF EXIST "!WORKDIR!\tools\peter2_live\receiver.py" (
     CALL :L "[PETER2] 수신기 사이드카 기동 (127.0.0.1:8766, 주문 없음)"

@@ -225,7 +225,24 @@ class _Server(ThreadingHTTPServer):
         ThreadingHTTPServer.server_bind(self)
 
 
+def _collect_mode():
+    """[2026-10-20 MW0602] 수집 스위치. 못 읽으면 "live"(종전 동작) — 그 사실은 로그에 남긴다."""
+    try:
+        from config.settings import PETER2_COLLECT_MODE
+        return str(PETER2_COLLECT_MODE or 'live').lower(), True
+    except Exception:
+        return 'live', False
+
+
 def main():
+    mode, measured = _collect_mode()
+    if not measured:
+        _log('COLLECT_MODE 읽기 실패 — 종전대로 live 로 기동')
+    if mode != 'live' and '--check' not in sys.argv:
+        # 콘솔이 cp949 일 수 있다 — 출력은 ASCII 로만(로그 파일은 UTF-8)
+        print('[peter2-receiver] disabled (PETER2_COLLECT_MODE=%s) - not starting' % mode)
+        _log('DISABLED COLLECT_MODE=%s — 기동하지 않음(장후 peter_pull 이 사료를 받는다)' % mode)
+        return
     if '--check' in sys.argv:
         try:
             from urllib.request import urlopen
