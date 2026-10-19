@@ -148,6 +148,13 @@ DEFAULT_CONFIG = {
         "virtual_entry": r"\[Virtual\] (?P<who>\S+) 가상진입 (?P<dir>\w+) (?P<qty>\d+)계약 @(?P<px>[\d.]+)",
         "virtual_exit": r"\[Virtual\] (?P<who>\S+) 가상청산 (?P<dir>\w+) (?P<qty>\d+)계약 @(?P<px>[\d.]+) (?P<reason>\S+) \| (?P<pt>[+-][\d.]+)pt (?P<won>[+-][\d,]+)원",
         "fill_entry": r"\[체결진입\]\s*(?P<dir>\w+)\s+(?P<qty>\d+)계약.*?보유=(?P<held>\d+)계약",
+        # [MW0602 1019 장후 1-6] 체결 선행 진입 — `position_tracker.apply_entry_fill()` 이
+        # 낙관적 오픈(`[Position] 진입`) 없이 포지션을 연 경우에만 찍힌다(정상 경로는
+        # `[Position] 체결보정`). 브로커 체결 통보가 주문 결과보다 먼저 오면
+        # `main._ts_execute_entry` 가 「Chejan 선행 체결 처리로 추정」 분기로 빠져
+        # `[Position] 진입`·`[주문요청]` 이 둘 다 생략된다(2026-10-19 10:01:36 실측).
+        # 이것을 앵커로 안 쓰면 그 청산이 「진입 없는 청산」 고아가 된다.
+        "chejan_entry": r"\[Position\] 체결진입 (?P<dir>\w+) (?P<qty>\d+)계약 @ (?P<px>[\d.]+)",
         "exit": r"\[Position\] 체결청산 (?P<dir>\w+) @ (?P<px>[\d.]+)\s*\|\s*PnL=(?P<pt>[+-][\d.]+)pt\s*\((?P<won>[+-][\d,]+)원\)\s*\|\s*(?P<reason>.+?)\s*$",
         # [MW0602 470차 S3] 부분청산 — 이것을 안 세면 §5 손익이 배너와 어긋난다.
         # 2026-08-14 실측: §5 -82,547원 vs 배너 -93,450원, 차이 10,902원이 정확히 부분청산 3레그였다.
@@ -188,14 +195,15 @@ DEFAULT_CONFIG = {
     "banner_lines": 8,
     # config/settings.py 에서 값을 확인할 상수 — CLAUDE.md 절대원칙·한시예외 대응
     "invariants": [
-        {"name": "CB_CONSEC_STOP_LIMIT", "expect": "9999",
+        {"name": "CB_CONSEC_STOP_LIMIT", "expect": "3",
          # [MW0602 491차 F-1] 489차 D2가 기한을 **날짜 → 사건**으로 바꿨는데 이 사본만
          # 남아 죽은 날짜를 매일 인쇄했다(정본 `invariants.md`는 489차에 갱신됨).
-         # ⚠ 값(`9999`)은 손대지 않는다 — 이 fix는 기한 문구만 고친다.
-         "why": "모의투자 한정 예외(CB② 사실상 비활성). 실투 전환 전 2~3 복원 필수. "
-                "🔴 [489차 D2] 기한은 날짜가 아니라 **사건** — 복원 = 전환기준 ⑧ 해제와 "
-                "동일 커밋. 종전 '2026-08-29'는 효력 종료(재인용 금지). "
-                "그 사이 캠페인 [56] cb2_restore_shadow가 매주 반사실 재계산"},
+         # [MW0602 637차 / 1019 F-1] 기대값 9999 → 3. 2026-10-13 실거래 전환 사용자 결정
+         # (9999 → 2 → 같은 날 3)으로 CB②가 복원됐는데 이 기대값만 모의 시절에 남아
+         # 10/13~10/19 매일 「불일치 ⚠」 오탐을 냈다. 설정값이 아니라 **점검 기대값**만 고친다.
+         "why": "CB② 복원값(2026-10-13 실거래 전환, 9999 → 2 → 3 같은 날 재결정 — 피터 재진입 "
+                "패턴과 충돌). ⑧ 해제(SIZING_TARGET_CAPITAL_KRW 1,500만원)와 같은 커밋. "
+                "모의 시절 9999 는 이력 — 9999 로 돌아가면 그것이 사건이다"},
         {"name": "CB3_P4_GRADE_BLOCK_ENABLED", "expect": "False",
          "why": "30m 퇴역으로 CB③-P4 상시 RESTRICTED 고착 → 차단만 비활성 (296·297차)"},
         {"name": "FP_CRITICAL_GRADE_BLOCK_ENABLED", "expect": "False",
@@ -203,9 +211,9 @@ DEFAULT_CONFIG = {
         {"name": "MAX_CONTRACTS", "expect": "3",
          "why": "431차 10→3 인하. 실전 자본 확정 시 재산출 대상"},
         {"name": "SIZING_TARGET_CAPITAL_ENABLED", "expect": "True",
-         "why": "모의투자 한정. False 전환은 단독 지시로 읽지 말 것 (손실 구간 복원 위험)"},
+         "why": "실거래 전환(2026-10-13) 후에도 True 유지(사용자 결정). False 전환은 단독 지시로 읽지 말 것 (손실 구간 복원 위험)"},
         {"name": "SIZING_TARGET_CAPITAL_KRW", "expect": None,
-         "why": "현행 5천만원. 실전 전환 기준 ⑧의 남은 해제 조건"},
+         "why": "2026-10-13 ⑧ 조건 1 해제 — 5천만 → 1,500만원(사용자 결정). 전후 자본 대비 MDD 직접 비교 금지"},
         {"name": "HURST_WINDOW_N", "expect": "90", "why": "317차 재보정. 26주 WFA마다 재검증"},
         {"name": "HURST_MAX_LAG", "expect": "9", "why": "317차 재보정. 26주 WFA마다 재검증"},
         {"name": "VALIDATION_REPORT_KEEP_WEEKS", "expect": "4", "why": "주간 리포트 FIFO 보관"},
@@ -3405,7 +3413,7 @@ def scan_stuck_indicators(root, cfg, day):
     return rows
 
 
-def exit_stop_kind(reason):
+def exit_stop_kind(reason, pt=None):
     """[MW0602 468차 F-2/A안] 청산 사유 한 줄을 손절/보호/불명으로 가른다.
 
     `하드스톱` 라벨 하나에 **정반대 두 사건**이 들어 있다 — 진짜 손절과 TP1 도달 후
@@ -3413,11 +3421,18 @@ def exit_stop_kind(reason):
     (LIKE '%하드스톱%'가 사전등록 채널의 필터라 문자열을 못 바꾼다), 468차가 같은 값을
     청산 로그 줄에 `[TP1보호]`/`[TP1미도달]` 태그로 덧붙였다.
 
-    반환: "stop"(진짜 손절) / "protect"(보호트레일) / "unknown"(태그 없는 구버전 로그)
-          / None(손절 계열이 아님 — TP·시간마감 등)
+    반환: "stop"(진짜 손절) / "protect"(보호트레일) / "trail_win"(TP1 미도달 수익권 스톱)
+          / "unknown"(태그 없는 구버전 로그) / None(손절 계열이 아님 — TP·시간마감 등)
 
     ⚠ 태그가 없으면 **불명으로 둔다.** 손절로 세면 없는 사실을 만들고, 보호로 세면
     진짜 손절을 숨긴다 — 둘 다 이 수집기가 실제로 저지른 오독의 형태다.
+
+    [MW0602 1019 장후 F-10] `[TP1미도달]` 이어도 **손익이 양수면 손절이 아니다.**
+    신동(ShindongLive)은 진입 뒤 손절가를 진입가 위로 끌어올린다(`재생 stop_now`) —
+    TP1 레벨엔 못 갔지만 가격은 수익권에서 체결된다. 2026-10-19 하드스톱 2건이
+    +2.90pt·+2.10pt 인데 「진짜 손절」로 셌다. `pt` 는 청산 줄의 gross pt 다 —
+    `trades.exit_outcome`(utils/db_utils.py: pnl_pts 부호) 과 같은 기준이다.
+    `pt` 를 못 읽으면(None) 종전대로 태그만 본다 — 계측 4원칙 ②, 0으로 떨어뜨리지 않는다.
     """
     r = str(reason or "")
     if not ("스톱" in r or "손절" in r):
@@ -3425,14 +3440,29 @@ def exit_stop_kind(reason):
     if "TP1보호" in r:
         return "protect"
     if "TP1미도달" in r:
+        try:
+            _v = float(pt) if pt is not None else None
+        except (TypeError, ValueError):
+            _v = None
+        if _v is not None and _v > 0:
+            return "trail_win"
         return "stop"
     return "unknown"
 
 
 def exit_stop_counts(exits):
-    """청산 목록 → (진짜손절, 보호트레일, 태그없음) 건수."""
-    kinds = [exit_stop_kind(e.get("reason")) for e in exits]
+    """청산 목록 → (진짜손절, 보호트레일, 태그없음) 건수.
+
+    ⚠ 반환 형태(3튜플)는 호출부 호환을 위해 그대로 둔다. `trail_win` 은 어느 칸에도
+    넣지 않는다 — 건수가 필요하면 `exit_trail_win_count()` 를 따로 부른다.
+    """
+    kinds = [exit_stop_kind(e.get("reason"), e.get("pt")) for e in exits]
     return kinds.count("stop"), kinds.count("protect"), kinds.count("unknown")
+
+
+def exit_trail_win_count(exits):
+    """[MW0602 1019 장후 F-10] `[TP1미도달]` 이지만 수익권에서 체결된 스톱 건수."""
+    return sum(1 for e in exits if exit_stop_kind(e.get("reason"), e.get("pt")) == "trail_win")
 
 
 def _won_to_int(s):
@@ -3443,7 +3473,7 @@ def _won_to_int(s):
         return None
 
 
-def group_positions(entries, partials, finals):
+def group_positions(entries, partials, finals, fill_opens=None):
     """진입·부분청산·최종청산 이벤트를 **포지션 단위**로 묶는다.
 
     [MW0602 470차 S3] 417차(2026-08-02)가 정정한 단위 혼동 — 청산 레그를 포지션으로 세는 것 —
@@ -3458,16 +3488,22 @@ def group_positions(entries, partials, finals):
       positions — [{"entry":…, "legs":[…], "pt":float|None, "won":int|None, "closed":bool}]
       orphans   — 진입 없이 나타난 청산 레그(전일 이월·로그 절단·수집 시점 절단).
                   ⚠ **버리지 않는다.** 버리면 손익이 조용히 사라지고 검산이 통과해버린다.
+
+    [MW0602 1019 장후 1-6] `fill_opens` — `[Position] 체결진입`(체결 선행 진입). 열린
+    포지션이 **없을 때만** 새 포지션을 연다(`anchor="fill"`). 열린 포지션이 있으면
+    증량 체결이므로 무시한다 — 그래야 정상 경로의 같은 초 중복이 이중 계수되지 않는다.
     """
     ev = []
     for e in entries or []:
         ev.append((e.get("hhmm") or "", 0, "entry", e))
+    for e in fill_opens or []:
+        ev.append((e.get("hhmm") or "", 1, "fill_open", e))
     for e in partials or []:
-        ev.append((e.get("hhmm") or "", 1, "partial", e))
+        ev.append((e.get("hhmm") or "", 2, "partial", e))
     for e in finals or []:
-        ev.append((e.get("hhmm") or "", 2, "final", e))
-    # 같은 초에 진입과 청산이 겹치면 진입(0) → 부분(1) → 최종(2) 순으로 정렬해야
-    # 포지션이 열리기 전에 닫히는 역전이 생기지 않는다.
+        ev.append((e.get("hhmm") or "", 3, "final", e))
+    # 같은 초에 진입과 청산이 겹치면 진입(0) → 체결선행(1) → 부분(2) → 최종(3) 순으로
+    # 정렬해야 포지션이 열리기 전에 닫히는 역전이 생기지 않는다.
     ev.sort(key=lambda t: (t[0], t[1]))
 
     positions = []
@@ -3475,8 +3511,12 @@ def group_positions(entries, partials, finals):
     cur = None
     for _hhmm, _ord, kind, rec in ev:
         if kind == "entry":
-            cur = {"entry": rec, "legs": [], "closed": False}
+            cur = {"entry": rec, "legs": [], "closed": False, "anchor": "entry"}
             positions.append(cur)
+        elif kind == "fill_open":
+            if cur is None or cur["closed"]:
+                cur = {"entry": rec, "legs": [], "closed": False, "anchor": "fill"}
+                positions.append(cur)
         elif cur is not None and not cur["closed"]:
             cur["legs"].append((kind, rec))
             if kind == "final":
@@ -3515,6 +3555,15 @@ def _real_entries(merged):
     """
     vk = set(_vkey(v) for v in merged.get("virtual_entry", []))
     return [e for e in merged.get("entry", []) if _vkey(e) not in vk]
+
+
+def _chejan_opens(merged):
+    """[MW0602 1019 장후 1-6] `[Position] 체결진입` 중 가상 장부 진입과 겹치지 않는 것.
+
+    포지션을 실제로 여는지는 `group_positions()` 가 판단한다(열린 포지션이 없을 때만).
+    """
+    vk = set(_vkey(v) for v in merged.get("virtual_entry", []))
+    return [e for e in merged.get("chejan_entry", []) if _vkey(e) not in vk]
 
 
 def _render_virtual_book(merged, A, ds_flags):
@@ -3623,12 +3672,15 @@ def day_summary(digests, cfg, out, root=None, day=None):
     sm = merged.get("sizer_match", [])
     mc = merged.get("margin_cap", [])
 
-    positions, orphans = group_positions(en, pex, ex)
+    fo = _chejan_opens(merged)   # [1019 1-6] 체결 선행 진입 — 열린 포지션이 없을 때만 앵커
+    positions, orphans = group_positions(en, pex, ex, fo)
+    n_fill_anchor = sum(1 for p in positions if p.get("anchor") == "fill")
 
     A("| 항목 | 건수 |")
     A("|---|---|")
     A("| 진입체크 통과(`[진입체크]`) | %d |" % len(ec))
     A("| 진입 등록(`[Position] 진입`) | %d |" % len(en))
+    A("| 체결 선행 진입(`[Position] 체결진입`, 진입 등록 없이 포지션을 연 것) | %d |" % n_fill_anchor)
     A("| 체결(`[체결진입]`) | %d |" % len(fi))
     A("| **포지션**(진입~최종청산) | **%d** |" % len(positions))
     A("| 청산 레그 — 최종(`체결청산`) | %d |" % len(ex))
@@ -3712,13 +3764,20 @@ def day_summary(digests, cfg, out, root=None, day=None):
             ) or "_미청산_"
             _cm = (costs or {}).get("by_min", {}).get((e.get("hhmm") or "")[:5])
             A("| %s | %s | %s | %d | %s | %s | %s | %s | %s |" % (
-                e.get("hhmm"), e.get("dir"), e.get("qty"), len(p["legs"]),
+                (e.get("hhmm") or "") + (" ⓕ" if p.get("anchor") == "fill" else ""),
+                e.get("dir"), e.get("qty"), len(p["legs"]),
                 ("%+.2f" % p["pt"]) if p.get("pt") is not None else "?",
                 format(int(_cm[1]), "+,d") if _cm else "—",
                 format(int(_cm[2]), ",d") if _cm else "—",
                 format(p["won"], "+,d") if p.get("won") is not None else "?",
                 truncate(chain, 110)))
         A("")
+        if n_fill_anchor:
+            A("> ⓕ = **체결 선행 진입 %d건** — `[Position] 진입`·`[주문요청]` 없이 "
+              "`[Position] 체결진입` 으로 열린 포지션이다(브로커 체결 통보가 주문 결과보다 먼저 "
+              "도착한 경로, 2026-10-19 10:01:36 실측). 매매 결함이 아니다 — 진입가는 체결가다."
+              % n_fill_anchor)
+            A("")
         if any(not p["closed"] for p in positions):
             n_open = sum(1 for p in positions if not p["closed"])
             A("> ⚠ **미청산 포지션 %d건** — 수집 시점에 아직 열려 있거나 청산 로그를 못 찾았다. "
@@ -3815,9 +3874,15 @@ def day_summary(digests, cfg, out, root=None, day=None):
                   "(2026-08-14 실측 차 10,902원).")
                 A("")
         n_stop, n_prot, n_unk = exit_stop_counts(ex)
-        if n_stop or n_prot or n_unk:
-            A("> **손절 계열 분해** — 진짜 손절 %d건 · TP1 보호트레일 %d건 · 태그없음 %d건 "
-              "(청산 %d건 중)" % (n_stop, n_prot, n_unk, len(ex)))
+        n_twin = exit_trail_win_count(ex)
+        if n_stop or n_prot or n_unk or n_twin:
+            A("> **손절 계열 분해** — 진짜 손절 %d건 · TP1 보호트레일 %d건 · "
+              "수익권 트레일(TP1 미도달·pt>0) %d건 · 태그없음 %d건 (청산 %d건 중)"
+              % (n_stop, n_prot, n_twin, n_unk, len(ex)))
+            if n_twin:
+                A("> `[TP1미도달]` 태그지만 **gross pt가 양수**인 스톱이 %d건이다 — 손절가를 "
+                  "진입가 위로 끌어올린 트레일(신동 `재생 stop_now`)이 수익권에서 체결된 것이다. "
+                  "손절로 세지 말 것(1019 장후 F-10)." % n_twin)
             if n_prot:
                 A("> `하드스톱` 라벨이지만 **TP1 도달 후 보호 스톱 = 이익 청산**인 건이 "
                   "%d건이다. 손절로 세지 말 것 — 라벨 하나에 정반대 두 사건이 들어 있다"
@@ -4081,8 +4146,9 @@ def day_summary(digests, cfg, out, root=None, day=None):
         for k, v in sorted(cd.items(), key=lambda kv: -kv[1]):
             A("- `%s` ×%d" % (k, v))
         A("")
-        A("> CB② 는 `CB_CONSEC_STOP_LIMIT=9999` 라 **연속 손절 카운터는 올라가되 정지는 안 한다.** "
-          "카운터 로그가 보이는 것은 정상이다.")
+        A("> CB② 는 2026-10-13 실거래 전환으로 **복원됐다**(`CB_CONSEC_STOP_LIMIT=3`, 그 전 모의 "
+          "시절은 9999). pnl≤0 포지션이 출처 무관 연속 3회면 **당일 정지**다 — 카운터 로그가 3에 "
+          "닿았는데 정지 로그가 없으면 그것이 이상이다. 실값은 §3 설정 불변식 표로 확인하라.")
         A("")
 
     # --- 메인 스레드 블로킹 ---
@@ -4922,7 +4988,7 @@ def build(root, day, phase, cfg, discover_only=False):
     bl = merged.get("block", [])
     sz = merged.get("sizer", [])
     if phase in ("post", "all"):
-        if not en and not ex:
+        if not en and not ex and not _chejan_opens(merged):
             top_bl = ""
             if bl:
                 bd = {}
@@ -4943,6 +5009,9 @@ def build(root, day, phase, cfg, discover_only=False):
                     _det += " · 태그없음(468차 이전 로그) %d" % n_unk
                 if n_prot:
                     _det += " · 보호트레일 %d건은 제외" % n_prot
+                _twin = exit_trail_win_count(ex)
+                if _twin:
+                    _det += " · 수익권 트레일 %d건은 제외" % _twin
                 flags.append("청산 %d건 중 손절 계열 **%d건(%.0f%%)** [%s] — 손절 준수율 확인 필요"
                              % (len(ex), _susp, 100.0 * _susp / len(ex), _det))
     try:
