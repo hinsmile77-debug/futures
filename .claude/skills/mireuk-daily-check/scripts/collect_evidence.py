@@ -2312,6 +2312,32 @@ def preretrain_bypass_lines(root, day, out):
     A("")
 
 
+def peter2_sole_collect_section(root, day, out):
+    """[MW0601 698차] 2026-10-20 MW0602 피터2 수집기 중지 → MW0601 단독 수집 효과 추적.
+
+    판정 기준은 `tools/peter2_live/sole_collect_tracker.py` 상단에 사전등록돼 있다.
+    여기서는 그 요약을 올리기만 한다. 모듈을 못 읽으면 **미측정**으로 적는다(0 이 아니다).
+    """
+    A = out.append
+    A("### 9-e. 피터2 단독 수집 추적 (698차 — MW0602 수집기 중지 효과)")
+    A("")
+    if day < _date(2026, 10, 20):
+        A("(평가 창 이전 날짜 — 해당 없음)")
+        A("")
+        return
+    try:
+        import importlib.util
+        p = os.path.join(root, "tools", "peter2_live", "sole_collect_tracker.py")
+        spec = importlib.util.spec_from_file_location("_p2_sole_tracker", p)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        for line in mod.evidence_lines(day.isoformat()):
+            A(line)
+    except Exception as e:
+        A("- **미측정** — 추적 스크립트 실행 실패: `%s`" % truncate(repr(e), 200))
+    A("")
+
+
 def split_due_bars(ts_list, upto_min):
     """[MW0601 667차 / G-2] 분봉 ts 목록을 (이미 확정됐어야 할 것, 미도래) 로 가른다.
 
@@ -3365,6 +3391,10 @@ def build(root, day, phase, cfg, discover_only=False):
 
     # ---- 9-d. 프로세스 종료 3축 대사 (620차) ----
     _fau = wer_crash_section(root, cfg, day, L)
+
+    # ---- 9-e. 피터2 단독 수집 추적 (698차) ----
+    if phase in ("post", "all"):
+        peter2_sole_collect_section(root, day, L)
 
     # ---- 10. 정기점검 리포트 폴더 ----
     A("## 10. 정기점검 리포트 현황")
