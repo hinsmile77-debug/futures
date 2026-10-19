@@ -25085,3 +25085,7 @@ SizerMatch로 설명됨(기존 관측 연속). P0 없음 · P1 신규 0건 · P2
 - [ ] G-A (P2, 이월) NEXT_TODO 미완료 P0/P1 항목 ↔ 코드 흔적 대조 섀도 검사 — 키워드 추출·판별 규칙을 먼저 정할 것(없이 만들면 오탐 누적).
 - [ ] G-B (P2, 이월) SKILL.md §7 에 「예약 프롬프트의 스킬 rev 설명 ↔ 정본 대조」 항목 추가 — SKILL.md 수정 시 `rev:` 갱신 필수 → 앱 저장 사본·예약 프롬프트 3종 동시 갱신(사용자 손 작업)과 한 번에.
 - [ ] 전체 스위트 실패 17건(10/19) vs 장전 기록 16건 — 늘어난 1건 식별(신동/신동2 재생 계열 추정, 수집기 무관).
+
+## 2026-10-20 (MW0602 638차 후속 — 점검 예약 프롬프트 rev 설명 갱신: 사용자 지시, 미완)
+
+- [ ] 장전·장중·장후 점검 예약 3종(Cowork 원격 루틴 trig_01JTdWEd2EqbK2ugCocL4CiZ / trig_01F8x6dMpNXhs65TYxteXZdE / trig_0131aLqrbhCQSiEC27VSYdPZ, 2026-09-23 원격 이관 — 로컬 `C:\Users\pc1\Claude\Scheduled\mireuk-daily-check-*\SKILL.md` 는 enabled=false 사본) 프롬프트 §0-① 의 「`rev: 2026-08-26 (494차)`(558줄)」 문단을 정본 `rev: 2026-08-26e`(664줄, `53c665f`)로 교체. 세션에서 미수행 사유: 프롬프트가 `job_config.ccr.events[2]` 안에 있어 부분 갱신 불가 — job_config 전체(custom_system_prompt 77KB 포함) 재전송이 필요해 08:55 장전 실행 전 루틴 파손 위험. → Cowork 예약 화면에서 사용자가 수정.
