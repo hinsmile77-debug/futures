@@ -95,6 +95,18 @@ git log -20 --format="%h %ad %s" --date=short                     # 최근 이�
 - **불일치 → 그 자체가 P1 이상점.** 건수 차이와 어느 소스가 누락인지 적고,
   딥다이브 결론에 "관측 훼손" 꼬리표를 단다.
 
+🔴 **[2026-10-19 장후 G-1] 대사 전에 거래주체부터 확인한다 — 실거래 주체가 엔진이 아닐 수 있다.**
+`data/trade_principal.json`의 `principal`(`MIREUK`·`SHINDONG`·`PETER`)이 계좌에서 **실주문을 내는
+유일한 주체**다(`strategy/runtime/trade_principal.py`, 거래주체분리 2026-10-12 사용자 결정).
+선택되지 않은 주체의 진입은 실주문이 아니라 **가상 장부**로 간다(로그 `[Virtual] <주체> 가상진입`,
+`main.py:_ts_vbook_open`).
+- 주체가 `MIREUK`가 아니면 `ensemble_decisions.entry_executed=1`은 **엔진의 결정**일 뿐 실주문이 아니다
+  → **3원 대사의 분모에서 뺀다.** 실거래 대사는 그 주체의 진입 로그 · `trades`(`entry_source`로 구분)로 맞춘다.
+- 2026-10-19 실측: 주체=`PETER` · `entry_executed=1` **2건**(전부 `[Virtual] 미륵 가상진입`) vs
+  `trades` 실거래 **4포지션**(전부 피터2). 대사 불일치처럼 보였지만 **설계된 분기**였다 —
+  코드를 읽어 재발견하는 데 시간을 썼다.
+- 파일이 없거나 깨졌으면 `load()`가 `measured=False`로 기본값(미륵)을 돌려준다 — 그 경우엔 그 사실을 적는다.
+
 ---
 
 ## 3. 케이스 단위 딥다이브 (**포지션** 1건 = 카드 1장)

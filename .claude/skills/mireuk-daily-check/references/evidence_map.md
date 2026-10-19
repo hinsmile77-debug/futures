@@ -398,6 +398,11 @@ exit_stage, commission_rate_used
 **포지션 3 = 3 = 3 이면 일치**다. 레그 6은 불일치가 아니다.
 앞의 세 값 중 하나라도 어긋나면 그때가 P1 이상점이다(관측 훼손).
 
+⚠ **[2026-10-19 G-1] 위 표는 거래주체=미륵(`MIREUK`)일 때의 대사다.** 먼저
+`data/trade_principal.json`의 `principal`을 확인할 것. 주체가 다른 로직(`PETER`·`SHINDONG`)이면
+`entry_executed=1`은 가상 장부로 간 엔진 결정이라 **분모에서 빼고**, `trades`는 `entry_source`로
+그 주체 행만 센다. 상세·실측 예시: `postmortem.md` §2-1.
+
 ### 8-6. 조회 명령
 
 ```bash
