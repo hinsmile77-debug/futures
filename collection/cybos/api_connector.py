@@ -1309,13 +1309,18 @@ class CybosAPI:
                 "buy_new_qty": _safe_int(obj.GetHeaderValue(MARGIN_QTY_HEADER_BUY_NEW)),
             }
 
+        # [MW0602 638차 / F-2] 시장가 조회에는 단가를 넣지 않는다(0). 실서버가
+        # `msg=11298 시장가/…/최유리지정가 주문은 단가를 입력하지 않습니다` 로 거부해
+        # 2026-10-13 실거래 전환 이래 성공 0건이었다(모의서버는 단가를 허용했다).
+        # 같은 규약을 실서버에서 체결되는 시장가 주문(`send_market_order` 의 `(4, 0)`)이
+        # 이미 따르고 있다. `price` 인자는 호출부 호환을 위해 받기만 한다.
         try:
             ret, status, msg, data = _run_block_request(
                 progid=CYBOS_FUTURES_ORDER_MARGIN_QTY_PROGID,
                 input_pairs=[
                     (0, account_no),
                     (1, _code),
-                    (2, float(price or 0.0)),
+                    (2, 0),
                     (3, ORDER_HOGA_MARKET),
                     (4, CYBOS_GOODS_CODE_FUTURES),
                     (5, "Y"),

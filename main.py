@@ -21252,8 +21252,19 @@ def _ts_margin_capped_qty(self, direction: str, price: float, qty: int) -> int:
         margin_info = self.broker.get_order_available_qty(account_no, code, price)
     except Exception as _mq_e:
         logger.debug("[MarginQty] 조회 예외 — 원 산출수량 유지: %s", _mq_e)
+        # [MW0602 638차 / F-2] 실패도 상태 샘플로 남긴다 — 계측 4원칙 ②(미측정 ≠ 0).
+        # 2026-10-13~19 조회 100% 실패 동안 `[MarginCap] state=` 가 한 줄도 안 찍혀
+        # 「binding 아님」과 「조회 못 함」이 같은 침묵이었다. ⚠ 수량은 무변경(qty 그대로),
+        # `_margin_probe` 도 None 유지 — sizing_trace 의 margin_binding 이 None(미확정)으로 남는다.
+        # ⚠ `상한=` 뒤에 숫자를 쓰지 말 것 — 수집기 §5 `margin_cap` 정규식이 조회 성공으로 센다.
+        log_manager.trade(
+            f"[MarginCap] state=UNMEASURED {direction} 산출={qty} 상한=미측정 사유=조회예외"
+        )
         return qty
     if not margin_info:
+        log_manager.trade(
+            f"[MarginCap] state=UNMEASURED {direction} 산출={qty} 상한=미측정 사유=조회실패"
+        )
         return qty
     key = "buy_new_qty" if direction == "LONG" else "sell_new_qty"
     margin_qty = int(margin_info.get(key, 0) or 0)

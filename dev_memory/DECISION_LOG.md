@@ -49925,3 +49925,23 @@ v9-dev 배포 시 MW0601 을 실계좌로 보고 실계좌 경로 영향을 평�
 **부수 사항** — 첫 `git push` 가 커밋 실패(PowerShell 메시지 전달) 상태에서 실행돼 로컬 미푸시 사용자 커밋 `60c8897`·`ec2f014` 가 원격에 먼저 올라갔다(`c68b442..ec2f014`). 이후 `b540f66` 푸시.
 
 **이월** — F-2(브로커 어댑터, C등급) · G-A(판별 규칙 미정) · G-B(SKILL.md rev 갱신 → 앱 사본·예약 프롬프트 동시 갱신 필요) · G-D(설계만, 표본 1일) · H-1/H-2(313차 미통과). G-C 는 기존 고아 경고로 이미 반영.
+
+## 2026-10-20 (MW0602 638차 — F-2 CpTd6722 시장가 단가입력 제거: 사용자 지시) — ✅ 구현 · 라이브 검증 대기
+
+**증상** — `[CybosMarginQty] 조회 실패 ret=0 status=-1 msg=11298 시장가/신고대량/최우선/최유리지정가 주문은 단가를 입력하지 않습니다. (ordsvr56)(ord.fo.dpmyinqr.selanwordpsblqty)` — 2026-10-13 실거래 전환 이래 성공 0건(631·633차, 10/19까지 지속). 그동안 `[MarginCap] state=` 0줄 → 증거금 상한 미작동 + ⑧ 입력 시계열 공백.
+
+**원인** — `collection/cybos/api_connector.py:request_order_available_qty()` 가 `(3, ORDER_HOGA_MARKET)` 인데 `(2, float(price))` 로 단가를 넣었다. 모의서버는 허용, 실서버는 거부.
+
+**결정**
+1. 입력 idx 2 를 `0` 으로 고정. 근거: 같은 파일 `send_market_order()` 가 시장가에 `(4, 0)` 을 보내고 실서버에서 체결된다 — 같은 규약. `price` 인자는 호출부 호환을 위해 받기만 한다.
+2. `main._ts_margin_capped_qty()` 실패 2경로(예외 · None)에 `[MarginCap] state=UNMEASURED … 상한=미측정 사유=조회예외|조회실패` 상태 샘플(계측 4원칙 ②). **수량은 무변경**(qty 그대로), `_margin_probe` 는 None 유지 → `sizing_trace.margin_binding` 은 None(미확정)으로 남는다(「미측정」을 넣으면 False 로 오독된다).
+3. `상한=` 뒤 숫자 금지 — 수집기 §5 `margin_cap` 정규식이 조회 성공으로 계수하지 않게. 수집기 `MarginCap_state` why 에 UNMEASURED 의미 추가(benign 아님 — 고착이면 재사망).
+
+**Why** — 증거금 부족 사전 차단 안전장치가 실거래 1주일간 눈을 감고 있었다. 계약수 확대·거래주체 전환(⑧, `MAX_CONTRACTS` 재산출) 전에 선행 필요.
+
+**How to apply / 주의**
+- ⚠ **라이브 동작이 바뀐다** — 조회가 성공하기 시작하면 `margin_qty < qty` 축소, `margin_qty <= 0` 이면 `[MarginBlock]` 진입 차단이 실제로 작동한다(10/12 이전 모의에서 하던 동작의 복귀). 실계좌 1,500만원 · 신동 1계약에서 BLOCK 이 뜨면 증거금 산정부터 확인.
+- `price=0` 이 실서버에서 수용되는지는 **라이브로만 확인된다**(오프라인 재현 불가). 실패 메시지가 바뀌면(11298 외) 그 문구로 다음 수를 정한다.
+
+**검증** — `tests/test_638_margin_qty_market_price.py` 5건 통과. 전체 스위트 2,559 통과 / 17 실패(10/19 목록과 동일, 신규 0). py37_32 구문 파싱 OK.
+라이브 확인 기준(2026-10-20 장중): ① `[CybosMarginQty] 조회 실패` 0건 ② `[MarginCap] state=OK|CAP|BLOCK` 출현 ③ `state=UNMEASURED` 고착 아님.
