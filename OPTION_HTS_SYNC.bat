@@ -17,7 +17,7 @@ cd /d "%~dp0"
 set "PYTHONUTF8=1"
 set "PY=%USERPROFILE%\anaconda3\envs\py37_32\python.exe"
 if not exist "%PY%" set "PY=python"
-"%PY%" scripts\sync_option_hts.py --loop 60 --until 16:30 %*
+"%PY%" scripts\sync_option_hts.py --loop 60 --until 18:25 %*
 echo.
 echo [RESULT] exit %ERRORLEVEL%
 pause

@@ -8,11 +8,22 @@ import json
 import os
 import sys
 
+import pytest
+
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(_ROOT, "scripts"))
 import sync_option_hts as S  # noqa: E402
 
 NOW = 2_000_000_000.0
+_PROD_LOG_DIR = S.LOG_DIR
+
+
+@pytest.fixture(autouse=True)
+def _isolate_log_dir(tmp_path, monkeypatch):
+    """S._log 가 운영 로그(logs/YYYYMMDD_OPTION_HTS_SYNC.log)에 쓰지 않게 한다."""
+    d = tmp_path / "logs"
+    monkeypatch.setattr(S, "LOG_DIR", str(d))
+    return d
 
 
 def _mk(d, name, mtime, data=b"x"):
@@ -88,9 +99,18 @@ def test_self_source_refused_by_own_ip(monkeypatch):
     assert not S.is_self_source(r"\\192.168.0.12\option_hts")
 
 
-def test_unreachable_source_returns_3(tmp_path):
+def test_unreachable_source_returns_3(tmp_path, _isolate_log_dir):
     rc = S.main(["--src", str(tmp_path / "nope"), "--dst", str(tmp_path / "dst")])
     assert rc == 3
+    # 로그는 격리 폴더로만 간다
+    assert any("원본 접근 불가" in open(str(p), encoding="utf-8").read()
+               for p in _isolate_log_dir.iterdir())
+
+
+def test_prod_log_dir_untouched_by_tests():
+    """운영 로그 경로는 ROOT/logs 그대로이고, 테스트 중에는 그 경로로 쓰지 않는다."""
+    assert _PROD_LOG_DIR == os.path.join(S.ROOT, "logs")
+    assert S.LOG_DIR != _PROD_LOG_DIR
 
 
 def test_derive_refuses_on_mirror_folder():

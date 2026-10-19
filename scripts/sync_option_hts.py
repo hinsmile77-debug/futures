@@ -24,7 +24,7 @@
 
 사용 (MW0602)
   python scripts/sync_option_hts.py                     # 1회
-  python scripts/sync_option_hts.py --loop 60 --until 16:30
+  python scripts/sync_option_hts.py --loop 60 --until 18:25
   OPTION_HTS_SYNC.bat                                    # 위 루프를 띄운다
   원본 경로: --src 또는 환경변수 MIREUK_OPTION_HTS_SRC (기본 \\\\DeskTop-MW0601\\option_hts)
 
@@ -46,6 +46,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_SRC = r"\\DeskTop-MW0601\option_hts"
 DEFAULT_DST = os.path.join(ROOT, "data", "db", "option_hts")
 ARRIVALS = "_sync_arrivals.json"
+# 운영 로그 위치. 테스트는 이 값을 tmp 로 돌린다 — 안 돌리면 pytest 의 가짜 원본 경로가
+# 그날 운영 로그에 섞인다(2026-10-17·19 실제 발생).
+LOG_DIR = os.path.join(ROOT, "logs")
 MARKER_PREFIX = "_MIRROR_OF_"
 # 사다리가 읽는 이름 규칙(ladder_data._list_9842_files) + 파생 매니페스트만 옮긴다
 _NAME_RE = re.compile(r"^(\d{6}(?:_\d{4})?(?:_[DP])?\.(?:xlsx|xls)|_derived_D\.json)$")
@@ -59,7 +62,7 @@ def _log(msg):
         print(line)
         sys.stdout.flush()
     try:
-        d = os.path.join(ROOT, "logs")
+        d = LOG_DIR
         os.makedirs(d, exist_ok=True)
         with open(os.path.join(d, "%s_OPTION_HTS_SYNC.log" % now.strftime("%Y%m%d")), "a", encoding="utf-8") as fh:
             fh.write(line + "\n")
@@ -171,7 +174,7 @@ def main(argv=None):
     ap.add_argument("--dst", default=DEFAULT_DST)
     ap.add_argument("--settle", type=float, default=5.0, help="원본 mtime 이 이 초 이내면 이번 회차 건너뜀")
     ap.add_argument("--loop", type=float, default=0, help="N초 간격 반복 (0=1회)")
-    ap.add_argument("--until", default="16:30", help="--loop 종료 시각 HH:MM")
+    ap.add_argument("--until", default="18:25", help="--loop 종료 시각 HH:MM")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)
     for s in ("stdout", "stderr"):
