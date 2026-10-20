@@ -34,6 +34,23 @@
     "noise_95": 0.281,
     "verdict": "FAIL",
     "why": "적중 0.596 (p=0.243) · IC 0.182 (순열 p=0.185, 노이즈95 0.281)"
+   },
+   {
+    "ts": "2026-10-20T20:06:33",
+    "days": 60,
+    "at": "10:00",
+    "perm": 200,
+    "first": "2026-07-29",
+    "last": "2026-10-20",
+    "n": 54,
+    "n_all": 55,
+    "hit_rate": 0.593,
+    "p_binom": 0.2203,
+    "ic": 0.19,
+    "p_perm": 0.21,
+    "noise_95": 0.269,
+    "verdict": "FAIL",
+    "why": "적중 0.593 (p=0.2203) · IC 0.19 (순열 p=0.21, 노이즈95 0.269)"
    }
   ],
   "mounted_at": null,
@@ -85,6 +102,23 @@
     "noise_95": null,
     "verdict": "UNMEASURED",
     "why": "표본 11 < 20"
+   },
+   {
+    "ts": "2026-10-20T20:06:38",
+    "days": 60,
+    "at": "10:00",
+    "perm": 200,
+    "first": "2026-07-29",
+    "last": "2026-10-20",
+    "n": 18,
+    "n_all": 55,
+    "hit_rate": null,
+    "p_binom": null,
+    "ic": null,
+    "p_perm": null,
+    "noise_95": null,
+    "verdict": "UNMEASURED",
+    "why": "표본 18 < 20"
    }
   ],
   "mounted_at": null,
@@ -136,6 +170,23 @@
     "noise_95": null,
     "verdict": "UNMEASURED",
     "why": "표본 11 < 20"
+   },
+   {
+    "ts": "2026-10-20T20:06:43",
+    "days": 60,
+    "at": "10:00",
+    "perm": 200,
+    "first": "2026-07-29",
+    "last": "2026-10-20",
+    "n": 18,
+    "n_all": 55,
+    "hit_rate": null,
+    "p_binom": null,
+    "ic": null,
+    "p_perm": null,
+    "noise_95": null,
+    "verdict": "UNMEASURED",
+    "why": "표본 18 < 20"
    }
   ],
   "mounted_at": null,
