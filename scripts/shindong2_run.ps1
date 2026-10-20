@@ -120,7 +120,7 @@ function Find-Claude {
 
 Log ("start (dry={0})" -f [bool]$DryRun)
 
-# 1) trading day  (research runs on Saturday by design - no gate; 640-4)
+# 1) trading day  (research runs Friday 17:00 after close by design - no gate; 640-4)
 if ($Phase -ne 'research') {
     $g = Run-Live @('gate')
     if ($g -eq 3) { Log 'holiday -> skip'; exit 0 }
@@ -168,7 +168,7 @@ try {
                  'Bash(conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py:*)')
     $denied = @('Edit', 'Write', 'NotebookEdit', 'WebFetch', 'WebSearch')
     if ($Phase -eq 'research') {
-        # 640-4: research (Saturday) may search the web and run the indicator registry / PIT verifier.
+        # 640-4: research (Friday 17:00) may search the web and run the indicator registry / PIT verifier.
         # Still no Edit/Write: plugin code is written in an interactive session with the user.
         $allowed += @('WebSearch', 'WebFetch',
                       'Bash(conda run --no-capture-output -n py310_64 python scripts/shindong2_research.py:*)')

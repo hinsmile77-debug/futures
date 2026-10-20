@@ -119,4 +119,5 @@ def test_7_mounted_values_and_headless_scripts():
     run = open(os.path.join(ROOT, "scripts", "shindong2_run.ps1"), encoding="utf-8").read()
     assert "'research'" in run and "shindong2_research.py:*" in run and "$Phase -ne 'research'" in run
     tasks = open(os.path.join(ROOT, "scripts", "shindong2_tasks.ps1"), encoding="utf-8").read()
-    assert "'Research'" in tasks and "Saturday" in tasks
+    # [MW0601 640차 이식] 이 PC 는 토요일에 꺼져 있다(금 19:30 pc_shutdown_friday) → 금요일 17:00 장후로 옮겼다.
+    assert "'Research'" in tasks and "-DaysOfWeek Friday -At (At '17:00')" in tasks

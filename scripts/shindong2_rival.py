@@ -44,7 +44,9 @@ PREREG = dict(
 #   (가짜 판정을 내지 않는다 — 계측 4원칙 ②).
 PREREG_BY_PC = {
     "MW0602": dict(version="SD2AI-2026-10-20-v1", scoring_start="2026-10-21"),
-    "MW0601": dict(version="SD2AI-MW0601-미등록", scoring_start="9999-12-31"),
+    # [MW0601 640차 이식] 사전등록 `docs/맥점x옵션사다리개선/02_사전등록_AI대MAIN_판정_MW0601-20261020.md`
+    #   — 문턱은 위 PREREG 그대로, 개시 = 배포(10-20) 다음 거래일. 버전명에 PC 를 넣어 MW0602 문자열과 겹치지 않게 했다.
+    "MW0601": dict(version="SD2AI-MW0601-2026-10-20-v1", scoring_start="2026-10-21"),
 }
 
 

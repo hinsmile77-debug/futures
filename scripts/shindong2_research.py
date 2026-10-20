@@ -163,7 +163,9 @@ def binom_two_sided(k: int, n: int, p: float = 0.5) -> float:
     """정확 이항 양측 p — 관측 확률 이하인 결과들의 합."""
     if n == 0:
         return 1.0
-    pk = [math.comb(n, i) * p ** i * (1 - p) ** (n - i) for i in range(n + 1)]
+    # math.comb 는 3.8+ — 테스트는 py37_32 로 돈다(CLAUDE.md 규약). 운영(py310_64)과 같은 값.
+    comb = getattr(math, "comb", None) or (lambda a, b: math.factorial(a) // (math.factorial(b) * math.factorial(a - b)))
+    pk = [comb(n, i) * p ** i * (1 - p) ** (n - i) for i in range(n + 1)]
     obs = pk[k]
     return min(1.0, sum(v for v in pk if v <= obs + 1e-12))
 

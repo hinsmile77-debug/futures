@@ -9,7 +9,9 @@
       \Mireuk\Mireuk_Shindong2_Poll        10:10-15:00 every 10 min (claude only on new events)
       \Mireuk\Mireuk_Shindong2_Close       15:12  (after 15:10 forced exit)
       \Mireuk\Mireuk_Shindong2_Postmarket  15:55  (after regular futures load 15:52)
-      \Mireuk\Mireuk_Shindong2_Research    Saturday 10:00  (640-4: web research + indicator registry; no trading-day gate)
+      \Mireuk\Mireuk_Shindong2_Research    Friday 17:00  (640-4: web research + indicator registry; no trading-day gate)
+                                           MW0601: Friday after close, not Saturday - this PC powers off Fri 19:30
+                                           (pc_shutdown_friday) and claude_update_window runs 19:20; 17:00 + 12 min limit clears both.
 
     Each task runs scripts\shindong2_run.ps1 -Phase <phase> hidden, as the logged-on user,
     Interactive, RunLevel Limited (no COM, no elevation needed). Holidays are skipped by the
@@ -62,7 +64,7 @@ $Tasks = [ordered]@{
     'Poll'       = @{ Phase = 'poll';       Triggers = @(New-WeekdayRepeat '10:10' 10 291) }
     'Close'      = @{ Phase = 'close';      Triggers = @(New-Weekday '15:12') }
     'Postmarket' = @{ Phase = 'postmarket'; Triggers = @(New-Weekday '15:55') }
-    'Research'   = @{ Phase = 'research';   Triggers = @((New-ScheduledTaskTrigger -Weekly -DaysOfWeek Saturday -At (At '10:00'))) }   # 640-4
+    'Research'   = @{ Phase = 'research';   Triggers = @((New-ScheduledTaskTrigger -Weekly -DaysOfWeek Friday -At (At '17:00'))) }   # 640-4 (MW0601: Fri 17:00 - PC off Sat)
 }
 
 if ($Action -eq 'Register') {
