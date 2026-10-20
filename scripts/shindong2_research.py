@@ -210,12 +210,12 @@ def evaluate_pairs(vals: List[float], fwd: List[float], sign: str, prereg: Dict[
 
 # ── PIT 검증 러너 ─────────────────────────────────────────────────────────
 def trading_days(n_days: int, until: Optional[str] = None, db: str = REG_DB) -> List[str]:
-    """regular_candles(A056A) 에 봉이 있는 거래일 — 최근 n_days. DB 없으면 빈 목록."""
+    """regular_candles 미니(A05*) 봉이 있는 거래일 — 최근 n_days. DB 없으면 빈 목록. [641차] A056A 하드코딩 제거(롤)."""
     if not os.path.exists(db):
         return []
     con = sqlite3.connect("file:%s?mode=ro" % db.replace("\\", "/"), uri=True, timeout=5.0)
     try:
-        q = "SELECT DISTINCT trade_date FROM regular_candles WHERE code='A056A'" + (" AND trade_date<=?" if until else "") + " ORDER BY trade_date DESC LIMIT ?"
+        q = "SELECT DISTINCT trade_date FROM regular_candles WHERE code LIKE 'A05%'" + (" AND trade_date<=?" if until else "") + " ORDER BY trade_date DESC LIMIT ?"
         rows = con.execute(q, ((until, n_days) if until else (n_days,))).fetchall()
     finally:
         con.close()
@@ -223,15 +223,19 @@ def trading_days(n_days: int, until: Optional[str] = None, db: str = REG_DB) -> 
 
 
 def forward_return(day: str, at_hm: str, db: str = REG_DB) -> Optional[float]:
-    """at_hm 의 종가 → 15:10 직전 마지막 종가. 미니 A056A 정규봉."""
+    """at_hm 의 종가 → 15:10 직전 마지막 종가. 그날 미니 근월물(`ladder_data.mini_code_for`) 정규봉."""
     if not os.path.exists(db):
         return None
     con = sqlite3.connect("file:%s?mode=ro" % db.replace("\\", "/"), uri=True, timeout=5.0)
     try:
-        a = con.execute("SELECT close FROM regular_candles WHERE code='A056A' AND trade_date=? AND substr(ts,12,5)<=? ORDER BY ts DESC LIMIT 1",
-                        (day, at_hm)).fetchone()
-        b = con.execute("SELECT close FROM regular_candles WHERE code='A056A' AND trade_date=? AND substr(ts,12,5)<='15:09' ORDER BY ts DESC LIMIT 1",
-                        (day,)).fetchone()
+        import ladder_data as LD
+        code = LD.mini_code_for(con, day)
+        if not code:
+            return None
+        a = con.execute("SELECT close FROM regular_candles WHERE code=? AND trade_date=? AND substr(ts,12,5)<=? ORDER BY ts DESC LIMIT 1",
+                        (code, day, at_hm)).fetchone()
+        b = con.execute("SELECT close FROM regular_candles WHERE code=? AND trade_date=? AND substr(ts,12,5)<='15:09' ORDER BY ts DESC LIMIT 1",
+                        (code, day)).fetchone()
     finally:
         con.close()
     if not a or not b:

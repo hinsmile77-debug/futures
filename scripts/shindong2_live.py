@@ -104,16 +104,20 @@ def _prev_day_mini(day):
     p = os.path.join(ROOT, "data", "db", "regular_candles.db").replace("\\", "/")
     con = sqlite3.connect("file:%s?mode=ro" % p, uri=True, timeout=5.0)
     try:
-        r = con.execute("SELECT MAX(trade_date) FROM regular_candles WHERE code='A056A' AND trade_date<?", (day,)).fetchone()
+        # [MW0602 641차] code='A056A' 하드코딩 → 10/08 롤 뒤 「전일」이 10/08 에 고착됐다(12일). 근월물은 날짜마다 정하고,
+        #   전일 값은 **오늘도 살아 있는 월물**로 읽는다(롤 다음 날 만기 월물 값을 쓰면 월물 격차만큼 레벨이 틀린다).
+        import ladder_data as LD
+        r = con.execute("SELECT MAX(trade_date) FROM regular_candles WHERE code LIKE ? AND trade_date<?", (LD.MINI_PREFIX + "%", day)).fetchone()
         if not r or not r[0]:
             return None
-        rows = con.execute("SELECT open, high, low, close FROM regular_candles WHERE code='A056A' AND trade_date=?"
-                           " AND substr(ts,12,5) BETWEEN '08:45' AND '15:45' ORDER BY ts", (r[0],)).fetchall()
+        code = LD.mini_code_continuing(con, r[0], day)
+        rows = con.execute("SELECT open, high, low, close FROM regular_candles WHERE code=? AND trade_date=?"
+                           " AND substr(ts,12,5) BETWEEN '08:45' AND '15:45' ORDER BY ts", (code, r[0])).fetchall()
     finally:
         con.close()
     if not rows:
         return None
-    return dict(date=r[0], open=round(rows[0][0], 2), high=round(max(x[1] for x in rows), 2),
+    return dict(date=r[0], code=code, open=round(rows[0][0], 2), high=round(max(x[1] for x in rows), 2),
                 low=round(min(x[2] for x in rows), 2), close=round(rows[-1][3], 2))
 
 
@@ -314,7 +318,7 @@ def source_warnings(st, now=None):
     if pv and pv.get("date"):
         gap = (_dt.date.fromisoformat(day) - _dt.date.fromisoformat(pv["date"])).days
         if gap > 5:
-            W.append("전일 참조 고착 — 전일=%s(%d일 전). 정규봉 적재 공백. 전일 고저·종가를 레벨 근거로 쓰지 말 것" % (pv["date"], gap))
+            W.append("전일 참조 고착 — 전일=%s(%d일 전, 원인 미상 — 641차: 월물 롤 하드코딩이었던 전례). 전일 고저·종가를 레벨 근거로 쓰지 말 것" % (pv["date"], gap))
     elif not pv:
         W.append("전일 참조 없음 — 정규봉 DB 에 이전 거래일이 없다(미측정)")
     fp = st.get("foreign") or {}

@@ -348,7 +348,7 @@ conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py lesso
 6. 연구 메모를 `record --phase postmarket --action note --dir 관망` 로 **그날(금요일) 날짜 파일**에 남긴다(무엇을 찾았고 무엇을 등록했고 무엇이
    기각됐나 · 출처 URL). `--scenarios` 는 요구되지 않는다(postmarket 단계).
    ⚠ 15:55 장후 해설 **뒤에** 붙는 기록이라 사다리 패널의 「최신 해설」이 이 메모로 바뀐다 — 본문 첫 줄을 **`[연구] …`** 로 시작해
-   장 해설과 구분되게 한다. 다음 거래일 계획(`overnight`)은 건드리지 않는다.
+   장 해설과 구분되게 한다. 다음 거래일 계획(`overnight`)과 장후 피드백은 고치지 않는다.
 7. 20거래일 지난 장착 지표가 전략 S-n 의 적중에 기여하지 못하면 `set --status 폐기 --why` — 이력은 남는다.
 
 내장 지표(2026-10-20): `I1` 외인 선물 누계 60분 변화 · `I2` 개인 위클리 콜−풋 09:00 대비(**상대 MAIN 이 보는 값**) ·
