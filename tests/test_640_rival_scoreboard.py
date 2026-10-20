@@ -17,6 +17,9 @@ sys.path.insert(0, os.path.join(ROOT, "scripts"))
 import shindong2_rival as RV  # noqa: E402
 from strategy.shindong import store, spec  # noqa: E402
 
+# 규격 중립 — dev(v3 family) 와 v9-dev(R1/R2/R3) 모두에서 돈다. 섀도 이름은 spec.VARIANTS 에서 뽑는다
+SH_A, SH_B, SH_C = spec.VARIANTS[1], spec.VARIANTS[-1], spec.VARIANTS[2]
+
 
 def _mk_db(path, day="2026-10-20"):
     con = store.connect(path)
@@ -37,16 +40,16 @@ def _mk_db(path, day="2026-10-20"):
             # 섀도: V22 CLOSED +300,000 (= +3pt) · BRKC CLOSED −900,000 (= −9pt) · 나머지 거래 없음(day 행만)
             con.execute("""INSERT INTO shindong_trades(trade_date,variant,trade_key,rule,side,entry_ts,entry_px,status,
                            leg1_exit_ts,leg1_exit_px,leg1_reason,net_krw,spec_version,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (day, "SHADOW_V22", "FLOW|09:07|-1", "FLOW", -1, day + " 09:07:00", 871.68, "CLOSED",
+                        (day, SH_A, "FLOW|09:07|-1", "FLOW", -1, day + " 09:07:00", 871.68, "CLOSED",
                          day + " 10:00:00", 868.68, "TR", 300_000.0, spec.SPEC_VERSION, "x"))
             con.execute("""INSERT INTO shindong_trades(trade_date,variant,trade_key,rule,side,entry_ts,entry_px,status,
                            leg1_exit_ts,leg1_exit_px,leg1_reason,net_krw,spec_version,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (day, "SHADOW_BRKC", "BRK|09:20|+1", "BRK", 1, day + " 09:20:00", 875.0, "CLOSED",
+                        (day, SH_B, "BRK|09:20|+1", "BRK", 1, day + " 09:20:00", 875.0, "CLOSED",
                          day + " 09:40:00", 866.0, "SL", -900_000.0, spec.SPEC_VERSION, "x"))
             # RETRACTED 행은 보이면 안 된다
             con.execute("""INSERT INTO shindong_trades(trade_date,variant,trade_key,rule,side,entry_ts,entry_px,status,net_krw,spec_version,updated_at)
                            VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-                        (day, "SHADOW_HYBL", "LEAD|11:00|+1", "LEAD", 1, day + " 11:00:00", 860.0, "RETRACTED", 0.0, spec.SPEC_VERSION, "x"))
+                        (day, SH_C, "LEAD|11:00|+1", "LEAD", 1, day + " 11:00:00", 860.0, "RETRACTED", 0.0, spec.SPEC_VERSION, "x"))
     finally:
         con.close()
 
@@ -67,11 +70,11 @@ def test_2_read_day_variants_open_eval_and_divergence(tmp_path):
     assert m["n"] == 2 and m["n_closed"] == 1 and m["pnl_pt"] == 10.0 and m["first_side"] == "매도"
     assert m["open"]["entry_t"] == "10:16" and m["open"]["eval_pt"] == pytest.approx(2.10, abs=0.01)   # 매도 852.10 → 850.0
     assert m["trades"][0]["reason_ko"] == "1차/최종" and m["trades"][0]["exit_t"] == "09:49"
-    assert r["variants"]["SHADOW_V22"]["pnl_pt"] == 3.0
-    assert r["variants"]["SHADOW_BRKC"]["pnl_pt"] == -9.0 and r["variants"]["SHADOW_BRKC"]["first_side"] == "매수"
-    assert r["variants"]["SHADOW_HYBL"]["n"] == 0 and r["variants"]["SHADOW_HYBL"]["pnl_pt"] == 0.0   # RETRACTED 제외, day 행 있으니 0
+    assert r["variants"][SH_A]["pnl_pt"] == 3.0
+    assert r["variants"][SH_B]["pnl_pt"] == -9.0 and r["variants"][SH_B]["first_side"] == "매수"
+    assert r["variants"][SH_C]["n"] == 0 and r["variants"][SH_C]["pnl_pt"] == 0.0   # RETRACTED 제외, day 행 있으니 0
     shorts = {d["short"]: d["diff"] for d in r["divergent"]}
-    assert shorts["V22"] == -7.0 and shorts["BRKC"] == -19.0 and "HYBL" in shorts and "FLOWR60" in shorts
+    assert shorts[RV.SHORT[SH_A]] == -7.0 and shorts[RV.SHORT[SH_B]] == -19.0 and RV.SHORT[SH_C] in shorts
 
 
 def test_3_missing_db_is_unmeasured(tmp_path):

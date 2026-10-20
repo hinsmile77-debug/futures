@@ -527,8 +527,20 @@ def lessons_text(active_only=False):
 
 
 # ── [640차 ③] AI 전략 레지스트리 S-n — 레슨 조각이 아니라 5축이 한 세트로 완결된 「독자적 길」 ─────────
-STRAT_JSON = "strategies_%s.json" % PC
-STRAT_MD = "전략_레지스트리_%s.md" % PC
+def _strat_pc():
+    """[640차 이식] v9-dev(MW0601) 의 learn·live 에는 PC 상수가 없다(파일명 MW0601 하드코딩) — 호스트명에서 뽑는다."""
+    v = globals().get("PC") or getattr(SL, "PC", None)
+    if v:
+        return v
+    import platform as _pf
+    import re as _re
+    m = _re.search(r"(MW\d{4})", _pf.node() or "", _re.IGNORECASE)
+    return m.group(1).upper() if m else ((_pf.node() or "UNKNOWN")[:32])
+
+
+STRAT_PC = os.environ.get("SHINDONG2_PC") or _strat_pc()
+STRAT_JSON = "strategies_%s.json" % STRAT_PC
+STRAT_MD = "전략_레지스트리_%s.md" % STRAT_PC
 STRAT_AXES = ("방향", "진입", "손절", "청산", "확률")
 
 
@@ -631,7 +643,7 @@ def strategy_suggestion(s):
 
 
 def render_strategies(ss):
-    L = ["# 신동2 AI 전략 레지스트리 (%s)" % PC, "",
+    L = ["# 신동2 AI 전략 레지스트리 (%s)" % STRAT_PC, "",
          "> 값의 단일 출처는 같은 폴더 `%s` — 이 파일은 렌더다(손으로 고치지 말 것)." % STRAT_JSON,
          "> 전략 = 방향·진입·손절·청산·확률 **5축이 한 세트로 완결된 것**(레슨은 조각이다). 신동 섀도가 MAIN 의 변형이듯 AI 전략은 AI 자신의 섀도다.",
          "> 적중 = 그날 AI 실현(비용차감) > 0 · 실패 = < 0 · MAIN 우위 = 그날 AI−MAIN > 0. 승격은 레슨과 같다(적용 3회·적중 우세). 적용은 다음 거래일부터 센다.",
