@@ -10,7 +10,7 @@
 마지막에 장 마감 데이터 전체로 같은 규칙을 한 번 더 돌려 **다음 날 계획**의 재료를 낸다.
 
 🔴 미래 참조 금지 — 원천별 컷오프(시각 T 의 제안)
-  · 1분봉(regular_candles A056A)     봉 시각 < T            (봉은 시작 시각 표기 → T 직전 봉까지 완결)
+  · 1분봉(regular_candles 미니 근월물)     봉 시각 < T            (봉은 시작 시각 표기 → T 직전 봉까지 완결)
   · 선물 투자자(7221 raw_investor_futures)  ts < T          (ts = 조회 시각 분 내림, 실제 +8초)
   · 옵션·현물 투자자(7222 option_flow)       bar_time < T
   · 9842 시점 파일(data/db/option_hts)       파일 mtime ≤ T  (이름 HHMM 이 아니라 **저장 시각**)
@@ -115,7 +115,7 @@ def load(day, cs=None, fut=None):
         # 「종가가 레벨을 넘었나」 판정이 두 경로에서 같다(10/2 13:04 vs 13:10 불일치 실측).
         cs = [[t, round(o, 2), round(h, 2), round(l, 2), round(c, 2)] for t, o, h, l, c in con.execute(
             "SELECT substr(ts,12,5), open, high, low, close FROM regular_candles WHERE code=? AND trade_date=?"
-            " AND substr(ts,12,5) BETWEEN '08:45' AND '15:45' ORDER BY ts", (L.MINI_CODE, day))]
+            " AND substr(ts,12,5) BETWEEN '08:45' AND '15:45' ORDER BY ts", (L.mini_code_for(con, day), day))]   # 641차 — 근월물 롤
         con.close()
 
     if fut is None:
@@ -158,7 +158,7 @@ def load(day, cs=None, fut=None):
         a = {t: c for t, c in con.execute("SELECT substr(ts,12,5), close FROM regular_candles WHERE code='10100' AND trade_date=?"
                                          " AND substr(ts,12,5) BETWEEN '08:45' AND '15:45'", (rdays[0],))}
         b = {t: c for t, c in con.execute("SELECT substr(ts,12,5), close FROM regular_candles WHERE code=? AND trade_date=?"
-                                         " AND substr(ts,12,5) BETWEEN '08:45' AND '15:45'", (L.MINI_CODE, rdays[0]))}
+                                         " AND substr(ts,12,5) BETWEEN '08:45' AND '15:45'", (L.mini_code_for(con, rdays[0]), rdays[0]))}   # 641차
         diffs = sorted(a[t] - b[t] for t in sorted(set(a) & set(b))[-60:])
         off_prev = diffs[len(diffs) // 2] if diffs else None
     con.close()

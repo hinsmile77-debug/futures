@@ -119,4 +119,4 @@ def test_7_mounted_values_and_headless_scripts():
     run = open(os.path.join(ROOT, "scripts", "shindong2_run.ps1"), encoding="utf-8").read()
     assert "'research'" in run and "shindong2_research.py:*" in run and "$Phase -ne 'research'" in run
     tasks = open(os.path.join(ROOT, "scripts", "shindong2_tasks.ps1"), encoding="utf-8").read()
-    assert "'Research'" in tasks and "Saturday" in tasks
+    assert "'Research'" in tasks and "Friday" in tasks and "17:00" in tasks

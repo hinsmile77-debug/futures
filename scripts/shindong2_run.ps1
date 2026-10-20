@@ -114,7 +114,7 @@ function Find-Claude {
 
 Log ("start (dry={0})" -f [bool]$DryRun)
 
-# 1) trading day  (research runs on Saturday by design - no gate; 640-4)
+# 1) trading day  (research runs Friday 17:00 after close - no gate, runs even on a holiday Friday; 640-4)
 if ($Phase -ne 'research') {
     $g = Run-Live @('gate')
     if ($g -eq 3) { Log 'holiday -> skip'; exit 0 }

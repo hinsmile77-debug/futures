@@ -327,7 +327,7 @@ conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py lesso
    「기존방식과 무엇이 다른가 · 어느 레슨 때문인가」 한 줄.
 5. 오늘 해설·피드백·레지스트리·추이 문서(`docs/미륵이고도화3/신동2/live/`, `학습/`)는 커밋 대상이다 — 커밋은 사람이 지시할 때만.
 
-### research (토요일 10:00 — 640차 ④ 지표 연구 통로)
+### research (금요일 17:00 장마감 후 — 640차 ④ 지표 연구 통로)
 
 **목적**: 상대(신동 v3 MAIN·섀도)를 이기기 위한 **무기**를 만든다 — 더 나은 지표, 기관·외국인·헤지펀드의 수를 읽는 지표·전략. 장후·주말 전용(456차).
 이 단계에서만 WebSearch/WebFetch 가 열린다. Edit/Write 는 여전히 막혀 있다 — **플러그인 코드는 사용자와의 대화 세션에서** 쓴다.
@@ -343,8 +343,8 @@ conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py lesso
 5. 구현된 지표는 **검증** — `python scripts/shindong2_research.py verify --id I<n> --days 60 --at 10:00`. 부호 적중(이항 p) · 스피어만 IC ·
    **순열 널 200회**(노이즈 하한선). 문턱은 플러그인 `META.prereg`(사전등록 — 결과 보고 낮추지 않는다). PASS 면 다음 대화 세션에서
    `set --status 장착` 을 **사용자 확인 뒤** 한다(자동 장착 없음). 장착 지표는 월요일 `snapshot` 「AI 지표」 블록에 실린다.
-6. 연구 메모를 `record --phase postmarket --action note --dir 관망` 로 **토요일 날짜 파일**에 남긴다(무엇을 찾았고 무엇을 등록했고 무엇이
-   기각됐나 · 출처 URL). `--scenarios` 는 토요일엔 요구되지 않는다(postmarket 단계).
+6. 연구 메모를 `record --phase postmarket --action note --dir 관망` 로 **그날(금요일) 날짜 파일**에 남긴다(무엇을 찾았고 무엇을 등록했고 무엇이
+   기각됐나 · 출처 URL). `--scenarios` 는 요구되지 않는다(postmarket 단계). 15:55 장후 기록 뒤에 붙는다 — 장후 피드백을 고치지 않는다.
 7. 20거래일 지난 장착 지표가 전략 S-n 의 적중에 기여하지 못하면 `set --status 폐기 --why` — 이력은 남는다.
 
 내장 지표(2026-10-20): `I1` 외인 선물 60분 변화(HYBL FX 축과 같은 정의) · `I2` 개인 위클리 콜−풋 09:00 대비(**상대 MAIN 이 보는 값**) ·
@@ -353,7 +353,7 @@ conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py lesso
 ## 예약작업 (3단계)
 
 `scripts/shindong2_tasks.ps1 -Action Register` 가 `\Mireuk\Mireuk_Shindong2_*` 여섯 개를 등록한다
-(월–금: 장전 08:52 · 장중 09:05–10:05/10분 + 10:30–14:30/30분 · 이벤트 10:10–15:00/10분 · 마감 15:12 · 장후 15:55 · **토요일 10:00 research**(640차 ④,
+(월–금: 장전 08:52 · 장중 09:05–10:05/10분 + 10:30–14:30/30분 · 이벤트 10:10–15:00/10분 · 마감 15:12 · 장후 15:55 · **금요일 17:00 research**(640차 ④ — 장마감 후 · 18:50 전 종료,
 거래일 게이트 없음 · WebSearch/WebFetch 와 `scripts/shindong2_research.py` 허용)). 재등록해야 Research 가 생긴다(`-Action Register` 는 기존 것을 덮어쓴다).
 실행은 `scripts/shindong2_run.ps1 -Phase …` — 휴장일·중복 실행은 건너뛰고, 이벤트 단계는 새 이벤트가 있을 때만
 Claude 를 부른다. 로그 `logs/shindong2_YYYYMMDD.log`. 해제는 `-Action Unregister`.

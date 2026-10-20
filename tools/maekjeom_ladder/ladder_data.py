@@ -5,7 +5,7 @@
 표준 라이브러리만 쓴다(numpy·pandas 없음 → BLAS delay-load 즉사 경로와 무관).
 
 원천 (전부 `mode=ro`)
-  · 1분봉     regular_candles.db (A056A, 08:45–15:45 · 장후 15:52 적재)
+  · 1분봉     regular_candles.db (미니 근월물 — 날짜마다 `mini_code(day)`, 08:45–15:45 · 장후 15:52 적재)
               → 오늘이거나 그날 적재 전이면 raw_data.db raw_candles(라이브)
   · 맥점      premarket_levels.db (08:50 · 09:30) · peter_levels.db(피터, 대시보드 파서 재사용)
   · 행사가 OI option_book.db (5분)
@@ -35,7 +35,74 @@ DB = os.path.join(ROOT, "data", "db")
 # [2026-10-04 사용자 지정] 저장소 안 data/db/option_hts — .gitignore(data/*) 대상이라 커밋되지 않는다.
 #   종전 위치 ~/Documents/옵션 은 더 읽지 않는다.
 DOCS_9842 = os.path.join(DB, "option_hts")
-MINI_CODE = "A056A"
+MINI_CODE = "A056A"   # 🔴 [MW0602 641차] 하위호환 이름만 남긴다 — 조회에 쓰지 말 것. 근월물은 `mini_code(day)` 로 날짜마다 정한다.
+MINI_PREFIX = "A05"   # 미니 KOSPI200 선물 종목코드 접두(A05 + 연도 1자리 + 월 1자리: 1–9·A·B·C). 예 A056A=2026-10, A056B=2026-11
+
+
+def mini_code_for(con, day):
+    """[MW0602 641차] 그날의 미니 **근월물** 코드 — 그날 봉이 있는 A05* 중 **만기가 가장 가까운 것**(문자열 최소).
+
+    🔴 2026-10-08(10월물 만기) 이후 `code='A056A'` 하드코딩이 조용히 낡았다. 수집기(`collect_regular_futures.py`)는
+       롤을 따라 A056B 를 매일 적재했지만, 읽는 쪽 네 곳(사다리·신동2 전일 참조·PIT 복기·지표 검증)이 A056A 만 찾아
+       「10/08 에서 적재가 멈췄다」로 보였다. 원인 딥다이브: `docs/맥점x옵션사다리개선/09_정규봉적재중단_딥다이브_MW0602-20261020.md`.
+    규칙 근거(실측 2026-10-06–10-12, 미륵이 raw_candles 와 종가 대조): 만기일 당일(10/08)까지 미륵이는 A056A 를 거래했다
+       (오차 0.000 · A056B 는 2.747). 거래량은 10/08 에 이미 A056B 가 컸으므로 **거래량 최대로 고르면 틀린다.**
+    코드 문자열 정렬 = 만기 순서: 연도 자리(6 → 7)가 월 자리보다 앞이고, 월 자리는 '1'–'9' < 'A'–'C'(ASCII).
+       ⚠ 2030년(연도 자리 '0')에는 이 정렬이 깨진다 — 그때 고칠 것.
+    없으면 None(미측정 — 0 으로 메우지 않는다)."""
+    r = con.execute("SELECT MIN(code) FROM regular_candles WHERE trade_date=? AND code LIKE ?",
+                    (day, MINI_PREFIX + "%")).fetchone()
+    return r[0] if r and r[0] else None
+
+
+_MONTH_CH = {**{str(i): i for i in range(1, 10)}, "A": 10, "B": 11, "C": 12}
+
+
+def mini_expiry(code):
+    """A05 + 연도 + 월 → 그 월물의 만기일(둘째 목요일, 휴장이면 앞당김 — utils.time_utils). 해석 불가면 None."""
+    try:
+        y = 2020 + int(code[3])
+        m = _MONTH_CH[code[4].upper()]
+    except (IndexError, KeyError, ValueError, TypeError):
+        return None
+    try:
+        import sys as _s
+        if ROOT not in _s.path:
+            _s.path.insert(0, ROOT)
+        from utils.time_utils import get_monthly_expiry_date
+        e = get_monthly_expiry_date(y, m)
+        return e.date() if hasattr(e, "date") else e
+    except Exception:                                    # 폴백 — 둘째 목요일(휴장 보정 없음)
+        d = _dt.date(y, m, 1)
+        d += _dt.timedelta(days=(3 - d.weekday()) % 7 + 7)
+        return d
+
+
+def mini_code_continuing(con, prev_day, day):
+    """[641차] prev_day 의 미니 봉 가운데 **day 에도 살아 있는 월물**(만기 ≥ day) — 전일 고저종을 오늘 가격과 같은 월물로 비교한다.
+    롤 다음 날(예 10/12 의 전일 10/08)에 만기 월물(A056A)을 쓰면 월물 간 격차(~3pt)만큼 전일 레벨이 틀린다.
+    그런 월물이 없으면 prev_day 근월물(`mini_code_for`)."""
+    codes = [r[0] for r in con.execute("SELECT DISTINCT code FROM regular_candles WHERE trade_date=? AND code LIKE ? ORDER BY code",
+                                       (prev_day, MINI_PREFIX + "%"))]
+    d = _dt.date.fromisoformat(day)
+    for c in codes:
+        e = mini_expiry(c)
+        if e is not None and e >= d:
+            return c
+    return codes[0] if codes else None
+
+
+def mini_code(day):
+    """`mini_code_for` 를 DB 를 열어 부르는 편의 함수. DB 가 없거나 그날 미니 봉이 없으면 None."""
+    try:
+        con = _ro("regular_candles.db")
+    except Exception:
+        return None
+    try:
+        return mini_code_for(con, day)
+    finally:
+        con.close()
+
 
 # 9842 파일 모드 — 파일 안에 「당일/기간」 표시가 없다(2026-10-02 실측).
 #   새 파일은 이름 끝에 _D(당일 순매수) / _P(기간 보유)를 붙인다.
@@ -75,7 +142,7 @@ def list_dates():
         pass
     try:
         con = _ro("regular_candles.db")
-        mark(con.execute("SELECT DISTINCT trade_date FROM regular_candles WHERE code=?", (MINI_CODE,)), "candles"); con.close()
+        mark(con.execute("SELECT DISTINCT trade_date FROM regular_candles WHERE code LIKE ?", (MINI_PREFIX + "%",)), "candles"); con.close()
     except Exception:
         pass
     for _db in ("option_book.db", "option_book_fuo.db"):
@@ -107,15 +174,17 @@ _live_lock = threading.Lock()
 
 
 def _candles_regular(day):
+    """(봉, 코드). 그날 근월물(`mini_code_for`)의 정규 봉. 없으면 ([], None)."""
     con = _ro("regular_candles.db")
     try:
+        code = mini_code_for(con, day)
         rows = con.execute(
             "SELECT substr(ts,12,5), open, high, low, close FROM regular_candles"
             " WHERE code=? AND trade_date=? AND substr(ts,12,5) BETWEEN '08:45' AND '15:45' ORDER BY ts",
-            (MINI_CODE, day)).fetchall()
+            (code, day)).fetchall() if code else []
     finally:
         con.close()
-    return [[t, round(o, 2), round(h, 2), round(l, 2), round(c, 2)] for t, o, h, l, c in rows]
+    return [[t, round(o, 2), round(h, 2), round(l, 2), round(c, 2)] for t, o, h, l, c in rows], code
 
 
 def _candles_live(day):
@@ -143,9 +212,9 @@ def _candles_live(day):
 def candles(day, live):
     if not live:
         try:
-            rows = _candles_regular(day)
+            rows, code = _candles_regular(day)
             if rows:
-                return rows, "regular_candles(A056A)"
+                return rows, "regular_candles(%s)" % code
         except Exception:
             pass
     return _candles_live(day)
