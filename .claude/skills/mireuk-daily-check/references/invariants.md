@@ -86,7 +86,7 @@ GetCommData(sTrCode, sRQName, ...)   # 2번째: rq_name
 | `CB_CONSEC_STOP_LIMIT` | **`3`** | ~~모의투자 한정 예외(9999)~~ → **2026-09-02(519차) 사용자 지시로 복원**. 절대원칙 ② 문구("3연속")와 일치 | 값 복원 완료. ⚠ **전환기준 ⑤는 아직 미충족** — 「복원 후 정상 발동 1회 확인」이 남았다(게이트가 UNMEASURED 반환) |
 | `CB3_P4_GRADE_BLOCK_ENABLED` | `False` | 30m 퇴역 후 CB③-P4가 퇴역된 30m 정확도만으로 판정 → 상시 RESTRICTED 고착, 무관한 호라이즌의 C등급 진입까지 차단(292차 실측) | 30m 재도입 또는 CB③ 기준 호라이즌 교체 시 `True` |
 | `FP_CRITICAL_GRADE_BLOCK_ENABLED` | `False` | PSI 계측 결함(균등폭 10-bin 메가빈)으로 이틀 연속 CRITICAL 고착, 신규 진입 0건 | 371차 분위수 재설계 후 **라이브 관찰 중**. 정상 구간에서 PSI가 오르내리는 것을 실측 확인한 뒤 `True` |
-| `MAX_CONTRACTS` | `3` | 431차 10→3 인하. 손실이 qty≥6 9포지션 -1,609만원에 집중 | 실전 자본 확정 시 **함께 재산출** |
+| `MAX_CONTRACTS` | `1` | 431차 10→3 인하(손실이 qty≥6 9포지션 -1,609만원에 집중) → **2026-10-13 사용자 결정(`56cc917`) 3→1** — CREON 실거래 전환, 1계약 명목가치만 실운영금 1,500만원의 약 3.5배 | 10-13 이후 진입수량 분포는 불연속. 실전 자본 확정 시 **함께 재산출** |
 | `SIZING_TARGET_CAPITAL_ENABLED` | `True` | 모의 잔고(4.9억)와 실전 자본 괴리로 base_risk 왜곡 방지 | 실전 자본으로 `SIZING_TARGET_CAPITAL_KRW` 재설정 |
 
 > ⚠ **`SIZING_TARGET_CAPITAL_ENABLED`를 `False`로 바꾸라는 말을 단독 지시로 읽지 마라.**
