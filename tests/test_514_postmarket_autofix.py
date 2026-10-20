@@ -326,7 +326,9 @@ def test_fc_no_slack():
     ("CB3_P4_GRADE_BLOCK_ENABLED", False),
     ("FP_CRITICAL_GRADE_BLOCK_ENABLED", False),
     ("TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED", False),
-    ("MAX_CONTRACTS", 3),
+    # ⚠ [2026-10-13 사용자 결정 56cc917] 3 → 1 (CREON 실거래 전환). 자동조치 변경 아님 —
+    #   698차 후속 F-1 이 수집기 기대값과 함께 여기도 옮겼다.
+    ("MAX_CONTRACTS", 1),
     ("FORCE_FLAT_GUARD_ORDER_ENABLED", False),
 ])
 def test_absolute_principle_toggles_untouched(toggle, expected):
