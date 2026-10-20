@@ -37,17 +37,20 @@ from strategy.shindong.calendar import select_flow_product  # noqa: E402
 # ── A. 규격 고정 ──────────────────────────────────────────────────────────
 def test_spec_is_preregistered_values():
     """🔴 값이 바뀌면 검증 시계가 초기화된다 — 이 테스트를 고치기 전에 사전등록 문서부터."""
-    assert spec.SPEC_VERSION == "SD-2026-09-29-v2"      # 639차 개정 — 최종 목표 최소거리(값 무변경)
+    assert spec.SPEC_VERSION == "SD-2026-10-21-v3"      # [699차] v3 — MAIN = v2 + R3 트레일 4/4(구 TR44 승격)
+    assert spec.SPEC_VERSION_PREV == "SD-2026-09-29-v2"  # 639차 개정 — 최종 목표 최소거리(값 무변경)
+    assert spec.MAIN_TRAIL == (4.0, 4.0) == (spec.TR44_ACT, spec.TR44_DIST)
     assert (spec.BIAS_MIN, spec.CONF_MIN, spec.CONF_END, spec.REV_MIN, spec.REV_WIN_MIN) == \
         (50, 50, "09:10", 50, 10)
     assert (spec.TOUCH_NEAR, spec.TOUCH_FAR, spec.LV_STOP_BUF, spec.EXT_STOP_BUF) == \
         (1.0, 1.5, 1.5, 0.5)
     assert (spec.T1_MIN_DIST, spec.TP_BUF, spec.OR_STOP_BUF) == (2.0, 0.5, 1.0)
     assert (spec.R3_START, spec.NEW_ENTRY_END, spec.TIME_EXIT) == ("09:30", "14:30", "15:05")
-    assert spec.VARIANTS == ("MAIN", "SHADOW_E2F2", "SHADOW_X4NF", "SHADOW_TR44",
-                             "SHADOW_X4NFA")   # 632차·598차 섀도 추가(MAIN 값 무변경)
+    assert spec.VARIANTS == ("MAIN", "SHADOW_V2", "SHADOW_E2F2", "SHADOW_X4NF",
+                             "SHADOW_X4NFA")   # [699차] TR44 → MAIN 승격 · 구 MAIN 은 SHADOW_V2
+    assert "SHADOW_TR44" in spec.RETIRED_SHADOWS
     assert (spec.SCORING_START, spec.R3_KILL_AFTER_DAYS, spec.R3_KILL_NET_MAX,
-            spec.R3_KILL_WINRATE_MAX) == ("2026-09-30", 10, 0, 0.35)   # v2 채점 재시작
+            spec.R3_KILL_WINRATE_MAX) == ("2026-10-21", 10, 0, 0.35)   # [699차] v3 채점 재시작(v2: 09-30)
 
 
 # ── B. 상품 선택 ──────────────────────────────────────────────────────────
@@ -170,7 +173,8 @@ def test_replay_reproduces_preregistration_analysis(day, main, shadow):
         pytest.skip("그날 봉이 이 PC DB 에 없다")
     got = {v: round(sum(engine.trade_net(t) for t in res["trades"]))
            for v, res in r["results"].items()}
-    assert got["MAIN"] == pytest.approx(main, abs=2)
+    # [699차] 사전등록 재현값(v2 MAIN)은 이제 SHADOW_V2 가 낸다 — 값은 그대로다
+    assert got["SHADOW_V2"] == pytest.approx(main, abs=2)
     assert got["SHADOW_E2F2"] == pytest.approx(shadow, abs=2)
 
 

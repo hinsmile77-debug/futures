@@ -53,10 +53,11 @@ def _levels(struct, dist_low=1080.0, dist_high=1120.0):
 # ── A ────────────────────────────────────────────────────────────────────
 def test_x4nfa_preregistration():
     assert spec.VARIANTS[0] == "MAIN" and spec.VARIANTS[-1] == "SHADOW_X4NFA"
-    assert spec.LATE_SHADOW_START["SHADOW_X4NFA"] == "2026-09-30"     # 9/29 를 보고 만들었다
+    assert spec.LATE_SHADOW_START["SHADOW_X4NFA"] == "2026-10-21"     # 9/29 를 보고 만들었다 → [699차] v3 재시작
     assert spec.X4NFA_BASE_VARIANT == "SHADOW_X4NF"
     # [MW0601 체리픽] v9-dev 는 639차 v2 개정 위에 얹혔다 — X4NFA 추가 자체는 MAIN 값을 바꾸지 않는다
-    assert spec.SPEC_VERSION == "SD-2026-09-29-v2"
+    assert spec.SPEC_VERSION_PREV == "SD-2026-09-29-v2"
+    assert spec.SPEC_VERSION == "SD-2026-10-21-v3"   # [699차] MAIN 개정 — X4NFA 규칙은 무변경
 
 
 # ── B ────────────────────────────────────────────────────────────────────
@@ -280,7 +281,10 @@ def test_main_retracted_behavior(monkeypatch):
                 {"trades": [], "horizon": "09:51", "last_close": 1084.0}]
     monkeypatch.setattr(sd_runner, "run_and_store", lambda *a_, **k: payloads.pop(0))
     # [MW0601 685차] `_run_shindong` 이 재생 직후 `_shindong_exec_step` 을 부른다 — 여기서는 재생 로그만 본다.
+    # [699차] 690c 이후 `_run_shindong` 이 읽는 `_sd_hold_gap_logged`·`_sd_exec_last_sync` 를 대역에도 둔다
+    #   (없어서 AttributeError → 바깥 except → WARN 으로 이 테스트가 깨져 있었다 — 제품 결함 아님).
     me = types.SimpleNamespace(_sd_day=None, _sd_seen={}, _sd_last={}, _sd_warned=False, dashboard=None,
+                               _sd_hold_gap_logged=False, _sd_exec_last_sync=None,
                                _refresh_pnl_history=lambda: None,
                                _shindong_exec_step=lambda payload, now: None)
     for m in (49, 50, 51):

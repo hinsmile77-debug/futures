@@ -32,8 +32,10 @@ from strategy.shindong import runner as RN
 from strategy.shindong import spec as S
 from strategy.shindong.calendar import select_flow_product
 
-VLABEL = {"MAIN": "MAIN(본안)", "SHADOW_E2F2": "E2F2(흐름순응)",
-          "SHADOW_X4NF": "X4NF(가까운목표·flip금지)", "SHADOW_TR44": "TR44(R3 트레일 4/4)",
+# [v3 · 699차] MAIN = v2 + R3 트레일 4/4(구 TR44). SHADOW_V2 = 구 MAIN(되돌림 기준). TR44 는 종료(과거 행 표시용 라벨만 남긴다).
+VLABEL = {"MAIN": "MAIN(v3 본안·R3 트레일 4/4)", "SHADOW_V2": "V2(구 MAIN·트레일 없음)",
+          "SHADOW_E2F2": "E2F2(흐름순응)",
+          "SHADOW_X4NF": "X4NF(가까운목표·flip금지)", "SHADOW_TR44": "TR44(R3 트레일 4/4 · 종료)",
           "SHADOW_X4NFA": "X4NFA(X4NF+깨진맥점금지)"}
 REASON = {"TP1": "1차", "TP2": "최종", "SL": "손절", "BE": "본전", "TIME": "시간", "TR": "트레일"}
 
@@ -247,8 +249,9 @@ def observations(day: Dict[str, Any], rows: Dict[str, List[Dict]], sums: Dict[st
                        % (len(losers), len(shallow), S.TR44_ACT,
                           ", ".join("%.1f" % r["mfe"] for r in shallow)))
         if deep:
+            # [v3 · 699차] MAIN 이 이미 R3 트레일을 쓴다 — 이 손실은 트레일 간격·R2(트레일 없음) 쪽 관찰 대상이다.
             obs.append("**청산** — MAIN 손실 %d건은 %.0fpt 이상 유리하게 갔다가 손절됐다(MFE %s) → "
-                       "트레일(TR44) 쪽 관찰 대상." % (len(deep), S.TR44_ACT, ", ".join("%.1f" % r["mfe"] for r in deep)))
+                       "트레일 간격(R3)·R2 청산 쪽 관찰 대상." % (len(deep), S.TR44_ACT, ", ".join("%.1f" % r["mfe"] for r in deep)))
     lv = {}
     for r in main:
         if r["rule"] == "R3":

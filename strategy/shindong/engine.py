@@ -263,7 +263,14 @@ def run_day(d: DayFrame, L, variant: str = "MAIN") -> Dict[str, Any]:
     broken_guard = variant == "SHADOW_X4NFA"
     x4nf = variant == "SHADOW_X4NF" or broken_guard
     # [632차 후속] SHADOW_TR44 — MAIN 과 같은 진입·목표에 R3 만 트레일(+4pt 발동 · 4pt 간격). 비교 기록용.
-    tr44 = (S.TR44_ACT, S.TR44_DIST) if variant == "SHADOW_TR44" else None
+    # [v3 · 699차] MAIN 이 그 규칙을 승계했다(spec.MAIN_TRAIL). SHADOW_V2 = 트레일 없는 구 MAIN(되돌림 기준).
+    #   SHADOW_TR44 이름은 종료됐지만 재현 테스트·과거 행 복기용으로 계속 알아듣는다(= v3 MAIN 과 같다).
+    if variant == "SHADOW_TR44":
+        tr44 = (S.TR44_ACT, S.TR44_DIST)
+    elif variant == "MAIN":
+        tr44 = S.MAIN_TRAIL
+    else:
+        tr44 = None
     lvl_side: Dict[float, int] = {}     # 맥점 → 그 맥점에서 마지막으로 **진입한** 방향
     dec: Dict[str, Any] = {"pm_sp": None, "bias": None, "r2": None, "r2_ts": None,
                            "notes": []}

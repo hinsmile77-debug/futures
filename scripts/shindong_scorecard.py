@@ -5,7 +5,7 @@
 
 무엇을 내나
 -----------
-1. 변형(MAIN / SHADOW_E2F2 / SHADOW_X4NF / SHADOW_TR44 / SHADOW_X4NFA) × 규칙(R2 / R3)별 거래 수 · 승 · 순손익 · 거래당
+1. 변형(spec.VARIANTS — v3: MAIN / SHADOW_V2 / SHADOW_E2F2 / SHADOW_X4NF / SHADOW_X4NFA) × 규칙(R2 / R3)별 거래 수 · 승 · 순손익 · 거래당
 2. 규칙가 vs **실현가능가** — 라이브 행은 처음 알아챈 시각의 최신 종가(`detect_px`)로
    진입했다고 보고 같은 청산가로 다시 잰다. 09:00·09:01 흐름은 09:02 수집(PEAK_SKIP)에서야
    들어오므로 R2 는 구조적으로 늦게 탐지된다 — 그 비용이 여기서 드러난다.
@@ -230,7 +230,7 @@ def build(db=SHINDONG_DB, since=spec.SCORING_START, raw_db=RAW_DATA_DB):
     # [632차] 9/28 결과를 보고 만든 섀도(X4NF·TR44) — 같은 기준으로 MAIN 과 비교
     sec = 4
     for v in sorted(spec.LATE_SHADOW_START):
-        w("## %d. %s 판정 (%s 사전등록)" % (sec, v, "598차" if v == "SHADOW_X4NFA" else "632차"))
+        w("## %d. %s 판정 (%s 사전등록 · v3 재채점)" % (sec, v, {"SHADOW_X4NFA": "598차", "SHADOW_V2": "699차 되돌림"}.get(v, "632차")))
         w("")
         w("\n".join(_late_judge(live, days, v)))
         w("")
@@ -392,8 +392,12 @@ def _late_judge(live, days, variant):
         out.append("- 판정: **대기** — %d/%d 거래일" % (len(xdays), spec.X4NF_JUDGE_AFTER_DAYS))
     else:
         ok = sum(xx.values()) > sum(mm.values()) and min(xx.values()) > min(mm.values())
-        out.append("- 판정: **%s** (기준: 순손익 우위 **그리고** 최악일 개선)" % (
-            "채택 후보 — 새 SPEC_VERSION 개정 뒤 재채점" if ok else "폐기"))
+        if variant == "SHADOW_V2":      # [v3 · 699차] 구 MAIN — 이기면 v2 복귀 후보, 지면 v3 유지
+            out.append("- 판정: **%s** (기준: 순손익 우위 **그리고** 최악일 개선)" % (
+                "되돌림 후보 — v2 복귀는 새 SPEC_VERSION 개정으로만" if ok else "v3 유지"))
+        else:
+            out.append("- 판정: **%s** (기준: 순손익 우위 **그리고** 최악일 개선)" % (
+                "채택 후보 — 새 SPEC_VERSION 개정 뒤 재채점" if ok else "폐기"))
     return out
 
 

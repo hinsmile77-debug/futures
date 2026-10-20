@@ -46,10 +46,11 @@ def test_report_matches_engine_and_attributes_causes(tmp_path):
     if not r["ok"]:
         pytest.skip("그날 봉이 이 PC DB 에 없다")
     # [598차] 비교는 632차 당시 네 변형만 — 뒤에 붙은 섀도(X4NFA)는 test_598 이 따로 고정한다
+    # [699차] v3 — MAIN 은 구 TR44 규칙, SHADOW_V2 는 구 MAIN. 9/28 은 트레일 청산이 없어 둘 다 330,667
     net = {v: round(s["net"]) for v, s in r["sums"].items()
-           if v in ("MAIN", "SHADOW_E2F2", "SHADOW_X4NF", "SHADOW_TR44")}
-    assert net == pytest.approx({"MAIN": 330667, "SHADOW_E2F2": 1393500,
-                                 "SHADOW_X4NF": 828674, "SHADOW_TR44": 330667}, abs=2)
+           if v in ("MAIN", "SHADOW_V2", "SHADOW_E2F2", "SHADOW_X4NF")}
+    assert net == pytest.approx({"MAIN": 330667, "SHADOW_V2": 330667, "SHADOW_E2F2": 1393500,
+                                 "SHADOW_X4NF": 828674}, abs=2)
     md = open(r["md_path"], encoding="utf-8").read()
     for sec in ("## 0. 한눈에", "## 1. 차트", "## 2. 거래 흐름", "## 3. 섀도 흐름",
                 "## 4. 누적 채점", "## 5. 러너 섀도", "## 6. 개선 방향"):

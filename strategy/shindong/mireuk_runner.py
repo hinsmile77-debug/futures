@@ -287,7 +287,9 @@ def run_for_date(trade_date: str, trades_db: str, raw_db: str, flow_db: str, lev
     candles, flow, lvrows = _rn.load_inputs(trade_date, product, raw_db, flow_db, levels_db)
     d = E.DayFrame(candles, flow) if candles else None
     L = E.prepare_levels(lvrows) if "0850" in lvrows else None
-    day_res = E.run_day(d, L, "MAIN") if (d is not None and L is not None) else None
+    # [v3 · 699차] 이 섀도는 RUNNER_VERSION 으로 따로 사전등록됐다 — 신동 v3 개정(MAIN R3 트레일)이
+    #   신동 보유 상태(sd_trades 청산 시각)를 조용히 바꾸지 않게 v2 MAIN(= SHADOW_V2)으로 고정한다(targets_v1 과 같은 취지).
+    day_res = E.run_day(d, L, "SHADOW_V2") if (d is not None and L is not None) else None
     decision = day_res["decision"] if day_res else None
     sd_trades = None
     if day_res is not None and d.sp:          # 흐름이 없으면 신동 보유 상태는 미측정

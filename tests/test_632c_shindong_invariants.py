@@ -8,12 +8,12 @@
 그 테스트들은 이제 `pc_id() == "MW0601"` 일 때만 돈다. 여기 불변식은 그 공백을 메운다:
 값이 아니라 **변형 사이의 관계**를 본다.
 
-  I1. R2 는 변형과 무관하다 — 진입(시각·방향·가격)은 네 변형이 같고, E2 를 쓰지 않는
-      MAIN · X4NF · TR44 는 손익까지 같다.
+  I1. R2 는 변형과 무관하다 — 진입(시각·방향·가격)은 모든 변형이 같고, E2 를 쓰지 않는
+      MAIN · SHADOW_V2 · X4NF 는 손익까지 같다([699차] v3 MAIN 의 트레일은 R3 에만 걸린다).
   I2. X4NF 는 같은 맥점에서 R3 진입 방향을 뒤집지 않는다.
   I3. X4NF 의 1차 목표는 같은 진입의 MAIN 1차 목표보다 멀지 않다.
   I4. E2F2 의 R3 는 모두 터치 시점의 당일 흐름 방향과 같은 쪽이다(F2).
-  I5. TR44 에서 트레일 청산(`TR`)이 한 번도 없었으면 TR44 거래는 MAIN 과 완전히 같다.
+  I5. [699차] v3 MAIN(구 TR44)에서 트레일 청산(`TR`)이 한 번도 없었으면 MAIN 거래는 SHADOW_V2(구 MAIN)와 완전히 같다.
   I6. 일일 리포트의 변형별 순손익 = 엔진 재생 순손익.
 
 대상 날짜: 이 PC `option_flow.db` 에 개인 흐름이 있는 거래일 중 최근 8일(없으면 skip).
@@ -81,8 +81,8 @@ def test_i1_r2_same_across_variants(d):
     ent = {v: [_key(t) for t in r[v]["trades"] if t["rule"] == "R2"] for v in spec.VARIANTS}
     assert all(e == ent["MAIN"] for e in ent.values()), ent
     net = {v: [round(engine.trade_net(t)) for t in r[v]["trades"] if t["rule"] == "R2"]
-           for v in ("MAIN", "SHADOW_X4NF", "SHADOW_TR44")}
-    assert net["SHADOW_X4NF"] == net["MAIN"] == net["SHADOW_TR44"], net
+           for v in ("MAIN", "SHADOW_V2", "SHADOW_X4NF")}
+    assert net["SHADOW_X4NF"] == net["MAIN"] == net["SHADOW_V2"], net
 
 
 @pytest.mark.parametrize("d", _DAYS or ["-"])
@@ -122,11 +122,11 @@ def test_i4_e2f2_r3_follows_day_flow(d):
 @pytest.mark.parametrize("d", _DAYS or ["-"])
 def test_i5_tr44_equals_main_without_trail_exit(d):
     r = _day(d)["results"]
-    tr = r["SHADOW_TR44"]["trades"]
+    tr = r["MAIN"]["trades"]
     if any(g.get("reason") == "TR" for t in tr for g in t["legs"]):
         pytest.skip("%s — 트레일 청산이 있었던 날(관계 I5 대상 아님)" % d)
     sig = lambda ts: [(_key(t), round(engine.trade_net(t))) for t in ts]
-    assert sig(tr) == sig(r["MAIN"]["trades"])
+    assert sig(tr) == sig(r["SHADOW_V2"]["trades"])
 
 
 @pytest.mark.parametrize("d", _DAYS or ["-"])

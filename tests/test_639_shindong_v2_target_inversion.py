@@ -42,14 +42,13 @@ from strategy.shindong import engine, spec  # noqa: E402
 
 # ── A ────────────────────────────────────────────────────────────────────
 def test_amendment_registered():
-    assert spec.SPEC_VERSION == "SD-2026-09-29-v2"
-    assert spec.SPEC_VERSION_PREV == "SD-2026-09-24-v1"
+    # [699차] v3 개정 뒤에도 v2 창은 사료로 남는다 — 버전 이름·창 시작일 고정
+    assert spec.V2_SPEC_VERSION == "SD-2026-09-29-v2" == spec.SPEC_VERSION_PREV
+    assert spec.V1_SPEC_VERSION == "SD-2026-09-24-v1"
     assert spec.V1_SCORING == ("2026-09-28", "2026-09-29")
-    # 채점은 새 버전 첫날부터 다시 센다(사전등록 §6-3) — R3 중단 판정 10거래일도 재시작
-    assert spec.SCORING_START == "2026-09-30"
-    assert spec.X4NF_SCORING_START == "2026-09-30"
-    assert spec.LATE_SHADOW_START == {"SHADOW_X4NF": "2026-09-30", "SHADOW_TR44": "2026-09-30",
-                                      "SHADOW_X4NFA": "2026-09-30"}   # 598차 체리픽 섀도
+    # 채점은 새 버전 첫날부터 다시 센다(사전등록 §6-3) — v2 창은 09-30 부터였다
+    assert spec.V2_SCORING_START == "2026-09-30"
+    assert spec.SCORING_START == "2026-10-21" == spec.X4NF_SCORING_START
     # 값은 하나도 바뀌지 않았다 — 바뀐 것은 판정 동작(최종 후보 최소거리)이다
     assert (spec.T1_MIN_DIST, spec.TP_BUF) == (2.0, 0.5)
 
@@ -182,10 +181,10 @@ def test_scorecard_excludes_other_version(tmp_path):
                    {"leg": 2, "open": False, "ts": "11:00", "px": 1088.5, "reason": "SL",
                     "pts": -3.4, "net": -170000.0}]}
     res = {"decision": {"pm_sp": 34.0, "bias": 0, "r2": None, "r2_ts": None, "notes": []}, "trades": [tr]}
-    store.save_day(db, "2026-09-30", "MAIN", "wk_thu", "", res, "15:08", spec.SPEC_VERSION_PREV,
+    store.save_day(db, "2026-10-21", "MAIN", "wk_thu", "", res, "15:08", spec.SPEC_VERSION_PREV,
                    source="backfill")     # 재기동 전 옛 프로세스가 남긴 행이라 치자
-    store.save_day(db, "2026-10-01", "MAIN", "wk_thu", "", res, "15:08", spec.SPEC_VERSION,
+    store.save_day(db, "2026-10-22", "MAIN", "wk_thu", "", res, "15:08", spec.SPEC_VERSION,
                    source="backfill")
     txt = sc.build(db, spec.SCORING_START)
-    assert "다른 규격 버전 행 **1건**(SD-2026-09-24-v1) — 표본 제외" in txt
+    assert "다른 규격 버전 행 **1건**(SD-2026-09-29-v2) — 표본 제외" in txt   # [699차] v3 기준
     assert "판정 기록 거래일: **1일**" in txt

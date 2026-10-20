@@ -13,6 +13,13 @@ dev 의 `live_exec.manage` 는 FLOWC(두 레그 동시 청산) 전제라 v9 규�
     시간청산  `spec.TIME_EXIT`(15:05) — 규격 그대로. 15:10 강제청산은 main 이 별도로 지킨다.
     철회      RETRACTED 는 청산 사유가 아니다(dev 와 같다) — 마지막 손절·목표로 계속 관리한다.
 
+[v3 · 699차] MAIN R3 트레일(spec.MAIN_TRAIL = +4pt 발동 · 4pt 간격)
+    재생의 `stop_now` 가 트레일로 유리하게 움직이면 `sync()` 의 ('set_stop', 가격)으로 따라 조인다 —
+    코드 변경 없이 기존 경로 그대로다(한 방향 단조). 트레일 청산(재생 `TR`)은 2초 폴링이 아니라
+    외부 손절(틱 하드스톱)이 먼저 집행하고, 놓치면 재생 CLOSED 미러가 잡는다.
+    1차 익절 뒤 본전 이동(`after_leg1`)은 손절이 이미 본전보다 유리하면 그대로 둔다 — 엔진의 트레일 경로와 같다.
+    ⚠ 엔진은 그 봉 극값을 **다음 봉부터** 반영하므로 라이브 손절 갱신은 매분 1회다(2초 단위 트레일이 아니다).
+
 집행 기록 rec (data/principal/<날짜>/shindong_exec.json 에 영속 — 재기동 생존)
     {trade_key, rule, side(+1/-1), entry_px(규칙가), stop, t1, t2, leg1_done, retracted, done}
 """
