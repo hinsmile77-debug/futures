@@ -34,6 +34,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 import shindong2_live as SL  # noqa: E402
 import shindong2_scenario as SC  # noqa: E402  (683차 — 확률 시나리오 채점·보정)
+import shindong2_rival as RV  # noqa: E402  (MW0602 640차 — 상대의 수: 신동 v3 MAIN·섀도 채점 단일화)
 
 ROOT = SL.ROOT
 LEARN_DIR = os.environ.get("SHINDONG2_LEARN_DIR") or os.path.join(ROOT, "docs", "미륵이고도화3", "신동2", "학습")
@@ -200,15 +201,139 @@ def evaluate_day(day, now=None, bars=None, st=None, log=None, save=True):
                overnight={k: ev(v) for k, v in on.items()}, premarket={k: ev(v) for k, v in pm.items()},
                live_ai=dict(pnl=ai["pnl"], n=len(ai["trades"]),
                             trades=[dict(entry_t=t["entry_t"], side=t["side"], fill=t["fill"], exit_t=t.get("exit_t"),
-                                         why=t.get("why"), pnl=t["pnl"]) for t in ai["trades"]]),
-               rules=((st or {}).get("sd2") or {}).get("summary"), lessons_applied=applied)
+                                         exit_px=t.get("exit_px"), stop=t.get("stop"), target=t.get("target"),   # [640차 ③] 귀속용
+                                         why=t.get("why"), pnl=t["pnl"], open=bool(t.get("open"))) for t in ai["trades"]]),
+               rules=((st or {}).get("sd2") or {}).get("summary"), lessons_applied=applied,
+               strategies_applied=strategies_applied(log))                                   # [640차 ③]
     # 683차 — 확률 시나리오 채점(장중이면 결말 난 세트만 점수). 예측결과 → 반성의 입력.
     sets = SC.evaluate_sets([r for r in log if (r.get("variant") or "live") == "live" and r.get("scenarios")],
                             bars, lambda r: effective_time(r, day), final=not live)
     out["scenarios"] = sets
     out["scen_summary"] = SC.day_summary(sets)
+    # [640차] 상대의 수 — MAIN·섀도와 같은 단위로. st 가 없는 시험 경로(bars 직접 주입)는 미측정.
+    out["rival"] = rival_block(day, (st or {}).get("rival") if st else None, out["live_ai"], log)
     if save:
         SL._atomic_json(os.path.join(SL.day_dir(day), "eval.json"), out)
+    return out
+
+
+# ── [640차] 상대의 수 — AI 대 MAIN 채점 단일화 ─────────────────────────────
+def ai_direction(log):
+    """그날 AI 의 방향 = live 첫 plan 의 방향(매수/매도). stand/관망만 있으면 None."""
+    recs = sorted((r for r in log if (r.get("variant") or "live") == "live" and r.get("action") == "plan"
+                   and r.get("dir") in ("매수", "매도")), key=lambda r: r.get("ts", ""))
+    return recs[0]["dir"] if recs else None
+
+
+def vs_main_recorded(log):
+    """②단계 — AI 가 기록한 동의/반대. 그날 live plan/stand/note 가운데 **마지막 명시 기록**(미기재 기권은 명시보다 뒤로 민다).
+    없으면 (None, None, None). 반환 (vs_main, src, why)."""
+    recs = [r for r in log if (r.get("variant") or "live") == "live" and r.get("vs_main") in ("agree", "disagree", "abstain")
+            and r.get("action") in ("plan", "stand", "note")]
+    if not recs:
+        return None, None, None
+    explicit = [r for r in recs if not r.get("vs_main_missing")]
+    r = sorted(explicit or recs, key=lambda r: r.get("ts", ""))[-1]
+    return r["vs_main"], ("recorded" if explicit else "missing"), r.get("vs_why")
+
+
+def rival_block(day, rv, live_ai, log):
+    """eval.json 의 `rival` — MAIN·섀도 pt, AI 비용차감 pt, 방향, 동의/반대(기록값 우선 · 없으면 기계)."""
+    if rv is None:
+        rv = RV.read_day(day)
+    ai_sim = dict(pnl=(live_ai or {}).get("pnl"), trades=[dict(t, open=(t.get("exit_t") is None)) for t in (live_ai or {}).get("trades", [])])
+    ai_pt_cost = RV.ai_cost_pt(ai_sim) if live_ai is not None else None
+    ai_dir = ai_direction(log)
+    vm, src, why = vs_main_recorded(log)
+    out = dict(present=bool(rv.get("present")), why=rv.get("why"), unit=rv.get("unit"),
+               main_pt=None, main_dir=None, main_n=None, shadows={}, divergent=rv.get("divergent") or [],
+               ai_pt=(live_ai or {}).get("pnl"), ai_pt_cost=ai_pt_cost, ai_dir=ai_dir, diff=None,
+               vs_main=vm, vs_src=src, vs_why=why, agree_mech=None)
+    if rv.get("present"):
+        m = rv["main"]
+        out.update(main_pt=m["pnl_pt"], main_dir=RV.direction_of(m), main_n=m["n"],
+                   shadows={rv["variants"][v]["short"]: rv["variants"][v]["pnl_pt"] for v in RV.VARIANTS[1:]})
+        out["agree_mech"] = RV.agreement(ai_dir, out["main_dir"])
+        if out["vs_main"] is None and out["agree_mech"]:
+            out["vs_main"], out["vs_src"] = out["agree_mech"], "mechanical"      # 폴백 가시화(계측 4원칙 ④)
+        if ai_pt_cost is not None and m["pnl_pt"] is not None:
+            out["diff"] = round(ai_pt_cost - m["pnl_pt"], 2)
+        # [③] 4축 귀속 + 갈린 섀도 상세(섀도 사이클의 입력)
+        out["axes"] = attribute_axes((live_ai or {}).get("trades") or [], m["trades"], ai_total=ai_pt_cost, main_total=m["pnl_pt"])
+        short2v = {rv["variants"][v]["short"]: v for v in RV.VARIANTS}
+        for d in out["divergent"]:
+            vd = rv["variants"].get(short2v.get(d["short"]))
+            if vd:
+                d["trades"] = [dict(rule=t["rule"], entry_t=t["entry_t"], side=t["side_ko"], entry_px=t["entry_px"], exit_t=t["exit_t"],
+                                    reason=t["reason_ko"], net_pt=t["net_pt"]) for t in vd["trades"]]
+        out["main_trades"] = [dict(rule=t["rule"], entry_t=t["entry_t"], side=t["side_ko"], entry_px=t["entry_px"], exit_t=t["exit_t"],
+                                   reason=t["reason_ko"], net_pt=t["net_pt"]) for t in m["trades"]]
+    return out
+
+
+# ── [640차 ③] 4축 귀속 — AI−MAIN 차이를 방향 / 진입 / 청산 / 횟수 / 비용 으로 분해 ────────
+AXES = ("방향", "진입", "손절", "청산", "확률", "계측")          # 레슨·전략 레지스트리의 축 어휘
+ATTR_AXES = ("방향", "진입", "청산", "횟수", "비용")             # 귀속 축(합 = AI−MAIN)
+
+
+def attribute_axes(ai_trades, main_trades, ai_total=None, main_total=None):
+    """AI−MAIN(비용차감 pt) 차이의 분해. 합은 항상 diff 와 같다(불변식 — 테스트가 고정).
+
+    · 한쪽만 거래 → 전액 「횟수」(참여 차이). 미측정 쪽이 있으면 None.
+    · 첫 거래 방향이 다르면 → 전액 「방향」. 나머지 축은 None(비교 불가 = 미측정).
+    · 같으면 첫 거래를 짝지어 진입 = (MAIN 진입가 − AI 진입가)×side, 청산 = (AI 청산가 − MAIN 청산가)×side,
+      횟수 = 나머지 거래의 차, 비용 = 잔차(AI 왕복비용·MAIN 수수료 차).
+    청산 축에는 AI 청산 사유(손절/목표/재량/강제)를 `exit_kind` 로 붙인다 — 손절 레슨과 청산 레슨을 가르는 꼬리표."""
+    out = dict(diff=None, by={a: None for a in ATTR_AXES}, mode=None, exit_kind=None, note=None)
+    if ai_total is None or main_total is None:
+        out["note"] = "AI 또는 MAIN 미측정"
+        return out
+    diff = round(ai_total - main_total, 2)
+    out["diff"] = diff
+    ai_c = [t for t in ai_trades if t.get("exit_t") and not t.get("open")]
+    mn_c = [t for t in main_trades if t.get("net_pt") is not None]
+    if not ai_c or not mn_c:
+        out["mode"] = "참여차"
+        out["by"] = {a: (diff if a == "횟수" else 0.0) for a in ATTR_AXES}
+        out["note"] = "AI 거래 %d · MAIN 거래 %d — 한쪽만 참여" % (len(ai_c), len(mn_c))
+        return out
+    a0, m0 = ai_c[0], mn_c[0]
+    if a0["side"] != m0["side_ko"]:
+        out["mode"] = "방향차"
+        out["by"] = {a: (diff if a == "방향" else None) for a in ATTR_AXES}
+        out["note"] = "첫 거래 방향 AI %s vs MAIN %s — 전액 방향 축(나머지 비교 불가)" % (a0["side"], m0["side_ko"])
+        return out
+    s = 1 if a0["side"] == "매수" else -1
+    entry = round((float(m0["entry_px"]) - float(a0["fill"])) * s, 2)
+    a_exit = a0.get("exit_px")
+    m_exit = m0.get("exit_px")
+    exit_ = round((float(a_exit) - float(m_exit)) * s, 2) if a_exit is not None and m_exit is not None else 0.0
+    rest_ai = round(sum(float(t["pnl"]) for t in ai_c[1:]), 2)
+    rest_mn = round(sum(float(t["net_pt"]) for t in mn_c[1:]), 2)
+    count = round(rest_ai - rest_mn, 2)
+    cost = round(diff - entry - exit_ - count, 2)          # 잔차 = AI 왕복비용·MAIN 수수료·평가 차
+    out["mode"] = "짝지음"
+    out["by"] = {"방향": 0.0, "진입": entry, "청산": exit_, "횟수": count, "비용": cost}
+    out["exit_kind"] = a0.get("why")
+    out["note"] = "첫 거래 짝 AI %s@%.2f→%s vs MAIN %s@%.2f→%s" % (
+        a0["entry_t"], float(a0["fill"]), a0.get("why") or "?", m0["entry_t"], float(m0["entry_px"]), m0.get("reason_ko") or "?")
+    return out
+
+
+def _rival_row(ev):
+    rv = ev.get("rival") or {}
+    return dict(date=ev["date"], ai_pt=rv.get("ai_pt_cost"), main_pt=rv.get("main_pt"), ai_dir=rv.get("ai_dir"),
+                main_dir=rv.get("main_dir"), vs_main=rv.get("vs_main"), vs_src=rv.get("vs_src"),
+                axes=(rv.get("axes") or {}).get("by"), divergent=[d.get("short") for d in rv.get("divergent") or []],
+                strategies=ev.get("strategies_applied") or [])
+
+
+def axes_window(rrows):
+    """창 안 축별 누적(None 은 빼고 센다 — 미측정 ≠ 0). 반환 {축: (합, n)}."""
+    out = {}
+    for a in ATTR_AXES:
+        xs = [r["axes"][a] for r in rrows if r.get("axes") and r["axes"].get(a) is not None]
+        out[a] = (round(sum(xs), 2) if xs else None, len(xs))
     return out
 
 
@@ -248,7 +373,8 @@ def render_eval(out):
          "",
          "- 당일 시 %.2f · 고 %.2f · 저 %.2f · 종 %.2f (폭 %.2f) · 전일 종 %s → **실제 방향 %s**(종가−시가, ±%.1fpt 보합)" % (
              oh["open"], oh["high"], oh["low"], oh["close"], oh["range"], out.get("prev_close"), out["actual_dir"], DIR_DEADBAND),
-         "- 재량 실현(신동2-AI) %s pt · 거래 %d · 규칙 %s" % (_fmtp(out["live_ai"]["pnl"]), out["live_ai"]["n"], out.get("rules")),
+         "- 재량 실현(신동2-AI) %s pt · 거래 %d · (사료)규칙 %s" % (_fmtp(out["live_ai"]["pnl"]), out["live_ai"]["n"], out.get("rules")),
+         _render_rival_eval(out.get("rival")),
          "- 적용 레슨: %s" % (", ".join(out["lessons_applied"]) if out["lessons_applied"] else "없음(기록에 --lessons 미표기)"),
          "",
          "| 계획 | 방향 | 적중 | 진입 | 손절 | 청산 | 체결 | 결과 | 손익 | MFE/MAE | 타점 품질 |",
@@ -299,22 +425,24 @@ def _find(ls, lid):
     return None
 
 
-def lesson_add(lid, title, rule, trigger="", status="후보", origin=None, evidence=None, note="", now=None):
+def lesson_add(lid, title, rule, trigger="", status="후보", origin=None, evidence=None, note="", now=None, axis=None):
     if status not in STATUSES:
         raise SystemExit("status 는 %s 중 하나" % (STATUSES,))
+    if axis is not None and axis not in AXES:
+        raise SystemExit("--axis 는 %s 중 하나" % (AXES,))
     ls = load_lessons()
     if _find(ls, lid):
         raise SystemExit("이미 있는 레슨 %s — set/tally 로 갱신할 것(기록은 고치지 않는다)" % lid)
     now = now or _dt.datetime.now()
     l = dict(id=lid, title=title, rule=rule, trigger=trigger, status=status, origin=origin or now.date().isoformat(),
-             evidence=sorted(set(evidence or [])), applied=[], hit=[], miss=[], note=note,
+             evidence=sorted(set(evidence or [])), applied=[], hit=[], miss=[], note=note, axis=axis,
              history=[dict(ts=now.isoformat(timespec="seconds"), status=status, why="신설")])
     ls.append(l)
     save_lessons(ls)
     return l
 
 
-def lesson_set(lid, status=None, note=None, rule=None, why="", now=None):
+def lesson_set(lid, status=None, note=None, rule=None, why="", now=None, axis=None):
     ls = load_lessons()
     l = _find(ls, lid)
     if not l:
@@ -329,6 +457,11 @@ def lesson_set(lid, status=None, note=None, rule=None, why="", now=None):
         l["note"] = note
     if rule is not None:
         l["rule"] = rule
+    if axis is not None:                                  # [640차 ③] 축 귀속 — 이력에 남긴다(소급 부여도 이력이다)
+        if axis not in AXES:
+            raise SystemExit("--axis 는 %s 중 하나" % (AXES,))
+        l["axis"] = axis
+        l["history"].append(dict(ts=now.isoformat(timespec="seconds"), status=l["status"], why="축=%s %s" % (axis, why or "")))
     save_lessons(ls)
     return l
 
@@ -362,11 +495,12 @@ def render_lessons(ls):
          "> 값의 단일 출처는 같은 폴더 `lessons.json` — 이 파일은 렌더다(손으로 고치지 말 것).",
          "> 상태: 후보 → 적용중 → 검증 / 폐기 / 딥다이브. 적용·적중·실패는 **날짜 목록**이라 횟수가 곧 표본 수다.",
          "> 🔴 하루를 보고 만든 레슨은 그 하루에 다시 대 보면 당연히 좋아 보인다(과적합) — 적용은 **다음 거래일부터** 센다.",
-         "", "| ID | 상태 | 레슨 | 적용 규칙 | 발동 조건 | 기원 | 적용/적중/실패 | 비고 |", "|---|---|---|---|---|---|---|---|"]
+         "> 축(640차 ③): 방향 · 진입 · 손절 · 청산 · 확률 · 계측 — 4축 귀속(AI−MAIN 분해)과 맞춰 어느 축의 레슨인지 적는다.",
+         "", "| ID | 상태 | 축 | 레슨 | 적용 규칙 | 발동 조건 | 기원 | 적용/적중/실패 | 비고 |", "|---|---|---|---|---|---|---|---|---|"]
     for l in ls:
         sug = lesson_suggestion(l)
-        L.append("| %s | %s | **%s** | %s | %s | %s | %d/%d/%d | %s |" % (
-            l["id"], l["status"], l["title"], l["rule"], l.get("trigger") or "—", l["origin"],
+        L.append("| %s | %s | %s | **%s** | %s | %s | %s | %d/%d/%d | %s |" % (
+            l["id"], l["status"], l.get("axis") or "—", l["title"], l["rule"], l.get("trigger") or "—", l["origin"],
             len(l["applied"]), len(l["hit"]), len(l["miss"]), (l.get("note") or "") + ((" ⚠ " + sug) if sug else "")))
     L += ["", "## 이력", ""]
     for l in ls:
@@ -385,10 +519,156 @@ def lessons_text(active_only=False):
     L = []
     for l in ls:
         sug = lesson_suggestion(l)
-        L.append("- %s [%s] %s — %s%s (적용 %d · 적중 %d · 실패 %d)%s" % (
-            l["id"], l["status"], l["title"], l["rule"], (" · 조건: " + l["trigger"]) if l.get("trigger") else "",
+        L.append("- %s [%s%s] %s — %s%s (적용 %d · 적중 %d · 실패 %d)%s" % (
+            l["id"], l["status"], ("·" + l["axis"]) if l.get("axis") else "", l["title"], l["rule"],
+            (" · 조건: " + l["trigger"]) if l.get("trigger") else "",
             len(l["applied"]), len(l["hit"]), len(l["miss"]), (" ⚠ " + sug) if sug else ""))
     return "\n".join(L)
+
+
+# ── [640차 ③] AI 전략 레지스트리 S-n — 레슨 조각이 아니라 5축이 한 세트로 완결된 「독자적 길」 ─────────
+STRAT_JSON = "strategies_%s.json" % PC
+STRAT_MD = "전략_레지스트리_%s.md" % PC
+STRAT_AXES = ("방향", "진입", "손절", "청산", "확률")
+
+
+def _strat_path():
+    return os.path.join(_learn_dir(), STRAT_JSON)
+
+
+def load_strategies():
+    p = _strat_path()
+    if not os.path.exists(p):
+        return []
+    with open(p, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_strategies(ss):
+    SL._atomic_json(_strat_path(), ss)
+    with open(os.path.join(_learn_dir(), STRAT_MD), "w", encoding="utf-8") as f:
+        f.write(render_strategies(ss))
+
+
+def _sfind(ss, sid):
+    for s in ss:
+        if s["id"] == sid:
+            return s
+    return None
+
+
+def strategy_add(sid, title, rules, lessons=(), status="후보", origin=None, note="", now=None):
+    """rules = {방향:…, 진입:…, 손절:…, 청산:…, 확률:…} — 다섯 축이 **모두** 있어야 전략이다(조각은 레슨이다)."""
+    if status not in STATUSES:
+        raise SystemExit("status 는 %s 중 하나" % (STATUSES,))
+    missing = [a for a in STRAT_AXES if not (rules or {}).get(a, "").strip()]
+    if missing:
+        raise SystemExit("전략은 5축이 한 세트다 — 빠진 축 %s (조각이면 레슨으로 등록할 것)" % missing)
+    ss = load_strategies()
+    if _sfind(ss, sid):
+        raise SystemExit("이미 있는 전략 %s — set/tally 로 갱신할 것" % sid)
+    ls = load_lessons()
+    unknown = [l for l in lessons if not _find(ls, l)]
+    if unknown:
+        raise SystemExit("레지스트리에 없는 레슨 %s" % unknown)
+    now = now or _dt.datetime.now()
+    s = dict(id=sid, title=title, rules={a: rules[a].strip() for a in STRAT_AXES}, lessons=sorted(set(lessons)), status=status,
+             origin=origin or now.date().isoformat(), applied=[], hit=[], miss=[], beat_main=[], note=note,
+             history=[dict(ts=now.isoformat(timespec="seconds"), status=status, why="신설")])
+    ss.append(s)
+    save_strategies(ss)
+    return s
+
+
+def strategy_set(sid, status=None, note=None, rules=None, why="", now=None):
+    ss = load_strategies()
+    s = _sfind(ss, sid)
+    if not s:
+        raise SystemExit("없는 전략 %s" % sid)
+    now = now or _dt.datetime.now()
+    if status:
+        if status not in STATUSES:
+            raise SystemExit("status 는 %s 중 하나" % (STATUSES,))
+        s["status"] = status
+        s["history"].append(dict(ts=now.isoformat(timespec="seconds"), status=status, why=why))
+    if note is not None:
+        s["note"] = note
+    for a, v in (rules or {}).items():
+        if a not in STRAT_AXES:
+            raise SystemExit("축은 %s 중 하나" % (STRAT_AXES,))
+        if v and v.strip():
+            s["rules"][a] = v.strip()
+            s["history"].append(dict(ts=now.isoformat(timespec="seconds"), status=s["status"], why="%s 축 개정: %s" % (a, why or "")))
+    save_strategies(ss)
+    return s
+
+
+def strategy_tally(sid, day, hit=None, applied=False, beat_main=None):
+    ss = load_strategies()
+    s = _sfind(ss, sid)
+    if not s:
+        raise SystemExit("없는 전략 %s" % sid)
+    if applied and day not in s["applied"]:
+        s["applied"].append(day)
+    if hit is True and day not in s["hit"]:
+        s["hit"].append(day)
+    if hit is False and day not in s["miss"]:
+        s["miss"].append(day)
+    s.setdefault("beat_main", [])
+    if beat_main is True and day not in s["beat_main"]:
+        s["beat_main"].append(day)
+    save_strategies(ss)
+    return s
+
+
+def strategy_suggestion(s):
+    n, h, m, b = len(s["applied"]), len(s["hit"]), len(s["miss"]), len(s.get("beat_main", []))
+    if s["status"] == "후보" and n >= PROMOTE_MIN_APPLIED and h > m:
+        return "적용 %d회(적중 %d/실패 %d · MAIN 우위 %d) → 「적용중」 승격 검토" % (n, h, m, b)
+    if s["status"] in ACTIVE and n >= PROMOTE_MIN_APPLIED and m > h:
+        return "적용 %d회(적중 %d/실패 %d) → 실패 우세 — 딥다이브/폐기 검토" % (n, h, m)
+    return ""
+
+
+def render_strategies(ss):
+    L = ["# 신동2 AI 전략 레지스트리 (%s)" % PC, "",
+         "> 값의 단일 출처는 같은 폴더 `%s` — 이 파일은 렌더다(손으로 고치지 말 것)." % STRAT_JSON,
+         "> 전략 = 방향·진입·손절·청산·확률 **5축이 한 세트로 완결된 것**(레슨은 조각이다). 신동 섀도가 MAIN 의 변형이듯 AI 전략은 AI 자신의 섀도다.",
+         "> 적중 = 그날 AI 실현(비용차감) > 0 · 실패 = < 0 · MAIN 우위 = 그날 AI−MAIN > 0. 승격은 레슨과 같다(적용 3회·적중 우세). 적용은 다음 거래일부터 센다.",
+         "", "| ID | 상태 | 전략 | 방향 | 진입 | 손절 | 청산 | 확률 | 레슨 | 적용/적중/실패/MAIN우위 | 비고 |",
+         "|---|---|---|---|---|---|---|---|---|---|---|"]
+    for s in ss:
+        sug = strategy_suggestion(s)
+        r = s["rules"]
+        L.append("| %s | %s | **%s** | %s | %s | %s | %s | %s | %s | %d/%d/%d/%d | %s |" % (
+            s["id"], s["status"], s["title"], r["방향"], r["진입"], r["손절"], r["청산"], r["확률"], ", ".join(s["lessons"]) or "—",
+            len(s["applied"]), len(s["hit"]), len(s["miss"]), len(s.get("beat_main", [])), (s.get("note") or "") + ((" ⚠ " + sug) if sug else "")))
+    L += ["", "## 이력", ""]
+    for s in ss:
+        hist = " → ".join("%s %s%s" % (h["ts"][:10], h["status"], ("(%s)" % h["why"]) if h.get("why") else "") for h in s["history"])
+        L.append("- **%s** %s · 적용 %s · 적중 %s · 실패 %s · MAIN 우위 %s" % (
+            s["id"], hist, ", ".join(s["applied"]) or "—", ", ".join(s["hit"]) or "—", ", ".join(s["miss"]) or "—", ", ".join(s.get("beat_main", [])) or "—"))
+    return "\n".join(L) + "\n"
+
+
+def strategies_text(active_only=False):
+    ss = load_strategies()
+    if active_only:
+        ss = [s for s in ss if s["status"] in ACTIVE]
+    if not ss:
+        return "전략 없음" + ("(활성)" if active_only else "") + " — `strategy add` 로 5축 세트를 등록할 것"
+    L = []
+    for s in ss:
+        sug = strategy_suggestion(s)
+        r = s["rules"]
+        L.append("- %s [%s] %s — 방향: %s / 진입: %s / 손절: %s / 청산: %s / 확률: %s (레슨 %s · 적용 %d · 적중 %d · 실패 %d · MAIN우위 %d)%s" % (
+            s["id"], s["status"], s["title"], r["방향"], r["진입"], r["손절"], r["청산"], r["확률"], ",".join(s["lessons"]) or "—",
+            len(s["applied"]), len(s["hit"]), len(s["miss"]), len(s.get("beat_main", [])), (" ⚠ " + sug) if sug else ""))
+    return "\n".join(L)
+
+
+def strategies_applied(log):
+    return sorted({r["strategy"] for r in log if (r.get("variant") or "live") == "live" and r.get("strategy")})
 
 
 # ── 피드백 ────────────────────────────────────────────────────────────────
@@ -412,6 +692,15 @@ def feedback(day, comment, applied=(), hits=(), misses=(), now=None):
         lesson_tally(l, day, hit=True)
     for l in misses:
         lesson_tally(l, day, hit=False)
+    # [640차 ③] 전략 집계 — 기계적이다(적중 = AI 비용차감 > 0 · MAIN 우위 = AI−MAIN > 0). 사람이 고르지 않는다.
+    rv = out.get("rival") or {}
+    ss = load_strategies()
+    for sid in out.get("strategies_applied") or []:
+        if not _sfind(ss, sid):
+            raise SystemExit("레지스트리에 없는 전략 %s — 먼저 strategy add" % sid)
+        pt = rv.get("ai_pt_cost")
+        strategy_tally(sid, day, applied=True, hit=(None if pt is None or pt == 0 else pt > 0),
+                       beat_main=(None if rv.get("diff") is None else rv["diff"] > 0))
     rec = dict(ts=now.isoformat(timespec="seconds"), date=day, eval_live=out["live"], applied=applied, hits=sorted(hits),
                misses=sorted(misses), comment=(comment or "").strip(), actual_dir=out["actual_dir"], ai_pnl=out["live_ai"]["pnl"])
     dd = SL.day_dir(day)
@@ -478,6 +767,14 @@ def trend_rows(today=None, now=None):
                 continue
         if ev.get("empty"):
             continue
+        if "rival" not in ev:                            # [640차] 배포 전 확정 eval.json — 상대의 수만 보강해 다시 저장(평가 자체는 불변)
+            try:
+                log = SL.load_ai_log(day)
+                ev["rival"] = rival_block(day, None, ev.get("live_ai"), log)
+                ev["rival_backfilled_at"] = (now or _dt.datetime.now()).isoformat(timespec="seconds")
+                SL._atomic_json(p, ev)
+            except Exception as e:
+                ev["rival"] = dict(present=False, why="보강 실패: %s" % e)
         fb = None
         fp = os.path.join(dd, "feedback.json")
         if os.path.exists(fp):
@@ -491,7 +788,8 @@ def trend_rows(today=None, now=None):
                          rules_base=(ev.get("rules") or {}).get("base"), rules_p=(ev.get("rules") or {}).get("p"),
                          lessons=ev.get("lessons_applied") or (fb or {}).get("applied") or [], feedback=bool(fb),
                          fb_hits=(fb or {}).get("hits") or [], fb_misses=(fb or {}).get("misses") or [],
-                         scen=ev.get("scen_summary") or {"n": 0}))
+                         scen=ev.get("scen_summary") or {"n": 0},
+                         rival=_rival_row(ev)))                       # [640차] AI 대 MAIN
     return rows
 
 
@@ -525,8 +823,16 @@ def trend_windows(rows):
                       ai_pnl=round(sum(r["ai_pnl"] or 0 for r in sub), 2), ai_days_pos=sum(1 for r in sub if (r["ai_pnl"] or 0) > 0),
                       rules_base=round(sum(r["rules_base"] or 0 for r in sub), 2),
                       lessons_days=sum(1 for r in sub if r["lessons"]), feedback_days=sum(1 for r in sub if r["feedback"]),
+                      rival=RV.judge_window([r["rival"] for r in sub if r.get("rival")], window=w, since=""),   # 창 표시용(개시일 무관)
+                      axes=axes_window([r["rival"] for r in sub if r.get("rival")]),                            # [③] 축별 누적
                       **_scen_window(sub))
     return out
+
+
+def rival_prereg(rows):
+    """[640차] 사전등록 판정 — 개시일(2026-10-21) 이후 20거래일 창. 표시용 창(trend_windows.rival)과 달리 이것이 공식 판정이다."""
+    rows = [r for r in rows if not r.get("error") and r.get("rival")]
+    return RV.judge_window([r["rival"] for r in rows])
 
 
 def _scen_window(sub):
@@ -592,7 +898,19 @@ def trend_verdict(rows, win):
             msgs.append("✅ 시나리오 BSS %+.2f(n=%d일) — 균등 확률보다 낫다." % (bss, bn))
         for a in SC.calibration_advice((win.get(20) or w5).get("calibration") or []):
             msgs.append("⚠ 보정 " + a)
-    return dict(flag=flag, messages=msgs, streak_nonimprove=streak)
+    # [640차] 상대의 수 — 사전등록 판정(AI 대 MAIN). 경쟁자를 이기고 있는가가 이 학습의 최종 지표다.
+    pj = rival_prereg(rows)
+    c = pj["cohort"]
+    msgs.append("🏁 AI 대 MAIN(%s · 개시 %s · 창 %d일): **%s** — %s · 동의율 %s(n=%d) · 반대일 %d건 AI 승 %s Σ(AI−MAIN) %s → %s" % (
+        pj["version"], pj["since"], pj["window"], RV.VERDICT_KO[pj["verdict"]], pj["why"] or "n=%d" % pj["n_both"],
+        "—" if pj["agree_rate"] is None else "%.0f%%" % (pj["agree_rate"] * 100), pj["n_dir"], c["n"],
+        "—" if c["win_rate"] is None else "%.0f%%" % (c["win_rate"] * 100), _fmtp(c["sum_diff"]), RV.VERDICT_KO[c["verdict"]]))
+    ref = (win.get(5) or {}).get("rival") or {}
+    if ref.get("n_both"):
+        msgs.append("   참고(개시 전 포함 최근 %d일): AI %s vs MAIN %s (차 %s) · 동의율 %s" % (
+            ref["n_both"], _fmtp(ref["ai_net"]), _fmtp(ref["main_net"]), _fmtp(ref["diff"]),
+            "—" if ref["agree_rate"] is None else "%.0f%%" % (ref["agree_rate"] * 100)))
+    return dict(flag=flag, messages=msgs, streak_nonimprove=streak, rival=pj)
 
 
 def _ai(r):
@@ -612,8 +930,8 @@ def render_trend(rows, win, verdict):
          "> `scripts/shindong2_live.py trend` 가 매번 다시 쓴다(파생 뷰). 원천은 날짜별 `eval.json`·`feedback.json`.",
          "> 계획 손익은 그 계획을 **단독**으로 1분봉에 대 본 값(실제 재량 실현과 다르다). 개선(live) − 기존(legacy) 이 핵심 지표.",
          "> 「—」 는 미측정이다(계측 4원칙 ② — 0 이 아니다).", "",
-         "## 판정", ""] + ["- " + m for m in verdict["messages"]] + ["", "## 창", "",
-         "| 창 | 기간 | 익일계획 적중 | 장전 적중 | 익일계획 평균pt (개선/기존) | 장전 평균pt (개선/기존) | 개선−기존 (익일/장전) | 재량 실현 합 | 규칙 기본 합 | 레슨 적용일 | 피드백일 |",
+         "## 판정", ""] + ["- " + m for m in verdict["messages"]] + [""] + _render_rival(win, verdict.get("rival")) + ["", "## 창", "",
+         "| 창 | 기간 | 익일계획 적중 | 장전 적중 | 익일계획 평균pt (개선/기존) | 장전 평균pt (개선/기존) | 개선−기존 (익일/장전) | 재량 실현 합 | (사료)기본 합 | 레슨 적용일 | 피드백일 |",
          "|---|---|---|---|---|---|---|---|---|---|---|"]
     for w in WINDOWS:
         v = win.get(w)
@@ -642,17 +960,104 @@ def render_trend(rows, win, verdict):
     L += ["", "보정표(최근 최대 20일 — 준 확률 대비 실제 실현율):", "", "| 확률 구간 | n | 평균 준 확률 | 실현율 |", "|---|---|---|---|"]
     L += ["| %s | %d | %.0f%% | %.0f%% |" % (c["bin"], c["n"], c["mean_p"], c["rate"]) for c in cal] or ["| (표본 없음) | | | |"]
     L += ["", "## 날짜별", "",
-          "| 날짜 | 실제 | 폭 | 익일계획 개선 | 익일계획 기존 | 장전 개선 | 장전 기존 | 재량 실현 | 규칙 기본 | 규칙 P | 적용 레슨 | 레슨 적중/실패 |",
-          "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+          "| 날짜 | 실제 | 폭 | 익일계획 개선 | 익일계획 기존 | 장전 개선 | 장전 기존 | 재량 실현 | MAIN | AI−MAIN | 동의 | (사료)기본 | (사료)P | 적용 레슨 | 레슨 적중/실패 |",
+          "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
         if r.get("error"):
-            L.append("| %s | (평가 실패: %s) | | | | | | | | | | |" % (r["date"], r["error"][:60]))
+            L.append("| %s | (평가 실패: %s) | | | | | | | | | | | | | |" % (r["date"], r["error"][:60]))
             continue
-        L.append("| %s%s | %s | %.2f | %s | %s | %s | %s | %s | %s | %s | %s | %s / %s |" % (
+        rv = r.get("rival") or {}
+        diff = None if rv.get("ai_pt") is None or rv.get("main_pt") is None else round(rv["ai_pt"] - rv["main_pt"], 2)
+        L.append("| %s%s | %s | %.2f | %s | %s | %s | %s | %s | %s%s | %s | %s | %s | %s | %s | %s / %s |" % (
             r["date"], "(잠정)" if r.get("live") else "", r["actual"], r["range"] or 0, _cell(r["on_live"]), _cell(r["on_legacy"]),
-            _cell(r["pm_live"]), _cell(r["pm_legacy"]), _ai(r), _fmtp(r["rules_base"]), _fmtp(r["rules_p"]),
+            _cell(r["pm_live"]), _cell(r["pm_legacy"]), _ai(r),
+            _fmtp(rv.get("main_pt")), (" " + rv["main_dir"]) if rv.get("main_dir") else "", _fmtp(diff), _vs_ko(rv),
+            _fmtp(r["rules_base"]), _fmtp(r["rules_p"]),
             ", ".join(r["lessons"]) or "—", ", ".join(r["fb_hits"]) or "—", ", ".join(r["fb_misses"]) or "—"))
     return "\n".join(L) + "\n"
+
+
+def _render_rival_eval(rv):
+    """evaluate 표의 「상대의 수」 — MAIN·섀도 pt, AI 비용차감 pt, 동의/반대와 이유, 4축 귀속, 갈린 섀도 상세(섀도 사이클 입력)."""
+    if not rv or not rv.get("present"):
+        return "- 상대의 수: 미측정 — %s" % ((rv or {}).get("why") or "shindong.db 기록 없음")
+    sh = " · ".join("%s %s" % (k, _fmtp(v)) for k, v in (rv.get("shadows") or {}).items())
+    dv = ", ".join("%s(%s)" % (d["short"], _fmtp(d["diff"])) for d in rv.get("divergent") or [])
+    L = ["- **상대의 수**: MAIN %s%s · AI(비용차감) %s%s → AI−MAIN **%s** · 판단 %s%s · 섀도 %s%s" % (
+        _fmtp(rv.get("main_pt")), (" " + rv["main_dir"]) if rv.get("main_dir") else "",
+        _fmtp(rv.get("ai_pt_cost")), (" " + rv["ai_dir"]) if rv.get("ai_dir") else "", _fmtp(rv.get("diff")),
+        _vs_ko(rv), (" — " + rv["vs_why"]) if rv.get("vs_why") else "", sh or "—", (" · 갈린 섀도 " + dv) if dv else "")]
+    ax = rv.get("axes")
+    if ax and ax.get("diff") is not None:
+        by = ax["by"]
+        L.append("- **4축 귀속**(%s): %s%s · %s" % (
+            ax.get("mode") or "—", " · ".join("%s %s" % (a, _fmtp(by.get(a))) for a in ATTR_AXES),
+            (" · AI 청산 사유 %s" % ax["exit_kind"]) if ax.get("exit_kind") else "", ax.get("note") or ""))
+    tr = lambda t: "%s %s %s @%.2f → %s %s %s" % (t["rule"], t["entry_t"], t["side"], t["entry_px"], t.get("exit_t") or "보유", t.get("reason") or "", _fmtp(t.get("net_pt")))
+    if rv.get("main_trades"):
+        L.append("- MAIN 거래: " + " / ".join(tr(t) for t in rv["main_trades"]))
+    for d in rv.get("divergent") or []:
+        if d.get("trades"):
+            L.append("- 갈린 섀도 %s(%s): " % (d["short"], _fmtp(d["diff"])) + (" / ".join(tr(t) for t in d["trades"]) or "거래 없음"))
+        elif "trades" in d:
+            L.append("- 갈린 섀도 %s(%s): 거래 없음(MAIN 만 거래)" % (d["short"], _fmtp(d["diff"])))
+    return "\n".join(L)
+
+
+def _vs_ko(rv):
+    vm = rv.get("vs_main")
+    if not vm:
+        return "—"
+    return {"agree": "동의", "disagree": "**반대**", "abstain": "기권"}.get(vm, vm) + ("(기계)" if rv.get("vs_src") == "mechanical" else "")
+
+
+def _render_rival(win, pj):
+    """[640차] 「AI 대 MAIN」 절 — 사전등록 판정 + 창별 표."""
+    if not pj:
+        return []
+    c = pj["cohort"]
+    L = ["## AI 대 MAIN — 상대의 수 (사전등록 %s)" % pj["version"], "",
+         "> AI = 재량 실현 1계약 **− 왕복비용 %.2fpt/거래** · MAIN·섀도 = `net_krw ÷ %d ÷ %d`(pt/계약, 수수료 포함). "
+         "능가 = 창 순손익 우위 **그리고** 최악일 개선. 동의율 > %.0f%% 면 복사본(무효). 능가의 증거는 **반대일 코호트**에서만 센다."
+         % (RV.AI_RT_COST_PT, S_PT_VALUE(), S_LEGS(), RV.PREREG["copy_agree"] * 100), "",
+         "- **공식 판정**(개시 %s · 창 %d일 · 둘 다 측정 %d일): **%s** — %s" % (pj["since"], pj["window"], pj["n_both"], RV.VERDICT_KO[pj["verdict"]], pj["why"] or "표본 대기"),
+         "- 반대일 코호트: n=%d · AI 승 %s · Σ(AI−MAIN) %s → **%s**" % (
+             c["n"], "—" if c["win_rate"] is None else "%.0f%%" % (c["win_rate"] * 100), _fmtp(c["sum_diff"]), RV.VERDICT_KO[c["verdict"]]),
+         "- 동의율 %s (방향 둘 다 있는 날 n=%d)" % ("—" if pj["agree_rate"] is None else "%.0f%%" % (pj["agree_rate"] * 100), pj["n_dir"]),
+         "", "| 창(개시 전 포함·참고) | 둘 다 측정 | AI 합(비용차감) | MAIN 합 | AI−MAIN | AI 최악일 | MAIN 최악일 | 동의율 | 반대일 n · AI 승 · Σ차 |",
+         "|---|---|---|---|---|---|---|---|---|"]
+    for w in WINDOWS:
+        v = (win.get(w) or {}).get("rival")
+        if not v:
+            continue
+        cc = v["cohort"]
+        L.append("| 최근 %d일 | %d | %s | %s | %s | %s | %s | %s | %d · %s · %s |" % (
+            w, v["n_both"], _fmtp(v["ai_net"]), _fmtp(v["main_net"]), _fmtp(v["diff"]), _fmtp(v["ai_worst"]), _fmtp(v["main_worst"]),
+            "—" if v["agree_rate"] is None else "%.0f%%" % (v["agree_rate"] * 100),
+            cc["n"], "—" if cc["win_rate"] is None else "%.0f%%" % (cc["win_rate"] * 100), _fmtp(cc["sum_diff"])))
+    # [③] 축별 누적 — AI−MAIN 차이가 어느 축에서 나는가(방향차 날은 전액 방향, 짝지은 날만 진입·청산·횟수·비용)
+    L += ["", "축별 누적 AI−MAIN(개시 전 포함 · None 제외 · 방향차 날은 전액 「방향」):", "",
+          "| 창 | 방향 | 진입 | 청산 | 횟수 | 비용 |", "|---|---|---|---|---|---|"]
+    for w in WINDOWS:
+        ax = (win.get(w) or {}).get("axes")
+        if not ax:
+            continue
+        L.append("| 최근 %d일 | %s |" % (w, " | ".join("%s (n=%d)" % (_fmtp(ax[a][0]), ax[a][1]) for a in ATTR_AXES)))
+    # [③] 전략 레지스트리 요약
+    ss = load_strategies()
+    if ss:
+        L += ["", "AI 전략(S-n) — 적용/적중/실패/MAIN 우위:", ""]
+        L += ["- %s [%s] %s — %d/%d/%d/%d" % (s["id"], s["status"], s["title"], len(s["applied"]), len(s["hit"]), len(s["miss"]), len(s.get("beat_main", [])))
+              for s in ss]
+    return L
+
+
+def S_PT_VALUE():
+    return RV.S.PT_VALUE_KRW
+
+
+def S_LEGS():
+    return RV.S.LEGS
 
 
 def trend(today=None, now=None, write=True):
@@ -678,15 +1083,19 @@ def trend_text(out, last=5):
             L.append("  %s 시나리오 brier %.3f · BSS %s · 기본 적중 %.0f%% · 익일계획 brier %s" % (
                 r["date"], sc["brier"], "—" if sc.get("bss") is None else "%+.2f" % sc["bss"], sc["top_hit"] * 100,
                 "—" if sc.get("on_brier") is None else "%.3f" % sc["on_brier"]))
-        L.append("  %s 실제 %s · 익일계획 %s / 기존 %s · 장전 %s / 기존 %s · 재량 %s · 기본 %s · 레슨 %s" % (
+        rv = r.get("rival") or {}
+        L.append("  %s 실제 %s · 익일계획 %s / 기존 %s · 장전 %s / 기존 %s · 재량 %s · MAIN %s%s · %s · 레슨 %s" % (
             r["date"], r["actual"], _cell(r["on_live"]), _cell(r["on_legacy"]), _cell(r["pm_live"]), _cell(r["pm_legacy"]),
-            _ai(r), _fmtp(r["rules_base"]), ",".join(r["lessons"]) or "—"))
+            _ai(r), _fmtp(rv.get("main_pt")), (" " + rv["main_dir"]) if rv.get("main_dir") else "", _vs_ko(rv).replace("**", ""),
+            ",".join(r["lessons"]) or "—"))
     return "\n".join(L)
 
 
 # ── 장전 브리핑 ────────────────────────────────────────────────────────────
 def brief(day, now=None):
-    L = ["# 신동2 학습 브리핑 — %s" % day, "", "## 활성 레슨(계획에 적용하고 `--lessons` 로 표기할 것)", lessons_text(active_only=True), "",
+    L = ["# 신동2 학습 브리핑 — %s" % day, "",
+         "## AI 전략(계획에 적용하고 `--strategy S1` 로 표기할 것 — 5축 세트)", strategies_text(), "",
+         "## 활성 레슨(계획에 적용하고 `--lessons` 로 표기할 것)", lessons_text(active_only=True), "",
          "## 후보·딥다이브 레슨(관찰만 — 승격은 표본 뒤)",
          "\n".join(l for l in lessons_text().split("\n") if "[후보]" in l or "[딥다이브]" in l) or "없음", ""]
     fb = latest_feedback_before(day)
@@ -707,6 +1116,16 @@ def brief(day, now=None):
         adv = SC.calibration_advice(cal)
         L += ["", "## 오늘 확률에 반영할 보정 지침(최근 최대 20일 보정표)"]
         L += ["- " + a for a in adv] or ["- 지침 없음 — 구간별 표본 5 미만이거나 보정 편차 15%p 이내"]
+        # [640차] 상대 전적 — 경쟁자(MAIN)를 이기고 있는가. 반대일에서 졌으면 오늘 반대할 때 그 이유가 더 강해야 한다.
+        pj = (t.get("verdict") or {}).get("rival")
+        if pj:
+            c = pj.get("cohort") or {}
+            L += ["", "## 상대 전적 — AI 대 MAIN (사전등록 %s)" % pj.get("version"),
+                  "- 공식 판정: **%s** — %s" % (RV.VERDICT_KO.get(pj.get("verdict"), pj.get("verdict")), pj.get("why") or "표본 대기"),
+                  "- 반대일 코호트 n=%d · AI 승 %s · Σ(AI−MAIN) %s → %s · 동의율 %s" % (
+                      c.get("n", 0), "—" if c.get("win_rate") is None else "%.0f%%" % (c["win_rate"] * 100), _fmtp(c.get("sum_diff")),
+                      RV.VERDICT_KO.get(c.get("verdict"), "—"), "—" if pj.get("agree_rate") is None else "%.0f%%" % (pj["agree_rate"] * 100)),
+                  "- 오늘 할 일: snapshot 의 「상대의 수」를 읽고 `--vs-main agree|disagree|abstain` 과 이유를 기록할 것. 동의율이 80% 를 넘으면 복사본이다."]
     else:
         L.append("## 워크포워드 추이 — 아직 없음(`trend` 미실행)")
     # 오늘 익일계획(전날 장후 작성) 변형

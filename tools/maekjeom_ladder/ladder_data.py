@@ -517,8 +517,77 @@ def shindong2_ai(day, cs, live):
             scen = M.scenario_sets(day, bars, log, final=not live)
         except Exception as e:                       # 미측정 ≠ 0 — 사유를 남긴다
             scen_err = str(e)[:200]
+    st = _state_json(d)
     return dict(latest=latest, log=log, events=ev[-40:], events_n=len(ev), sim=sim, next_plan=_next_plan(M, day),
-                learning=_learning(M, d), scen=scen, scen_err=scen_err)
+                learning=_learning(M, d), scen=scen, scen_err=scen_err,
+                source_warnings=(st or {}).get("source_warnings") or [], state_at=(st or {}).get("generated_at"),   # [640차 ⑤]
+                plain=plain_lines(day, cs, live, st, latest, sim))
+
+
+def _state_json(d):
+    try:
+        with open(os.path.join(d, "state.json"), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def plain_lines(day, cs, live, st, latest, sim):
+    """[640차 ⑤] 중학생 설명 층 — 「지금 시장은 / 상대(MAIN)는 지금 / AI 생각은」 세 문장. 숫자는 사다리 봉·state.json·shindong.db 에서만.
+    없는 것은 「모른다」고 쓴다(미측정 ≠ 0)."""
+    bars = [list(c) for c in (cs[:-1] if live else cs)]
+    out = dict(market=None, rival=None, ai=None)
+    if bars:
+        o, px = bars[0][1], bars[-1][4]
+        hi, lo = max(c[2] for c in bars), min(c[3] for c in bars)
+        d = px - o
+        where = "시가보다 %.2f 위" % d if d > 0 else "시가보다 %.2f 아래" % -d if d < 0 else "시가 자리"
+        pv = (st or {}).get("prev") or {}
+        pvs = ""
+        stale = any("전일 참조 고착" in w for w in (st or {}).get("source_warnings") or [])
+        if pv.get("close") and stale:
+            pvs = " 전날 값은 낡아서(%s) 비교하지 않는다." % pv.get("date")
+        elif pv.get("close"):
+            pvs = " 전날 마감(%.2f)보다 %s." % (pv["close"], "높다" if px > pv["close"] else "낮다" if px < pv["close"] else "같다")
+        f = (st or {}).get("flow") or {}
+        ff = f.get("fut_foreign")
+        fs = ""
+        if ff is not None:
+            fs = " 외국인은 선물을 오늘 %s계약 %s." % (format(abs(int(ff)), ","), "사 모았다(매수)" if ff > 0 else "팔았다(매도)" if ff < 0 else "순매수 0")
+        out["market"] = "%s 현재 %.2f — %s(시가 %.2f · 오늘 범위 %.2f–%.2f).%s%s" % (bars[-1][0], px, where, o, lo, hi, pvs, fs)
+    rv = (st or {}).get("rival") or {}
+    if rv.get("present"):
+        m = rv["main"]
+        n = m["n"]
+        if n == 0:
+            core = "MAIN(기본 규칙)은 오늘 아직 거래하지 않았다"
+        else:
+            t0 = m["trades"][0]
+            core = "MAIN(기본 규칙)은 %s에 %s로 들어가 지금까지 %d번 거래해 %s%.2fpt" % (
+                t0["entry_t"], t0["side_ko"], n, "+" if (m["pnl_pt"] or 0) >= 0 else "", m["pnl_pt"] or 0)
+        op = m.get("open")
+        hold = (" · 지금 %s 포지션 보유(평가 %+.2fpt)" % (op["side_ko"], op["eval_pt"])) if op and op.get("eval_pt") is not None else " · 지금 포지션 없음"
+        sg = rv.get("signals") or {}
+        see = ""
+        fc = sg.get("flowc")
+        if fc:
+            see = " 상대가 보는 것: 개인이 위클리 옵션에서 콜을 %s(09:00 대비 %+.0f백만, 문턱 ±%d → %s)." % (
+                "더 샀다" if fc["dv"] > 0 else "덜 샀다(풋 우위)" if fc["dv"] < 0 else "비슷하게", fc["dv"], fc["k"],
+                ("MAIN 은 " + fc["side"] + " 쪽") if fc["side"] else "아직 신호 없음")
+        out["rival"] = core + hold + "." + see
+    if latest:
+        vs = {"agree": "상대와 같은 생각", "disagree": "상대와 반대", "abstain": "판단 보류"}.get(latest.get("vs_main"))
+        dirk = latest.get("dir") or "관망"
+        plan = ""
+        if dirk in ("매수", "매도"):
+            plan = " %s — 진입 %s · 손절 %s · 목표 %s" % (dirk, latest.get("entry") if latest.get("entry") is not None else "시장가", latest.get("stop"), latest.get("target"))
+        else:
+            plan = " 관망(들어가지 않는다)"
+        first = ((latest.get("comment") or "").strip().splitlines() or [""])[0][:140]
+        out["ai"] = "AI 는 %s 기준으로%s%s. 한 줄 이유: %s%s" % (
+            latest["ts"][11:16], plan, (" · " + vs + ((" — " + latest["vs_why"]) if latest.get("vs_why") else "")) if vs else "", first,
+            (" · 오늘 AI 재량 %+.2fpt" % sim["pnl"]) if sim else "")
+    return out
 
 
 def _learning(M, d):
@@ -572,6 +641,19 @@ def _next_plan(M, day):
             return dict(for_date="%s-%s-%s" % (d[:4], d[4:6], d[6:]), latest=(plans or recs)[-1], n=len(recs),
                         scen=sc[-1] if sc else None)
     return None
+
+
+def rival(day, cs, live):
+    """[MW0602 640차] 「상대의 수」 — 신동 v3 MAIN·섀도 5종(shindong.db 하루치). 사다리 패널·차트 마커가 읽는다.
+    DB/행이 없으면 present=False 와 사유(미기록 ≠ 0). 456차 — PK 조회 두 개뿐."""
+    M = _sd2_live_mod()                                   # scripts/ 경로가 sys.path 에 실린다
+    import importlib.util
+    p = os.path.join(ROOT, "scripts", "shindong2_rival.py")
+    spec = importlib.util.spec_from_file_location("shindong2_rival", p)
+    RV = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(RV)
+    bars = [list(c) for c in (cs[:-1] if live else cs)]
+    return RV.read_day(day, last_close=bars[-1][4] if bars else None, live=live)
 
 
 def shindong2(day, cs, live):
@@ -891,13 +973,18 @@ def build_day(day, now=None):
     except Exception as e:
         sd2ai = None
         warn.append("신동2 해설 읽기 실패: %s" % e)
+    try:
+        rv = rival(day, cs, live)                             # [640차] 상대의 수 — 신동 v3 MAIN·섀도
+    except Exception as e:
+        rv = dict(present=False, why="읽기 실패: %s" % e, variants={})
+        warn.append("신동 v3 MAIN·섀도 읽기 실패: %s" % e)
     h = hts9842(day)
     warn += ["9842 시점 파일 읽기 실패 — %s" % e for e in h["flow_snaps_err"]]
     actual = dict(high=max((c[2] for c in cs), default=None), low=min((c[3] for c in cs), default=None))
     return dict(date=day, live=live, generated_at=now.isoformat(timespec="seconds"),
                 candles=cs, candle_src=csrc, levels=lv, bands=bands, basis=basis if basis is not None else 0.0,
                 basis_measured=basis is not None, times=times, books=bk, mins=mins, flow1m=f1m, flow1m_amt=f1m_amt, flow_last=flow_last,
-                fut=fut, fut_last=fut_last, fut_src=fut_src, shindong2=sd2, sd2ai=sd2ai,
+                fut=fut, fut_last=fut_last, fut_src=fut_src, shindong2=sd2, sd2ai=sd2ai, rival=rv,
                 hold=h["hold"], flow=h["flow"], hold_src=h["hold_src"], flow_src=h["flow_src"],
                 hold_unit=h["hold_unit"], flow_unit=h["flow_unit"],
                 hold_date=h["hold_date"], hold_is_prev=h["hold_is_prev"],
