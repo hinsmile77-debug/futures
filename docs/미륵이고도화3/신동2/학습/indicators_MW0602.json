@@ -1,0 +1,240 @@
+[
+ {
+  "id": "I1",
+  "title": "외인 선물 60분 변화",
+  "source": "내부: raw_investor_futures.foreign_net_qty (7221) · HYBL FX 축과 같은 정의",
+  "hypothesis": "최근 60분 외인 선물 순매수가 +면 이후 상승(순추종). 외인 선물은 가격을 1분 뒤따르므로(L1) 신호가 아니라 지속성 가설",
+  "formula": "",
+  "inputs": [
+   "raw_investor_futures"
+  ],
+  "status": "검증",
+  "implemented": true,
+  "sign": "follow",
+  "prereg": {
+   "min_days": 20,
+   "hit_min": 0.55,
+   "p_max": 0.05
+  },
+  "origin": "2026-10-20",
+  "verifications": [
+   {
+    "ts": "2026-10-20T18:49:50",
+    "days": 60,
+    "at": "10:00",
+    "perm": 200,
+    "first": "2026-08-03",
+    "last": "2026-10-08",
+    "n": 1,
+    "n_all": 45,
+    "hit_rate": null,
+    "p_binom": null,
+    "ic": null,
+    "p_perm": null,
+    "noise_95": null,
+    "verdict": "UNMEASURED",
+    "why": "표본 1 < 20"
+   },
+   {
+    "ts": "2026-10-20T18:52:58",
+    "days": 60,
+    "at": "10:00",
+    "perm": 200,
+    "first": "2026-08-03",
+    "last": "2026-10-08",
+    "n": 45,
+    "n_all": 45,
+    "hit_rate": 0.622,
+    "p_binom": 0.1352,
+    "ic": 0.198,
+    "p_perm": 0.175,
+    "noise_95": 0.302,
+    "verdict": "FAIL",
+    "why": "적중 0.622 (p=0.1352) · IC 0.198 (순열 p=0.175, 노이즈95 0.302)"
+   },
+   {
+    "ts": "2026-10-20T18:53:00",
+    "days": 60,
+    "at": "11:00",
+    "perm": 200,
+    "first": "2026-08-03",
+    "last": "2026-10-08",
+    "n": 45,
+    "n_all": 45,
+    "hit_rate": 0.591,
+    "p_binom": 0.2912,
+    "ic": 0.086,
+    "p_perm": 0.555,
+    "noise_95": 0.33,
+    "verdict": "FAIL",
+    "why": "적중 0.591 (p=0.2912) · IC 0.086 (순열 p=0.555, 노이즈95 0.33)"
+   },
+   {
+    "ts": "2026-10-20T19:50:53",
+    "days": 60,
+    "at": "10:00",
+    "perm": 200,
+    "first": "2026-08-03",
+    "last": "2026-10-20",
+    "n": 52,
+    "n_all": 52,
+    "hit_rate": 0.615,
+    "p_binom": 0.1263,
+    "ic": 0.208,
+    "p_perm": 0.125,
+    "noise_95": 0.283,
+    "verdict": "FAIL",
+    "why": "적중 0.615 (p=0.1263) · IC 0.208 (순열 p=0.125, 노이즈95 0.283)"
+   }
+  ],
+  "mounted_at": null,
+  "history": [
+   {
+    "ts": "2026-10-20T18:49:50",
+    "status": "후보",
+    "why": "신설"
+   },
+   {
+    "ts": "2026-10-20T18:49:50",
+    "status": "검증",
+    "why": "verify 실행 — UNMEASURED"
+   }
+  ]
+ },
+ {
+  "id": "I2",
+  "title": "개인 위클리 콜−풋 09:00 대비",
+  "source": "내부: option_investor_flow individual 위클리(7222) — MAIN FLOWC 의 입력",
+  "hypothesis": "개인이 콜을 사면(+) 이후 하락(역추종). MAIN 은 ±300 에서 켜진다 — AI 는 문턱 안쪽의 기울기·지속을 본다",
+  "formula": "",
+  "inputs": [
+   "option_investor_flow"
+  ],
+  "status": "검증",
+  "implemented": true,
+  "sign": "contra",
+  "prereg": {
+   "min_days": 20,
+   "hit_min": 0.55,
+   "p_max": 0.05
+  },
+  "origin": "2026-10-20",
+  "verifications": [
+   {
+    "ts": "2026-10-20T18:49:52",
+    "days": 60,
+    "at": "10:00",
+    "perm": 200,
+    "first": "2026-08-03",
+    "last": "2026-10-08",
+    "n": 11,
+    "n_all": 45,
+    "hit_rate": null,
+    "p_binom": null,
+    "ic": null,
+    "p_perm": null,
+    "noise_95": null,
+    "verdict": "UNMEASURED",
+    "why": "표본 11 < 20"
+   },
+   {
+    "ts": "2026-10-20T19:50:57",
+    "days": 60,
+    "at": "10:00",
+    "perm": 200,
+    "first": "2026-08-03",
+    "last": "2026-10-20",
+    "n": 18,
+    "n_all": 52,
+    "hit_rate": null,
+    "p_binom": null,
+    "ic": null,
+    "p_perm": null,
+    "noise_95": null,
+    "verdict": "UNMEASURED",
+    "why": "표본 18 < 20"
+   }
+  ],
+  "mounted_at": null,
+  "history": [
+   {
+    "ts": "2026-10-20T18:49:52",
+    "status": "후보",
+    "why": "신설"
+   },
+   {
+    "ts": "2026-10-20T18:49:52",
+    "status": "검증",
+    "why": "verify 실행 — UNMEASURED"
+   }
+  ]
+ },
+ {
+  "id": "I3",
+  "title": "현물 외인 누계 부호 지속",
+  "source": "내부: option_investor_flow kospi_spot foreign (7222) · 레슨 L2/L7/L22 의 「대장」 축",
+  "hypothesis": "현물 외인 누계가 개장 내내 한 부호면 그 방향이 종가까지 간다(순추종). 부호가 뒤집힌 날은 0 근처 — 관망 근거",
+  "formula": "",
+  "inputs": [
+   "option_investor_flow"
+  ],
+  "status": "검증",
+  "implemented": true,
+  "sign": "follow",
+  "prereg": {
+   "min_days": 20,
+   "hit_min": 0.55,
+   "p_max": 0.05
+  },
+  "origin": "2026-10-20",
+  "verifications": [
+   {
+    "ts": "2026-10-20T18:49:54",
+    "days": 60,
+    "at": "10:00",
+    "perm": 200,
+    "first": "2026-08-03",
+    "last": "2026-10-08",
+    "n": 11,
+    "n_all": 45,
+    "hit_rate": null,
+    "p_binom": null,
+    "ic": null,
+    "p_perm": null,
+    "noise_95": null,
+    "verdict": "UNMEASURED",
+    "why": "표본 11 < 20"
+   },
+   {
+    "ts": "2026-10-20T19:50:59",
+    "days": 60,
+    "at": "10:00",
+    "perm": 200,
+    "first": "2026-08-03",
+    "last": "2026-10-20",
+    "n": 18,
+    "n_all": 52,
+    "hit_rate": null,
+    "p_binom": null,
+    "ic": null,
+    "p_perm": null,
+    "noise_95": null,
+    "verdict": "UNMEASURED",
+    "why": "표본 18 < 20"
+   }
+  ],
+  "mounted_at": null,
+  "history": [
+   {
+    "ts": "2026-10-20T18:49:54",
+    "status": "후보",
+    "why": "신설"
+   },
+   {
+    "ts": "2026-10-20T18:49:54",
+    "status": "검증",
+    "why": "verify 실행 — UNMEASURED"
+   }
+  ]
+ }
+]
