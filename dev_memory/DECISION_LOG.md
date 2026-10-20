@@ -48904,7 +48904,7 @@ EKS는 366차 이전부터 존재하는 기존 설계이고, 이번 사이클은
 - **[보강 · 테스트]** `tests/test_514_postmarket_autofix.py::test_absolute_principle_toggles_untouched[MAX_CONTRACTS-3]`도 같은 낡은 기대값이었다 → `1`로 이동(주석의 "승인된 변경이 나면 기대값을 함께 옮긴다" 규약). 26 passed.
 - **[전체 스위트 — 미청결, 기록]** py37_32 전체 실행이 ~66%에서 `test_493_commission_rate_and_net_recon.py:323 _daily_til` → `dashboard/main_dashboard.py:7434 _build` access violation으로 프로세스 종료(606-4와 같은 자리). 종료 전 실패 13파일: test_457·477·483(fuoption 사본)·490('피터2미러(청산)' 미분류)·493·497·498·504·554·555·598·621·virtual_book. 전부 이번 변경 파일을 참조하지 않음(grep 확인). 이전 커밋 기준선 재실행은 하지 않음 — 「사전 존재」는 추정이다. → NEXT_TODO 698-T.
 
-## 2026-10-20 (MW0601 699차 — 신동 규격 v3: TR44 → MAIN 승격 · MW0602 보완 판정 사전등록) — 🟢 **구현 완료 · 실주문 로직 변경(R3 손절 갱신)**
+## 2026-10-20 (MW0601 699차 — 신동 규격 v3: TR44 → MAIN 승격 · MW0602 보완 판정 사전등록) — 🟢 **구현 완료 · 가상 집행 변경 — 신동 선택 시 실주문(R3 손절 갱신)**
 
 - **결정(사용자)**: MW0602 신동은 현 체계(v3 HYBR60)를 유지하고, MW0601 신동이 MW0602 를 보완한다. 「제안을 구현계획 수립하고 구현해」(장 마감 후).
 - **무엇을**: `SPEC_VERSION` `SD-2026-09-29-v2` → **`SD-2026-10-21-v3`**. MAIN = v2 + R3 트레일 4/4(`spec.MAIN_TRAIL` = 632차 `TR44_ACT`·`TR44_DIST`, 새 값 0개). 구 MAIN → `SHADOW_V2`(되돌림 기준) · `SHADOW_TR44` 종료(`RETIRED_SHADOWS`, 엔진은 이름 계속 인식). 채점 10-21 재시작(R3 중단·섀도 판정 전부).
