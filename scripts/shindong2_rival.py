@@ -39,6 +39,24 @@ PREREG = dict(
     disagree_min=5,                 # 반대일 코호트 최소 n
     divergence_pt=1.0,              # 「갈린 섀도」 = |섀도 − MAIN| ≥ 이 값
 )
+# [640차 이식] PC 별 사전등록 — 두 PC 는 별개 계좌·별개 신동 규격이라 개시일·버전이 다르다. 문턱은 같다(바꾸려면 새 버전).
+#   MW0601 은 이식 뒤 **자기 사전등록 문서를 쓰고** 아래 값을 채운다. 채우기 전에는 개시일이 먼 미래라 판정이 「미측정」이다
+#   (가짜 판정을 내지 않는다 — 계측 4원칙 ②).
+PREREG_BY_PC = {
+    "MW0602": dict(version="SD2AI-2026-10-20-v1", scoring_start="2026-10-21"),
+    "MW0601": dict(version="SD2AI-MW0601-미등록", scoring_start="9999-12-31"),
+}
+
+
+def _host_pc():
+    import platform as _pf
+    import re as _re
+    m = _re.search(r"(MW\d{4})", _pf.node() or "", _re.IGNORECASE)
+    return m.group(1).upper() if m else ((_pf.node() or "UNKNOWN")[:32])
+
+
+RIVAL_PC = os.environ.get("SHINDONG2_PC") or _host_pc()
+PREREG.update(PREREG_BY_PC.get(RIVAL_PC, dict(version="SD2AI-%s-미등록" % RIVAL_PC, scoring_start="9999-12-31")))
 REASON = {"TP1": "1차", "TP2": "최종", "SL": "손절", "BE": "본전", "TIME": "시간", "TR": "트레일"}
 VARIANTS = tuple(S.VARIANTS)
 SHORT = {v: v.replace("SHADOW_", "") for v in VARIANTS}

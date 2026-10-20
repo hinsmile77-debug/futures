@@ -15,6 +15,8 @@ import shindong2_learn as LN  # noqa: E402
 import shindong2_rival as RV  # noqa: E402
 from strategy.shindong import engine, spec  # noqa: E402
 
+family_only = pytest.mark.skipif(RV.RULESET != "family", reason="v3 family 규격 전용(FLOWC·FLOWR60·FX) — v1 은 test_7")
+
 
 def _minutes(a, b):
     out, h, m = [], int(a[:2]), int(a[3:])
@@ -33,6 +35,7 @@ def _frame(cp_by_min, fx_by_min=None, px=1000.0):
     return engine.DayFrame(candles, flow, fx=fx_by_min)
 
 
+@family_only
 def test_1_flowc_and_flowr60_signals_follow_spec_sign_convention():
     # 09:00 기준 0 → 10:00 에 +400(콜 우위 ↑ → 역추종 매도) → 11:00 에 +400 유지(60분 변화 0)
     cp = lambda k: 0.0 if k < "10:00" else 400.0
@@ -46,6 +49,7 @@ def test_1_flowc_and_flowr60_signals_follow_spec_sign_convention():
     assert s09["flowr60"] is None and s09["flowc"]["side"] is None and s09["flowc"]["dist"] == spec.FLOWC_K   # 10:00 전엔 60분 창 없음
 
 
+@family_only
 def test_2_signal_no_future_reference_and_fx_axis():
     cp = lambda k: 0.0 if k < "10:30" else -900.0            # 10:30 에 급락(매수 신호) — 10:00 시점에선 보이면 안 된다
     fx = {k: (0.0 if k < "10:00" else 500.0) for k in _minutes("09:00", "11:05")}
@@ -58,6 +62,7 @@ def test_2_signal_no_future_reference_and_fx_axis():
     assert RV.signal_lines(s2)[0].startswith("상대의 눈") and any("매수" in l for l in RV.signal_lines(s2))
 
 
+@family_only
 def test_3_r1_bias_from_premarket_flow():
     cp = lambda k: 120.0                                   # 08:59 콜−풋 +120 ≥ BIAS_MIN → 하방 편향(매도)
     s = RV.signal_from_frame(_frame(cp), "09:10")

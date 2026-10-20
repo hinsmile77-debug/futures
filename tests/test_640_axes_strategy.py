@@ -53,7 +53,8 @@ def test_3_lesson_axis_add_set_and_render(tmp_path, monkeypatch):
         LN.lesson_add("L91", "t", "r", axis="엉뚱")
     l2 = LN.lesson_set("L90", axis="손절", why="재분류")
     assert l2["axis"] == "손절" and any("축=손절" in h["why"] for h in l2["history"])
-    md = open(os.path.join(str(tmp_path), LN.REGISTRY_MD), encoding="utf-8").read()
+    reg = getattr(LN, "REGISTRY_MD", None) or next(f for f in os.listdir(str(tmp_path)) if f.endswith(".md"))   # v9 는 이름이 다르다
+    md = open(os.path.join(str(tmp_path), reg), encoding="utf-8").read()
     assert "| 축 |" in md and "| L90 | 후보 | 손절 |" in md
     assert "[후보·손절]" in LN.lessons_text()
 
@@ -107,8 +108,10 @@ def test_6_rival_block_divergent_carries_trades(tmp_path):
     live_ai = dict(pnl=-9.0, trades=[dict(entry_t="09:30", side="매수", fill=880.5, exit_t="09:44", exit_px=871.5, why="손절", pnl=-9.0, open=False)])
     b = LN.rival_block("2026-10-20", rv, live_ai, [dict(ts="2026-10-20T08:52:00", variant="live", action="plan", dir="매수")])
     assert b["axes"]["mode"] == "방향차" and b["axes"]["by"]["방향"] == pytest.approx(-9.2 - 10.0)
+    from strategy.shindong import spec
     d = {x["short"]: x for x in b["divergent"]}
-    assert d["BRKC"]["trades"][0]["side"] == "매수" and d["BRKC"]["trades"][0]["reason"] == "손절"
+    last = RV.SHORT[spec.VARIANTS[-1]]
+    assert d[last]["trades"][0]["side"] == "매수" and d[last]["trades"][0]["reason"] == "손절"
     assert b["main_trades"][0]["rule"] == "FLOW" and b["main_trades"][0]["net_pt"] == 10.0
     txt = LN._render_rival_eval(b)
-    assert "4축 귀속" in txt and "갈린 섀도 BRKC" in txt and "MAIN 거래" in txt
+    assert "4축 귀속" in txt and ("갈린 섀도 %s" % last) in txt and "MAIN 거래" in txt
