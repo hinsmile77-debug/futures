@@ -10,6 +10,12 @@
 - [ ] 장후 일일 리포트 라벨 `MAIN(v3 본안·R3 트레일 4/4)` · `V2(구 MAIN·트레일 없음)` · 4절 누적표 시작일 10-21.
 - [ ] 조건부 러너 섀도(`shindong_mireuk_runner`)가 v2 MAIN(SHADOW_V2) 기준 보유 상태로 계속 기록되는가(RUNNER_VERSION 무변경).
 
+### 700-1 [MW0601] 신동 섀도 SHADOW_ATRS — 첫날 확인 · 판정 (2026-10-21–)
+
+- [ ] 10-21 `shindong_day` 에 `SHADOW_ATRS` 행 · 일일 리포트 6변형 · 차트 패널 6개(+흐름).
+- [ ] R3 진입이 있으면 ATRS `stop_init` = 진입가 ∓ 0.25×ATR14(현행보다 넓을 때만). `notes` 에 「ATR14 없음」 이 뜨면 08:50 맥점 산출 확인.
+- [ ] 10거래일(2026-11-03경) 판정 — `scripts/shindong_scorecard.py` 「SHADOW_ATRS 판정 (700차 사전등록 · v3 재채점)」. k 변경 금지.
+
 ### 699-2 [MW0601] 신동 v3 판정 일정 (사전등록 — 기준 완화 금지)
 
 - [ ] 10거래일 차는 날(2026-11-03경): R3 중단 판정 · `SHADOW_V2` 되돌림 판정 · X4NF·X4NFA 채택 판정 — `scripts/shindong_scorecard.py`.

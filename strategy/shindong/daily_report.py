@@ -36,7 +36,8 @@ from strategy.shindong.calendar import select_flow_product
 VLABEL = {"MAIN": "MAIN(v3 본안·R3 트레일 4/4)", "SHADOW_V2": "V2(구 MAIN·트레일 없음)",
           "SHADOW_E2F2": "E2F2(흐름순응)",
           "SHADOW_X4NF": "X4NF(가까운목표·flip금지)", "SHADOW_TR44": "TR44(R3 트레일 4/4 · 종료)",
-          "SHADOW_X4NFA": "X4NFA(X4NF+깨진맥점금지)"}
+          "SHADOW_X4NFA": "X4NFA(X4NF+깨진맥점금지)",
+          "SHADOW_ATRS": "ATRS(R3 손절 0.25×ATR14)"}   # [700차]
 REASON = {"TP1": "1차", "TP2": "최종", "SL": "손절", "BE": "본전", "TIME": "시간", "TR": "트레일"}
 
 
@@ -127,7 +128,10 @@ def attribute(main: List[Dict], sh: List[Dict], variant: str, d: "E.DayFrame") -
             if abs((s["net"] or 0) - (r["net"] or 0)) >= 1:
                 ra = "/".join(REASON.get(x[2], x[2] or "보유") for x in r["legs"])
                 sa = "/".join(REASON.get(x[2], x[2] or "보유") for x in s["legs"])
-                if ra == sa:
+                if variant == "SHADOW_ATRS" and r.get("stop") != s.get("stop"):   # [700차]
+                    why = "손절 폭 차이 — 손절 %.2f → %.2f · 청산 %s → %s" % (
+                        r["stop"], s["stop"], ra, sa)
+                elif ra == sa:
                     why = "목표가 차이 — 1차 %s → %s" % (
                         ("%.2f" % r["t1"]) if r["t1"] else "-", ("%.2f" % s["t1"]) if s["t1"] else "-")
                 else:

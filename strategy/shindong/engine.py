@@ -267,10 +267,16 @@ def run_day(d: DayFrame, L, variant: str = "MAIN") -> Dict[str, Any]:
     #   SHADOW_TR44 이름은 종료됐지만 재현 테스트·과거 행 복기용으로 계속 알아듣는다(= v3 MAIN 과 같다).
     if variant == "SHADOW_TR44":
         tr44 = (S.TR44_ACT, S.TR44_DIST)
-    elif variant == "MAIN":
+    elif variant in ("MAIN", "SHADOW_ATRS"):
         tr44 = S.MAIN_TRAIL
     else:
         tr44 = None
+    # [700차] SHADOW_ATRS = v3 MAIN 그대로 + R3 초기 손절만 k×ATR14(08:50 산출) 로 넓힘(R2 무변경)
+    atrs = variant == "SHADOW_ATRS"
+    atr14 = None
+    if atrs:
+        _a = (L.get("0850") or {}).get("atr14")
+        atr14 = float(_a) if isinstance(_a, (int, float)) and _a > 0 else None
     lvl_side: Dict[float, int] = {}     # 맥점 → 그 맥점에서 마지막으로 **진입한** 방향
     dec: Dict[str, Any] = {"pm_sp": None, "bias": None, "r2": None, "r2_ts": None,
                            "notes": []}
@@ -375,6 +381,15 @@ def run_day(d: DayFrame, L, variant: str = "MAIN") -> Dict[str, Any]:
                 else min(L0 - S.LV_STOP_BUF, min(d.l[k] for k in span) - S.EXT_STOP_BUF))
         if side * (e - stop) <= 0:
             continue
+        if atrs:
+            # [700차] SHADOW_ATRS — R3 초기 손절을 진입가 ∓ k×ATR14 로 넓힌다(현행보다 좁히지 않는다).
+            #   ATR14 가 없으면 현행 손절 그대로 — 폴백 사실을 notes 에 한 번 남긴다(계측 4원칙 ④).
+            if atr14 is not None:
+                wide = e - side * S.R3_ATR_STOP_K * atr14
+                if side * (stop - wide) > 0:
+                    stop = wide
+            elif "ATR14 없음 — R3 손절 폴백(현행 맥점 손절)" not in dec["notes"]:
+                dec["notes"].append("ATR14 없음 — R3 손절 폴백(현행 맥점 손절)")
         t1, t2 = (targets_x4 if x4nf else targets)(L, ent, side, e)
         tr = run_trade(d, side, ent, stop, t1, t2, e2=e2, trail=tr44)
         tr.update(rule="R3", touch_level=L0, touch_ts=t)

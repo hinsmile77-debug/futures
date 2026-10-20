@@ -81,7 +81,14 @@ SLIP_TICK = 0.02              # 시장가 1틱 — 진입 + (손절·시간 청�
 # SHADOW_V2  = 구 MAIN(v2, 트레일 없음) 그대로 — **되돌림 기준**. 이것 없이는 v3 판정이 불가능하다.
 # SHADOW_E2F2 · SHADOW_X4NF · SHADOW_X4NFA = 규칙 무변경(트레일 없음 — v2 MAIN 위의 수정판 그대로).
 # SHADOW_TR44 = **종료**(v3 MAIN 과 같은 규칙). 엔진은 이름을 계속 알아듣는다(재현 테스트·과거 행 복기).
-VARIANTS = ("MAIN", "SHADOW_V2", "SHADOW_E2F2", "SHADOW_X4NF", "SHADOW_X4NFA")
+# SHADOW_ATRS = [2026-10-21 MW0601 700차 / 사용자 결정] v3 MAIN 그대로 + **R3 초기 손절만** 진입가 ∓ R3_ATR_STOP_K × ATR14
+#   (08:50 `premarket_levels.atr14`, 일봉 ATR14). 현행 손절(맥점 ±1.5 · 터치 극값 +0.5)보다 **좁아지지 않는다**(넓힐 때만).
+#   ATR14 없으면 현행 손절 폴백(notes 기록). R2 무변경. MAIN 값 무변경 → SPEC_VERSION 유지.
+#   근거: 방향 적중 비교(2026-10-21) — R3 손절 중앙 3.48pt 가 1분 노이즈 안이라 「15:05 방향은 맞았는데 손실」 31%
+#   (`docs/미륵이고도화3/신동2/신동보완분석_MW0601-20261020/방향적중_…md` §2-③).
+#   k = 0.25 는 「손절 ≤ R3 1차 목표 거리(중앙 8.67pt)」 구조 원칙(ATR 30–42pt → 7.5–10.4pt)에서 정했다 — 성과 격자로 고르지 않았다.
+VARIANTS = ("MAIN", "SHADOW_V2", "SHADOW_E2F2", "SHADOW_X4NF", "SHADOW_X4NFA", "SHADOW_ATRS")
+R3_ATR_STOP_K = 0.25
 TR44_ACT = 4.0
 TR44_DIST = 4.0
 MAIN_TRAIL = (TR44_ACT, TR44_DIST)          # [v3] MAIN R3 트레일 — None 이면 v2 MAIN
@@ -111,7 +118,8 @@ X4NF_JUDGE_AFTER_DAYS = 10    # 채점 시작 후 이 거래일 수가 차면 MA
 # [v3 · 699차] 판정 대상을 v3 MAIN 기준으로 다시 센다 — 모두 SCORING_START(2026-10-21)부터 · 같은 기준.
 #   SHADOW_V2 가 이 기준을 만족하면 「되돌림 후보」(v2 복귀는 새 SPEC_VERSION 개정으로만).
 LATE_SHADOW_START = {"SHADOW_V2": SCORING_START, "SHADOW_X4NF": X4NF_SCORING_START,
-                     "SHADOW_X4NFA": SCORING_START}
+                     "SHADOW_X4NFA": SCORING_START,
+                     "SHADOW_ATRS": "2026-10-21"}   # [700차] 장전 추가 · 같은 날 장 시작부터 채점(결과 보기 전 등록)
 # [598차] X4NFA 는 9/29 결과를 보고 만들었다 → 채점은 **9/30** 부터(9/29 행은 표본 제외).
 #   판정은 X4NF 와 같다: 10거래일 뒤 MAIN 대비 순손익 우위 **그리고** 최악일 개선. 둘 다 아니면 폐기.
 #   X4NF 대비 차이(= A 필터 몫)는 채점표에 **표시만** 한다 — 판정 기준이 아니다(다중비교 방지).

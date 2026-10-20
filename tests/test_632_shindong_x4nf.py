@@ -160,7 +160,8 @@ def test_tr44_preregistration():
     assert "SHADOW_TR44" not in spec.VARIANTS and "SHADOW_TR44" in spec.RETIRED_SHADOWS
     assert (spec.TR44_ACT, spec.TR44_DIST) == (4.0, 4.0) == spec.MAIN_TRAIL
     assert spec.LATE_SHADOW_START == {"SHADOW_V2": "2026-10-21", "SHADOW_X4NF": "2026-10-21",
-                                      "SHADOW_X4NFA": "2026-10-21"}   # [699차] v3 재시작
+                                      "SHADOW_X4NFA": "2026-10-21",
+                                      "SHADOW_ATRS": "2026-10-21"}   # [699차] v3 재시작 · [700차] ATRS
 
 
 def _frame(bars):

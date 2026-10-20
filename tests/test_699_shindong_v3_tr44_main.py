@@ -32,11 +32,11 @@ def _src(rel):
 def test_spec_v3_registered():
     assert spec.SPEC_VERSION == "SD-2026-10-21-v3"
     assert spec.SPEC_VERSION_PREV == spec.V2_SPEC_VERSION == "SD-2026-09-29-v2"
-    assert spec.VARIANTS == ("MAIN", "SHADOW_V2", "SHADOW_E2F2", "SHADOW_X4NF", "SHADOW_X4NFA")
+    assert spec.VARIANTS[:5] == ("MAIN", "SHADOW_V2", "SHADOW_E2F2", "SHADOW_X4NF", "SHADOW_X4NFA")   # [700차] 뒤에 ATRS
     assert spec.MAIN_TRAIL == (spec.TR44_ACT, spec.TR44_DIST) == (4.0, 4.0)     # 632차 사전등록값 그대로
     assert "SHADOW_TR44" in spec.RETIRED_SHADOWS and "SHADOW_TR44" not in spec.VARIANTS
     assert spec.SCORING_START == "2026-10-21" and spec.V2_SCORING_START == "2026-09-30"
-    assert set(spec.LATE_SHADOW_START) == {"SHADOW_V2", "SHADOW_X4NF", "SHADOW_X4NFA"}
+    assert {"SHADOW_V2", "SHADOW_X4NF", "SHADOW_X4NFA"} <= set(spec.LATE_SHADOW_START)
     assert all(v == spec.SCORING_START for v in spec.LATE_SHADOW_START.values())
     assert (spec.COMPLEMENT_SCORING_START, spec.COMPLEMENT_JUDGE_AFTER_DAYS) == ("2026-10-21", 20)
 

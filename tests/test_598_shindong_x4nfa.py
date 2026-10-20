@@ -52,7 +52,7 @@ def _levels(struct, dist_low=1080.0, dist_high=1120.0):
 
 # ── A ────────────────────────────────────────────────────────────────────
 def test_x4nfa_preregistration():
-    assert spec.VARIANTS[0] == "MAIN" and spec.VARIANTS[-1] == "SHADOW_X4NFA"
+    assert spec.VARIANTS[0] == "MAIN" and "SHADOW_X4NFA" in spec.VARIANTS   # [700차] 뒤에 SHADOW_ATRS 가 붙었다
     assert spec.LATE_SHADOW_START["SHADOW_X4NFA"] == "2026-10-21"     # 9/29 를 보고 만들었다 → [699차] v3 재시작
     assert spec.X4NFA_BASE_VARIANT == "SHADOW_X4NF"
     # [MW0601 체리픽] v9-dev 는 639차 v2 개정 위에 얹혔다 — X4NFA 추가 자체는 MAIN 값을 바꾸지 않는다
