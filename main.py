@@ -72,6 +72,8 @@ from config.settings import (
     TRADES_DB, DB_DIR, HORIZONS, HORIZON_DIR, PARTIAL_EXIT_RATIOS,
     VALIDATION_CAMPAIGN,                  # [502차 U-2] [57] te 게이트 섀도 임계 조회
     PROFIT_GUARD_SYSTEM_ONLY_PNL, PROFIT_GUARD_SYSTEM_SOURCES,  # [546차] 판정 손익 축
+    PROFIT_GUARD_ACCOUNT_AXIS, PROFIT_GUARD_JUDGE_SOURCES,     # [703차 이식] 계좌 축(주체 3종 합)
+    PROFIT_GUARD_BLOCK_VIRTUAL_PRINCIPAL,                      # [703차 이식] 가상 주체 차단 여부
     VALIDATION_CAMPAIGN,                  # [MW0602 502차 U-2] [57] te 게이트 섀도 임계 조회
     SIGNAL_DECAY_EXIT_ENABLED,
     LOSS_TIER1_ENABLED, LOSS_TIER1_TICK_ENABLED,
@@ -1273,6 +1275,13 @@ class TradingSystem:
         self._sys_daily_other_krw: float = 0.0   # 외부·수동·복구분(표시 전용)
         self._sys_daily_other_legs: int  = 0
         self._sys_daily_date:      str   = datetime.date.today().isoformat()
+        # [MW0601 703차 / MW0602 이식] L4 카운터용 **포지션 단위** 판정 축 net.
+        # 키 = entry_ts, 값 = 그 포지션의 판정 축 레그 net 합. `_pg_on_position_closed` 에서 pop.
+        # v9-dev 는 556차 G-4 레그 원장(`_sys_daily_legs_detail`)으로 묶지만 dev 엔
+        # 그 원장이 없어 같은 자리·같은 조건에서 따로 누적한다(계측 4원칙 ①).
+        self._pg_pos_net_by_ets: dict = {}
+        # [MW0601 703차] 가상 주체 미차단 안내 1회 로그 키(「날짜|레이어」). None = 아직 없음.
+        self._pg_virtual_note_key: Optional[str] = None
         # [260704 감사 P1] 지정가 우선 집행 상태 (LIMIT_ENTRY_FIRST_ENABLED=False면 미사용)
         self._pending_limit_is_active: bool = False
         self._pending_limit_order_no: str = ""
@@ -3885,6 +3894,9 @@ class TradingSystem:
                 return self._peter2_reject(date, now, it, "CB %s" % self.circuit_breaker.state)
             if self.kill_switch.is_active:      # property — `is_active()` 면 진입 전량 증발(668차 후속6)
                 return self._peter2_reject(date, now, it, "kill_switch")
+            _pg = self._pg_principal_entry_block("피터2")   # [MW0601 703차 / F-701-A 이식]
+            if _pg:
+                return self._peter2_reject(date, now, it, _pg)
             if not is_new_entry_allowed():
                 return self._peter2_reject(date, now, it, "time(신규진입 마감)")
             if is_force_exit_time():
@@ -4396,10 +4408,19 @@ class TradingSystem:
             self._sys_daily_legs = 0
             self._sys_daily_other_krw = 0.0
             self._sys_daily_other_legs = 0
+            self._pg_pos_net_by_ets = {}
         _leg_net = float(executed_metrics["net_pnl_krw"])
-        if _entry_src_this_leg in PROFIT_GUARD_SYSTEM_SOURCES:
+        # 🔴 [MW0601 703차 / MW0602 이식] 판정 축 화이트리스트 — 계좌 축이면 주체 3종
+        #   (SYSTEM_AUTO·SHINDONG·PETER2), 아니면 546차 SYSTEM_AUTO 한정. 이름은 `_sys_*`
+        #   그대로지만 **「ProfitGuard 판정 축」** 이라는 뜻이다(세션 복원·배지가 이 이름에
+        #   묶여 있어 개명하지 않는다). 무엇을 셌는지는 로그 토큰 `pnl_source` 가 말한다.
+        if _entry_src_this_leg in PROFIT_GUARD_JUDGE_SOURCES:
             self._sys_daily_net_krw += _leg_net
             self._sys_daily_legs += 1
+            _pg_ets = str(result.get("entry_ts") or "")
+            if _pg_ets:
+                self._pg_pos_net_by_ets[_pg_ets] = (
+                    self._pg_pos_net_by_ets.get(_pg_ets, 0.0) + _leg_net)
         else:
             self._sys_daily_other_krw += _leg_net
             self._sys_daily_other_legs += 1
@@ -5485,6 +5506,35 @@ class TradingSystem:
             except Exception as _e:
                 logger.warning("[ShindongVirtual] 가상 집행 기록 저장 실패: %s", _e)
 
+    def _pg_principal_entry_block(self, who: str) -> str:
+        """[MW0601 703차 / F-701-A · MW0602 이식] 외부 주체(신동·피터2) 실거래 진입의 ProfitGuard 관문.
+
+        🔴 MW0601 2026-10-21 사고의 나머지 절반이다. 미륵 관문(STEP 6)에만 ProfitGuard 가
+        있어, 신동 2연패로 L4 가 발동한 뒤에도 신동은 5포지션을 더 거래했다. 이제 세 주체가
+        **같은 인스턴스·같은 축**(계좌 = 주체 3종 실현 net 합)으로 막힌다.
+
+        - `size_mult=None` — 신동·피터는 미륵 등급 체계가 없다. L2 최소배수·L3 품질
+          요건은 생략하고 금액(L1·L2)·횟수(L3)·연패(L4)만 건다.
+        - `PROFIT_GUARD_ACCOUNT_AXIS=False` 면 종전과 같이 검사하지 않는다(롤백 경로).
+        - 실거래 경로에서만 부른다 — 가상(비선택) 주체 진입은 각자의 가상 장부로 간다.
+
+        Returns: '' = 통과, 아니면 기각 사유. ⚠ dev 신동 관문은 `None` = 통과 규약이라
+        호출부는 `if _pg: return _pg` 로만 쓴다(빈 문자열을 그대로 반환하지 않는다).
+        """
+        if not PROFIT_GUARD_ACCOUNT_AXIS:
+            return ""
+        try:
+            ok, why = self.profit_guard.is_entry_allowed(
+                float(self._sys_daily_net_krw), None,
+                pnl_source="account_principals",
+            )
+        except Exception as _pg_e:
+            # 판정 실패 시 진입을 허용하면 보호가 조용히 꺼진다 — 막고 크게 남긴다.
+            log_manager.system("[ProfitGuard] %s 관문 판정 실패 — 진입 차단: %r"
+                               % (who, _pg_e), "ERROR")
+            return "ProfitGuard(판정실패)"
+        return "" if ok else "ProfitGuard %s" % why
+
     def _shindong_entry_block_reason(self):
         """신동 실집행 진입 전 게이트 — 피터2 와 같은 집합. 통과면 None."""
         if self.position.status != "FLAT" or self._has_pending_order():
@@ -5499,6 +5549,9 @@ class TradingSystem:
             return "CB %s" % self.circuit_breaker.state
         if self.kill_switch.is_active:          # property — 668차 후속6
             return "kill_switch"
+        _pg = self._pg_principal_entry_block("신동")   # [MW0601 703차 / F-701-A 이식]
+        if _pg:
+            return _pg
         if not is_new_entry_allowed():
             return "time(신규진입 마감)"
         if is_force_exit_time():
@@ -10682,7 +10735,9 @@ class TradingSystem:
             _pg_pnl_now    = float(self._sys_daily_net_krw)
             # 원천 토큰에 축을 박는다 — **모든 차단 로그**가 어느 축으로 판정됐는지
             # 스스로 말한다(계측 4원칙 ①·④, 477차 GR-3 관례).
-            _pg_pnl_source = "engine_system_only"
+            # [MW0601 703차 이식] 계좌 축(주체 3종 합)이면 토큰도 바뀐다 — 2026-10-22 불연속.
+            _pg_pnl_source = ("account_principals" if PROFIT_GUARD_ACCOUNT_AXIS
+                              else "engine_system_only")
         # grade X 시 size_mult=0.0을 ProfitGuard에 전달하면 Tier0(min_mult=0.6)이
         # 불필요하게 발동해 중복 차단 로그가 쌓임 (ZeroDiag→grade X→size_mult=0 경로).
         # Tier4(daily_pnl>=400만 완전중단) 감지는 size_mult=1.0으로도 작동하므로 대체.
@@ -10695,7 +10750,29 @@ class TradingSystem:
             # (08-18 실측 37/160). 계측 4원칙 ①(단위 명시)·④(폴백 가시화).
             pnl_source=_pg_pnl_source,
         )
-        if not _pg_allowed and _final_grade not in ("X",):
+        # 🔴 [MW0601 703차 이식] 계좌 축 래치는 **실계좌 돈**을 지키는 것이다. 미륵이 가상
+        #   주체(다른 주체가 실거래 중이거나 실서버 자동주문 잠금)면 이 진입은 가상 장부로만
+        #   가므로 막지 않는다 — 막으면 신동이 켠 래치가 미륵 섀도 평가 표본을 잘라 주체 비교가
+        #   오염된다. 판정은 그대로 호출한다(L1 피크 갱신 · 배지가 같은 상태를 보게). 안 막은
+        #   사실은 그날 사유별 1회 남긴다(계측 4원칙 ④).
+        _pg_virtual_pass = False
+        if (not _pg_allowed and PROFIT_GUARD_ACCOUNT_AXIS
+                and not PROFIT_GUARD_BLOCK_VIRTUAL_PRINCIPAL):
+            try:
+                _pg_virtual_pass = bool(_ts_is_virtual(self, principal_mod.MIREUK))
+            except Exception as _pgv_e:
+                logger.warning("[ProfitGuard][Virtual] 주체 판정 실패 — 차단 적용: %s", _pgv_e)
+                _pg_virtual_pass = False
+            if _pg_virtual_pass:
+                _pgv_key = "%s|%s" % (datetime.date.today().isoformat(),
+                                      str(_pg_reason).split("]")[0])
+                if _pgv_key != self._pg_virtual_note_key:
+                    self._pg_virtual_note_key = _pgv_key
+                    log_manager.signal(
+                        "[ProfitGuard][Virtual] 계좌 래치 %s — 미륵은 가상 주체(선택=%s)라 "
+                        "가상 진입은 막지 않는다(PROFIT_GUARD_BLOCK_VIRTUAL_PRINCIPAL=False)"
+                        % (_pg_reason, principal_mod.label(self._principal_state["principal"])))
+        if not _pg_allowed and not _pg_virtual_pass and _final_grade not in ("X",):
             _final_grade = "X"
             _grade_x_source = _grade_x_source or "ProfitGuard 진입 차단 (%s)" % _pg_reason
             log_manager.signal(f"[ProfitGuard] 진입 차단: {_pg_reason}")
@@ -13175,9 +13252,9 @@ class TradingSystem:
                 logger.debug("[EnsembleGater] record_outcome 오류: %s", _ge)
             self._last_gate_signals = {}
             self._last_gate_direction = 0
-        # 수익 보존 가드 — 체결 후 연속 손실 카운터 업데이트
-        _daily_after = self.position.daily_stats()["pnl_krw"]
-        self.profit_guard.on_trade_close(result["pnl_krw"], _daily_after)
+        # 수익 보존 가드 — 연속 손실 카운터(L4)·피크(L1) 갱신은 아래
+        # `_record_trade_result()` **뒤**로 옮겼다([MW0601 703차 이식] `_pg_on_position_closed`).
+        # 종전 자리는 마지막 레그가 판정 축 누적기에 더해지기 **전**이라 축을 맞출 수 없었다.
 
         # 쿨다운 설정 — Cybos 비동기 경로(_ts_on_exit_fill)에서는 이미 호출되지 않으므로
         # 여기서 단일 진입점으로 처리 (레거시 동기 경로 포함 모두 통합)
@@ -13218,7 +13295,58 @@ class TradingSystem:
         self.dashboard.set_ui_ready_mode()
 
         self._record_trade_result(result)
+        self._pg_on_position_closed(result)
         self._refresh_pnl_history()
+
+    def _pg_on_position_closed(self, result: dict) -> None:
+        """[MW0601 703차 / F-701-A · MW0602 이식] 포지션 완전 청산 → L4 카운터·L1 피크 갱신.
+
+        🔴 **판정과 같은 축**으로 센다. 종전은 판정(L1–L3)이 SYSTEM_AUTO 한정 누적기를
+        보는데 이 카운터만 `position.daily_stats()`(계좌 전체 — 수동 포함)와 마지막 주문의
+        `pnl_krw` 를 봤다.
+
+        - 판정 축 밖 출처(수동·복구·유령)의 청산은 **세지 않는다** — 카운터를 올리지도,
+          리셋하지도 않는다.
+        - 손익 부호는 **포지션 단위 실현 net**(같은 `entry_ts` 레그 합, 계측 4원칙 ①)이다.
+          종전의 마지막 주문 손익은 TP1 이익 뒤 본전 근처 손절 레그를 「손실」로 셌다.
+          dev 는 레그 원장 대신 `_pg_pos_net_by_ets` 누적기를 쓴다.
+        - 반드시 `_record_trade_result()` **뒤**에 부른다.
+        """
+        try:
+            _src = result.get("pos_entry_src")
+            _ets = str(result.get("entry_ts") or "")
+            _has = bool(_ets) and _ets in self._pg_pos_net_by_ets
+            if _src is not None:
+                _in_axis = _src in PROFIT_GUARD_JUDGE_SOURCES
+            else:
+                # 출처 미상(구버전 result) — 누적기가 이 포지션 레그를 받았는지로 판정한다.
+                _in_axis = _has
+                logger.warning("[ProfitGuard] 청산 result 에 pos_entry_src 없음 — 누적기 "
+                               "매칭으로 축 판정(%s, entry_ts=%s)", _in_axis, _ets)
+            if not _in_axis:
+                self._pg_pos_net_by_ets.pop(_ets, None)
+                log_manager.signal(
+                    "[ProfitGuard] 판정 축 밖 청산 — L4/L1 갱신 생략 (출처=%s)" % (_src,))
+                return
+            if _has:
+                _pos_net = float(self._pg_pos_net_by_ets.pop(_ets))
+                _pos_src = "pos_net"
+            else:
+                # 매칭 실패 — 폴백 사실을 남긴다(계측 4원칙 ④).
+                _pos_net = float(result.get("pnl_krw") or 0.0)
+                _pos_src = "fallback_result_pnl"
+                logger.warning("[ProfitGuard] 포지션 net 매칭 실패(entry_ts=%s) — "
+                               "result.pnl_krw 로 L4 부호 판정", _ets)
+            _daily = float(self._sys_daily_net_krw)
+            self.profit_guard.on_trade_close(_pos_net, _daily)
+            # ⚠ `%` 포매팅은 천단위 콤마를 지원하지 않는다(ValueError) — format 을 쓴다.
+            log_manager.signal(
+                "[ProfitGuard] 포지션 청산 반영 출처={} 포지션net={:+,.0f}원({}) "
+                "판정축 당일={:+,.0f}원 L4연패={}".format(
+                    _src, _pos_net, _pos_src, _daily, self.profit_guard._pcb.consec_loss))
+        except Exception as _pgc_e:
+            # 카운터 갱신 실패를 조용히 넘기면 L4 가 영구 침묵한다 — 크게 남긴다.
+            log_manager.system("[ProfitGuard] 포지션 청산 반영 실패: %r" % (_pgc_e,), "ERROR")
 
     def activate_kill_switch(self, reason: str = "수동 발동") -> None:
         """Ctrl+Alt+K 단축키 또는 외부 호출용."""
@@ -14365,6 +14493,7 @@ class TradingSystem:
         self._sys_daily_other_krw = 0.0
         self._sys_daily_other_legs = 0
         self._sys_daily_date = datetime.date.today().isoformat()
+        self._pg_pos_net_by_ets = {}
         self.online_learner.reset_daily()
         # [311차 후속 B안] 극단성 보정기 — GBM 배치재학습과 같은 리듬(일 1회)으로 재적합.
         # reset_daily 없음 — 버퍼(BATCH_SIZE=5000)는 날짜 경계와 무관하게 계속 누적.
@@ -20936,6 +21065,25 @@ def _ts_vbook_on_price(self) -> None:
     _ts_vbook_dispatch(self, legs)
 
 
+def _ts_pg_count_entry(self, entry_source: str) -> None:
+    """[MW0601 703차 / MW0602 이식] 실주문으로 나간 진입을 ProfitGuard L3(오후 진입 횟수)에 센다.
+
+    🔴 **이 호출은 이식 전까지 어디에도 없었다**(dev 도 `profit_guard.on_entry(` 호출부 0곳).
+    그래서 L3 「오후 최대 N회」는 도입 이래 한 번도 센 적이 없고(카운터 영구 0), L3 는 품질
+    요건(size_mult) 하나로만 동작했다. 계측 4원칙 ④ 계열(죽은 카운터).
+
+    - 판정 축 출처(주체 3종)만 센다 — 수동·복구 진입은 이 장치의 관할 밖이다.
+    - 가상 주체 진입·실서버 자동주문 잠금은 여기까지 오지 않는다(앞에서 섀도로 돌린다).
+    - 오후(cutoff 이후) 여부는 `_AfternoonMode.on_entry()` 가 스스로 거른다.
+    """
+    try:
+        if entry_source not in PROFIT_GUARD_JUDGE_SOURCES:
+            return
+        self.profit_guard.on_entry(datetime.datetime.now())
+    except Exception as _pge_e:
+        log_manager.system("[ProfitGuard] L3 진입 카운트 실패: %r" % (_pge_e,), "WARNING")
+
+
 def _ts_execute_entry(
     self,
     direction: str,
@@ -21161,6 +21309,7 @@ def _ts_execute_entry(
     # None으로 변경되었을 경우 방어: 큐에 쌓인 Chejan이 이미 체결 처리를 완료했을 수 있음.
     if self._pending_order is None:
         logger.warning("[Entry] _pending_order가 BlockRequest 완료 후 None — Chejan 선행 체결 처리로 추정, 진입 완료로 간주")
+        _ts_pg_count_entry(self, entry_source)
         return
     if ret != 0:
         # -99는 BlockRequest 타임아웃. CB API지연 트리거 발동 후 롤백.
@@ -21191,6 +21340,10 @@ def _ts_execute_entry(
             )
             self._clear_pending_order()  # pending 롤백
             return
+
+    # [MW0601 703차 이식] 여기 도달 = 주문 접수(ret==0) 또는 오류코드이나 이미 체결.
+    #   이 진입을 ProfitGuard L3(오후 진입 횟수)에 센다.
+    _ts_pg_count_entry(self, entry_source)
 
     # [260704 감사 P1] 지정가 우선 집행 — 주문은 접수됐지만 즉시 체결이 보장되지
     # 않으므로 낙관적 오픈을 건너뛴다. 실제 포지션 오픈은 Chejan 체결 이벤트로만

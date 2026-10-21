@@ -50089,6 +50089,41 @@ AI 는 10/16 부터 고착을 적었으나 「raw_candles staleness·적재 지�
 - ⚠ **증거금 상한(`[MarginCap]`)이 2보다 작게 자르면 실체결은 1계약일 수 있다** — 실거래 계좌 1,500만원 기준. 첫 진입 로그 `[ShindongLive] 진입 … 2계약` 뒤 `[MarginCap]` 유무로 확인.
 - 회귀 가드: `tests/test_616_trade_principal.py` 의 `SHINDONG_LIVE_QTY == 2` 로 갱신(20 passed).
 
+## 2026-10-21 (MW0602 643차 — 일일 점검: 장전)
+
+- **증상/관측**: 장전 점검 — 브랜치 `dev`(정상) · HEAD `fc880ed` · 미커밋 73건(전부 문서/데이터, 코드 無) · 당일 커밋 0건(이 세션 기준, 세션 시작 전 08:37 `fc880ed` 642차 커밋 1건 존재) · `.git/index.lock` 없음(시작·렌더 2점 확인) · 설정 불변식 26행 전부 `일치` · 전일(10/20) EOD 재학습 성공(`eod_retrain_ok_date=2026-10-20`, `p8_last_success_date=2026-10-20`) → 08:55 `[PreRetrain]` 스킵 정상 · 레짐 확정 08:58:15 NEUTRAL(VIX 18.4) — 과거 패턴(~08:58:19)과 일치 · CORE 축퇴 08:45:12 3/6(above_vwap·cvd_divergence·opt_gex_bn) → 08:47:57부터 0/6, 개장 전 해소 확인 · 옵션체인 재수집은 09:01:15 완료(과거 10/16·19·20과 동일 타이밍 — 정상 패턴) · py37_32 32-bit Python 기동 확인(launcher 로그) · `OPT50029`(Cybos 경로 판정불가, 기존 NEXT_TODO 18313행대 등록 사안 — 재등록 안 함) 대체판정 `[BAR-CLOSE][CYBOS]` 매분 정상·`OPT10080` 0건으로 확인됨.
+- **원인**: 신규 결함 없음. CRITICAL `[Capital]` 로그 2건(사이징 목표자본 vs 실잔고 불일치 경고)은 2026-10-13 실거래 전환 결정(`SIZING_TARGET_CAPITAL_ENABLED=True` 유지)의 알려진 파생 — 10/14 이후 매일 재현 확인(함정① 체크, 신규 아님). 고착 지표 4종(`CORE안전`·`GuardFair_유효`·`전략판정`·`launcher_guard`)도 전부 기존 등록 채널(가장 최근 10/12 614차 후속3 `decide=clear` 수정 이후 `launcher_guard` 무발화=정상값으로 재확인된 것)이라 재제안하지 않음.
+- **결정**: P0 0건·P1 0건. 신규 P2 1건(1-1 — 증거 수집기 `collect_evidence.py:date_tokens()`의 `md`(MMDD 4자리) 토큰이 `discover_files()`에서 경계 검사 없이 부분일치돼, 7월 재학습 로그(`retrain_intraday_20260707_102159.log`·`...0715...`)의 타임스탬프 `102159`가 오늘(10/21) 토큰 `"1021"`과 우연히 겹쳐 "오늘 파일"로 오분류됨. 판정에는 영향 없었으나 §1/§6을 불필요하게 늘리는 구조적 오탐 — 매달 비슷한 날짜마다 재발 가능) 등록 + F-1(경계 조건 보강, 계획만) + G-1(mtime 대조 자가점검 내장 제안) 수립. 코드 변경 없음(장전 원칙).
+- **Why**: 장전은 "오늘 거래할 자격이 되는가"만 보는 국면이라 코드 결함 외의 사소한 도구 노이즈까지 전부 Fix로 밀어넣을 필요는 없지만, §0 함정①(판정≠결정) 원칙에 따라 grep으로 기존 등록 여부를 먼저 확인했고 신규임을 확인한 뒤 가장 가벼운 형태(P2, 계획만)로 기록했다.
+- **How to apply**: 장후 세션(또는 다음 평일 17:23 자동조치, C등급 제한 내에서 가능하면)에서 `collect_evidence.py:discover_files()`에 날짜 경계 검사(정규식 `\d` 경계 또는 mtime ±1일 필터) 추가 + 회귀 테스트(`20261021_SYSTEM.log` 등 정상 매칭 사례가 계속 잡히는지 확인).
+- **검증**: 라이브 미검증(도구 코드 미변경). 다음 판정 시점: F-1 적용 후 다음 거래일 장전에서 같은 오탐이 사라졌는지 확인.
+- 이월 처리: 장전이 하루의 첫 국면이라 이월 대상 없음 — 미처분 0건. 다음 국면(장중)은 1-1(P2)을 이월 처리표에서 먼저 처분할 것.
+
+## 2026-10-21 (MW0602 643차 후속 — 일일 점검: 장후, 종합)
+
+- 증상: 장전·장중 지속 이상점 2건(1-1 수집기 날짜토큰 오매칭, 1-2 신동2 conda 폴링 오류)을 장후 종합에서 재확인. 둘 다 실거래·절대원칙과 무관.
+- 원인: 1-1은 `collect_evidence.py:date_tokens()`의 MMDD 4자리 부분일치 구조적 결함(함정① grep 확인 — 신규 아님, 643차 장전 최초 등록). 1-2는 `scripts/shindong2_live.py poll`의 `conda run` 서브프로세스 간헐 실패(원인 미규명, 3거래일 연속 재발로 승격기준 충족).
+- 결정: 둘 다 계획만 수립(F-1 경계조건 보강, F-2 원인조사)하고 이번 세션은 코드 변경하지 않음(예약 점검 세션은 커밋·배포하지 않는다, SKILL.md §6).
+- Why: 장후 예약 점검의 목적은 보고이며, 구현 지시가 없는 한 적용하지 않는다. 저위험이지만 "지시 없이 임의 수정"은 신뢰 훼손 위험이 더 크다.
+- How to apply: F-1은 `.claude/skills/mireuk-daily-check/scripts/collect_evidence.py: discover_files()`에 경계검사(`\d` 비인접) 또는 mtime ±1일 필터 추가. F-2는 `logs/shindong2_202610{19,20,21}.log` 3일치 교차대조부터.
+- 검증: 당일 거래 결과 — 3포지션 3승(100%), net +1,914,839원(gross +1,925,000, 수수료 10,161, `source=engine` 폴백 — 브로커net 미집계). EOD(6/6 호라이즌)·P8 둘 다 성공(`p8_last_success_date=2026-10-21`). 매분 루프 09:00~15:10 공백 0건(371/371분). 절대원칙 6종 전부 준수. 라이브 검증 불필요(관측 보고일 뿐 코드 변경 없음).
+- 제4부 승패 사후검증: 신동(ShindongLive) 실거래 3건(09:15·10:01·10:44 LONG) 전부 승 — 주요인 A(방향예측 적중), 부요인 C(TP1보호 트레일)·B(타이밍)·E(슬리피지, 결과 불변). 3원대사: 로그3=trades.db(SHINDONG)3 일치, `ensemble_decisions.entry_executed=1`(3건)은 신동과 무관한 별도 모집단(13:02/13:06/13:08 가상장부 SHORT 판단)임을 확인·분리 기록 — 단순 "3=3=3 일치"로 적으면 오독.
+- 제5부: n=3·관측1일로 R-* 미채택. H-1(신동 신호 레짐 의존성) 가설만 사전등록 — 20거래일 누적 후 재판정.
+- 313차: 10/16(-889,339, 패1)·10/19(+848,047)·10/20(+982,107)·10/21(+1,914,839, 오늘) 부호 교차 확인 — ⑤ 부호 일관성 미충족, 확정 결론 금지 유지.
+
+근거: `docs/정기점검/매일점검/MW0602-20261021-점검리포트.md`(장후 절, 하루 종합), `docs/정기점검/매일점검/evidence_MW0602-20261021_post.md`.
+
+## 2026-10-21 (MW0602 643차 후속 — 장후 자동조치: F-1·G-1 구현 · `b2792d1`)
+
+- **증상**: 10-21 장전 점검 이상점 1-1 — 증거 수집기 §1 인벤토리가 `logs/retrain_intraday_20260707_102159.log`·`..._20260715_102159.log` 를 「오늘 파일」로 묶었다.
+- **원인**: `discover_files()` 가 날짜 토큰을 맨 부분일치(`tok in fn`)로 봤다. `md`(MMDD) `1021` 이 시각 `102159` 안에 들어 있다. 40일 역산 결과 **거의 매일 1~3건** 같은 오탐(전부 `retrain_*`의 시각 토큰)이 있었다.
+- **결정**: (F-1) 토큰을 숫자열 경계 `(?<!\d)tok(?!\d)` 에서만 인정하고 그룹키 치환도 같은 정규식으로. (G-1) 판정일보다 2일 이상 **먼저** 기록된 토큰 일치 파일을 인벤토리 아래 각주로 표기 — 표시만, 그룹에서 빼지 않음.
+- **Why**: 리포트 계획대로 `abs()` 차이로 재면 peter_feed·option_hts 처럼 날짜를 파일명에 박아 나중에 재생성하는 정상 파일이 매일 3~7건씩 걸려 각주가 잡음이 된다. 오탐의 지문은 「판정일 이전에 이미 있던 파일」이다.
+- **How to apply**: 수집기에 새 날짜 토큰 키를 추가할 때도 `date_token_regexes()` 를 거칠 것. `_`로 둘러싼 4자리 `md` 오탐(`261012_1007_D.xls`)은 이 경계로 못 막는다 — NEXT_TODO 관찰 항목.
+- **검증**: 신구 `discover_files()` 40일 대조 — 탈락은 전부 오탐, 정당 파일 손실 0 · 추가 0. F-1 뒤 G-1 의심 0건(백스톱). `tests/test_643_collector_date_token_boundary.py` 6건 + 수집기 기존 테스트 합 51 passed(base pytest), py37_32 직접 실행 PASS. `--discover` 스모크 10-21 인벤토리 37→35.
+- 미처리: 사용자 조치 1(미커밋 정리)·4(621-O2 응답)는 사용자 몫, 3(F-2 conda 조사)은 조사 항목이라 이월. 고도화 H-1은 6칸 중 기대효과 「산출 불가」·표본 미달로 C등급(구현 안 함).
+
+
 ## 2026-10-22 (MW0602 644차 — F-10 이식: `tp1_reached` 라벨 축 분리(`tp1_protect_armed`), 하드스톱 분할체결 `보호트레일` 오분류 해소) — ✅ 구현 · 라이브 검증 대기 · 미커밋
 
 - **출처(체리픽 아님 — 수동 이식)**: 원 커밋 **`7a4f6387`** · 원 PC **MW0601**(`v9-dev` 702차) · 이식메모 `d76d130`(`docs/정기점검/MW0601_to_MW0602_F10_이식메모_20261022.md`, v9-dev 에만 있음). 가져온 이유: 같은 결함이 dev 에서 **실측으로 발현**했다(아래). v9-dev 는 `exit_stage` 축을 고쳤고 dev 에는 그 축이 없어 `tp1_reached`/`classify_exit()` 축으로 옮겨 썼다.
@@ -50099,3 +50134,20 @@ AI 는 10/16 부터 고착을 적었으나 「raw_candles staleness·적재 지�
 - **불연속 마커**: `strategy_registry.db` `strategy_events` **id=125** `METRIC_REDEFINITION`(2026-10-22 06:44). 소급 재분류 안 함 — **2026-10-22 이전 `tp1_reached`/`exit_trigger='보호트레일'` 비율과 직접 비교 금지.** (v9-dev id=124 는 별개 DB)
 - **검증**: `tests/test_507_tp1_reached_multifill.py` 15 passed — 구 라벨 로직으로 되돌리면 **7건 실패**(결함 고정 확인). `test_465` 정적 검사 갱신(출처 문자열). 관련 16개 파일 143 passed / 2 failed — 실패 2건(`test_626_shindong` 리플레이 손익 재현 09-21·09-23)은 **변경 전에도 동일 실패**(무관). py37_32 import 스모크 OK.
 - **How to apply**: 소비처(`stop_overshoot_shadow.py`·캠페인 리포트·`collect_evidence.py`)는 컬럼만 읽으므로 무수정. 진짜 손절 표본이 **늘어나는 방향**이 정상이다(오분류로 빠졌던 손절 복귀) — 손절 증가로 읽지 말 것.
+
+## 2026-10-22 (MW0602 645차 — F-701-A 이식: ProfitGuard 계좌 축(주체 3종 실현 net 합) · 신동·피터2 관문 배선 · L4 축 통일 · L3 카운터 부활) — ✅ 구현 · 라이브 검증 대기
+
+- **출처(체리픽 아님 — 수동 이식)**: 원 커밋 `87ee17c`(MW0601 703차, `origin/v9-dev`) · 원 PC MW0601 · 가져온 이유: 이식 메모(`docs/정기점검/MW0601_to_MW0602_F701A_이식메모_20261022.md`)가 지적한 구멍 3개가 `dev` 에도 **그대로** 있었고, MW0602 는 2026-10-12 부터 **신동이 실거래 주체**(`data/trade_principal.json` principal=SHINDONG, 2계약)라 MW0601 10-21 사고(신동 2연패로 L4 발동 → 신동이 5포지션 추가 거래)가 그대로 재현될 수 있는 상태였다. 코드 구조 차이로 `git cherry-pick` 대신 손으로 옮겼다.
+- **증상(dev 확인)**: ① `_shindong_entry_block_reason()`·`_peter2_execute()` 에 ProfitGuard 호출 없음 ② L1–L3 판정은 SYSTEM_AUTO 한정 누적기인데 L4 는 `_post_exit` 에서 `position.daily_stats()`(계좌 전체·수동 포함)와 **마지막 주문 손익**으로 셈 — 축 불일치 ③ `profit_guard.on_entry(` 호출부 0곳 — L3 「오후 최대 N회」 카운터가 영구 0.
+- **결정/구현**(v9-dev 와 같은 축·같은 동작, dev 차이만 조정):
+  - `config/settings.py`: `PROFIT_GUARD_ACCOUNT_AXIS=True` · `PROFIT_GUARD_ACCOUNT_SOURCES`(SYSTEM_AUTO+SHINDONG+PETER2) · `PROFIT_GUARD_JUDGE_SOURCES` · `PROFIT_GUARD_BLOCK_VIRTUAL_PRINCIPAL=False`. **`PROFIT_GUARD_SYSTEM_SOURCES` 무변경**(시스템 성과 소비처 공유).
+  - `main.py`: 누적기 `in PROFIT_GUARD_JUDGE_SOURCES` · `_pg_principal_entry_block(who)`(size_mult=None, 판정 예외 시 차단)를 신동·피터2 실거래 관문에 배선 · 판정 토큰 `account_principals` · 미륵이 가상 주체면 계좌 래치가 미륵 가상 진입은 막지 않음(`[ProfitGuard][Virtual]` 1회 로그) · `_post_exit` 의 `on_trade_close` 제거 → `_record_trade_result()` **뒤** `_pg_on_position_closed()` · `_ts_pg_count_entry()` 를 `_ts_execute_entry` 주문 접수 2곳에 배선.
+  - `strategy/profit_guard.py`: `size_mult=None` 가드(L2 최소배수·L3 품질) · `on_trade_close` 에서 L1 피크 갱신 · `_PNL_SRC_LABEL["account_principals"]`.
+  - 세션 복원·패널·배지 툴팁 같은 화이트리스트.
+- **dev 차이(이식 메모 §2 대응)**: ⓐ dev 에는 556차 G-4 레그 원장(`_sys_daily_legs_detail`·`system_leg_details`)이 없다 → L4 포지션 net 은 신설 누적기 `_pg_pos_net_by_ets`(entry_ts → 판정 축 레그 net 합; `_record_trade_result` 판정 축 분기 안에서 누적, 청산 시 pop, 날짜 전환·`daily_close` 리셋, 세션 복원 시 당일 행으로 재구성). 매칭 실패 시 `result.pnl_krw` 폴백 + WARNING(계측 4원칙 ④). ⓑ `pnl_contributors` 인자 없이 호출(dev ProfitGuard 미지원). ⓒ dev 신동 관문은 `None`=통과 규약 — 헬퍼는 `""` 를 돌려주고 호출부는 `if _pg: return _pg` 로만 쓴다. ⓓ L2 래치 스냅샷 `size_mult:.2f` 수정은 dev 에 스냅샷 자체가 없어 해당 없음. ⓔ `_ts_is_virtual()` 은 dev 에서 `REAL_TRADING_ARMED` 잠금도 가상으로 본다 — 잠금이면 돈이 안 나가므로 「막지 않는다」 의미와 일치.
+- 🔴 **[별도 결정 — 사용자 2026-10-22] 임계도 703차 값으로 재설정.** `data/profit_guard_prefs.json`(PC 로컬, git 미추적) 종전값 L1 30만/10% · L2 50만 · L3 13시/30만/2회 · L4 30만/2연패 → **L1 150만/35% · L2 400만(Tier1~4 전부) · L3 13시/200만/2회 · L4 100만/3연패**(`afternoon_min_rr` 2.5 무변경). 백업 `data/profit_guard_prefs.json.bak_pre645`. 축 변경과 임계 변경은 별개 결정이다(313차 원칙) — 사후 효과 분리 시 두 줄을 나눠 읽을 것. ⚠ 둘 다 같은 날(2026-10-22) 적용이라 라이브 효과는 실측으로 분리할 수 없다 — 아래 재생 수치가 유일한 분리 근거다.
+  - ⚠ **영향 실측(사후 재생, 판정 근거 아님)**: 2026-10-13~21 MW0602 주체 3종 실거래 21포지션(`trades.db`, entry_ts 기준 포지션 net)을 새 축으로 재생 — **종전 임계: 7일 중 5일이 첫 신동 수익 직후 09:21~10:16 `L2-Tier4`(50만) 래치로 그날 종료**, 보존 +2,352,356원 / 전체 +6,155,123원(−3,802,767). **703차 임계(L1 150만/35% · L2 400만 · L3 200만/2회 · L4 100만/3연패): 끊긴 날 0일**, +6,155,123원. 종전 임계를 그대로 두면 신동 수익 50만 도달 시 그날 신동·미륵 진입이 모두 멈추는 구조였다 — 이것이 임계 동반 재설정의 근거다. ⚠ 703차 값은 **보호 완화 방향**(L2 정지선 8배)이다 — 실계좌 1,500만원 기준 하루 최대 보존 손실 폭이 커진다.
+- **불연속**: ProfitGuard 판정 손익 시계열 토큰 `engine_system_only` → `account_principals`(2026-10-22). L4 연패 기준도 마지막 주문 손익 → 포지션 net. `strategy_events` 마커는 미발행(사용자 판단).
+- **검증**: `tests/test_703_profit_guard_account_axis.py` 20 passed(v9-dev 19건을 dev 원천에 맞게 수정 + 누적기 배치 가드 1건 추가). 관련 21파일 258 passed / 1 failed — 실패 `test_497::test_prev_broker_net_fetch`(net==gross, DB 데이터 의존)는 **변경 전에도 동일 실패**(stash 대조). py37_32 컴파일·settings import OK.
+- ⚠ 작업 사고 1건: 영향 재생 스크립트가 ProfitGuard 의 `log_manager` 를 타 `logs/20261022_*.log`(앱 미기동 상태, 08:10)를 생성·9줄 기록 — 내용 전부가 그 스크립트 출력임을 확인하고 11개 파일 삭제. 상태 파일 기록 없음. ([[feedback_isolate_stateful_verification]] 계열)
+- **라이브 검증 대기**: NEXT_TODO 645.

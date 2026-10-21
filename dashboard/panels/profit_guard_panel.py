@@ -925,10 +925,13 @@ class ProfitGuardPanel(QWidget):
                 result.append(dict(r) if not isinstance(r, dict) else r)
             except Exception:
                 pass
+        # [MW0601 703차 이식] 라이브 게이트와 **같은 화이트리스트**를 쓴다 — 계좌 축이면
+        #   주체 3종(SYSTEM_AUTO·SHINDONG·PETER2). 시스템 한정 사본을 따로 두면 패널의
+        #   시뮬레이션·당일손익이 게이트와 갈라진다(546차가 막은 바로 그 어긋남).
         try:
             from config.settings import (
                 PROFIT_GUARD_SYSTEM_ONLY_PNL as _ONLY,
-                PROFIT_GUARD_SYSTEM_SOURCES as _SRC,
+                PROFIT_GUARD_JUDGE_SOURCES as _SRC,
             )
         except Exception:
             return result

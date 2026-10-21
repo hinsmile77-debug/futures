@@ -6721,6 +6721,53 @@ PROFIT_GUARD_SYSTEM_ONLY_PNL = True
 #     NULL                 311차 이전 미기록 구간 — **미측정이지 시스템진입이 아니다**
 PROFIT_GUARD_SYSTEM_SOURCES = ("SYSTEM_AUTO",)
 
+# ── 🔴 [MW0601 703차 / F-701-A · MW0602 이식 2026-10-22] ProfitGuard 판정 축 =
+#      **계좌 전체 = 거래주체 3종(미륵·신동·피터)의 실거래 실현 net 합** ───────────
+#
+# **계기(MW0601 2026-10-21) — 신동이 켠 래치가 신동을 막지 못했다.** 신동 포지션 2연패
+# (11:33 −196,412 · 11:38 −81,408원)로 11:38:57 `L4-ProfitCB` 가 발동했는데, 차단은
+# **미륵 진입 관문에만** 걸려 있어 신동은 그 뒤 5포지션을 더 거래했다. 원인 두 가지:
+#   ① 신동·피터 진입 관문(`_shindong_entry_block_reason` · `_peter2_execute`)에
+#      ProfitGuard 호출이 **없었다**.
+#   ② 판정 축(L1·L2·L3)은 SYSTEM_AUTO 한정인데 L4 카운터(`on_trade_close`)는
+#      **계좌 전체 포지션 손익**·마지막 주문 손익을 봐서 축이 어긋났다.
+# MW0602 `dev` 에도 같은 구멍 3개(①·②·L3 카운터 호출부 0곳)가 그대로 있었다
+# (이식 메모 `docs/정기점검/MW0601_to_MW0602_F701A_이식메모_20261022.md`).
+#
+# **결정**: 수익 보존은 판단 주체가 아니라 **실계좌의 돈**을 지키는 장치다. 판정·L4
+#   카운터·L3 횟수·배지·패널이 전부 아래 3개 출처의 실현 net 합 한 축을 본다.
+#
+# **546차 결정은 유지된다** — 수동(OPERATOR_MANUAL)·복구·유령·NULL 은 **여전히 제외**다.
+#
+# ⚠ `PROFIT_GUARD_SYSTEM_SOURCES` 는 **바꾸지 않는다** — 「시스템 성과」 소비처
+#   (손익 추이 패널·`db_utils` 기본값 등)가 같이 쓴다. ProfitGuard 는
+#   `PROFIT_GUARD_JUDGE_SOURCES` 만 본다.
+# ⚠ **불연속이다.** ProfitGuard 판정 손익 시계열·L4 연패 기준(마지막 주문 손익 →
+#   포지션 net)이 MW0602 는 2026-10-22 에 끊긴다. 로그 토큰
+#   `src=account(net·주체3종 실거래)` 로 세대를 구분한다.
+# ⚠ 임계값(`data/profit_guard_prefs.json`, PC 로컬)은 **이 이식에서 바꾸지 않았다** —
+#   축 변경과 임계 변경은 서로 다른 결정이다(313차 원칙).
+#
+# False 로 되돌리면 546차 축(SYSTEM_AUTO 한정)과 종전 관문(신동·피터 검사 없음)으로
+# 즉시 복귀한다.
+PROFIT_GUARD_ACCOUNT_AXIS = True
+
+from config.constants import (  # noqa: E402
+    SHINDONG_ENTRY_SOURCE as _PG_SHINDONG_SRC,
+    PETER2_ENTRY_SOURCE as _PG_PETER2_SRC,
+)
+# 거래주체 3종의 진입 출처. `strategy/runtime/trade_principal.py:SOURCE_PRINCIPAL` 의 키와
+# **같은 집합이어야 한다**(tests/test_703_profit_guard_account_axis.py 가 고정).
+PROFIT_GUARD_ACCOUNT_SOURCES = tuple(PROFIT_GUARD_SYSTEM_SOURCES) + (_PG_SHINDONG_SRC, _PG_PETER2_SRC)
+PROFIT_GUARD_JUDGE_SOURCES = (PROFIT_GUARD_ACCOUNT_SOURCES if PROFIT_GUARD_ACCOUNT_AXIS
+                              else PROFIT_GUARD_SYSTEM_SOURCES)
+
+# 실주문이 아닌 **가상 주체**(선택되지 않은 주체 · 실서버 자동주문 잠금) 의 진입도
+# ProfitGuard 로 막을 것인가. 기본 False — 이 장치는 실계좌 돈을 지키는 것이고,
+# 가상 장부는 돈이 걸리지 않는다. 막으면 신동 래치가 미륵 가상 장부(섀도 평가 표본)를
+# 잘라 주체 간 비교가 오염된다. 막지 않은 사실은 `[ProfitGuard][Virtual]` 로그로 남긴다.
+PROFIT_GUARD_BLOCK_VIRTUAL_PRINCIPAL = False
+
 # ── [MW0601 419차 / P0] cancel_stress 정규화 ceiling 재보정 ────────────────────
 # 380차가 cancel_churn_ratio(신규 피처)의 ceiling을 0.08로 잠정 설정하면서
 # features/technical/toxicity.py 주석에 "과거 데이터로 재현검증 불가한 잠정치 —
