@@ -150,6 +150,13 @@ def run_campaign_steps(logger, base_dir: str) -> None:
     ]
     if datetime.date.today().isocalendar()[1] % 2 == 0:
         steps.append(("MAE/MFE 분석", ["analyze_mae_mfe.py"]))
+    # [MW0601 701차] 연구용 장후 사본 — ensemble_decisions 를 삭제 없는 아카이브
+    # (data/research/research_archive.db)로 증분 복사한다. 원천을 읽기만 하므로 순서에
+    # 민감하지 않지만 **월간 정리 앞**에 둔다: 정리가 DB 행을 지우는 쪽으로 바뀌어도
+    # 사본이 먼저 떠지게. 증분이라 평소 수 초(첫 실행 111일 39,816행 5초, 218MB).
+    # 주 1회로 충분한 이유: 원천 DB 행 삭제는 190일 하한 + --allow-db-prune 명시 시에만
+    # 일어난다(monthly_cleanup.py). 디스크 사고 대비 손실 상한은 1주일치다.
+    steps.append(("연구용 장후 사본", ["research_snapshot.py"]))
     # [MW0601 479차] 월간 로그 정리(압축 + 보관 컷) — 매월 첫 캠페인 실행일 1회.
     # **마지막 스텝**에 둔다: 정리 IO(첫 실행 시 수 GB 압축)가 리포트·재학습
     # 체인을 지연시키지 않게. 로그를 소급 파싱하는 스텝([49] 등)은 TRADE만 읽고
