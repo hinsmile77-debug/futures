@@ -1100,6 +1100,20 @@ def date_tokens(day):
     }
 
 
+# [MW0602 643차 후속 F-1] 날짜 토큰은 숫자열 경계에서만 인정한다.
+# 맨 부분일치였을 때 `retrain_intraday_20260707_102159.log` 의 시각 `102159` 가
+# `md`=`1021` 에 걸려 7월 로그가 10-21 「오늘 파일」로 묶였다(2026-10-21 장전 1-1).
+# `_`·`-`·`.`·영문자는 경계로 인정하므로 `20261021_SYSTEM.log` 류는 그대로 잡힌다.
+def date_token_regexes(day):
+    toks = date_tokens(day)
+    return dict((k, re.compile(r"(?<!\d)%s(?!\d)" % re.escape(toks[k]))) for k in toks)
+
+
+# [MW0602 643차 후속 G-1] 파일명 토큰은 오늘인데 mtime 이 이만큼(일) 이상 떨어져 있으면
+# 인벤토리에 「날짜 토큰 부분일치 의심」으로 따로 적는다. 표시만 — 그룹핑·판정 무관여.
+DATE_TOKEN_MTIME_SUSPECT_DAYS = 2
+
+
 # ------------------------------------------------------------------ 거래일 판정
 # [MW0602 486차 F-1 + G-1 / 488차 계획 B] 수집기가 휴장일을 인지한다.
 #
@@ -1637,7 +1651,7 @@ def pc_id():
 # ------------------------------------------------------------------ 파일 탐색
 def discover_files(root, cfg, day):
     """날짜 토큰을 파일명에 가진 파일을 찾아 그룹으로 묶는다."""
-    toks = date_tokens(day)
+    tok_res = date_token_regexes(day)
     found = []
     seen = set()
     for rel in cfg["scan_dirs"]:
@@ -1658,7 +1672,7 @@ def discover_files(root, cfg, day):
                     continue
                 hit = None
                 for key in DATE_TOKEN_KEYS:
-                    if toks[key] in fn:
+                    if tok_res[key].search(fn):
                         hit = key
                         break
                 if hit is None:
@@ -1671,7 +1685,10 @@ def discover_files(root, cfg, day):
                 # 파일명에서 날짜 토큰을 지운 나머지를 그룹키로 쓴다
                 stem = fn
                 for key in DATE_TOKEN_KEYS:
-                    stem = stem.replace(toks[key], "{DATE}")
+                    stem = tok_res[key].sub("{DATE}", stem)
+                # 판정일보다 **먼저** 기록된 일수(음수 = 판정일 뒤에 기록). 뒤에 기록된 것은
+                # 백필·재생성(peter_feed·option_hts)이라 정상이므로 의심 대상이 아니다.
+                mtime_before_days = (day - ts_kst(st.st_mtime).date()).days
                 found.append({
                     "path": full,
                     "rel": os.path.relpath(full, root).replace(os.sep, "/"),
@@ -1680,6 +1697,7 @@ def discover_files(root, cfg, day):
                     "token": hit,
                     "size": st.st_size,
                     "mtime": st.st_mtime,
+                    "mtime_before_days": mtime_before_days,
                     "ext": os.path.splitext(fn)[1].lower(),
                 })
     found.sort(key=lambda x: (x["group"], x["rel"]))
@@ -1692,6 +1710,29 @@ def is_logish(entry):
 
 def is_jsonish(entry):
     return entry["ext"] in (".json", ".jsonl")
+
+
+def date_token_suspect_lines(files):
+    """[643차 후속 G-1] 토큰은 오늘인데 mtime 이 먼 파일을 인벤토리 각주로 뽑는다.
+
+    표시만 한다 — 그룹에서 빼지 않는다(정당한 사전 생성 파일일 수도 있다).
+    """
+    sus = [e for e in files
+           if e["mtime_before_days"] >= DATE_TOKEN_MTIME_SUSPECT_DAYS]
+    if not sus:
+        return []
+    out = ["⚠ **날짜 토큰 부분일치 의심 %d건** — 파일명 토큰은 판정일인데 최종기록이 "
+           "판정일보다 %d일 이상 앞선다. 이 파일들을 「오늘 로그」 근거로 쓰기 전에 확인할 것:"
+           % (len(sus), DATE_TOKEN_MTIME_SUSPECT_DAYS), ""]
+    cap = 10
+    for e in sus[:cap]:
+        out.append("- `%s` (토큰 `%s` · mtime %s · %d일 전)" % (
+            e["rel"], e["token"], ts_kst(e["mtime"]).strftime("%Y-%m-%d %H:%M"),
+            e["mtime_before_days"]))
+    if len(sus) > cap:
+        out.append("- … 외 %d개" % (len(sus) - cap))
+    out.append("")
+    return out
 
 
 # ------------------------------------------------------------------ 로그 파싱
@@ -4485,6 +4526,8 @@ def build(root, day, phase, cfg, discover_only=False):
             if len(items) > cfg["max_files_per_group"]:
                 A("| `%s` | | … 외 %d개 | | |" % (g, len(items) - cfg["max_files_per_group"]))
         A("")
+        for ln in date_token_suspect_lines(files):
+            A(ln)
 
     if discover_only:
         A("---")
