@@ -213,8 +213,13 @@ def test_p4_migration_and_result_field():
     check("소급 백필 안 함 (추정치 혼입 금지)",
           "UPDATE trades SET tp1_reached" not in dbu)
     pt = _read("strategy/position/position_tracker.py")
+    # [F-10 이식] 출처가 partial_1_done → tp1_protect_armed(라벨 전용 축)로 바뀌었다.
+    #   partial_1_done 은 하드스톱 분할체결로도 서므로 TP1 경유를 뜻하지 않는다
+    #   (tests/test_507_tp1_reached_multifill.py).
     check("_build_exit_result가 tp1_reached 제공",
-          '"tp1_reached": 1 if self.partial_1_done else 0,' in pt)
+          '"tp1_reached": self._tp1_reached_label(),' in pt)
+    check("tp1_reached 출처가 partial_1_done 이 아니다(F-10)",
+          '"tp1_reached": 1 if self.partial_1_done else 0,' not in pt)
 
 
 def test_p4_insert_arity():

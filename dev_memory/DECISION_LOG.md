@@ -50088,3 +50088,14 @@ AI 는 10/16 부터 고착을 적었으나 「raw_candles staleness·적재 지�
 - **청산**: `live_exec.manage` 가 전량 1회 청산이라 2계약도 한 번에 나간다 — 분할 청산 아님.
 - ⚠ **증거금 상한(`[MarginCap]`)이 2보다 작게 자르면 실체결은 1계약일 수 있다** — 실거래 계좌 1,500만원 기준. 첫 진입 로그 `[ShindongLive] 진입 … 2계약` 뒤 `[MarginCap]` 유무로 확인.
 - 회귀 가드: `tests/test_616_trade_principal.py` 의 `SHINDONG_LIVE_QTY == 2` 로 갱신(20 passed).
+
+## 2026-10-22 (MW0602 644차 — F-10 이식: `tp1_reached` 라벨 축 분리(`tp1_protect_armed`), 하드스톱 분할체결 `보호트레일` 오분류 해소) — ✅ 구현 · 라이브 검증 대기 · 미커밋
+
+- **출처(체리픽 아님 — 수동 이식)**: 원 커밋 **`7a4f6387`** · 원 PC **MW0601**(`v9-dev` 702차) · 이식메모 `d76d130`(`docs/정기점검/MW0601_to_MW0602_F10_이식메모_20261022.md`, v9-dev 에만 있음). 가져온 이유: 같은 결함이 dev 에서 **실측으로 발현**했다(아래). v9-dev 는 `exit_stage` 축을 고쳤고 dev 에는 그 축이 없어 `tp1_reached`/`classify_exit()` 축으로 옮겨 썼다.
+- **증상/관측(dev 실측, 읽기 전용, 장전 06:38)**: `[Position] 체결부분청산 … 하드스톱` 뒤 TP1 사건 없이 최종 레그가 `[TP1보호]` — 로그 **6포지션**(10-13 10:31·10:51·15:18·15:19, 10-21 09:35·11:06) / DB `tp1_reached=1 ∧ 스톱 ∧ entry_qty=2 ∧ quantity=2` **7행**(+10-13 15:16 GHOST_PENDING_MISS), 레그 합 +1,631,230원(손실 3). 전부 실거래 전환(10-13) 이후 2계약 신동·복구 포지션이다.
+- 🔴 **메모 4절 쿼리는 dev 에서 과대계상한다 — 그대로 인용 금지.** 29건 중 22건(08-18~10-12, `quantity=1`)은 **정상 라벨**이다: `손절1차 조기축소`(shrink_initial) 뒤 잔여 1계약이 실제로 `1계약 TP1 보호전환`을 거쳤다(08-18 10:21:52 로그 확인). 쿼리가 「TP 레그 없음」만 보고 qty1 보호전환을 거르지 못한 것. 판정은 로그(진입~최종 사이 TP1 사건 유무)로 할 것.
+- **결정(메모 5절 범위, 매매 경로 무변경)**: `partial_1_done`(TP1 재발동 가드·TP 진행률)은 **무변경**. 라벨 전용 `tp1_protect_armed` 신설 — TP 계열 사유(`classify_exit` 트리거 `TP*`)·1계약 보호전환 2곳·main `EXIT_PARTIAL`/`EXIT_MANUAL_PARTIAL` stage1 에서만 True. 스톱·손절·강제청산·시간마감·시간청산·안전망 사유로 진행률이 차면 미승격 + `[ExitStage] F-10 … TP1 보호 미승격` INFO. 사유 미상(브로커 동기화·복원)은 None → `tp1_reached` NULL → `하드스톱?`(로그 `[TP1?]`). 상태파일·virtual_book 스냅샷 키 추가(구버전: `partial_1_done=True`면 None). `_build_exit_result`의 `classify_exit` 입력도 같은 값.
+- **Why**: `partial_1_done`을 사유 조건으로 바꾸면(507차 원계획) TP1 재발동 가드가 바뀌어 매매 경로가 변한다 — 라벨만 틀렸으므로 라벨 축만 분리한다. dev 에 `classify_exit_stage()`가 없어 사유 판정은 `classify_exit()` + 문자열 조각으로 했다(신동 `시간청산` 포함 — `classify_exit`은 그것을 `기타`로 본다).
+- **불연속 마커**: `strategy_registry.db` `strategy_events` **id=125** `METRIC_REDEFINITION`(2026-10-22 06:44). 소급 재분류 안 함 — **2026-10-22 이전 `tp1_reached`/`exit_trigger='보호트레일'` 비율과 직접 비교 금지.** (v9-dev id=124 는 별개 DB)
+- **검증**: `tests/test_507_tp1_reached_multifill.py` 15 passed — 구 라벨 로직으로 되돌리면 **7건 실패**(결함 고정 확인). `test_465` 정적 검사 갱신(출처 문자열). 관련 16개 파일 143 passed / 2 failed — 실패 2건(`test_626_shindong` 리플레이 손익 재현 09-21·09-23)은 **변경 전에도 동일 실패**(무관). py37_32 import 스모크 OK.
+- **How to apply**: 소비처(`stop_overshoot_shadow.py`·캠페인 리포트·`collect_evidence.py`)는 컬럼만 읽으므로 무수정. 진짜 손절 표본이 **늘어나는 방향**이 정상이다(오분류로 빠졌던 손절 복귀) — 손절 증가로 읽지 말 것.

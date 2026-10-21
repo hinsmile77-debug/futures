@@ -140,6 +140,14 @@ class PositionTracker:
         self.partial_1_done: bool = False
         self.partial_2_done: bool = False
         self.partial_3_done: bool = False
+        # [MW0602 / v9-dev 702차 F-10 이식] TP1 보호 발동 여부 — **라벨 전용**
+        #   (`tp1_reached` → `classify_exit()` 의 하드스톱/보호트레일 축).
+        #   `partial_1_done` 은 TP 진행률 + TP1 재발동 가드(`is_tp1_hit`)이고 **매매 경로**라
+        #   그대로 둔다. 그 플래그는 청산 사유를 안 보고 누적 청산수량만으로 서므로,
+        #   하드스톱이 1+1로 분할 체결되거나 손절1차 조기축소 뒤 남은 레그가 스톱에 걸리면
+        #   손절인데도 True 가 된다(dev 실측 2026-10-21 09:35 신동 2계약 1+1 → [TP1보호]).
+        #   True=TP 경유 확인 / False=TP 없음 / None=미상(→ `하드스톱?`, 계측 4원칙 ②).
+        self.tp1_protect_armed: Optional[bool] = False
         self.initial_quantity: int = 0
 
         # [MW0601 421차] 진입 계약수 — `initial_quantity`와 분리한 별도 필드.
@@ -236,6 +244,7 @@ class PositionTracker:
         self.partial_1_done = False
         self.partial_2_done = False
         self.partial_3_done = False
+        self.tp1_protect_armed = False   # [F-10 이식]
         self.initial_quantity = 0
         self.entry_quantity = 0
         self.loss_tier1_price = 0.0
@@ -348,6 +357,7 @@ class PositionTracker:
         self.partial_1_done = False
         self.partial_2_done = False
         self.partial_3_done = False
+        self.tp1_protect_armed = False   # [F-10 이식]
         self.loss_tier1_done = False
         self.loss_tier1_qty1_shadow_logged = False
         self.loss_tier2_price = 0.0
@@ -528,6 +538,7 @@ class PositionTracker:
             self.partial_1_done = False
             self.partial_2_done = False
             self.partial_3_done = False
+            self.tp1_protect_armed = False   # [F-10 이식]
             self._pos_acc_pnl_pts = 0.0       # [459차 F1] FLAT→진입만 초기화 (증량 시 보존)
             self._pos_acc_fwd_pnl_pts = 0.0
         self.last_update_reason = f"apply_entry_fill:{direction}"
@@ -636,7 +647,9 @@ class PositionTracker:
             _stop_family = any(_k in str(reason) for _k in ("스톱", "손절"))
             _tp1_tag = ""
             if _stop_family:
-                _tp1_tag = " [TP1보호]" if result.get("tp1_reached") else " [TP1미도달]"
+                _tp1r = result.get("tp1_reached")
+                _tp1_tag = (" [TP1?]" if _tp1r is None
+                            else (" [TP1보호]" if _tp1r else " [TP1미도달]"))   # [F-10 이식]
             logger.info(
                 f"[Position] 체결청산 {self.status} @ {exit_price} "
                 f"| PnL={pnl_pts:+.2f}pt ({pnl_krw:+,.0f}원) | {reason}{_tp1_tag}"
@@ -653,7 +666,7 @@ class PositionTracker:
                 # initial_quantity 축소는 TP 진행률 매칭용이지 "진입 규모 정정"이
                 # 아니다. 이 불변식을 깨려면 tests/test_entry_qty_invariant.py를
                 # 먼저 볼 것.
-            self._sync_partial_progress()
+            self._sync_partial_progress(reason)
             self.last_update_reason = f"apply_exit_fill_partial:{reason}"
             self.last_update_ts = filled_at or now_kst()
             self._save_state()
@@ -712,6 +725,7 @@ class PositionTracker:
             self.partial_1_done = False
             self.partial_2_done = False
             self.partial_3_done = False
+            self.tp1_protect_armed = False   # [F-10 이식]
             self._pos_acc_pnl_pts = 0.0       # [459차 F1] 별개 포지션 — 레그 누적 초기화
             self._pos_acc_fwd_pnl_pts = 0.0
         self.last_update_reason = f"sync_from_broker:{direction}"
@@ -784,7 +798,7 @@ class PositionTracker:
         self._pos_acc_pnl_pts += pnl_pts * qty
         self._pos_acc_fwd_pnl_pts += forward_pnl_pts * qty
         self.quantity        -= qty
-        self._sync_partial_progress()
+        self._sync_partial_progress(reason)
         self.last_update_reason = f"partial_close:{reason}"
         self.last_update_ts = now_kst()
 
@@ -841,6 +855,7 @@ class PositionTracker:
             self._mark_stop_tightened("arm_tp1_qty1")
 
         self.partial_1_done = True
+        self.tp1_protect_armed = True   # [F-10 이식] 라벨 축
         self._sync_partial_progress()
         self.last_update_reason = "arm_tp1_single_contract"
         self.last_update_ts = now_kst()
@@ -894,6 +909,7 @@ class PositionTracker:
             self._mark_stop_tightened("arm_tp1_qty1_mode")
 
         self.partial_1_done = True
+        self.tp1_protect_armed = True   # [F-10 이식] 라벨 축
 
         # [339차 후속] 회계적 분할청산(synthetic partial) — 실제로는 못 쪼개는 1계약을
         # "TP1 도달가에서 PARTIAL_EXIT_RATIOS[0](33%)를 확정했다"고 회계상으로만 기록.
@@ -1300,12 +1316,62 @@ class PositionTracker:
             return self.entry_price - mult * atr * 0.75
         return self.entry_price - mult * atr * ATR_STOP_MULT
 
-    def _sync_partial_progress(self) -> None:
+    # [F-10 이식] TP 진행률을 채워도 TP1 보호로 승격시키지 않는 사유 조각.
+    #   dev 에는 v9-dev 의 `classify_exit_stage()` 가 없어 문자열로 판정한다
+    #   (`classify_exit()` 의 하드스톱·손절1차·시간마감·안전망 축 + 신동 시간청산).
+    _TP1_NON_PROTECT_FRAGMENTS = ("스톱", "손절", "강제청산", "시간마감", "시간청산", "안전망")
+
+    def _sync_partial_progress(self, reason: Optional[str] = None) -> None:
+        """TP 진행률 플래그 동기화 + [F-10 이식] 라벨 축(`tp1_protect_armed`) 갱신.
+
+        `partial_*_done` 계산은 **종전과 동일**하다(매매 경로 — TP 재발동 가드).
+        라벨 축만 사유를 본다:
+          · TP 계열 사유(`classify_exit` 트리거 TP*) → True
+          · 이 호출에서 partial_1_done 이 새로 섰고
+              - 스톱·손절·시간청산 사유 → 그대로(False) + `[ExitStage]` INFO
+              - 그 밖의 사유(수동·복구 등) → True (종전 라벨과 동일)
+              - 사유 없음(브로커 동기화·복원) → False 였으면 None(미상)
+        """
         target_1, target_2, target_3 = self.get_stage_targets()
         closed_qty = self.get_closed_quantity()
+        _was_p1 = bool(self.partial_1_done)
         self.partial_1_done = bool(self.partial_1_done or (target_1 > 0 and closed_qty >= target_1))
         self.partial_2_done = bool(self.partial_2_done or (target_2 > 0 and closed_qty >= target_2))
         self.partial_3_done = bool(self.partial_3_done or (target_3 > 0 and closed_qty >= target_3))
+
+        if self.tp1_protect_armed is True:
+            return
+        _trigger = ""
+        if reason:
+            try:
+                from utils.db_utils import classify_exit as _cx
+                _trigger = _cx(reason, None, None)[0]
+            except Exception:
+                _trigger = ""
+        if _trigger.startswith("TP"):
+            self.tp1_protect_armed = True
+            return
+        if not (self.partial_1_done and not _was_p1):
+            return
+        if reason is None:
+            if self.tp1_protect_armed is False:
+                self.tp1_protect_armed = None
+                logger.warning(
+                    "[ExitStage] F-10 사유 미상 진행률 승격 closed=%d target_1=%d "
+                    "→ TP1 보호 여부 미상(이후 스톱은 하드스톱?)", closed_qty, target_1)
+        elif any(_k in str(reason) for _k in self._TP1_NON_PROTECT_FRAGMENTS):
+            logger.info(
+                "[ExitStage] F-10 TP1 진행률 충족(closed=%d≥target_1=%d)이지만 사유=%s "
+                "→ TP1 보호 미승격(partial_1_done 은 재발동 가드로 유지)",
+                closed_qty, target_1, reason)
+        else:
+            self.tp1_protect_armed = True
+
+    def _tp1_reached_label(self) -> Optional[int]:
+        """[F-10 이식] `tp1_reached` 기록값 — None 은 미상(main.py 가 NULL 로 기록)."""
+        if self.tp1_protect_armed is None:
+            return None
+        return 1 if self.tp1_protect_armed else 0
 
     def _build_exit_result(
         self,
@@ -1325,7 +1391,7 @@ class PositionTracker:
         try:
             from utils.db_utils import classify_exit as _cx
             _trigger, _outcome = _cx(
-                reason, 1 if self.partial_1_done else 0, pnl_pts)
+                reason, self._tp1_reached_label(), pnl_pts)   # [F-10 이식]
         except Exception:
             _trigger, _outcome = "", ""
         return {
@@ -1365,7 +1431,9 @@ class PositionTracker:
             # 기록 측에 구분값을 남긴다(utils/db_utils.py `tp1_reached` 주석 참조).
             # `partial_1_done`은 qty≥2 TP1 부분청산과 qty=1 보호전환
             # (`arm_tp1_single_contract_with_mode`) 양쪽에서 True가 된다.
-            "tp1_reached": 1 if self.partial_1_done else 0,
+            # 🔴 [F-10 이식] 그러나 `partial_1_done` 은 하드스톱 분할체결·손절1차 뒤 스톱
+            #   에서도 선다 — 라벨은 사유를 본 `tp1_protect_armed` 에서 읽는다.
+            "tp1_reached": self._tp1_reached_label(),
             # [MW0602 468차 G-3] 청산 2축(트리거/결과). `exit_reason`은 그대로 두고
             # 분석용 축을 함께 싣는다 — 이 dict를 소비하는 대시보드·복구 경로도
             # 같은 값을 보게 하려는 것. DB 기록은 main.py가 한 번 더 보장한다
@@ -1398,6 +1466,7 @@ class PositionTracker:
         self.partial_1_done = False
         self.partial_2_done = False
         self.partial_3_done = False
+        self.tp1_protect_armed = False   # [F-10 이식]
         self.initial_quantity = 0
         self.entry_quantity = 0
         self.loss_tier1_price = 0.0
@@ -1576,6 +1645,7 @@ class PositionTracker:
                 "partial_1_done": self.partial_1_done,
                 "partial_2_done": self.partial_2_done,
                 "partial_3_done": self.partial_3_done,
+                "tp1_protect_armed": self.tp1_protect_armed,   # [F-10 이식]
                 "loss_tier1_price": self.loss_tier1_price,
                 "loss_tier1_done": self.loss_tier1_done,
                 "loss_tier1_qty1_shadow_logged": self.loss_tier1_qty1_shadow_logged,
@@ -1677,6 +1747,17 @@ class PositionTracker:
             self.partial_1_done = bool(state.get("partial_1_done", False))
             self.partial_2_done = bool(state.get("partial_2_done", False))
             self.partial_3_done = bool(state.get("partial_3_done", False))
+            # [F-10 이식] 구버전 상태파일에는 키가 없다. partial_1_done=False 면 TP1 경유가
+            #   없었던 것이 확실하므로 False, True 면 오염 여부를 알 수 없으므로 None(미상).
+            if "tp1_protect_armed" in state:
+                _tpa = state.get("tp1_protect_armed")
+                self.tp1_protect_armed = None if _tpa is None else bool(_tpa)
+            elif self.partial_1_done:
+                self.tp1_protect_armed = None
+                logger.warning("[ExitStage] F-10 구버전 상태파일 — partial_1_done=True 인데 "
+                               "TP1 보호 여부 미상 → None(이후 스톱은 하드스톱?)")
+            else:
+                self.tp1_protect_armed = False
             self.loss_tier1_price = float(state.get("loss_tier1_price", 0.0) or 0.0)
             self.loss_tier1_done = bool(state.get("loss_tier1_done", False))
             self.loss_tier1_qty1_shadow_logged = bool(state.get("loss_tier1_qty1_shadow_logged", False))

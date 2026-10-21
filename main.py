@@ -18503,6 +18503,7 @@ def _ts_handle_exit_fill(
     if pending["kind"] == "EXIT_PARTIAL":
         if pending.get("stage") == 1:
             self.position.partial_1_done = True
+            self.position.tp1_protect_armed = True   # [F-10 이식] 라벨 축(종전 라벨과 동일)
         elif pending.get("stage") == 2:
             self.position.partial_2_done = True
         elif pending.get("stage") == 3:
@@ -18522,6 +18523,7 @@ def _ts_handle_exit_fill(
     if pending["kind"] == "EXIT_MANUAL_PARTIAL":
         if pending.get("stage") == 1:
             self.position.partial_1_done = True
+            self.position.tp1_protect_armed = True   # [F-10 이식] 라벨 축(종전 라벨과 동일)
         elif pending.get("stage") == 2:
             self.position.partial_2_done = True
         elif pending.get("stage") == 3:
