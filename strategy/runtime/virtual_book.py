@@ -52,7 +52,7 @@ _FIELDS = ('status', 'entry_price', 'quantity', 'grade', 'regime', 'signal_direc
            'entry_horizon', 'entry_source', 'entry_hurst_bucket', 'entry_extra_stop_mult',
            'stop_price', 'ext_stop', 'ext_target', 'ext_stop_src', 'tp1_price', 'tp2_price',
            'tp3_price', 'trailing_anchor_price', 'partial_1_done', 'partial_2_done',
-           'partial_3_done', 'initial_quantity', 'entry_quantity', 'loss_tier1_price',
+           'partial_3_done', 'tp1_protect_armed', 'initial_quantity', 'entry_quantity', 'loss_tier1_price',
            'loss_tier1_done', 'synthetic_tp1_price', 'synthetic_tp1_pnl_pts',
            'synthetic_tp1_fraction', '_pos_acc_pnl_pts', '_pos_acc_fwd_pnl_pts',
            'last_update_reason') + _DT_FIELDS
@@ -408,6 +408,9 @@ class VirtualBook:
             for f in _FIELDS:
                 if f in d:
                     setattr(t, f, _parse_dt(d[f]) if f in _DT_FIELDS else d[f])
+            # [702차 F-10] 구버전 스냅샷 — partial_1_done=True 면 TP1 보호 여부 미상(None).
+            if 'tp1_protect_armed' not in d and d.get('partial_1_done'):
+                t.tp1_protect_armed = None
             n += 1
         self.meta = {p: m for p, m in (st.get('meta') or {}).items() if p in self.books}
         self.cooldown = {p: _parse_dt(v) for p, v in (st.get('cooldown') or {}).items() if _parse_dt(v)}

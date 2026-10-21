@@ -114,6 +114,9 @@ def test_tick_stop_distinguishes_initial_from_trail():
     before = pt._build_exit_result(exit_price=1038.0, quantity=2, pnl_pts=-2.0,
                                    pnl_krw=-200000.0, reason="하드스톱(틱)")["exit_stage"]
     pt.partial_1_done = True                       # TP1 도달 후 트레일 상태
+    # [702차 F-10] 라벨 축이 `tp1_protect_armed` 로 분리됐다 — partial_1_done 만으로는
+    #   (하드스톱 분할체결로도 서므로) 더 이상 TP1 경유를 뜻하지 않는다.
+    pt.tp1_protect_armed = True
     after = pt._build_exit_result(exit_price=1041.0, quantity=1, pnl_pts=1.0,
                                   pnl_krw=50000.0, reason="하드스톱(틱)")["exit_stage"]
     assert before != after, (
