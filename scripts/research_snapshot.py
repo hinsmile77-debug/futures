@@ -191,7 +191,7 @@ def status(archive=ARCHIVE_DB):
     for tbl, (_db, ts_col) in TABLES.items():
         r = con.execute('SELECT COUNT(*), COUNT(DISTINCT substr("%s",1,10)), MIN("%s"), MAX("%s") FROM "%s"'
                         % (ts_col, ts_col, ts_col, tbl)).fetchone()
-        print("[ResearchSnapshot] %s: %d행 · %d일 · %s – %s" % ((tbl,) + tuple(r)))
+        print("[ResearchSnapshot] %s: %d행 · %d일 · %s ~ %s" % ((tbl,) + tuple(r)))
     last = con.execute("SELECT run_ts, tbl, added, refreshed, kept, rows_copied FROM snapshot_runs "
                        "ORDER BY rowid DESC LIMIT 3").fetchall()
     for x in last:
