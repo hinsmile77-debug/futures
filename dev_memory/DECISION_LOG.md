@@ -2,6 +2,29 @@
 
 ---
 
+## 2026-10-21 (MW0601 701차 — 연구용 장후 사본 `research_archive.db` 신설 · `regime_history` 보존 무변경) — 🟢 **첫 사본 완료 · 주간 EOD 체인 배선**
+
+- **결정(사용자)**: `regime_history` 30일 정리(`main.py:15940`)는 **그대로 둔다.** 대신 `ensemble_decisions`를
+  삭제 없는 연구용 사본으로 떠 둔다.
+- **근거(실측 16:04)**: `regime_history`는 173차 차트 재시작 복원용 **캐시**다. 같은 라벨이
+  `predictions.db:ensemble_decisions.micro_regime`에 **2026-05-08부터 111거래일(39,816행)** 남아 있고,
+  겹치는 6,902분이 **전부 일치**했다(`docs/가격움직임패턴연구/표본실측/regime_coverage.py`).
+  ⚠ 같은 날 장전 보고서 초판의 「국면 기록이 매일 소실 중」은 `regime_history`만 보고 낸 **오판**이었다(정정 완료).
+- **구현**: `scripts/research_snapshot.py` → `data/research/research_archive.db`(gitignore).
+  마감된 날짜만 · 사본에 없는 날 복사 · 원천 행이 늘어난 날만 재복사 · **원천이 줄거나 사라진 날은 사본 유지** ·
+  원천 새 컬럼 자동 추가 · 복사 후 날짜별 행 수 대조(불일치 시 그 날 롤백, rc=1) · `snapshot_runs`에 실행 이력.
+  장중 `guard_intraday`. 첫 실행 5초 · 218MB. 재실행은 무변경(멱등) 확인 — py37_32·py310_64 둘 다.
+- **배선**: `scripts/campaign_steps.py` 주간 스텝(금요일 EOD) — **월간 로그 정리 앞**.
+  주 1회로 충분한 이유: 원천 행 삭제는 `monthly_cleanup.py --allow-db-prune` 명시 + 190일 하한에서만 일어난다.
+  디스크 사고 대비 손실 상한은 1주일치. 매일로 줄이려면 `retrain_eod.py`·`scripts/eod_retrain.py` 양쪽 배선이 필요하다(미착수).
+- **회귀 가드**: `tests/test_701_research_snapshot.py`(추가·갱신·삭제없음·미마감일 제외·스키마 추종·체인 순서).
+- **양방향 공유(사용자 지시)**: 이 연구는 MW0602(`dev`)에서도 같이 진행한다 — `docs/가격움직임패턴연구/README.md`
+  규약(폴더만 바꾼 커밋에 `[가격패턴]`, 데이터는 `표본실측/<PC명>/`). CLAUDE.md 멀티PC 절에 예외로 명기.
+  공유 코드 3개(`research_snapshot.py`·`campaign_steps.py` 스텝·`test_701`)와 연구 폴더를 `dev`에 체리픽 배포.
+- 관련: `docs/가격움직임패턴연구/선물시장_국면분류체계_조사및계획_MW0601-20261021.md` 0단계 ②.
+
+---
+
 ## 2026-10-21 (MW0601 — 신동 실거래 수량 SHINDONG_LIVE_QTY 1 → 2 · 사용자 결정) — 🟢 **핫리로드로 당일 반영**
 
 - **결정**: `config/settings.py:SHINDONG_LIVE_QTY` 1 → **2**. 규격 `spec.LEGS=2`와 다시 일치한다.
