@@ -2,6 +2,66 @@
 
 ---
 
+## 2026-10-22 (MW0601 703차 — F-701-A: ProfitGuard 계좌 축(주체 3종 실현 net 합) · 신동·피터2 관문 배선 · L4 축 통일 · L3 카운터 부활 · 임계 재설정) — 🟢 **구현 · 테스트 완료 · 라이브 미검증(재기동 전)**
+
+> 사용자 결정(2026-10-22): 「계좌 전체 = 주체 3종의 실현 net 합」, 당일 목표 200만원 기준 임계 재설정.
+
+- **증상**: 2026-10-21 신동이 실거래 주체가 된 첫날, 신동 포지션 2연패(11:33 −196,412 · 11:38 −81,408원)로
+  11:38:57 `L4-ProfitCB` 발동 → **차단은 미륵 관문에만** 걸려 신동은 그 뒤 5포지션 추가 거래(장중 점검 1-3).
+- **원인(3개가 겹침)**:
+  ① `_shindong_entry_block_reason` · `_peter2_execute`(실거래)에 ProfitGuard 호출 없음.
+  ② 축 불일치 — 판정(L1–L3)은 SYSTEM_AUTO 한정 누적기(546차), L4 카운터(`_post_exit`)는
+     `position.daily_stats()`(계좌 전체·수동 포함) + **마지막 주문 손익**. 신동 손실이 L4 를 켜고 판정은 신동을 못 봄.
+  ③ **(신규 발견) L3 오후 횟수 카운터가 죽어 있었다** — `ProfitGuard.on_entry()` 호출부가 main.py 에 0곳.
+     「오후 최대 N회」는 도입 이래 센 적이 없고(카운터 영구 0) L3 는 품질 요건 하나로만 동작했다.
+- **결정·구현**:
+  - `config/settings.py`: `PROFIT_GUARD_ACCOUNT_AXIS=True` · `PROFIT_GUARD_ACCOUNT_SOURCES`
+    (SYSTEM_AUTO·SHINDONG·PETER2 = `trade_principal.SOURCE_PRINCIPAL` 키) · `PROFIT_GUARD_JUDGE_SOURCES` ·
+    `PROFIT_GUARD_BLOCK_VIRTUAL_PRINCIPAL=False`. **`PROFIT_GUARD_SYSTEM_SOURCES` 는 무변경**
+    (손익 추이 패널·db_utils 의 「시스템 성과」 축이 같이 씀). 수동·복구·유령·NULL 은 여전히 제외(546차 유지).
+  - `main.py`: 누적기(`_sys_daily_*`, 이름 유지 — 뜻은 「판정 축」) 화이트리스트 → JUDGE · 미륵 관문 토큰
+    `account_principals` · 신규 `_pg_principal_entry_block()`(신동·피터2 실거래 관문, `size_mult=None`,
+    판정 예외 시 **fail-closed**) · L4/L1 갱신을 `_record_trade_result()` **뒤** `_pg_on_position_closed()` 로 이동
+    (판정 축 출처만 · **포지션 단위 net** = 같은 entry_ts 레그 합, 계측 4원칙 ①) · `_ts_pg_count_entry()` 를
+    `_ts_execute_entry` 주문 접수 지점 2곳에 배선(L3 부활) · 미륵이 가상 주체면 계좌 래치가 미륵 **가상** 진입은
+    막지 않음(`[ProfitGuard][Virtual]` 1회 로그).
+  - `strategy/profit_guard.py`: `size_mult=None`(등급 없는 주체) → L2 최소배수·L3 품질 요건 생략(금액·횟수·연패는 유지) ·
+    `on_trade_close` 에서 L1 피크 갱신 · 토큰 `account_principals` · **L2 래치 스냅샷의 `size_mult:.2f` 가 None 에서
+    TypeError** 나던 것 수정(703 테스트가 잡음 — 그대로 배포했으면 신동 관문이 래치 순간 「판정실패」로 막혔다).
+  - 세션 복원(`session_recovery_service`)·ProfitGuard 패널 필터·배지 툴팁을 같은 화이트리스트로.
+- **임계 재설정(별도 결정 — 축 변경과 효과 분리용 기록, 313차 원칙)** `data/profit_guard_prefs.json`
+  (PC 로컬·gitignore, 백업 `profit_guard_prefs.json.bak_20261022_pre703`):
+
+  | 층 | 종전 | 703차 |
+  |---|---|---|
+  | L1 | 30만 · 10% | **150만 · 35%** |
+  | L2 중단 | 50만 | **400만**(티어 4칸 모두 400만 — 중간 등급티어 무력화) |
+  | L3 | 13시 · 30만 · 2회 | **13시 · 200만 · 2회** |
+  | L4 | 30만 · 2연패 | **100만 · 3연패** |
+
+  근거: 신동 일일 리포트 19거래일(09-21–10-21, TR44=v3 MAIN 표) 소급 — 무가드 +988.4만 /
+  **종전 +603.3만(−385만, 래치 11일)** / 703차 +1,050.7만(래치 1일). 10-21 실거래: 종전 10:12 첫 거래 뒤 L2 래치
+  +103.9만 vs 703차 전량 유지 +222.7만. L2 를 목표(200만)에 두면 목표 달성일(10-20 +406.8만)을 222만에서 자른다(−185만).
+  09-28 연구(「당일 +G 중단 권고 안 함」)와 같은 방향. ⚠ 19일·다중비교·효과는 하루짜리 사건(09-28 L1) — **출발값**이다.
+  재현: 세션 스크래치 `pg_sim.py`/`pg_grid.py`(신동 일일 md 파싱).
+- **불연속**: ProfitGuard 판정 손익 시계열 2026-10-22 재단절 — 로그 토큰 `src=account(net·주체3종 실거래)` vs
+  `src=engine(net·시스템진입만)`(09-08–10-21). L4 연패 수는 이제 포지션 net 기준(종전 마지막 주문 손익).
+- **Why**: 수익 보존은 판단 주체가 아니라 실계좌 돈을 지킨다. 주체 전환(FLAT 이면 장중 가능)으로 래치를 우회하는 길도
+  같이 닫힌다. 가드는 수익을 만들지 않는다 — 신동 재생 일평균 +52만·200만 이상 1/19일이라 목표 달성은 edge·사이즈의
+  별건이고, 임계는 「드문 큰 날을 끊지 않고 그날 크게 되돌리는 것만 막는」 쪽으로 잡았다.
+- **How to apply**: 재기동 후 첫 날 확인 — ① 신동 진입 기각 시 `[ShindongExec] … 진입 기각 — ProfitGuard [L…]`
+  ② 청산마다 `[ProfitGuard] 포지션 청산 반영 출처=SHINDONG 포지션net=… 판정축 당일=… L4연패=N`
+  ③ 13시 이후 L3 카운트가 실제로 오름(배지 L3 detail) ④ 미륵 가상이면 `[ProfitGuard][Virtual]` 1회.
+  롤백: `PROFIT_GUARD_ACCOUNT_AXIS=False`(546차 축·종전 관문) / 임계는 prefs 백업 복원.
+  ⚠ 실행 중 프로세스의 대시보드에서 ProfitGuard 패널 [적용]을 누르면 **옛 값이 prefs 에 다시 저장**된다 — 재기동 전 누르지 말 것.
+  10거래일 뒤 「래치 후 놓친 손익 vs 피한 손실」로 임계 재판정(NEXT_TODO 703-1). 신동 실거래가 막히면 재생 채점과
+  실거래가 갈라진다 — 대사 시 `REJECT why=ProfitGuard…` 이벤트로 설명할 것.
+- **검증**: `tests/test_703_profit_guard_account_axis.py` 19건 통과(화이트리스트=SOURCE_PRINCIPAL · None 품질 생략 ·
+  L1 청산시점 갱신 · 10-21 재현(종전 임계면 신동 차단) · 703 임계면 10-21 전량 유지 · L4 포지션 net/수동 무시 ·
+  TP1 이익 뒤 소손절 = 승 · L3 카운트 · 배선 · fail-closed · 롤백 플래그). 관련 묶음 25파일 305 passed · 3 failed ·
+  3 skipped — 실패 3건은 사전 존재(698-T 목록: 457 peter_paste · 555 PETER2_BACKFILL · virtual_book
+  `ast.get_source_segment` py3.7 미지원), 변경 파일과 무관. 재기동·커밋 안 함(07:36 장전 — 사용자 지시 범위 ①–④).
+
 ## 2026-10-22 (MW0601 702차 — F-10 구현: `exit_stage` 라벨 축 분리 · 하드스톱 분할체결 오분류 해소) — 🟢 **구현 · 테스트 완료 · 라이브 미검증**
 
 > 사용자 지시: "F-10을 구현해" (507차 계획, C등급 사용자 결정 대기 → 승인).

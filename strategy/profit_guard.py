@@ -94,6 +94,10 @@ _PNL_SRC_LABEL = {
     #   유령 체결·야간세션·이월분이 **빠진다**. 2026-09-08 사용자 지시.
     #   ⚠ 실현 전용이라 보유 중에는 움직이지 않는다(계좌 gross 축과 다르다).
     "engine_system_only": "engine(net·시스템진입만)",
+    # 🔴 [MW0601 703차 / F-701-A] 계좌 전체 = 거래주체 3종(SYSTEM_AUTO·SHINDONG·PETER2)
+    #   실거래 레그의 실현 net 합. 수동·복구·유령은 여전히 빠진다(546차 유지).
+    #   2026-10-22 부터. 위 `engine_system_only` 세대와 섞지 말 것(불연속).
+    "account_principals": "account(net·주체3종 실거래)",
 }
 
 
@@ -228,10 +232,13 @@ class _TierGate:
             # 판단했는가"를 재구성하는 데 EOD 마감 로그·DB 조회까지 동원해야 했다.
             # 래치는 하루에 한 번뿐이므로 **그 순간 한 줄**만 남긴다(로그 폭주 없음).
             # ⚠ 이 블록은 위 3줄의 판정 결과에 아무 영향을 주지 않는다 — 순수 계측이다.
+            # [MW0601 703차] size_mult=None(등급 없는 주체 — 신동·피터) 이면 `:.2f` 가
+            #   TypeError 로 래치 순간을 깨뜨린다(703차 테스트가 잡음). 「해당없음」으로 쓴다.
             self._halt_snapshot = (
-                "tier={} 임계={:,.0f}원 판정손익={:+,.0f}원 size_mult={:.2f} "
+                "tier={} 임계={:,.0f}원 판정손익={:+,.0f}원 size_mult={} "
                 "구성레그={}".format(
-                    self._halt_tier, self._halt_threshold, current_pnl, size_mult,
+                    self._halt_tier, self._halt_threshold, current_pnl,
+                    "해당없음(등급없는주체)" if size_mult is None else "{:.2f}".format(size_mult),
                     _format_latch_contributors(contributors),
                 )
             )
@@ -248,7 +255,10 @@ class _TierGate:
                 f"Tier {self._halt_tier}: 중단 임계 {self._halt_threshold:,.0f}원 도달 → 당일 영구 중단",
             )
 
-        if min_mult is not None and size_mult < min_mult:
+        # [MW0601 703차] size_mult=None = 「등급 개념이 없는 주체」(신동·피터). 품질 요건은
+        #   미륵 등급 체계의 언어라 그들에게 적용하면 1.0 미만 여부와 무관하게 오판한다.
+        #   금액 임계(위 중단 래치)는 그대로 걸린다 — 빠지는 것은 품질 요건뿐이다.
+        if min_mult is not None and size_mult is not None and size_mult < min_mult:
             return (
                 True, active_tier,
                 f"Tier {active_tier}: size_mult {size_mult:.1f} < 최소 {min_mult:.1f} 요구"
@@ -338,7 +348,9 @@ class _AfternoonMode:
             )
 
         # size_mult를 RR 프록시로 사용 (1.5=A급≈높은RR)
-        if size_mult < cfg.afternoon_min_rr / 2.0:
+        # [MW0601 703차] None = 등급 개념이 없는 주체(신동·피터) — 품질 요건 생략,
+        #   위 횟수 제한만 적용한다. 그대로 두면 오후 수익 구간에서 신동 진입이 **전부** 막힌다.
+        if size_mult is not None and size_mult < cfg.afternoon_min_rr / 2.0:
             return (
                 False,
                 f"오후 신호 품질 미달 (mult {size_mult:.1f} < 기준 {cfg.afternoon_min_rr/2:.1f})"
@@ -433,13 +445,16 @@ class ProfitGuard:
     def is_entry_allowed(
         self,
         daily_pnl_krw: float,
-        size_mult: float,
+        size_mult: Optional[float],
         now: Optional[datetime.datetime] = None,
         pnl_source: Optional[str] = None,
         pnl_contributors=None,
     ) -> Tuple[bool, str]:
         """
         Args:
+            size_mult: 진입 신호 품질(미륵 등급 배수). **None = 등급 개념이 없는 주체**
+                (신동·피터, 703차) — L2 최소배수·L3 품질 요건을 생략하고 금액·횟수·
+                연패 조건만 건다. 0.0 과 다르다(0.0 은 「품질 0」이라 L2 Tier0 에 막힌다).
             pnl_contributors: [MW0601 556차 후속 / G-4] `daily_pnl_krw` 를 구성한 청산
                 레그 목록(선택). L2 래치가 걸리는 **그 순간 한 줄**을 남기는 데만 쓰며,
                 **어떤 판정에도 관여하지 않는다.** 안 주면 스냅샷이 `미측정` 이라고
@@ -488,7 +503,15 @@ class ProfitGuard:
 
     # ── 이벤트 훅 ─────────────────────────────────────────────────
     def on_trade_close(self, pnl_krw: float, daily_pnl_krw: float):
+        """포지션 1개가 **완전히** 닫힐 때 1회(레그마다가 아니다 — 계측 4원칙 ①).
+
+        [MW0601 703차] L1 피크도 여기서 갱신한다. 종전엔 `is_entry_allowed()` 안에서만
+        갱신돼, 다음 진입 판정 전에 청산이 두 번 연달아 나면 그 사이 고점을 놓칠 수
+        있었다(실현 손익은 청산 때만 변하므로 청산 시점 갱신이면 빠짐이 없다).
+        ⚠ 이 갱신이 L1 래치를 걸 수도 있다 — 그 경우 로그는 `[ProfitGuard-L1]` 로 같다.
+        """
         self._pcb.on_trade_close(pnl_krw, daily_pnl_krw, self.cfg)
+        self._trail.update(daily_pnl_krw, self.cfg)
 
     def on_entry(self, now: Optional[datetime.datetime] = None):
         if now is None:

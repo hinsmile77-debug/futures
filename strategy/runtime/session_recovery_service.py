@@ -268,7 +268,11 @@ class SessionRecoveryService:
         # 복원이 살리지만, L1 피크·L2 티어는 이 값으로 다시 계산된다).
         # ⚠ 여기서만 DB 를 읽는다 — 매분 조회는 456차 장중 DB 금지에 걸린다.
         try:
-            _sys = sum_today_system_net_krw(rows)
+            # [MW0601 703차] 라이브 누적기와 **같은 화이트리스트**(판정 축)로 복원한다.
+            #   기본값(SYSTEM_AUTO 한정)으로 두면 재기동 직후 신동·피터 손익이 0원으로
+            #   돌아가 이미 걸렸어야 할 L1/L2 보호가 풀린다(552-10 「재시작이 상태를 지운다」).
+            from config.settings import PROFIT_GUARD_JUDGE_SOURCES as _PG_SRC
+            _sys = sum_today_system_net_krw(rows, sources=_PG_SRC)
             system._sys_daily_net_krw    = float(_sys["net_krw"])
             system._sys_daily_legs       = int(_sys["legs"])
             system._sys_daily_other_krw  = float(_sys["other_net_krw"])
@@ -281,7 +285,7 @@ class SessionRecoveryService:
             # 되살아나 즉시 래치됐는데 그 구성이 어디에도 안 남았다).
             # ⚠ 위 `sum_today_system_net_krw()` 와 **같은 화이트리스트**로 고른다.
             #   여기서 갈리면 스냅샷 구성과 합계가 어긋난다.
-            system._sys_daily_legs_detail = system_leg_details(rows)
+            system._sys_daily_legs_detail = system_leg_details(rows, sources=_PG_SRC)
             # ⚠ `%` 포매팅은 천단위 콤마(`%,.0f`)를 지원하지 않는다 — ValueError.
             #   포맷을 먼저 만들어 넘긴다.
             logger.info(

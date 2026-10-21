@@ -17177,6 +17177,8 @@ class MireukDashboard(QMainWindow):
     # `strategy/profit_guard.py:_PNL_SRC_LABEL` 과 같은 뜻이어야 한다.
     _PG_SRC_LABEL = {
         "engine_system_only": "시스템 자동매매 실현 net (외부·수동 제외)",
+        # [MW0601 703차] 계좌 축 — 거래주체 3종 실거래 합(수동·복구는 여전히 제외)
+        "account_principals": "계좌 실현 net — 미륵·신동·피터 실거래 합 (수동·복구 제외)",
         "broker_net_est":     "브로커 실현손익 − 수수료 (계좌 전체)",
         "broker":             "브로커 실현손익 gross (계좌 전체)",
         "engine":             "엔진 실현 net (계좌 전체)",
@@ -17198,14 +17200,18 @@ class MireukDashboard(QMainWindow):
             _sl = st.get("system_legs")
             _ol = st.get("other_legs") or 0
             _on = st.get("other_net_krw")
+            # [MW0601 703차] 계좌 축이면 「시스템」이 아니라 「주체 3종」을 센 것이다.
+            _acct = (src == "account_principals")
+            _who = "주체(미륵·신동·피터)" if _acct else "시스템"
+            _excl = "수동·복구" if _acct else "외부·수동·복구"
             if _sl == 0:
-                out.append("    · 시스템 청산 0레그 — 아직 시스템이 실현한 손익이 없다")
+                out.append("    · %s 청산 0레그 — 아직 실현한 손익이 없다" % _who)
                 out.append("      (미측정이 아니라 **알려진 0원**이다)")
             else:
-                out.append("    · 시스템 청산 %d레그" % int(_sl or 0))
+                out.append("    · %s 청산 %d레그" % (_who, int(_sl or 0)))
             if _ol:
-                out.append("    · 제외분(외부·수동·복구) %d레그 %s — 판정에 넣지 않는다" % (
-                    int(_ol), "{:+,.0f}원".format(_on or 0.0)))
+                out.append("    · 제외분(%s) %d레그 %s — 판정에 넣지 않는다" % (
+                    _excl, int(_ol), "{:+,.0f}원".format(_on or 0.0)))
             out.append("    ⚠ 실현 전용 축이다 — 보유 중 미실현은 반영되지 않는다.")
         if thr and pnl is not None:
             out.append("  중단 임계 {:,.0f}원 대비 달성률 {:.1%}".format(thr, pnl / thr))
