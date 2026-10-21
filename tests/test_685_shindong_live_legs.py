@@ -33,11 +33,11 @@ def _src(rel):
 # ── A. 순수 판단 ───────────────────────────────────────────────
 
 def test_qty_matches_spec_legs():
-    """[2026-10-13 사용자 결정] 실계좌 1계약 — 규격(LEGS=2)과 의도적으로 다르다.
-    1계약이면 1차 목표의 exit_leg1 이 부분청산이 아니라 전량청산으로 가야 한다(main 분기 고정)."""
+    """[2026-10-21 사용자 결정] 실계좌 2계약 — 규격(LEGS=2)과 일치(10-13 1계약에서 복원).
+    수량을 다시 1로 내리면 1차 목표의 exit_leg1 이 전량청산으로 가야 한다(main 분기 고정)."""
     import config.settings as ST
     assert S.LEGS == 2
-    assert ST.SHINDONG_LIVE_QTY == 1
+    assert ST.SHINDONG_LIVE_QTY == 2
     assert ST.PRINCIPAL_SHINDONG_ENABLED is True
     src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "main.py"),
                encoding="utf-8").read()

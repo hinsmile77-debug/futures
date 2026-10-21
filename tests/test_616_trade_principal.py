@@ -304,7 +304,7 @@ def test_shindong_exec_wired():
               'self._sd_exec_day = None', 'self._principal_prev_cache = None'):
         assert a in s, a                                   # __init__ 명시 초기화(계측 4원칙 ④)
     import config.settings as S
-    assert S.SHINDONG_LIVE_QTY == 1      # [2026-10-13 사용자 결정] 실계좌 1계약
+    assert S.SHINDONG_LIVE_QTY == 2      # [2026-10-21 사용자 결정] 실계좌 2계약 (10-13 1계약에서 복원)
 
 
 def test_isolation_and_cooldown_cover_shindong():

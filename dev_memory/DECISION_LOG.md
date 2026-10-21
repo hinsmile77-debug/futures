@@ -2,6 +2,16 @@
 
 ---
 
+## 2026-10-21 (MW0601 — 신동 실거래 수량 SHINDONG_LIVE_QTY 1 → 2 · 사용자 결정) — 🟢 **핫리로드로 당일 반영**
+
+- **결정**: `config/settings.py:SHINDONG_LIVE_QTY` 1 → **2**. 규격 `spec.LEGS=2`와 다시 일치한다.
+- **집행 변화**: 1차 목표에서 1계약 부분청산(`EXIT_MANUAL_PARTIAL`) → 공통 손절 본전 → 최종 목표(또는 15:05).
+  2026-10-13–10-20은 1계약이라 1차 목표에서 **전량 익절**이었다 — 그 구간 실손익과 이후를 직접 비교하지 말 것.
+- **적용 경로**: 진입 시점에 `runtime_settings.SHINDONG_LIVE_QTY`를 읽고, settings.py mtime 변경은
+  `_maybe_reload_health_policy`(5초 주기 `importlib.reload`)가 반영한다 → 재기동 불필요.
+  신동 진입은 PositionSizer·`MAX_CONTRACTS`(=1) 클램프를 거치지 않는 고정 수량 경로다.
+- 테스트 고정값 갱신: `test_616` · `test_685` · `test_690`.
+
 ## 2026-09-29 (MW0602 597차 체리픽 → v9-dev — 맥점 08:45 결손 차트 TR 보충 · ②런처 GUARD 는 보류) — 🟡 **v9-dev 반영 · MW0601 라이브 미배포(재기동 대기)**
 
 **체리픽 기록** — 원 커밋 `2e46abc` · 원 PC **MW0602**(`dev`) · 사용자 지시 「597차 v9-dev에 배포해」.

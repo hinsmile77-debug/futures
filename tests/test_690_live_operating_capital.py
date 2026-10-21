@@ -2,7 +2,7 @@
 """[MW0601 2026-10-13] CREON 실거래 전환 — 사용자 결정 운영값 고정.
 
   목표자본(사이징) 5천만원 유지 · 실운영금 1,500만원(손실 한도 분모) ·
-  신동 1계약 · 피터2 1계약 · CB② 3 · CREON 편도 수수료 0.0019%.
+  신동 2계약(2026-10-21 1→2) · 피터2 1계약 · CB② 3 · CREON 편도 수수료 0.0019%.
 값을 바꾸면 이 테스트가 깨져 결정 기록 갱신을 강제한다.
 """
 import os
@@ -20,7 +20,7 @@ def test_user_decided_values():
     assert ST.SIZING_TARGET_CAPITAL_KRW == 50_000_000
     assert ST.LIVE_OPERATING_CAPITAL_KRW == 15_000_000
     assert ST.MAX_CONTRACTS == 1
-    assert ST.SHINDONG_LIVE_QTY == 1
+    assert ST.SHINDONG_LIVE_QTY == 2
     assert ST.PETER2_QTY == 1
     assert ST.CB_CONSEC_STOP_LIMIT == 3
     assert K.BROKER_CHANNEL_SPECS["CREON"]["one_way_commission_rate"] == 0.000019
