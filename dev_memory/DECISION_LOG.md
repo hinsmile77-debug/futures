@@ -2,6 +2,23 @@
 
 ---
 
+## 2026-10-21 (MW0601 701차 dev 배포 — 가격움직임 패턴 연구 양방향 공유 · 연구용 장후 사본) — 🟡 **dev 반영 · MW0602 첫 실행 대기**
+
+- **체리픽 기록**: 원 커밋 `48f1f658`(연구용 장후 사본 코드) · `1808af74`(`[가격패턴]` 연구 폴더) · 원 PC MW0601(`v9-dev`) ·
+  이유: 사용자 지시(「이 연구가 MW0602에서도 동일하게 진행되고 양방향 공유 하도록 dev 배포」). 충돌 없음.
+- **무엇이 들어왔나**
+  - `docs/가격움직임패턴연구/` — 선물시장 국면 분류 조사 보고서·근거 노트 5종·표본실측 스크립트·MW0601 실측 CSV·공유 규약 `README.md`.
+  - `scripts/research_snapshot.py` — `ensemble_decisions` → `data/research/research_archive.db` 삭제 없는 증분 사본(장중 차단).
+  - `scripts/campaign_steps.py` — 주간 EOD 스텝 「연구용 장후 사본」(월간 정리 앞). `tests/test_701_research_snapshot.py`.
+  - CLAUDE.md 멀티PC 절에 **예외 한 줄**: 이 폴더만 양방향 공유(2026-08-23 상호 조율 폐기 결정의 예외).
+- **MW0602가 할 일**: ① 장후에 `python scripts/research_snapshot.py`로 첫 사본(이후 금요일 EOD 자동)
+  ② `docs/가격움직임패턴연구/표본실측/inventory.py` → `summarize.py`·`regime_coverage.py` — 결과는 `표본실측/MW0602/`에 생긴다
+  ③ 이 폴더만 바꾼 커밋은 제목에 `[가격패턴]` → MW0601이 `git log origin/dev --grep 가격패턴`으로 가져간다.
+- ⚠ 보고서의 실측 수치는 **MW0601 DB** 기준이다. `regular_candles`(서버 10100)는 두 PC가 같아야 하고 —
+  다르면 수집 결함 — `raw_candles`·`ensemble_decisions`·수급 시작일은 PC마다 다를 수 있다(README 규약 4).
+
+---
+
 ## 2026-09-30 (MW0602 602차 — 신동 PDF 인쇄: 관리자 권한에서 Chrome 즉시 종료 → 자동 메일 실패) — ✅ **수정 · 관리자 창 재현/해소 확인**
 
 **증상** — 598차 후속(markdown 설치) 뒤 첫 자동 확인일. 15:40:24 리포트 생성 → 15:40:25 `[ShindongMail] PDF·메일 실패: PDF 가 만들어지지 않았다`.
