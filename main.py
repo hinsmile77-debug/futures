@@ -668,6 +668,10 @@ class TradingSystem:
         self._weekly_option_flow = None     # 지연 생성 (COM Dispatch 비용)
         self._wof_last_ts = None            # None = 아직 한 번도 수집 안 함
         self._wof_warned = False
+        # [MW0601 704차] 행사가 × 투자자(CpSvr9842) 수집기 상태 — 같은 규약으로 명시 초기화.
+        self._strike_investor_flow = None   # 지연 생성 (COM Dispatch 비용)
+        self._sif_last_ts = None            # None = 아직 한 번도 수집 안 함
+        self._sif_warned = False
         # [MW0601 626차] 신동 가상거래 — 로그 중복 억제용 「이미 알린 상태」 · 경고 1회.
         #   {trade_key: 알린 상태 문자열}. 날짜가 바뀌면 비운다(_sd_day).
         self._sd_seen = {}
@@ -5106,6 +5110,8 @@ class TradingSystem:
             # 그 뒤 전부를 막아 **OI 동기화가 4분간 끊겼다**. 보조 데이터가 핵심
             # 경로를 막는 배치는 그 자체가 결함이다.
             self._fetch_weekly_option_flow(now)
+            # [MW0601 704차] 행사가 × 투자자 — 7222 뒤(보조 수집은 핵심 로직 뒤, 611차 교훈).
+            self._fetch_strike_investor_flow(now)
         except Exception as e:
             apply_error_policy(
                 system=self,
@@ -5207,6 +5213,51 @@ class TradingSystem:
             if not self._wof_warned:
                 self._wof_warned = True
                 logger.warning("[OptionFlow] 수집기 기동 실패(이후 로그 억제): %s", e)
+
+    def _fetch_strike_investor_flow(self, now: datetime.datetime) -> None:
+        """[MW0601 704차] 먼스리 옵션 행사가 × 투자자 12주체 수집 (CpSvr9842 = HTS [9842]).
+
+        수급 타이머에 얹혀 돈다 — 추가 타이머 없음, COM 콜백 밖(절대원칙 §4).
+        🔴 실계좌 로그인 전용. 모의 로그인이면 수집기가 첫 호출에서 차단을 확인하고
+          그날 더 부르지 않는다(WARNING 1회 + 상태 테이블 1행).
+        어떤 예외도 밖으로 내보내지 않는다 — 보조 수집이 파이프라인을 막으면 안 된다.
+        """
+        try:
+            if not getattr(runtime_settings, "STRIKE_INVESTOR_FLOW_ENABLED", False):
+                return
+            hh, mm = str(getattr(runtime_settings,
+                                 "WEEKLY_OPTION_FLOW_START_AFTER", "08:50")).split(":")
+            if now.time() < datetime.time(int(hh), int(mm)):
+                return
+            peak = getattr(runtime_settings, "WEEKLY_OPTION_FLOW_PEAK_SKIP", None)
+            if peak:
+                p0h, p0m = str(peak[0]).split(":")
+                p1h, p1m = str(peak[1]).split(":")
+                if (datetime.time(int(p0h), int(p0m))
+                        <= now.time() < datetime.time(int(p1h), int(p1m))):
+                    return
+            min_iv = float(getattr(runtime_settings,
+                                   "STRIKE_INVESTOR_FLOW_MIN_INTERVAL_SEC", 55.0))
+            last = self._sif_last_ts
+            if last is not None and (now - last).total_seconds() < min_iv:
+                return
+            sif = self._strike_investor_flow
+            if sif is None:
+                from collection.cybos.strike_investor_flow import StrikeInvestorFlow
+                sif = StrikeInvestorFlow(
+                    getattr(runtime_settings, "STRIKE_INVESTOR_FLOW_DB",
+                            "data/db/strike_investor.db"),
+                    months=tuple(getattr(runtime_settings,
+                                         "STRIKE_INVESTOR_FLOW_MONTHS", ("1",))),
+                    quota_reserve=int(getattr(runtime_settings,
+                                              "STRIKE_INVESTOR_FLOW_QUOTA_RESERVE", 25)))
+                self._strike_investor_flow = sif
+            sif.fetch_and_store(now)
+            self._sif_last_ts = now
+        except Exception as e:
+            if not self._sif_warned:
+                self._sif_warned = True
+                logger.warning("[StrikeInvestor] 수집기 기동 실패(이후 로그 억제): %s", e)
 
     def _run_shindong(self, now: datetime.datetime) -> None:
         """[MW0601 626차] 신동(개인 위클리 흐름 + 맥점) **가상거래** 재생·기록·차트 push.

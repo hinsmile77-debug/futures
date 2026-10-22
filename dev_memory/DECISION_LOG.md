@@ -50151,3 +50151,13 @@ AI 는 10/16 부터 고착을 적었으나 「raw_candles staleness·적재 지�
 - **검증**: `tests/test_703_profit_guard_account_axis.py` 20 passed(v9-dev 19건을 dev 원천에 맞게 수정 + 누적기 배치 가드 1건 추가). 관련 21파일 258 passed / 1 failed — 실패 `test_497::test_prev_broker_net_fetch`(net==gross, DB 데이터 의존)는 **변경 전에도 동일 실패**(stash 대조). py37_32 컴파일·settings import OK.
 - ⚠ 작업 사고 1건: 영향 재생 스크립트가 ProfitGuard 의 `log_manager` 를 타 `logs/20261022_*.log`(앱 미기동 상태, 08:10)를 생성·9줄 기록 — 내용 전부가 그 스크립트 출력임을 확인하고 11개 파일 삭제. 상태 파일 기록 없음. ([[feedback_isolate_stateful_verification]] 계열)
 - **라이브 검증 대기**: NEXT_TODO 645.
+
+
+## 2026-10-22 (MW0601 → dev 이식: [9842] 행사가 × 투자자 12주체 수집기 (CpSvr9842) — 원 v9-dev 704차) — 🟡 **코드 배치 · `ENABLED=False` · MW0602 판단 대기**
+
+- **출처**: 원 커밋 `53601c55`·`5bed3446`·`51bdd5da`·`dc715667` · 원 PC **MW0601**(`v9-dev`) · 사용자 지시 「dev에 배포 혹은 이식메모를 넘겨 MW0602에서 구현 혹은 구현준비」.
+- **무엇**: HTS [9842] 의 API 판(`CpSvr9842`) — 먼스리 행사가별 × 12주체 보유계약. 장중 당일 모드 수집기(수급 타이머 · 7222 뒤) + 장후 기간 스냅샷 스크립트(= HTS `_P`, 칸 대사) + 예약작업 등록기 + 판별 프로브.
+- **왜 False 인가**: MW0601 실측은 **실계좌 로그인(ServerType=2) 한정 성공**이고 모의 로그인은 계좌등급 차단이다(사용자 결정: 모의계정에서는 쓰지 않는다). MW0602(CREON)에서는 **한 번도 재지 않았다** — 로그인 종류·등급 정책이 다를 수 있다. 수집기는 차단이면 그날 재호출하지 않고 상태 1행만 남기도록 짜여 있어 켜도 해는 작지만, 판별 없이 켜지 않는다.
+- **이식 방식**: `main.py`·`config/settings.py` 는 v9-dev diff 를 3-way 적용(충돌 0, 이식 지점 문맥 동일) 후 `ENABLED` 만 False. 새 파일 5종 복사. `scripts/eod_session_cleanup.ps1`(MW0601 전용, dev 없음) 대기 목록 변경은 제외 — 테스트는 그 파일이 없으면 skip.
+- **검증(dev 트리, py37_32)**: `test_704` 16 통과 · 1 skip · `test_611`·`test_617`·`test_537` 통과. `test_457::test_db_fallback_columns_have_measured_flag` 1건 실패는 dev 기존 결함(`main_dashboard.py peter_paste`, 이식 무관 — 대시보드 무변경).
+- **How to apply (MW0602)**: `docs/정기점검/MW0601_to_MW0602_9842_이식메모_20261022.md` §3 — ① `probe_cpsvr9842.py` ② `strike_investor_snapshot.py --end <미러 _P 날짜>` 2,744칸 대사 ③ True + 재기동 ④ (선택) 예약작업 — **RunLevel 은 MW0602 에서 정상 동작 중인 COM 작업과 같게**.
