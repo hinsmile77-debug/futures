@@ -37,11 +37,12 @@
   "gate_flag_pattern": "BLOCK|ENABLED|DISABLE",
   "gate_flag_alert_pattern": "BLOCK",
 
-  "_documented_설명": "꺼져 있는 것이 정상이고 근거가 기록된 차단 게이트. 근거 위치 — CB3_P4/FP_CRITICAL: CLAUDE.md 절대원칙 §2 한시예외(297·303차), TOXICITY_SEVERE_SPREAD: config/settings.py:4770-4781 (311차, 섀도우 관찰 후 활성화 조건 명시), HEALTH_DEGRADED_BLOCK_MANUAL_ENTRY: 설계 선택(수동진입은 막지 않는다). 새로 꺼진 게이트를 여기 넣을 때는 반드시 근거 위치를 이 문장에 함께 적을 것 — 목록만 늘리면 '기록됨' 표시가 근거 없이 붙는다.",
+  "_documented_설명": "꺼져 있는 것이 정상이고 근거가 기록된 차단 게이트. 근거 위치 — CB3_P4/FP_CRITICAL: CLAUDE.md 절대원칙 §2 한시예외(297·303차), TOXICITY_SEVERE_SPREAD: config/settings.py:4770-4781 (311차, 섀도우 관찰 후 활성화 조건 명시), HEALTH_DEGRADED_BLOCK_MANUAL_ENTRY: 설계 선택(수동진입은 막지 않는다), PROFIT_GUARD_BLOCK_VIRTUAL_PRINCIPAL: 설계 선택(645차 ProfitGuard 계좌 축 이식 — 가상 주체 미륵의 가상 진입은 계좌 래치가 막지 않는다, 막은 사실 대신 [ProfitGuard][Virtual] 로그를 남긴다. config/settings.py 주석 + dev_memory/DECISION_LOG.md 2026-10-22 645차). 새로 꺼진 게이트를 여기 넣을 때는 반드시 근거 위치를 이 문장에 함께 적을 것 — 목록만 늘리면 '기록됨' 표시가 근거 없이 붙는다.",
   "documented_disabled_flags": [
     "CB3_P4_GRADE_BLOCK_ENABLED",
     "FP_CRITICAL_GRADE_BLOCK_ENABLED",
     "HEALTH_DEGRADED_BLOCK_MANUAL_ENTRY",
+    "PROFIT_GUARD_BLOCK_VIRTUAL_PRINCIPAL",
     "TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED"
   ]
 }
