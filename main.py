@@ -139,6 +139,13 @@ from config.capital import (
     capital_profile as _capital_profile,
     check_consistency as _capital_check_consistency,
     format_profile as _capital_format_profile,
+    # [MW0601 707차 → dev 이식] 실전 자본 3층 — 모니터 상태 · PG 배율 · 신동 수량
+    sizing_capital as _capital_sizing_capital,
+    capital_state as _capital_state,
+    format_capital_state as _capital_format_state,
+    profit_guard_krw_scale as _capital_pg_scale,
+    shindong_planned_qty as _capital_sd_planned_qty,
+    shindong_entry_qty as _capital_sd_entry_qty,
 )
 from config import secrets as _secrets
 
@@ -592,6 +599,15 @@ class TradingSystem:
         # 롤오버로 본다(그때 `익일가 − 예탁`은 net이 아니라 −수수료다).
         # None = 오늘 첫 판독 전(계측 4원칙 ②·④ — getattr 폴백 금지).
         self._broker_dep_base_today = None
+        # [MW0601 707차 → dev 이식] 실전 자본 모니터 — 관측층 캐시. None = 미측정(계측 4원칙 ②).
+        #   _cap_margin_qty: 신규주문가능수량(CpTd6722) 매수·매도 중 작은 값
+        #   _cap_margin_ts : 마지막 조회 시각 — CAPITAL_MONITOR_MARGIN_REFRESH_SEC 간격으로만 조회
+        #   _cap_last_key  : 직전 모니터 상태 키 — 바뀔 때만 TRADE `[Capital]` 로그
+        #   _cap_day_start : 그날 장시작 주문가능수량 — data/principal/<날짜>/capital_day_start.json 승계
+        self._cap_margin_qty = None
+        self._cap_margin_ts = 0.0
+        self._cap_last_key = None
+        self._cap_day_start = None
         # [MW0602 497차 / P1] 전일 브로커 net 표시 캐시 (날짜, fetch 결과) — 날짜당
         # 1회만 DB를 본다. None = 오늘 아직 조회 안 함(4원칙 ④ — getattr 폴백 금지).
         self._prev_broker_net_cache = None
@@ -5427,7 +5443,33 @@ class TradingSystem:
                     changed = True
                     log_manager.system("[ShindongLive] %s 진입 기각 — %s" % (key, why), "WARNING")
                 else:
-                    qty = max(1, int(getattr(runtime_settings, "SHINDONG_LIVE_QTY", 2) or 2))
+                    qty = self._shindong_live_qty()
+                    # [MW0601 707차 → dev 이식] 증거금 연동(SHINDONG_QTY_FROM_MARGIN_ENABLED, dev 기본 꺼짐).
+                    #   켜면 수량 = min(계획 = min(최대허용수량, 장시작 가능), 진입 직전 주문가능수량) · 0 이면 기각.
+                    #   꺼져 있으면 종전과 같다(SHINDONG_LIVE_QTY 고정 · 진입 직전 조회 없음).
+                    if bool(getattr(runtime_settings, "SHINDONG_QTY_FROM_MARGIN_ENABLED", False)):
+                        try:
+                            _cap = self._capital_monitor_refresh(force_margin=True)
+                        except Exception as _cap_e:
+                            log_manager.trade("[ShindongLive] 자본 모니터 계산 실패 — 주문가능수량 미측정으로 진행: %r"
+                                              % (_cap_e,), "WARNING")
+                            _cap = {"margin_qty": None}
+                        _planned = qty
+                        qty = _capital_sd_entry_qty(_planned, _cap["margin_qty"])
+                        if _cap["margin_qty"] is None:
+                            log_manager.trade("[ShindongLive] 주문가능수량 미측정 — 계획 수량 %d계약 그대로 주문"
+                                              "(최종 판정은 브로커)" % qty, "WARNING")
+                        elif qty < _planned:
+                            log_manager.trade("[ShindongLive] 증거금 기준 축소 %d→%d계약 (지금 가능 %d)"
+                                              % (_planned, qty, _cap["margin_qty"]), "WARNING")
+                    if qty <= 0:
+                        _why = "margin(가능 %s · 계획 %d)" % (_cap["margin_qty"], _planned)
+                        self._sd_exec[key] = {"status": "REJECT", "why": _why, "side": side,
+                                              "entry_ts": pick["entry_ts"],
+                                              "at": now.isoformat(timespec="seconds")}
+                        changed = True
+                        log_manager.trade("[ShindongLive] %s 진입 기각 — %s" % (key, _why), "WARNING")
+                if not why and qty > 0:
                     price = float(payload.get("last_close") or pick["entry_px"])
                     _ctx = self._manual_entry_ctx or {}
                     atr = float(_ctx.get("atr") or 0.0) or 1.0
@@ -5528,7 +5570,7 @@ class TradingSystem:
                     #   체결이 불가능하므로, 가상만 들어가면 가상 성과가 현실과 어긋난다.
                     why = _ts_exchange_cb_entry_block(self) + "(가상)"
                 if why is None:
-                    qty = max(1, int(getattr(runtime_settings, "SHINDONG_LIVE_QTY", 2) or 2))
+                    qty = max(1, self._shindong_live_qty())   # [707차 이식] 실주문 계획 수량(꺼짐이면 SHINDONG_LIVE_QTY)
                     price = float(payload.get("last_close") or pick["entry_px"])
                     _ctx = self._manual_entry_ctx or {}
                     atr = float(_ctx.get("atr") or 0.0) or 1.0
@@ -5557,6 +5599,128 @@ class TradingSystem:
             except Exception as _e:
                 logger.warning("[ShindongVirtual] 가상 집행 기록 저장 실패: %s", _e)
 
+    # ── [MW0601 707차 / 사용자 결정 2026-10-23] 실전 자본 3층 — 통제 · 관측 · 모니터 ────────────
+    _CAP_DAY_START_FILE = "capital_day_start.json"
+
+    def _cap_day_start_qty(self, day: str):
+        """그날 장시작 주문가능수량. 메모리에 없으면 파일에서 승계한다. 없으면 None(미측정)."""
+        if self._cap_day_start is None or self._cap_day_start.get("date") != day:
+            rec = principal_mod.read_json(day, self._CAP_DAY_START_FILE)
+            self._cap_day_start = rec if (isinstance(rec, dict) and rec.get("date") == day) else {"date": day}
+            if isinstance(rec, dict) and rec.get("margin_qty") is not None:
+                log_manager.trade("[Capital] 장시작 가능수량 승계 %s: %s계약 (기록 %s)"
+                                  % (day, rec.get("margin_qty"), rec.get("ts")))
+        q = self._cap_day_start.get("margin_qty")
+        return None if q is None else int(q)
+
+    def _cap_day_start_record(self, day: str, margin_qty: int) -> None:
+        """그날 첫 FLAT 실측을 장시작 가능수량으로 고정한다(덮어쓰지 않는다)."""
+        if self._cap_day_start_qty(day) is not None:
+            return
+        rec = {"date": day, "margin_qty": int(margin_qty),
+               "ts": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+        self._cap_day_start = rec
+        try:
+            principal_mod.write_json(day, self._CAP_DAY_START_FILE, rec)
+        except Exception as _e:
+            log_manager.trade("[Capital] 장시작 가능수량 저장 실패(메모리만 유지): %s" % (_e,), "WARNING")
+        log_manager.trade("[Capital] 장시작 가능수량 %d계약 고정 (%s) — 신동 계획 수량의 기준"
+                          % (int(margin_qty), rec["ts"][11:]))
+
+    def _shindong_live_qty(self) -> int:
+        """신동 **계획** 수량 = min(최대허용수량, 장시작 가능수량). 장시작 미측정이면 min(최대허용수량, SHINDONG_LIVE_QTY).
+
+        [707차 후속 / 사용자 결정 2026-10-23] 「장시작 증거금에 따라 부족하면 줄이고 충분하면 늘리되
+        최대허용수량까지」. 최대허용수량은 `MAX_CONTRACTS` 이하로 잘린 UI 값이다(`_load_max_qty`).
+        실제 진입 수량은 진입 직전 주문가능수량으로 한 번 더 줄인다(`_capital_sd_entry_qty`). 0 = 증거금 없음.
+        1 이면 1차 목표에서 전량 청산된다(`_shindong_apply` 의 `qty_all >= 2` 분기, 685차).
+        """
+        _cfg = max(1, int(getattr(runtime_settings, "SHINDONG_LIVE_QTY", 2) or 2))
+        if not bool(getattr(runtime_settings, "SHINDONG_QTY_FROM_MARGIN_ENABLED", False)):
+            return _cfg        # [dev] 증거금 연동 꺼짐 — 종전과 같다(SHINDONG_LIVE_QTY 고정)
+        return _capital_sd_planned_qty(
+            int(self._max_entry_qty or 0),
+            self._cap_day_start_qty(datetime.date.today().isoformat()), _cfg)
+
+    def _principal_live_qty(self, principal: str) -> int:
+        """선택 주체의 실주문 수량 — ProfitGuard 원화 임계 배율의 기준."""
+        if principal == principal_mod.SHINDONG:
+            return max(1, self._shindong_live_qty())
+        if principal == principal_mod.PETER:
+            return max(1, int(getattr(runtime_settings, "PETER2_QTY", 1) or 1))
+        return max(1, int(self._max_entry_qty or 1))
+
+    def _pg_sync_scale(self) -> None:
+        """ProfitGuard 원화 임계를 선택 주체 실주문 수량에 맞춘다(2계약 이하 ×1 — 종전과 같다)."""
+        if not bool(getattr(runtime_settings, "PROFIT_GUARD_QTY_SCALE_ENABLED", False)):
+            return             # [dev] 수량 비례 꺼짐 — 원화 임계 ×1(종전)
+        _p = self._principal_state["principal"]
+        _q = self._principal_live_qty(_p)
+        self.profit_guard.set_krw_scale(_capital_pg_scale(_q),
+                                        why="%s %d계약" % (principal_mod.label(_p), _q))
+
+    def _cap_query_margin_qty(self, price) -> "Optional[int]":
+        """CpTd6722 신규주문가능수량(매수·매도 중 작은 값). 실패·미지원 = None(미측정 — 0 으로 쓰지 않는다)."""
+        account_no = self._get_active_account_no()
+        code = getattr(self, "_futures_code", "")   # 심볼 확정 시 broker_runtime_service 가 붙인다(test_457 허용 목록)
+        if not account_no or not code or not price or self.broker is None:
+            return None
+        try:
+            info = self.broker.get_order_available_qty(account_no, code, float(price))
+        except Exception as _e:
+            logger.debug("[Capital] 주문가능수량 조회 예외: %s", _e)
+            return None
+        if not info:
+            return None
+        try:
+            return min(int(info.get("buy_new_qty", 0) or 0), int(info.get("sell_new_qty", 0) or 0))
+        except Exception:
+            return None
+
+    def _capital_monitor_refresh(self, now=None, force_margin: bool = False) -> dict:
+        """관측 → 정책 → 통제 상태를 계산해 「3 주문/체결」 탭에 띄우고, 바뀌면 `[Capital]` 로그를 남긴다.
+
+        30초 스케줄러(장 시간대)와 신동 진입 직전이 부른다. 주문가능수량 조회는 BlockRequest 라
+        `CAPITAL_MONITOR_MARGIN_REFRESH_SEC` 간격(또는 force_margin)으로만 한다 — COM 콜백 밖(§4).
+        """
+        try:
+            _price = float(self._last_pipeline_price or 0.0) or None
+        except AttributeError:           # 첫 분봉 전 — 가격 미측정
+            _price = None
+        _now_ts = time.time()
+        _gap = float(getattr(runtime_settings, "CAPITAL_MONITOR_MARGIN_REFRESH_SEC", 300) or 300)
+        # 보유 중에는 조회하지 않는다 — 포지션이 증거금을 쓰고 있어 「남은」 가능수량이 작게 나와 ⛔로 오표시된다.
+        if _price and self.position.status == "FLAT" and (force_margin or _now_ts - self._cap_margin_ts >= _gap):
+            self._cap_margin_ts = _now_ts
+            self._cap_margin_qty = self._cap_query_margin_qty(_price)
+            if self._cap_margin_qty is not None:
+                self._cap_day_start_record(datetime.date.today().isoformat(), self._cap_margin_qty)
+        _margin_on = bool(getattr(runtime_settings, "SHINDONG_QTY_FROM_MARGIN_ENABLED", False))
+        st = _capital_state(
+            policy_krw=_capital_sizing_capital(_ts_current_sizer_balance(self)),   # [dev] 정책값 = 사이징 자본
+            deposit_krw=self._broker_dep_base_today, price=_price, pt_value=self._pt_value,
+            margin_qty=self._cap_margin_qty,
+            configured_qty=int(getattr(runtime_settings, "SHINDONG_LIVE_QTY", 2) or 2),
+            ui_max_qty=self._max_entry_qty,
+            day_start_margin_qty=self._cap_day_start_qty(datetime.date.today().isoformat()),
+            qty_from_margin=_margin_on,
+            deposit_cap=bool(getattr(runtime_settings, "RISK_CAPITAL_DEPOSIT_CAP_ENABLED", False)))
+        # PG 배율은 **선택 주체** 기준이다(신동 기준 계산값을 실제 적용값으로 덮는다 — 표시·판정 일치).
+        self._pg_sync_scale()
+        st["pg_scale"] = self.profit_guard.krw_scale
+        st["principal"] = principal_mod.label(self._principal_state["principal"])
+        line = _capital_format_state(st)
+        try:
+            self.dashboard.update_capital_monitor(line, st["level"])
+        except Exception as _e:
+            logger.debug("[Capital] 모니터 표시 실패(무해): %s", _e)
+        _key = (st["level"], st["deposit_krw"], st["risk_capital_krw"], st["margin_qty"],
+                st["day_start_margin_qty"], st["risk_max_qty"], st["effective_qty"], st["pg_scale"])
+        if _key != self._cap_last_key:
+            self._cap_last_key = _key
+            log_manager.trade(line, {"OK": "INFO", "WARN": "WARNING", "BLOCK": "WARNING"}[st["level"]])
+        return st
+
     def _pg_principal_entry_block(self, who: str) -> str:
         """[MW0601 703차 / F-701-A · MW0602 이식] 외부 주체(신동·피터2) 실거래 진입의 ProfitGuard 관문.
 
@@ -5574,6 +5738,11 @@ class TradingSystem:
         """
         if not PROFIT_GUARD_ACCOUNT_AXIS:
             return ""
+        try:
+            self._pg_sync_scale()    # [707차 이식] 원화 임계를 선택 주체 실주문 수량에 맞춘다(dev 기본 꺼짐)
+        except Exception as _pgs_e:
+            # 실패하면 직전 배율 그대로 판정한다(배율은 임계를 느슨하게 하는 쪽이라 유지가 보수적이다).
+            log_manager.trade("[ProfitGuard] 원화 임계 배율 동기화 실패 — 직전 배율 유지: %r" % (_pgs_e,), "WARNING")
         try:
             ok, why = self.profit_guard.is_entry_allowed(
                 float(self._sys_daily_net_krw), None,
@@ -9498,7 +9667,8 @@ class TradingSystem:
                         time_zone          = _tz,
                         daily_loss_pct     = _capital_daily_loss_ratio(
                                                  -self.position.daily_stats()["pnl_krw"],
-                                                 _ts_current_sizer_balance(self)),
+                                                 _ts_current_sizer_balance(self),
+                                                 deposit_krw=self._broker_dep_base_today),
                         min_confidence     = _cl_min_conf_pre,
                         bear_exhaustion    = float(features.get("bear_exhaustion", 0.0) or 0.0),
                         bull_exhaustion    = float(features.get("bull_exhaustion", 0.0) or 0.0),
@@ -9910,7 +10080,8 @@ class TradingSystem:
                         time_zone         = time_zone,
                         daily_loss_pct    = _capital_daily_loss_ratio(
                                                 -self.position.daily_stats()["pnl_krw"],
-                                                _ts_current_sizer_balance(self)),
+                                                _ts_current_sizer_balance(self),
+                                                deposit_krw=self._broker_dep_base_today),
                         min_confidence    = _checklist_min_conf,
                         bear_exhaustion   = float(features.get("bear_exhaustion", 0.0) or 0.0),
                         bull_exhaustion   = float(features.get("bull_exhaustion", 0.0) or 0.0),
@@ -10793,6 +10964,10 @@ class TradingSystem:
         # 불필요하게 발동해 중복 차단 로그가 쌓임 (ZeroDiag→grade X→size_mult=0 경로).
         # Tier4(daily_pnl>=400만 완전중단) 감지는 size_mult=1.0으로도 작동하므로 대체.
         _size_mult_for_pg = 1.0 if _final_grade == "X" else (_cr["size_mult"] if _cr else 1.0)
+        try:
+            self._pg_sync_scale()    # [707차 이식] 원화 임계를 선택 주체 실주문 수량에 맞춘다(dev 기본 꺼짐)
+        except Exception as _pgs_e:
+            log_manager.trade("[ProfitGuard] 원화 임계 배율 동기화 실패 — 직전 배율 유지: %r" % (_pgs_e,), "WARNING")
         _pg_allowed, _pg_reason = self.profit_guard.is_entry_allowed(
             _pg_pnl_now, _size_mult_for_pg,
             # [MW0601 477차 후속7 / GR-3] 이번 판정이 gross(broker)로 계산됐는지
@@ -11574,7 +11749,8 @@ class TradingSystem:
         _prev_bar_dir = (1 if bar.get("close", 0) > bar.get("open", 0)
                          else (-1 if bar.get("close", 0) < bar.get("open", 0) else 0))
         _dl_pct = _capital_daily_loss_ratio(
-            -self.position.daily_stats()["pnl_krw"], _ts_current_sizer_balance(self))
+            -self.position.daily_stats()["pnl_krw"], _ts_current_sizer_balance(self),
+            deposit_krw=self._broker_dep_base_today)
         _atr_state = (
             "↑고변동" if atr > _atr_max_adaptive
             else ("↓저변동" if atr < ATR_MIN_ENTRY else "OK")
@@ -16343,6 +16519,15 @@ class TradingSystem:
         if self._heartbeat_count % 10 == 0:
             self._log_waiting_status(now)
 
+        # [MW0601 707차 → dev 이식] 실전 자본 모니터 — 장전(08:30)부터 마감(15:35)까지, 우측패널 「3 주문/체결」.
+        #   읽기 전용(항상 켜짐). 주문가능수량 조회(BlockRequest)는 CAPITAL_MONITOR_MARGIN_REFRESH_SEC 간격 · FLAT 일 때만.
+        if (is_trading_day(now) and datetime.time(8, 30) <= now.time() <= datetime.time(15, 35)
+                and self.broker is not None and self.broker.is_connected):
+            try:
+                self._capital_monitor_refresh(now)
+            except Exception as _cap_e:
+                log_manager.trade("[Capital] 모니터 갱신 실패: %s" % (_cap_e,), "WARNING")
+
         # [MW0601 453차 D2] 시간 청산 피드 독립 안전망 — 분봉·틱이 전부 죽어도
         # 이 타이머는 돌므로, 15:11 이후 미청산 포지션을 브로커 직접 청산한다
         # (절대원칙 §1 오버나이트 금지의 마지막 방어선. 상세는 함수 docstring).
@@ -17767,6 +17952,10 @@ def _ts_alert_trade_loss(self, result: dict) -> None:
             self._alert_day, self._alert_day_net = today, 0.0
         self._alert_day_net += net
         cap = float(ALERT_LOSS_CAPITAL_KRW or 0.0)   # 사이징 자본과 분리 — 두 PC 같은 기준
+        # [707차 이식] RISK_CAPITAL_DEPOSIT_CAP_ENABLED 면 min(고정값, 당일 시가 예탁금). 꺼짐·미측정이면 종전 고정값.
+        if (bool(getattr(runtime_settings, "RISK_CAPITAL_DEPOSIT_CAP_ENABLED", False))
+                and cap > 0 and self._broker_dep_base_today):
+            cap = min(cap, float(self._broker_dep_base_today))
         if net <= -float(ALERT_LOSS_TRADE_KRW):
             _ts_alert(self, "A-04", "거래 1건 %s원 (기준 −%s원)" % (format(net, "+,.0f"), format(int(ALERT_LOSS_TRADE_KRW), ",")),
                       ["%s %s계약 %.2f→%.2f · 사유 %s" % (

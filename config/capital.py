@@ -41,6 +41,16 @@ from config.settings import (
     MAX_CONTRACTS,
 )
 
+try:
+    # [MW0601 707차 → dev 이식] 실전 자본 3층 — 설정 설명은 config/settings.py 해당 절.
+    from config.settings import (RISK_MDD_LIMIT_PCT, SHINDONG_MDD_PER_CONTRACT_KRW,
+                                 PROFIT_GUARD_QTY_BASE, FUTURES_MARGIN_RATE_INITIAL,
+                                 RISK_CAPITAL_DEPOSIT_CAP_ENABLED)
+except ImportError:
+    RISK_MDD_LIMIT_PCT, SHINDONG_MDD_PER_CONTRACT_KRW = 0.15, 0
+    PROFIT_GUARD_QTY_BASE, FUTURES_MARGIN_RATE_INITIAL = 2, 0.0
+    RISK_CAPITAL_DEPOSIT_CAP_ENABLED = False
+
 # 최대노출 레버리지 경고 임계 (기준자본 대비 MAX_CONTRACTS 총 계약가치 배수).
 # 자동 조치는 하지 않는다 — 경고만.
 LEVERAGE_WARN_MULT = 5.0
@@ -72,7 +82,20 @@ def sizing_capital(actual_balance=0.0) -> float:
     return max(0.0, _f(actual_balance))
 
 
-def daily_loss_ratio(loss_krw, actual_balance=0.0) -> float:
+def risk_capital(actual_balance=0.0, deposit_krw=None) -> float:
+    """[MW0601 707차 → dev 이식] 손실 한도의 기준 자본 = sizing_capital().
+
+    RISK_CAPITAL_DEPOSIT_CAP_ENABLED 이고 deposit_krw(당일 시가 예탁현금)가 측정됐으면 min(sizing_capital, 예탁금).
+    꺼져 있거나 미측정(None·0 이하)이면 sizing_capital() 그대로 — 종전 동작.
+    """
+    base = sizing_capital(actual_balance)
+    dep = _f(deposit_krw)
+    if RISK_CAPITAL_DEPOSIT_CAP_ENABLED and dep > 0 and base > 0:
+        return min(base, dep)
+    return base
+
+
+def daily_loss_ratio(loss_krw, actual_balance=0.0, deposit_krw=None) -> float:
     """당일 손실률(양수=손실). 분모는 sizing_capital() 하나뿐이다.
 
     구 코드는 `max(잔고, 50_000_000)` 으로 분모에 하한을 박아 뒀는데, 그 하한은
@@ -81,7 +104,7 @@ def daily_loss_ratio(loss_krw, actual_balance=0.0) -> float:
     "손실 없음"이 아니라 "판정 근거 없음"이라는 뜻이다. 이 경우 9_risk 체크는
     통과하지만, 잔고 미확보 상태는 broker sync 게이트가 별도로 막는다.
     """
-    base = sizing_capital(actual_balance)
+    base = risk_capital(actual_balance, deposit_krw)
     if base <= 0:
         return 0.0
     return max(0.0, _f(loss_krw)) / base
@@ -92,9 +115,149 @@ def base_risk_krw(actual_balance=0.0) -> float:
     return sizing_capital(actual_balance) * _f(ACCOUNT_BASE_RISK)
 
 
-def daily_loss_limit_krw(actual_balance=0.0) -> float:
-    """일일 손실 한도의 원화 환산(표시·로그용). = 기준자본 x DAILY_LOSS_LIMIT_PCT"""
-    return sizing_capital(actual_balance) * _f(DAILY_LOSS_LIMIT_PCT)
+def daily_loss_limit_krw(actual_balance=0.0, deposit_krw=None) -> float:
+    """일일 손실 한도의 원화 환산(표시·로그용). = risk_capital x DAILY_LOSS_LIMIT_PCT"""
+    return risk_capital(actual_balance, deposit_krw) * _f(DAILY_LOSS_LIMIT_PCT)
+
+
+# ── [MW0601 707차] 관측 → 정책 → 통제 ─────────────────────────────────────────────
+def margin_per_contract_est(price, pt_value) -> float:
+    """1계약 위탁증거금 **추정치**(참고). = 가격 × pt_value × FUTURES_MARGIN_RATE_INITIAL.
+
+    ⚠ 판정에 쓰지 않는다 — 주문 가능 여부는 브로커 CpTd6722 가 정한다(settings 주석 그대로).
+    """
+    return max(0.0, _f(price) * _f(pt_value) * _f(FUTURES_MARGIN_RATE_INITIAL))
+
+
+def risk_max_qty(risk_cap):
+    """위험 기준 최대계약수 = floor(위험자본 × MDD 한도 ÷ 계약당 MDD 실측). 근거값 없으면 None."""
+    per = _f(SHINDONG_MDD_PER_CONTRACT_KRW)
+    cap = _f(risk_cap)
+    if per <= 0 or cap <= 0:
+        return None
+    return int(cap * _f(RISK_MDD_LIMIT_PCT) // per)
+
+
+def profit_guard_krw_scale(live_qty) -> float:
+    """ProfitGuard 원화 임계 배율 = max(1, 실주문 수량 ÷ PROFIT_GUARD_QTY_BASE)."""
+    base = _f(PROFIT_GUARD_QTY_BASE)
+    q = _f(live_qty)
+    if base <= 0 or q <= 0:
+        return 1.0
+    return max(1.0, q / base)
+
+
+def shindong_planned_qty(ui_max_qty, day_start_margin_qty=None, configured_qty=None) -> int:
+    """신동 계획 수량 = min(최대허용수량, 장시작 주문가능수량). 장시작 미측정이면 min(최대허용수량, SHINDONG_LIVE_QTY).
+
+    [MW0601 707차 후속 / 사용자 결정 2026-10-23] 「장시작 증거금에 따라 부족하면 줄이고 충분하면 늘리되
+    최대허용수량까지」. 장시작 값으로 고정하므로 장중 이익으로 증거금 여유가 늘어도 커지지 않는다.
+    반환 0 = 증거금 없음(진입 기각).
+    """
+    ui = int(_f(ui_max_qty, 0))
+    if day_start_margin_qty is not None:
+        base = max(0, int(_f(day_start_margin_qty, 0)))
+    else:
+        base = max(1, int(_f(configured_qty, 1)))
+    return min(ui, base) if ui > 0 else base
+
+
+def shindong_entry_qty(planned_qty, margin_qty_now=None) -> int:
+    """진입 수량 = min(계획 수량, 진입 직전 주문가능수량). 직전 미측정이면 계획 수량(최종 판정은 브로커)."""
+    p = max(0, int(_f(planned_qty, 0)))
+    if margin_qty_now is None:
+        return p
+    return min(p, max(0, int(_f(margin_qty_now, 0))))
+
+
+def capital_state(policy_krw=None, deposit_krw=None, price=None, pt_value=0.0,
+                  margin_qty=None, configured_qty=None, ui_max_qty=None,
+                  day_start_margin_qty=None, qty_from_margin=True, deposit_cap=True) -> dict:
+    """실전 운영 상태 한 덩어리 — 우측패널 「3 주문/체결」 모니터와 `[Capital]` 로그가 같은 값을 쓴다.
+
+    margin_qty          : 지금 신규주문가능수량(CpTd6722, 매수·매도 중 작은 값). None = 미측정.
+    day_start_margin_qty: 그날 장시작(FLAT 첫 실측) 주문가능수량. None = 미측정 → SHINDONG_LIVE_QTY 폴백.
+    configured_qty      : SHINDONG_LIVE_QTY(폴백) · ui_max_qty: 진입관리탭 최대허용수량(MAX_CONTRACTS 상한).
+    level               : OK / WARN(위험 기준 초과 — 사람이 판단) / BLOCK(가능 0 — 신동 진입 기각).
+    [dev] qty_from_margin=False(SHINDONG_QTY_FROM_MARGIN_ENABLED 꺼짐) → 실주문 = SHINDONG_LIVE_QTY 고정,
+          계획 수량은 「켜면」 값으로만 보여 준다. deposit_cap=False → 위험자본 = 정책값(예탁금 상한 미적용).
+    """
+    pol = sizing_capital(0.0) if policy_krw is None else _f(policy_krw)
+    dep = _f(deposit_krw)
+    dep_measured = dep > 0
+    if deposit_cap:
+        rcap = (min(pol, dep) if (pol > 0 and dep_measured) else (pol if pol > 0 else (dep if dep_measured else 0.0)))
+    else:
+        rcap = pol
+    m1 = margin_per_contract_est(price, pt_value) if price else 0.0
+    est_qty = int(dep // m1) if (dep_measured and m1 > 0) else None
+    rmax = risk_max_qty(rcap)
+    cq = int(_f(configured_qty, 0)) if configured_qty is not None else None
+    uq = int(_f(ui_max_qty, 0)) if ui_max_qty is not None else None
+    planned = shindong_planned_qty(uq, day_start_margin_qty, cq) if (uq is not None or cq is not None) else None
+    eff = None if planned is None else shindong_entry_qty(planned, margin_qty)
+    level, reasons = "OK", []
+    if not qty_from_margin:
+        # [dev] 증거금 연동 꺼짐 — 실주문은 SHINDONG_LIVE_QTY 고정. 연동 시 값은 사유에만 남긴다.
+        reasons.append("증거금 연동 꺼짐 — 켜면 %s계약" % ("미측정" if eff is None else eff))
+        eff = cq
+        planned = cq
+    if eff is not None and eff <= 0:
+        level = "BLOCK"
+        reasons.append("주문가능 0 — 신동 진입 기각")
+    elif eff is not None and planned is not None and eff < planned:
+        reasons.append("지금 증거금 기준 축소 %d→%d" % (planned, eff))
+    if not qty_from_margin:
+        pass
+    elif day_start_margin_qty is None:
+        reasons.append("장시작 가능수량 미측정 — SHINDONG_LIVE_QTY=%s 폴백" % cq)
+    elif cq is not None and planned is not None and planned != cq:
+        reasons.append("장시작 증거금 기준 %s %d→%d" % ("확대" if planned > cq else "축소", cq, planned))
+    if eff is not None and rmax is not None and eff > rmax:
+        if level == "OK":
+            level = "WARN"
+        reasons.append("위험 기준 초과(실주문 %d > 위험최대 %d)" % (eff, rmax))
+    if margin_qty is None:
+        reasons.append("지금 주문가능수량 미측정")
+    if not dep_measured:
+        reasons.append("예탁금 미측정 — 위험자본=정책값")
+    elif not deposit_cap:
+        reasons.append("예탁금 상한 꺼짐 — 위험자본=정책값")
+    return {
+        "policy_krw": pol, "deposit_krw": dep if dep_measured else None, "deposit_measured": dep_measured,
+        "risk_capital_krw": rcap, "risk_capital_src": ("예탁금" if (deposit_cap and dep_measured and dep < pol) else "정책"),
+        "margin_per_contract_est": m1 if m1 > 0 else None, "margin_qty_est": est_qty,
+        "margin_qty": None if margin_qty is None else int(margin_qty),
+        "day_start_margin_qty": None if day_start_margin_qty is None else int(day_start_margin_qty),
+        "risk_max_qty": rmax, "configured_qty": cq, "ui_max_qty": uq,
+        "planned_qty": planned, "effective_qty": eff,
+        "daily_loss_limit_krw": rcap * _f(DAILY_LOSS_LIMIT_PCT),
+        "pg_scale": profit_guard_krw_scale(eff or 0),
+        "level": level, "reasons": reasons,
+    }
+
+
+def format_capital_state(st: dict) -> str:
+    """capital_state() → 한 줄. 미측정은 「미측정」으로 쓴다(0 으로 쓰지 않는다)."""
+    def _m(v):
+        return "미측정" if v is None else "%s만" % format(int(round(_f(v) / 1e4)), ",")
+    def _q(v):
+        return "미측정" if v is None else "%d" % int(v)
+    _mq = _q(st.get("margin_qty"))
+    if st.get("margin_qty") is None and st.get("margin_qty_est") is not None:
+        _mq = "미측정(추정 %d)" % st["margin_qty_est"]
+    _mark = {"OK": "✅", "WARN": "⚠", "BLOCK": "⛔"}.get(st.get("level"), "?")
+    line = ("[Capital] 예탁금 %s · 위험자본 %s(%s) · 계약당 증거금≈%s | 가능수량 지금 %s · 장시작 %s · 위험최대 %s | "
+            "신동 실주문 %s(최대허용 %s · 폴백 %s) %s | 일일한도 %s · PG ×%.2f(%s)" % (
+                _m(st.get("deposit_krw")), _m(st.get("risk_capital_krw")), st.get("risk_capital_src", "?"),
+                _m(st.get("margin_per_contract_est")), _mq, _q(st.get("day_start_margin_qty")),
+                _q(st.get("risk_max_qty")),
+                _q(st.get("effective_qty")), _q(st.get("ui_max_qty")), _q(st.get("configured_qty")), _mark,
+                _m(st.get("daily_loss_limit_krw")), _f(st.get("pg_scale"), 1.0),
+                st.get("principal") or "신동 기준"))
+    if st.get("reasons"):
+        line += " | " + " · ".join(st["reasons"])
+    return line
 
 
 def check_consistency(actual_balance=0.0, index_price=0.0, pt_value=0.0,

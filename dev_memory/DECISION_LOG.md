@@ -2,6 +2,24 @@
 
 ---
 
+## 2026-10-23 (MW0601 → dev 선별 이식 — 실전 자본 3층: 관측·정책·통제 + 「3 주문/체결」 탭 모니터 · 원 v9-dev 707차 `6d483785`) — 🟡 **이식 · 동작 변경 3종 기본 꺼짐(MW0602 판단 대기)**
+
+- **원 커밋**: v9-dev `6d483785`(MW0601 707차). **원 PC**: MW0601. **가져온 이유**: 사용자 지시 「이식메모와 함께 dev 배포」.
+- **항상 켜짐(읽기 전용)**: 우측패널 「3 주문/체결」 탭 상단 `[Capital]` 한 줄 — 예탁금(당일 시가, 552-10 승계) ·
+  위험자본 · 계약당 증거금(추정) · 주문가능수량 지금/장시작(CpTd6722, 300초 · FLAT 일 때만) · 위험최대 · 신동 실주문 ·
+  일일한도 · PG 배율. 로그는 전부 TRADE 계층(`log_manager.trade`) — 「3 주문/체결」 탭 · `logs/<날짜>_TRADE.log`.
+- **기본 꺼짐(켜면 동작이 바뀐다)** — `config/settings.py`:
+  - `SHINDONG_QTY_FROM_MARGIN_ENABLED` — 신동 계획 = min(최대허용수량, 장시작 가능) · 진입 = min(계획, 직전 가능) · 0 기각.
+    꺼짐 = 종전(SHINDONG_LIVE_QTY 고정 · 진입 직전 조회 없음). 꺼져 있어도 모니터가 「켜면 N계약」을 보여 준다.
+  - `RISK_CAPITAL_DEPOSIT_CAP_ENABLED` — 일일 손실 2% 분모·A-04 기준을 min(사이징 자본, 당일 시가 예탁금)으로.
+  - `PROFIT_GUARD_QTY_SCALE_ENABLED` — ProfitGuard 원화 임계 ×max(1, 선택 주체 수량 ÷ 2).
+    ⚠ dev 는 MAX_CONTRACTS=3 이라 켜면 미륵 최대허용수량 3 에서도 ×1.5.
+- **v9-dev 와 다른 점**: dev 는 실운영금 상수가 없어 정책값 = `SIZING_TARGET_CAPITAL_KRW`. 신동 실행기(FLOWC · 전량 1회 청산)는
+  무변경 — 수량만 바뀐다. 위험최대의 계약당 MDD 90만은 **MW0601 v3 실측**이라 dev 신동에는 참고값(경고 표시만).
+- 테스트: `tests/test_707_capital_three_layers.py`(dev 판 9건 — 꺼짐 = 종전 고정 포함). 관련 375 passed.
+  기존 결함(이식 무관, 깨끗한 dev 에서도 실패): `test_457::test_db_fallback_columns_have_measured_flag` · `test_598::test_main_retracted_behavior`.
+- 이식 메모: v9-dev `docs/정기점검/MW0601_to_MW0602_실전자본3층_이식메모_20261023.md`.
+
 ## 2026-10-21 (MW0601 701차 dev 배포 — 가격움직임 패턴 연구 양방향 공유 · 연구용 장후 사본) — 🟡 **dev 반영 · MW0602 첫 실행 대기**
 
 - **체리픽 기록**: 원 커밋 `48f1f658`(연구용 장후 사본 코드) · `1808af74`(`[가격패턴]` 연구 폴더) · 원 PC MW0601(`v9-dev`) ·

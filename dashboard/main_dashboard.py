@@ -8188,6 +8188,24 @@ class LogPanel(QWidget):
                     mrow.addWidget(mf)
                     self._order_vals[om_attr] = vl
                 pl.addLayout(mrow)
+                # [MW0601 707차] 실전 자본 모니터 — 관측(예탁금·주문가능수량)·정책(위험자본)·통제(실주문 수량).
+                #   main `_capital_monitor_refresh` 가 30초 스케줄러·신동 진입 직전에 채운다.
+                self._capital_lbl = QLabel("[Capital] 장전 08:30부터 표시 — 아직 미측정")
+                self._capital_lbl.setWordWrap(True)
+                self._capital_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                self._capital_lbl.setStyleSheet(
+                    f"color:{C['text2']};background:{C['bg3']};border:1px solid {C['border']};"
+                    f"border-radius:3px;padding:3px 5px;font-size:{S.f(10)}px;")
+                self._capital_lbl.setToolTip(
+                    "실전 자본 3층 (707차)\n"
+                    "· 예탁금: 당일 시가 예탁현금(CpTd6197) — 재기동 시 DB 승계\n"
+                    "· 위험자본 = min(LIVE_OPERATING_CAPITAL_KRW, 예탁금) → 일일한도 2% · A-04 경보\n"
+                    "· 증거금최대: 신규주문가능수량(CpTd6722, 5분 주기 · 신동 진입 직전 재조회)\n"
+                    "· 위험최대 = 위험자본 × 15% ÷ 계약당 MDD(90만)\n"
+                    "· 신동 실주문 = SHINDONG_LIVE_QTY (dev: 증거금 연동 꺼짐 — 켜면 min(최대허용, 장시작·직전 가능))\n"
+                    "· ⛔ 증거금 부족이면 신동 진입을 기각(수량을 줄이지 않는다) · ⚠ 위험 기준 초과는 경고만\n"
+                    "· PG ×배율 = max(1, 선택 주체 실주문 수량 ÷ 2)")
+                pl.addWidget(self._capital_lbl)
 
             elif key == "pnl":
                 mrow = QHBoxLayout()
@@ -8385,6 +8403,18 @@ class LogPanel(QWidget):
         except AttributeError:
             return
         btn.setText("피터2 꺼짐\n%s" % (why or "FOLLOW_MODE=off"))
+
+    def update_capital_monitor(self, text: str, level: str = "OK"):
+        """[MW0601 707차] 창3 주문/체결 탭 — 실전 자본 모니터 한 줄."""
+        try:
+            lbl = self._capital_lbl
+        except AttributeError:
+            return
+        col = {"OK": C['green'], "WARN": C['orange'], "BLOCK": C['red']}.get(level, C['text2'])
+        lbl.setText(text)
+        lbl.setStyleSheet(
+            f"color:{col};background:{C['bg3']};border:1px solid {col};"
+            f"border-radius:3px;padding:3px 5px;font-size:{S.f(10)}px;")
 
     def update_peter2_metrics(self, realized_krw, closed_n, open_side=None,
                               unrealized_krw=None, status_txt=""):
@@ -17918,6 +17948,10 @@ class DashboardAdapter:
     def update_order_metrics(self, trades: int, avg_lat_ms: float, peak_lat_ms: float, samples: int):
         """창3 주문/체결 탭 상단 지표 갱신"""
         self._win.log_panel.update_order_metrics(trades, avg_lat_ms, peak_lat_ms, samples)
+
+    def update_capital_monitor(self, text: str, level: str = "OK"):
+        """[MW0601 707차] 창3 주문/체결 탭 — 실전 자본 모니터 한 줄"""
+        self._win.log_panel.update_capital_monitor(text, level)
 
     def update_pnl_metrics(self, unrealized_krw: float, daily_pnl_krw: float, var_krw: float = 0.0,
                            forward_unrealized_krw: float = None, forward_daily_pnl_krw: float = None,
