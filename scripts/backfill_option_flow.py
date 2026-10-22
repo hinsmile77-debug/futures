@@ -121,6 +121,21 @@ def _is_elevated():
         return None
 
 
+def _uac_enabled():
+    """UAC(EnableLUA) 켜짐 여부. 판정 불가면 None(미측정 ≠ False).
+
+    705차: UAC 가 꺼진 PC 는 분할 토큰이 없어 Limited·Highest 가 같은 토큰을 받는다 —
+    그때 미접속은 권한 불일치가 아니라 **로그인 자체**가 원인이다.
+    """
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System") as k:
+            return int(winreg.QueryValueEx(k, "EnableLUA")[0]) != 0
+    except Exception:
+        return None
+
+
 def _is_holiday(now):
     """KRX 휴장일(주말·공휴일)이면 True. 판정 불가면 False — 모르면 돌려 본다(실패는 로그에 남는다)."""
     try:
@@ -209,15 +224,21 @@ def require_cybos_connection():
         return "CpCybos COM 을 열지 못했다: %s" % exc
     if not connected:
         elev = _is_elevated()
+        uac = _uac_enabled()
+        _yn = {True: "예", False: "아니오", None: "판정 불가"}
+        hint = ("    - UAC 꺼짐 → 권한 수준은 원인이 아니다(Limited·Highest 동일 토큰).\n"
+                "      Cybos/CREON 세션 로그인 여부를 볼 것.\n" if uac is False else "")
         return ("Cybos Plus 에 접속돼 있지 않다 (IsConnect=0).\n"
-                "    - 이 프로세스 승격(관리자) = %s\n"
+                "    - 이 프로세스 승격(관리자) = %s · UAC 켜짐 = %s\n"
+                "%s"
                 "    - Cybos Plus 가 로그인돼 있는지 확인할 것\n"
                 "    - **Cybos 와 이 프로세스의 권한 수준이 같아야 한다.** 다르면 COM 이\n"
                 "      기존 Cybos 에 붙지 못하고 미접속 DibServer 를 새로 띄워 전량 실패한다.\n"
-                "        · Cybos 승격(CREON·MW0602)  → 예약작업 -RunLevel Highest\n"
-                "        · Cybos 비승격(CYBOS·MW0601) → 예약작업 -RunLevel Limited\n"
+                "        · 세션 승격(UAC 켜짐 + CREON 런처)  → 예약작업 -RunLevel Highest\n"
+                "        · 세션 비승격(UAC 켜짐 + Cybos Limited) → 예약작업 -RunLevel Limited\n"
+                "      등록 작업 전수 대조: powershell -File scripts\\audit_com_task_runlevel.ps1\n"
                 "      (2026-09-21 – 10-02 MW0601: Highest 로 등록돼 8거래일 전부 이 사유로 실패)"
-                % ({True: "예", False: "아니오", None: "판정 불가"}[elev]))
+                % (_yn[elev], _yn[uac], hint))
     return ""
 
 

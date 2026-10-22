@@ -31,7 +31,10 @@
               (`ALWAYS_REFETCH_DAYS=7` 이라 최근 7일은 항상 재수집 →
                PC 가 꺼져 있었거나 Cybos 미로그인으로 며칠 걸러도 **스스로 메운다**.
                비용은 TR 2청크뿐)
-    실행주체  현재 로그온 사용자 · Interactive · **Highest** (`-RunLevel` 로 변경)
+    실행주체  현재 로그온 사용자 · Interactive · RunLevel **자동 판정**
+              [MW0601 705차] 고정 기본값(Highest) → 공용 판정기 scripts\lib\ComTaskRunLevel.ps1
+              (UAC → 실행 중 CpStart 실측 승격 → BROKER/기동 작업 → 불가 시 등록 거부).
+              MW0602(UAC 켜짐 + CREON 승격)에서는 판정 결과가 Highest 라 종전과 같다.
               Cybos Plus 작업과 **같은 무결성 수준**이어야 COM 이 붙는다.
               ⚠ 그 수준은 **PC 마다 다르다** — 공유되는 것은 값이 아니라 원칙이다.
                 · MW0602 실측(2026-09-17): CREON 이 **승격** 실행이라 `Limited` 로는
@@ -49,10 +52,11 @@
     해제   TASK_REGULAR_COLLECT_INSTALL.bat -Uninstall
     시각   TASK_REGULAR_COLLECT_INSTALL.bat -Time "16:10"
     권한   TASK_REGULAR_COLLECT_INSTALL.bat -RunLevel Limited
-           (Cybos 가 비승격인 PC 에서만. 기본은 Highest — 위 「실행주체」)
+           (판정기를 덮어쓸 때만. 판정과 다르면 WARN)
+    점검   powershell -File scripts\audit_com_task_runlevel.ps1   (등록된 COM 작업 전수 대조)
 
   주의
-    · 관리자 권한 불필요.
+    · 관리자 권한은 판정 결과가 Highest 일 때만 필요하다.
     · 예약작업은 PC별 등록이며 git 으로 공유되지 않는다(CLAUDE.md 멀티PC 컨벤션).
       다른 PC 에서도 쓰려면 그 PC 에서 한 번 더 실행할 것.
 #>
@@ -61,8 +65,9 @@ param(
     [string]$Time       = '15:52',
     [string]$PythonPath = '',
     [int]   $Days       = 7,
-    [ValidateSet('Highest','Limited')]
-    [string]$RunLevel   = 'Highest'
+    # 비우면 공용 판정기가 정한다(scripts\lib\ComTaskRunLevel.ps1, MW0601 705차)
+    [ValidateSet('','Highest','Limited')]
+    [string]$RunLevel   = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -144,17 +149,11 @@ $settings = New-ScheduledTaskSettingsSet `
 # ⚠ 그 수준은 PC 마다 다르다(헤더 「실행주체」). MW0602 는 CREON 이 승격이라 Highest.
 # 비승격에서 Highest 를 등록하려 하면 Register-ScheduledTask 가 Access is denied 로
 # 죽는다 — 그 오류는 원인을 말해 주지 않으므로 먼저 잡아 안내한다.
-if ($RunLevel -eq 'Highest') {
-    $me = New-Object Security.Principal.WindowsPrincipal(
-              [Security.Principal.WindowsIdentity]::GetCurrent())
-    if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        Write-Host '[FAIL] -RunLevel Highest 는 관리자 권한으로 등록해야 한다.' -ForegroundColor Red
-        Write-Host '       관리자 PowerShell 에서 다시 실행할 것.'
-        Write-Host '       Cybos 가 비승격으로 도는 PC 라면:'
-        Write-Host '         TASK_REGULAR_COLLECT_INSTALL.bat -RunLevel Limited'
-        exit 1
-    }
-}
+# [705차] 레벨은 공용 판정기가 정한다. 판정 불가면 등록하지 않는다(추측 금지).
+. (Join-Path $PSScriptRoot 'lib\ComTaskRunLevel.ps1')
+$RunLevel = Write-ComRunLevelDecision (Resolve-ComTaskRunLevel $Root) $RunLevel
+if (-not $RunLevel) { Write-Host '       직접 지정:  TASK_REGULAR_COLLECT_INSTALL.bat -RunLevel Limited|Highest'; exit 1 }
+if (-not (Test-CanRegisterRunLevel $RunLevel)) { exit 1 }
 $principal = New-ScheduledTaskPrincipal `
     -UserId ("{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME) `
     -LogonType Interactive -RunLevel $RunLevel
@@ -190,6 +189,6 @@ Write-Host '       0 = 정상.  로그: logs\<YYYYMMDD>_REGULAR_COLLECT.log'
 Write-Host '  적재 확인:'
 Write-Host '       python scripts\regular_freshness.py      (0=정상 1=결손 2=미측정)'
 Write-Host '  해제:  TASK_REGULAR_COLLECT_INSTALL.bat -Uninstall'
-Write-Host '  권한:  기본 Highest. Cybos 가 비승격인 PC 는 -RunLevel Limited'
+Write-Host '  권한:  자동 판정(scripts\lib\ComTaskRunLevel.ps1). 점검: scripts\audit_com_task_runlevel.ps1'
 Write-Host ''
 exit 0

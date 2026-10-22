@@ -251,7 +251,10 @@ def test_4e_highest_registration_has_an_elevation_precheck():
     두 갈래 해법(관리자로 재실행 / -RunLevel Limited)을 같이 안내한다.
     """
     body = _read(_SRC_TASK_PS1).split("#>")[-1]
-    i_check = body.find("IsInRole")
+    # [MW0601 705차] 사전점검은 공용 판정기의 Test-CanRegisterRunLevel(IsInRole 포함)로 옮겼다.
+    i_check = body.find("Test-CanRegisterRunLevel")
+    if i_check < 0:
+        i_check = body.find("IsInRole")
     # ⚠ 그냥 find 하면 해제 경로의 `Unregister-ScheduledTask` 에 먼저 걸려
     #   항상 실패한다(test_5 와 같은 계열의 함정). 줄 머리로 고정한다.
     m = re.search(r"^Register-ScheduledTask", body, re.M)
