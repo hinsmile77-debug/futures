@@ -939,6 +939,29 @@ def prune_evidence(root, cfg, pcid, keep_days, today, dry_run=False):
 
 
 # ------------------------------------------------------------------ 파일 탐색
+_YMD8_RE = re.compile(r"(?<!\d)(20\d{2})(\d{2})(\d{2})(?!\d)")
+
+
+def foreign_date_in_name(fn, toks):
+    """[MW0601 705차 후속 / G-2] 파일명이 **다른 날짜**를 명시하는가 → 그 날짜(YYYYMMDD) 또는 None.
+
+    짧은 토큰(`md`=1022 · `ymd2`)은 시각 숫자와 우연히 겹친다 —
+    `retrain_intraday_20260624_102256.log` 의 `102256` 이 10-22 의 `1022` 로 걸려
+    6월 파일이 「오늘 파일」로 다이제스트됐다(2026-10-21·22 연속 재현).
+    파일명에 오늘 `ymd` 가 있으면 오늘 파일이고, 없는데 유효한 8자리 날짜가
+    따로 있으면 그것이 그 파일의 진짜 날짜다.
+    """
+    if toks["ymd"] in fn:
+        return None
+    for m in _YMD8_RE.finditer(fn):
+        try:
+            datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            continue
+        return m.group(0)
+    return None
+
+
 def discover_files(root, cfg, day):
     """날짜 토큰을 파일명에 가진 파일을 찾아 그룹으로 묶는다."""
     toks = date_tokens(day)
@@ -977,6 +1000,7 @@ def discover_files(root, cfg, day):
                 for key in DATE_TOKEN_KEYS:
                     stem = stem.replace(toks[key], "{DATE}")
                 found.append({
+                    "foreign_date": foreign_date_in_name(fn, toks),
                     "path": full,
                     "rel": os.path.relpath(full, root).replace(os.sep, "/"),
                     "name": fn,
@@ -2171,7 +2195,38 @@ def scan_gate_flags(root, cfg):
         out.append({"name": name, "value": val,
                     "documented": name in cfg.get("documented_disabled_flags", [])})
     out.sort(key=lambda r: (r["value"] == "True", r["name"]))
+    for r in out:
+        r["trace"] = (rationale_trace(root, r["name"])
+                      if r["value"] == "False" and not r["documented"] else None)
     return out
+
+
+_RATIONALE_CACHE = {}
+
+
+def rationale_trace(root, name):
+    """[MW0601 705차 후속 / G-1] 화이트리스트 밖 꺼진 플래그의 근거가 **다른 곳에** 있는가.
+
+    2026-10-22: 703차가 `PROFIT_GUARD_BLOCK_VIRTUAL_PRINCIPAL=False` 를 근거와 함께
+    신설했는데 `documented_disabled_flags` 갱신만 빠져 이튿날 「근거 미기록 — 의도한
+    것이 아니면 P0」로 떴다. 근거가 실제로 없는 것과 **목록만 못 따라간 것**을 가른다.
+
+    반환: 근거 위치 문자열 목록(`DECISION_LOG` · `커밋 <sha>`). 빈 목록 = 어디에도 없음.
+    ⚠ 판정을 바꾸지 않는다 — 미등재는 미등재로 남고 표현만 한 단계 낮춘다.
+    """
+    if not _RATIONALE_CACHE:
+        dl = os.path.join(root, "dev_memory", "DECISION_LOG.md")
+        _RATIONALE_CACHE["dl"] = read_text(dl) if os.path.exists(dl) else ""
+        _RATIONALE_CACHE["log"] = run_git(
+            root, ["log", "--since=14 days ago", "--format=%h%x09%s%x09%b%x1e"])
+    hits = []
+    if name in _RATIONALE_CACHE["dl"]:
+        hits.append("DECISION_LOG")
+    for rec in _RATIONALE_CACHE["log"].split("\x1e"):
+        if name in rec:
+            hits.append("커밋 %s" % rec.strip().split("\t", 1)[0])
+            break
+    return hits
 
 
 # ------------------------------------------------------------------ dev_memory
@@ -2925,12 +2980,26 @@ def build(root, day, phase, cfg, discover_only=False):
         for g in sorted(groups):
             items = groups[g]
             for e in items[: cfg["max_files_per_group"]]:
-                A("| `%s` | %d | `%s` | %s | %s |" % (
-                    g, len(items), e["rel"], fmt_bytes(e["size"]),
+                A("| `%s` | %d | `%s`%s | %s | %s |" % (
+                    g, len(items), e["rel"],
+                    (" ⚠ 다른 날짜(%s) 파일 — 날짜 토큰 오매칭" % e["foreign_date"])
+                    if e.get("foreign_date") else "",
+                    fmt_bytes(e["size"]),
                     ts_kst(e["mtime"]).strftime("%m-%d %H:%M")))
             if len(items) > cfg["max_files_per_group"]:
                 A("| `%s` | | … 외 %d개 | | |" % (g, len(items) - cfg["max_files_per_group"]))
         A("")
+        # [MW0601 705차 후속 / G-2] 다른 날짜 파일은 인벤토리에만 남기고 아래(§4 다이제스트·
+        # JSON·완료 마커 판정)에서는 뺀다. 뺀 개수와 이름은 남긴다(계측 4원칙 ③).
+        _foreign = [e for e in files if e.get("foreign_date")]
+        if _foreign:
+            A("_다른 날짜 파일 %d개는 짧은 날짜 토큰(`%s`)이 시각 숫자와 우연히 겹친 것이라 "
+              "이후 절에서 제외했다: %s%s_" % (
+                  len(_foreign), date_tokens(day)["md"],
+                  ", ".join("`%s`" % e["name"] for e in _foreign[:6]),
+                  (" … 외 %d개" % (len(_foreign) - 6)) if len(_foreign) > 6 else ""))
+            A("")
+            files = [e for e in files if not e.get("foreign_date")]
 
     if discover_only:
         A("---")
@@ -3079,7 +3148,9 @@ def build(root, day, phase, cfg, discover_only=False):
     if gates:
         only_rx = re.compile(cfg.get("gate_flag_alert_pattern", "BLOCK"))
         off = [g for g in gates if g["value"] == "False"]
-        undoc = [g for g in off if not g["documented"] and only_rx.search(g["name"])]
+        undoc_all = [g for g in off if not g["documented"] and only_rx.search(g["name"])]
+        undoc = [g for g in undoc_all if not g.get("trace")]
+        traced = [g for g in undoc_all if g.get("trace")]
         A("### 차단 게이트 전수 인벤토리 — %d개 중 **%d개 꺼짐**" % (len(gates), len(off)))
         A("")
         A("| 플래그 | 값 | 기록됨 |")
@@ -3088,6 +3159,8 @@ def build(root, day, phase, cfg, discover_only=False):
             if g["value"] == "False":
                 if g["documented"]:
                     doc = "기록됨"
+                elif only_rx.search(g["name"]) and g.get("trace"):
+                    doc = "목록 미등재(근거: %s)" % " · ".join(g["trace"])
                 elif only_rx.search(g["name"]):
                     doc = "**미기록 ⚠**"
                 else:
@@ -3102,6 +3175,12 @@ def build(root, day, phase, cfg, discover_only=False):
             A("> 의도한 것이면 `dev_memory/DECISION_LOG.md` 에 사유·복원조건을 적고 "
               "`config/dailycheck_targets.json` 의 `documented_disabled_flags` 에 추가하라. "
               "의도한 것이 아니면 그 자체가 P0다.")
+            A("")
+        if traced:
+            A("> 꺼져 있고 목록에는 없지만 **근거는 다른 곳에 있는** 차단 게이트 %d개: %s — "
+              "`documented_disabled_flags` 등재만 누락된 것이다(P0 아님, 목록 갱신 대상)." % (
+                  len(traced), ", ".join("`%s`(%s)" % (g["name"], " · ".join(g["trace"]))
+                                         for g in traced)))
             A("")
 
     # ---- 4. 로그 다이제스트 ----
@@ -3459,8 +3538,14 @@ def build(root, day, phase, cfg, discover_only=False):
     only = re.compile(cfg.get("gate_flag_alert_pattern", "BLOCK"))
     for g in scan_gate_flags(root, cfg):
         if g["value"] == "False" and not g["documented"] and only.search(g["name"]):
-            flags.append("차단 게이트 `%s` = False 인데 **근거 미기록** — "
-                         "의도한 예외인지 확인하고 DECISION_LOG에 남길 것" % g["name"])
+            if g.get("trace"):
+                # [705차 후속 / G-1] 근거는 있고 화이트리스트만 못 따라간 경우 — 표현만 낮춘다
+                flags.append("차단 게이트 `%s` = False — 근거는 있음(%s), "
+                             "`documented_disabled_flags` 목록 등재만 누락"
+                             % (g["name"], " · ".join(g["trace"])))
+            else:
+                flags.append("차단 게이트 `%s` = False 인데 **근거 미기록** — "
+                             "의도한 예외인지 확인하고 DECISION_LOG에 남길 것" % g["name"])
     for dg in digests:
         n_err = sum(v for k, v in dg.level_counts.items() if k in ("ERROR", "CRITICAL", "FATAL"))
         if n_err:

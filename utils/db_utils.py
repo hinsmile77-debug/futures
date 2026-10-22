@@ -4206,6 +4206,9 @@ def format_net_recon_mismatch(rec: dict, broker_gross_measured: bool,
 
 
 _TP_STAGES = ("TP1", "TP2", "TP3")
+# [MW0601 705차 후속] 외부 주체 1차 목표 익절 사유 — `strategy/shindong/live_legs.py:poll()`
+# ('신동1차', '신동1차·최종'). 피터2미러는 익절·손절이 섞여 있어 넣지 않는다.
+_EXT_TARGET1_REASONS = ("신동1차",)
 
 
 def recon_exit_stage_labels(date: str) -> dict:
@@ -4238,6 +4241,11 @@ def recon_exit_stage_labels(date: str) -> dict:
       · `trail_legs`        TRAIL_AFTER_TP1 레그 수
       · `trail_positions`   그 라벨을 가진 포지션 수
       · `corresponded`      TP 레그가 실제로 있었던 포지션 수
+      · `external_target`   외부 주체(신동) 1차 목표 익절 레그가 있었던 포지션 수
+                            [705차 후속] — 신동은 1차 익절 뒤 손절을 본전으로 올린다
+                            (`strategy/shindong/live_legs.py:after_leg1`). 그 뒤 스톱은
+                            라벨 정의상 TP1 보호 트레일이 맞다(10-21·10-22 실측 +1.12·
+                            +7.31pt). 엔진 TP가 아니라 따로 센다(합치면 출처가 안 보인다)
       · `single_armed`      단일계약 1레그(설계상 정상) 포지션 수
       · `suspect`           의심 포지션 수 — F-10 이 뒤집을 대상
       · `suspect_net_krw`   의심 포지션 net 합계
@@ -4259,7 +4267,7 @@ def recon_exit_stage_labels(date: str) -> dict:
         if not ts:
             continue
         g = groups.setdefault(ts, {"legs": 0, "qty": 0, "net": 0.0,
-                                   "trail": 0, "tp": 0, "staged": 0})
+                                   "trail": 0, "tp": 0, "ext_t1": 0, "staged": 0})
         stage = (r["exit_stage"] or "").strip()
         reason = (r["exit_reason"] or "")
         g["legs"] += 1
@@ -4271,8 +4279,11 @@ def recon_exit_stage_labels(date: str) -> dict:
             g["trail"] += 1
         if stage in _TP_STAGES or "TP" in reason:
             g["tp"] += 1
+        if any(p in reason for p in _EXT_TARGET1_REASONS):
+            g["ext_t1"] += 1
 
     out = {"trail_legs": 0, "trail_positions": 0, "corresponded": 0,
+           "external_target": 0,
            "single_armed": 0, "suspect": 0, "suspect_net_krw": 0.0,
            "suspect_entries": [], "unmeasured": 0}
     for ts, g in sorted(groups.items()):
@@ -4285,6 +4296,8 @@ def recon_exit_stage_labels(date: str) -> dict:
         out["trail_positions"] += 1
         if g["tp"]:
             out["corresponded"] += 1
+        elif g["ext_t1"]:
+            out["external_target"] += 1
         elif g["legs"] == 1 and g["qty"] <= 1:
             out["single_armed"] += 1
         else:

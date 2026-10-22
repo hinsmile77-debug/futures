@@ -15872,6 +15872,7 @@ class TradingSystem:
                 log_manager.system(
                     f"[ExitStageRecon] 오늘 TRAIL_AFTER_TP1 {_g5['trail_legs']}레그 / "
                     f"{_g5['trail_positions']}포지션 중 TP 이벤트 대응 {_g5['corresponded']} · "
+                    f"신동 1차익절 대응 {_g5['external_target']} · "
                     f"단일계약 보호전환(설계) {_g5['single_armed']} · "
                     f"미대응 {_g5['suspect']}"
                     + (f" · 판정불가(exit_stage 미측정) {_g5['unmeasured']}"
