@@ -72,6 +72,7 @@ class _Self(object):
         self._alert_server_label = "Cybos 실서버(실계좌)"
         self._alert_day = None
         self._alert_day_net = 0.0
+        self._broker_dep_base_today = None   # [707차] A-04 기준 = min(고정값, 당일 시가 예탁금) — 미측정이면 고정값
         self._exchange_cb_mode = False
         self._exchange_cb_start = None
         self._exit_reject_episode_at = None

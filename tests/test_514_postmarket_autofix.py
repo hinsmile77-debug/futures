@@ -328,7 +328,8 @@ def test_fc_no_slack():
     ("TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED", False),
     # ⚠ [2026-10-13 사용자 결정 56cc917] 3 → 1 (CREON 실거래 전환). 자동조치 변경 아님 —
     #   698차 후속 F-1 이 수집기 기대값과 함께 여기도 옮겼다.
-    ("MAX_CONTRACTS", 1),
+    # ⚠ [2026-10-23 사용자 결정 707차] 1 → 3 (예수금 3,400만 · 증거금 최대 3). 자동조치 변경 아님.
+    ("MAX_CONTRACTS", 3),
     ("FORCE_FLAT_GUARD_ORDER_ENABLED", False),
 ])
 def test_absolute_principle_toggles_untouched(toggle, expected):

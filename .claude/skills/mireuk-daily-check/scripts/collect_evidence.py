@@ -246,9 +246,10 @@ DEFAULT_CONFIG = {
          "why": "30m 퇴역으로 CB③-P4 상시 RESTRICTED 고착 → 차단만 비활성 (296·297차)"},
         {"name": "FP_CRITICAL_GRADE_BLOCK_ENABLED", "expect": "False",
          "why": "PSI 계측 결함으로 차단만 비활성. 371차 분위수 재설계 후 라이브 관찰 중"},
-        {"name": "MAX_CONTRACTS", "expect": "1",
+        {"name": "MAX_CONTRACTS", "expect": "3",
          "why": "431차 10→3 인하 → [2026-10-13 사용자 결정 56cc917] CREON 실거래 전환으로 3→1 "
-                "(1계약 명목가치만 실운영금 1,500만원의 약 3.5배). 10-13 이후 진입수량 분포 불연속"},
+                "→ [2026-10-23 사용자 결정 707차] 1→3(예수금 3,400만 ÷ 계약당 증거금 약 901만). "
+                "707차부터 신동에도 적용. 10-13·10-23 경계로 진입수량 분포 불연속"},
         {"name": "SIZING_TARGET_CAPITAL_ENABLED", "expect": "True",
          "why": "모의투자 한정. False 전환은 단독 지시로 읽지 말 것 (손실 구간 복원 위험)"},
         {"name": "SIZING_TARGET_CAPITAL_KRW", "expect": None,

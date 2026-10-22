@@ -33,11 +33,11 @@ def _src(rel):
 # ── A. 순수 판단 ───────────────────────────────────────────────
 
 def test_qty_matches_spec_legs():
-    """[2026-10-21 사용자 결정] 실계좌 2계약 — 규격(LEGS=2)과 일치(10-13 1계약에서 복원).
+    """[2026-10-23 사용자 결정 707차] 실계좌 3계약(10-21 2계약에서 상향) — 레그는 1차 1계약 + 최종 2계약.
     수량을 다시 1로 내리면 1차 목표의 exit_leg1 이 전량청산으로 가야 한다(main 분기 고정)."""
     import config.settings as ST
     assert S.LEGS == 2
-    assert ST.SHINDONG_LIVE_QTY == 2
+    assert ST.SHINDONG_LIVE_QTY == 3
     assert ST.PRINCIPAL_SHINDONG_ENABLED is True
     src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "main.py"),
                encoding="utf-8").read()

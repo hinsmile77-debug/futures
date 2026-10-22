@@ -440,6 +440,44 @@ class ProfitGuard:
         self._pnl_source: Optional[str] = None
         self._blocked_today: int   = 0
         self._block_log: list      = []   # [(시각, layer, reason)]
+        # [MW0601 707차] 원화 임계 배율 — 원본(배율 1) 값을 보존해 두고 배율이 바뀔 때만 다시 계산한다.
+        #   횟수·비율(오후 3회 · 2연패 · 35%)과 size_mult 요건은 바꾸지 않는다.
+        self.krw_scale: float = 1.0
+        self._krw_base = (
+            float(self.cfg.trail_activation_krw),
+            [tuple(t) for t in self.cfg.profit_tiers],
+            float(self.cfg.afternoon_min_pnl_krw),
+            float(self.cfg.profit_cb_min_pnl_krw),
+        )
+
+    def set_krw_scale(self, scale: float, why: str = "") -> bool:
+        """[MW0601 707차] 원화 임계 4종(L1 발동 · L2 등급 경계 · L3 오후 발동 · L4 발동)에 배율을 건다.
+
+        배율 = max(1, 선택 주체 실주문 수량 ÷ PROFIT_GUARD_QTY_BASE) — `config/capital.py:
+        profit_guard_krw_scale`. 이미 걸린 래치(L1·L2·L4)는 풀지 않는다(판정 이력 보존).
+        Returns: 값이 바뀌었으면 True(호출부가 그때만 로그를 남긴다).
+        """
+        try:
+            s = max(1.0, float(scale))
+        except (TypeError, ValueError):
+            s = 1.0
+        if abs(s - self.krw_scale) < 1e-9:
+            return False
+        trail, tiers, aft, pcb = self._krw_base
+        self.cfg.trail_activation_krw = trail * s
+        self.cfg.profit_tiers = [(th * s, mm, mq) for (th, mm, mq) in tiers]
+        self.cfg.afternoon_min_pnl_krw = aft * s
+        self.cfg.profit_cb_min_pnl_krw = pcb * s
+        old, self.krw_scale = self.krw_scale, s
+        msg = ("[ProfitGuard] 원화 임계 배율 ×%.2f → ×%.2f%s — L1 발동 %s원 · L2 중단 %s원 · "
+               "L3 %s원 · L4 %s원" % (old, s, (" (%s)" % why) if why else "",
+                                     format(int(self.cfg.trail_activation_krw), ","),
+                                     format(int(self.cfg.profit_tiers[-1][0]), ","),
+                                     format(int(self.cfg.afternoon_min_pnl_krw), ","),
+                                     format(int(self.cfg.profit_cb_min_pnl_krw), ",")))
+        # [707차] 수량·증거금 관련 로그는 TRADE 계층(「3 주문/체결」 탭)으로 일원화
+        log_manager.trade(msg)
+        return True
 
     # ── 진입 허용 여부 ─────────────────────────────────────────────
     def is_entry_allowed(
