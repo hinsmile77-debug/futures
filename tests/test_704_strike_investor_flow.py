@@ -93,7 +93,9 @@ MASTER = {
 
 def _mk(tmp_path, responses, remain=60, raise_msg=None, months=("1",)):
     s = StrikeInvestorFlow(str(tmp_path / "sif.db"), months=months)
-    s._obj = FakeObj(responses, raise_msg)
+    fake = FakeObj(responses, raise_msg)
+    s._fake = fake
+    s._obj_factory = lambda: fake
     s._cy = FakeCy(remain)
 
     def _load(today, force=False):
@@ -171,15 +173,15 @@ def test_blocked_writes_no_rows_and_stops_for_the_day(tmp_path):
     assert _count(s.db_path) == 0
     st = _status(s.db_path)
     assert st and st[0][3] == 0 and st[0][10].startswith("BLOCKED")
-    calls = s._obj.calls
+    calls = s._fake.calls
     s.fetch_and_store(T2)
-    assert s._obj.calls == calls                        # 그날은 다시 부르지 않는다
+    assert s._fake.calls == calls                        # 그날은 다시 부르지 않는다
 
 
 def test_quota_skip_records_reason_without_request(tmp_path):
     s = _mk(tmp_path, {}, remain=10)
     r = s.fetch_and_store(T1)
-    assert r["skipped"] == "quota" and s._obj.calls == 0
+    assert r["skipped"] == "quota" and s._fake.calls == 0
     assert all(x[3] == 0 and x[10].startswith("SKIP_QUOTA") for x in _status(s.db_path))
 
 
@@ -234,3 +236,32 @@ def test_module_never_parses_strike_from_code():
     src = _read("collection/cybos/strike_investor_flow.py")
     assert "CpOptionCode" in src
     assert "code[5:" not in src and "code[-3:" not in src
+
+
+# ── 704차 후속 첫 실행에서 드러난 결함 (2026-10-22 장후) ──────────────────────
+
+def test_normalize_cp_accepts_korean_labels():
+    """CpOptionCode 필드 2 는 '콜'/'풋' 이다 — 'C'/'P' 만 받으면 콜 343행 전부 미매핑."""
+    from collection.cybos.strike_investor_flow import normalize_cp
+    assert normalize_cp("콜") == "C" and normalize_cp("풋") == "P"
+    assert normalize_cp("C") == "C" and normalize_cp("p") == "P"
+    assert normalize_cp("") is None
+
+
+def test_empty_response_is_failure_not_zero(tmp_path):
+    """풋이 status=0 · 0행으로 조용히 왔다 — 보유 0 으로 쓰면 안 된다."""
+    resp = {("2", "1"): [[_row("B016B740", _q(1, -1))]], ("3", "1"): [[]]}
+    s = _mk(tmp_path, resp)
+    r = s.fetch_and_store(T1)
+    assert not r["ok"] and any("빈 응답" in e for e in r["errors"])
+    st = {x[1]: x for x in _status(s.db_path)}
+    assert st["P"][3] == 0 and st["P"][10] == "EMPTY"
+    assert s.snapshot_at("2026-10-23", "10:00", "P") is None     # 풋은 미측정
+
+
+def test_new_com_object_per_request():
+    """같은 객체 재사용 시 두 번째 조회(풋)가 0행 — 요청마다 새로 만든다."""
+    src = _read("collection/cybos/strike_investor_flow.py")
+    body = src[src.index("    def _get_obj(self):"):]
+    body = body[:body.index("\n    def ")]
+    assert "return Dispatch(_PROGID)" in body and "self._obj =" not in body

@@ -144,6 +144,21 @@ def _rnd(xs: List[Any]) -> List[float]:
     return [round(float(x), 4) for x in xs]
 
 
+def normalize_cp(v: Any) -> Optional[str]:
+    """CpOptionCode 필드 2 → 'C' | 'P' | None.
+
+    🔴 실제 값은 **'콜' / '풋'** 이다(2026-10-22 `data/option_chain.json` 2,239/2,239).
+    'C'/'P' 를 가정했다가 콜 343행이 전부 미매핑됐다(704차 후속 첫 실행).
+    체인 워커(`option_chain_worker._is_call`)와 같이 두 표기를 다 받는다.
+    """
+    s = str(v or "").strip()
+    if "콜" in s or s.upper().startswith("C"):
+        return "C"
+    if "풋" in s or s.upper().startswith("P"):
+        return "P"
+    return None
+
+
 def inv_check(qty: List[int]) -> bool:
     """주체 대사 — 기관계 = Σ(3–10) 그리고 기관계를 뺀 합 = 0. 2026-10-22 전 행 성립."""
     if len(qty) != len(INVESTORS):
@@ -165,7 +180,7 @@ class StrikeInvestorFlow:
         self.db_path = db_path
         self.months = tuple(months)
         self.quota_reserve = int(quota_reserve)
-        self._obj = None                       # COM 캐시
+        self._obj_factory = None               # 테스트용 — None 이면 요청마다 Dispatch
         self._cy = None
         self._master: Dict[str, Tuple[str, str, float]] = {}
         self._master_day: Optional[str] = None
@@ -189,10 +204,17 @@ class StrikeInvestorFlow:
 
     # ── COM ──────────────────────────────────────────────────────────────
     def _get_obj(self):
-        if self._obj is None:
-            from win32com.client import Dispatch
-            self._obj = Dispatch(_PROGID)
-        return self._obj
+        """요청마다 **새 객체**를 만든다 — 캐시하지 않는다.
+
+        2026-10-22 장후 실측: 같은 객체로 콜(343행) 다음 풋을 조회하면 풋이 **0행**으로
+        왔다(status=0, 오류 없음 — 조용히 빈 값). 요청마다 Dispatch 한 프로브는 풋 343행.
+        첫 Dispatch 만 DLL 로드로 느리고 이후는 가볍다(7222 실측 ~ms).
+        테스트는 `_obj_factory` 로 가짜 객체를 꽂는다.
+        """
+        if self._obj_factory is not None:
+            return self._obj_factory()
+        from win32com.client import Dispatch
+        return Dispatch(_PROGID)
 
     def _get_cybos(self):
         if self._cy is None:
@@ -215,11 +237,11 @@ class StrikeInvestorFlow:
         m: Dict[str, Tuple[str, str, float]] = {}
         for i in range(int(obj.GetCount())):
             try:
+                cp = normalize_cp(obj.GetData(2, i))
+                if cp is None:
+                    continue
                 m[str(obj.GetData(0, i)).strip()] = (
-                    str(obj.GetData(2, i)).strip().upper(),
-                    str(obj.GetData(3, i)).strip(),
-                    float(obj.GetData(4, i)),
-                )
+                    cp, str(obj.GetData(3, i)).strip(), float(obj.GetData(4, i)))
             except Exception:
                 continue
         self._master = m
@@ -350,6 +372,14 @@ class StrikeInvestorFlow:
                                         "ERROR %s" % str(exc)[:200]))
                     continue
 
+                if not got:
+                    # 빈 응답은 「보유 0」이 아니다 — 먼스리는 늘 수백 행이다(실측 343·567).
+                    # 704차 후속 첫 실행에서 풋이 status=0 · 0행으로 조용히 왔다.
+                    errors.append("%s/%s: 빈 응답(0행)" % (cp, month))
+                    status_rows.append((today, snap_hm, cp, month, 0, None, 0, 0, pages,
+                                        None, None, None, None, remain,
+                                        (time.perf_counter() - ts) * 1000.0, "EMPTY"))
+                    continue
                 # 미매핑이 있으면 마스터를 한 번 다시 받는다(월물 롤오버 직후 대비).
                 if got and any(r["code"] not in self._master for r in got):
                     try:
@@ -491,9 +521,9 @@ class StrikeInvestorFlow:
                                     json.dumps(q), json.dumps(r["avg"]), json.dumps(r["amt"]),
                                     json.dumps(r["pnl"]), q[IDX_IND], q[IDX_FOR], q[IDX_INS],
                                     now_iso))
-                out[key] = {"ok": not truncated, "rows": len(got), "pages": pages,
+                out[key] = {"ok": bool(got) and not truncated, "rows": len(got), "pages": pages,
                             "unmapped": unmapped, "inv_bad": inv_bad,
-                            "msg": "truncated" if truncated else ""}
+                            "msg": "truncated" if truncated else ("EMPTY(0행)" if not got else "")}
         if rows_db:
             con = self._conn()
             with con:
