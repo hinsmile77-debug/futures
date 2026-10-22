@@ -50162,6 +50162,22 @@ AI 는 10/16 부터 고착을 적었으나 「raw_candles staleness·적재 지�
 - **검증(dev 트리, py37_32)**: `test_704` 16 통과 · 1 skip · `test_611`·`test_617`·`test_537` 통과. `test_457::test_db_fallback_columns_have_measured_flag` 1건 실패는 dev 기존 결함(`main_dashboard.py peter_paste`, 이식 무관 — 대시보드 무변경).
 - **How to apply (MW0602)**: `docs/정기점검/MW0601_to_MW0602_9842_이식메모_20261022.md` §3 — ① `probe_cpsvr9842.py` ② `strike_investor_snapshot.py --end <미러 _P 날짜>` 2,744칸 대사 ③ True + 재기동 ④ (선택) 예약작업 — **RunLevel 은 MW0602 에서 정상 동작 중인 COM 작업과 같게**.
 
+## 2026-10-22 (MW0602 646차 — 일일 점검: 장전)
+
+- **증상**: 장전(08:56~09:05) 정기점검 실행. 브랜치 `dev`(정상) · HEAD `f3ab77b` · 미커밋 82건(전부 문서/데이터, 코드 無). 전일(10/21) EOD 재학습·P8 스케일러 재적합 둘 다 성공(`eod_retrain_ok_date=2026-10-21`, `p8_last_success_date=2026-10-21`) → 08:55 `[PreRetrain]` 스킵 정상. 레짐 확정 08:58:05 RISK_ON(VIX 17.3) — 과거 패턴(~08:58:19)과 일치. CORE 축퇴 08:45:02 3/6(`cvd_divergence`·`opt_chain_pcr`·`opt_gex_bn`) → 08:47:59부터 0/6, 개장 전 해소 확인. 옵션체인 재수집 09:01:05 완료(target=48 valid=48). py37_32 32-bit 기동·creon preflight 4/4 통과(계좌 783293269) 확인(launcher 로그).
+  - `collect_evidence.py --phase pre --pc MW0602 --skill-rev 2026-08-26e --out-auto` 1·2차 실행이 `LogDigest.scan()`에서 `UnicodeDecodeError`(0xe2, position 0)로 중단, 3차 09:00:04 성공(87.4KB) — **기존 `NEXT_TODO` G-1(2026-10-16 634차 등록)의 재발**(2번째 재현). 재시도 지연으로 장전 발화 마진이 처음으로 음수(-5초, 개장 후 실행)가 됨.
+  - §2 "당일 커밋 없음" 오탐 — 실제로는 `baed0fd`(07:30 644차)·`f3ab77b`(08:15 645차) 2건 존재. **기존 `NEXT_TODO` 623-F1(2026-10-14 등록)의 재발** — 이 Cowork 샌드박스(시스템시계 UTC)에서 `git log --since/--until`이 KST 날짜 경계를 못 잡음. 실제 Windows PC 직접 실행 시 비해당.
+  - §3 "차단 게이트 전수 인벤토리"가 `PROFIT_GUARD_BLOCK_VIRTUAL_PRINCIPAL=False`를 "미기록 ⚠"으로 표시 — 오늘 새벽 645차 커밋이 신설한 플래그이며 근거는 아래 645차 DECISION_LOG 항목에 이미 있으나 `config/dailycheck_targets.json`의 `documented_disabled_flags` 반영이 누락됨(신규, 체크리스트 반영 누락일 뿐).
+  - `[CRITICAL][Capital]` 2건(08:41:02, 실서버 SIZING_TARGET_CAPITAL_ENABLED=True vs 실잔고 26,920,528원) — 2026-10-13 사용자 결정에 따른 설계된 정상 상태, 수집기 §3 `일치` 확인. 고착 지표 4종(`CORE안전`·`GuardFair_유효`·`전략판정`·`launcher_guard`)은 10/21에 이미 "기존 규명 채널" 처리됨 — 오늘도 동일, 재제안 없음.
+- **원인**: UnicodeDecodeError는 라이브 프로세스가 로그 파일에 쓰는 중에 읽어 멀티바이트 문자가 버퍼 경계에 걸리는 일시적 경합(기존 G-1 분석과 동일). UTC/KST 오탐은 이 샌드박스의 시스템시계가 UTC라 `git log` 날짜 파싱이 로컬시간 기준으로 동작하기 때문(기존 623-F1 분석과 동일).
+- **결정**: P0·P1 없음, P2 2건(1-1 수집기 디코드 레이스 재발, 1-2 신규 플래그 화이트리스트 미반영) — 둘 다 점검도구/체크리스트 이슈이며 실거래 경로 무관. 장전 규칙에 따라 코드·설정 변경은 하지 않고 계획만 수립(F-1: `dailycheck_targets.json`에 플래그 추가, F-2: 기존 G-1 계획 유지). 기존 TODO 재발 2건(G-1·623-F1)은 새 계획을 만들지 않고 재발 사실만 기록(함정① 방지).
+- **Why**: 함정① 위반(이미 아는 문제를 신규로 재제안)을 피하기 위해 두 재발 건 모두 `dev_memory/DECISION_LOG.md`·`NEXT_TODO.md` 선대조 후 "신규 아님"으로 분류했다. 신규 플래그는 `grep`으로 settings.py·DECISION_LOG 실측 확인 후 "근거는 있으나 체크리스트 반영만 누락"으로 정확히 구분했다.
+- **How to apply**: F-1(장후 권고) — `config/dailycheck_targets.json`의 `documented_disabled_flags`에 `PROFIT_GUARD_BLOCK_VIRTUAL_PRINCIPAL` 추가 + 근거 설명 한 줄(645차 인용). F-2는 기존 G-1(634차) 계획 그대로 — 새 일정 없음.
+- **검증**: 수집기 3차 재시도로 정상 다이제스트 생성 확인(87.4KB). `.git/index.lock`·`.git/HEAD.lock` 없음(시작·렌더 2점 확인). 병행 세션 확인: 오늘 이 국면(`pre`) 첫 수집, `docs/정기점검/매일점검/`에 오늘자 다른 산출물 없음.
+- 미처리: 사용자 조치는 리포트 맨 끝 참조. 621-O2(10거래일째 대기)·신동2 conda 조사(오늘 장전 로그 재발 없음, 장후 최종 판정)는 그대로 이월.
+
+근거: `docs/정기점검/매일점검/MW0602-20261022-점검리포트.md`(장전 절), `docs/정기점검/매일점검/evidence_MW0602-20261022_pre.md`.
+
 
 ## 2026-10-22 (MW0602 647차 — [9842] 행사가 × 투자자 수집기 MW0602 활성화: 이식 메모 §3 ①~④) — ✅ 판별·대사 통과 · `ENABLED=True` · 예약작업 등록 · 장중 라이브 검증 대기
 
@@ -50186,3 +50202,35 @@ AI 는 10/16 부터 고착을 적었으나 「raw_candles staleness·적재 지�
 - **B 미이식**: dev `_shindong_exec_step` 은 못 친 신호를 `shindong_exec.json` 에 SKIP_STALE·REJECT(사유)로 이미 남긴다 — v9-dev 의 「보유 중 흔적 없이 버림」 결함이 dev 에는 없다. 대사는 `events_from_exec_json()` 으로 그 json 을 읽는다.
 - **검증(dev 트리, py37_32)**: `test_705` 10건 포함 신동·신동2 199 passed · 26 skipped. 실패 1 `test_598::test_main_retracted_behavior` 는 깨끗한 `origin/dev` 에서도 실패(기존, 가짜 로거에 `exception` 없음).
 - **How to apply (MW0602)**: `docs/정기점검/MW0601_to_MW0602_신동실거래대사_이식메모_20261022.md` §4 — 장후 `python scripts/shindong_daily_report.py 2026-10-22` 로 §2-1 확인. 「실거래만 — 집행 기록 없음」 이 많으면 `at`↔`entry_ts` ±90초 짝짓기 점검.
+
+## 2026-10-22 (MW0602 646차 후속 — 일일 점검: 장후, 종합)
+
+- **증상**: 장후(16:48 KST) 정기점검 실행. 브랜치 `dev` · HEAD `3c0bd03` · 미커밋 92건(문서/데이터+`config/settings.py` 1줄, 코드 트레이딩 경로 無) · 당일 코드 커밋 3건(`baed0fd` 644차, `f3ab77b` 645차, `3c0bd03` [MW0601]→dev 9842 이식, 뒤 2건은 증거 수집기 §2가 UTC/KST 경계로 "0건"으로 오탐 — 기존 623-F1 재발, `awk` 보정 조회로 수동 확인). EOD(`daily_close`)·P8(`p8_scaler_refit`) 둘 다 `session_state.json` 기준 2026-10-22 성공 확인. 실거래(SHINDONG 경로) 3건 전원 승(`하드스톱` 2건은 TP1 도달 후 보호 트레일로 재확인, `tp1_reached`로 분기 — `baed0fd`/644차 라벨 분리 덕에 혼동 없이 분류), 미륵 가상장부 별도 5건(혼동 없이 분리 보고). 당일 손익: 브로커 net(`fetch_daily_net_for_verdict`) **+1,693,981원**(엔진 자체 계산 +1,693,959원, 22원 차이는 무시 가능 — 브로커 수치 채택). 절대원칙 6종 전부 준수(15:10 강제청산 대상 없음 → 15:18 FinalClose 로그 미발생은 정상, CB①~⑤ 발동 無).
+  - 병행 세션 활동 **2건** 포착: (1) `dev_memory/DECISION_LOG.md`에서 일시적 git stash 충돌 마커 관측 → 재확인 시 자체 해소, `git diff` +16줄만(손실 없음) — 보고서 1-3. (2) 보고서 작성 완료 **후** `647차` 항목이 DECISION_LOG에 추가돼 있는 것을 재확인 중 발견 — `config/settings.py:7903 STRIKE_INVESTOR_FLOW_ENABLED`가 `False→True`로 변경(미커밋), 9842 수집기 활성화 절차(프로브·2744칸 전수대사) 수행, 작업 스케줄러 등록 주장(이 셸에서 미검증) — 보고서 §10 추록으로 정정(본문은 규칙상 미수정). 둘 다 실거래 경로·절대원칙과 무관(수집 전용/기록파일 이슈).
+- **원인**: (1-3) 라이브 세션이 같은 파일에 거의 동시 작성을 시도해 `git stash pop` 충돌이 났고, 그 세션이 스스로 정리함. (647차) 사용자(또는 사용자 지시를 받은 별도 세션)가 이 점검과 **병행**으로 9842 기능의 MW0602 활성화 절차를 수행함 — 이 점검 세션은 관찰만 하고 개입하지 않음(파괴적/모호한 git 작업 금지 원칙 준수).
+- **결정**: 당일 종합 P0 **0건** · P1 **0건** · P2 **4건**(1-1 수집기 디코드 레이스 재발[이월]·1-2 화이트리스트 미기록[이월, F-1]·1-3 스태시 충돌 해소·1-4 9842 활성화 미커밋/미검증[신규, 정보성]). 621-O2(신동 vwap/체크리스트 우회 설계 확인 요청)는 오늘로 **10거래일째** 무응답 — 장중 절의 "11거래일째" 표기는 10/20·10/21 선행 기록과 대조해 오류로 판단, 장중 본문은 수정하지 않고 장후 이월표에서 정정만 기록. F-2(643차/신동2 conda 폴링 오류)는 오늘 미재현(3거래일 연속 재발 후 1일 중단) — 완전 해소 여부는 보류, 다음 거래일 재관찰. 313차 5원칙 적용 결과 오늘 3건(모두 승)을 포함한 최근 5거래일(10/16 패·10/19~22 승)은 부호 불일치(prong 5)로 **확정 결론 금지** — H-1(수익률 향상 가설)은 표본 20거래일 사전등록 기준에 아직 미달, 판정 보류 유지.
+- **Why**: 함정① 방지를 위해 `baed0fd`(tp1_protect_armed)·`f3ab77b`(PROFIT_GUARD_BLOCK_VIRTUAL_PRINCIPAL/계좌축)가 실제 코드에 반영됐는지 `main.py`·`config/settings.py` 직접 grep으로 재확인(문서/로그 텍스트만 보지 않음). 함정③(MW0601→dev 이식)은 `3c0bd03`이 `[MW0601]` 접두를 달고도 `dev`에 직접 배포된 것을 보고 바로 "태깅 위반"으로 단정하지 않고 DECISION_LOG의 "[9842]" 원 결정 기록을 확인해 명시적 선별 이식임을 확인함. 함정④(ERROR 레벨만 보지 않기)에 따라 WARNING/INFO 레벨까지 포함해 신동2 로그·CB 로그를 점검함. 2026-06-25 SHAP=0, 2026-08-01 §9-3 통계는 이번 보고서 어디서도 근거로 재인용하지 않음(함정②).
+- **How to apply**: F-1(차단 게이트 화이트리스트 — `config/dailycheck_targets.json`에 `PROFIT_GUARD_BLOCK_VIRTUAL_PRINCIPAL` 추가)은 이번 점검 세션에서는 **적용하지 않음**(점검=관측, 자동조치 세션의 몫) — `mireuk-postmarket-autofix`(평일 17:23) 또는 사용자 승인 세션에서 C급 변경으로 적용 권고. 9842(647차) 관련해서는 이 점검 세션이 할 일 없음(이미 다른 세션/사용자가 수행) — 다음 점검에서 커밋 여부·스케줄 등록 실제 확인만 추적.
+- **검증**: `.git/index.lock`·`.git/HEAD.lock` 세션 시작·종료 2회 확인, 둘 다 없음. 이 점검 세션은 `git commit`·`git push` 수행하지 않음(확인: `git --no-optional-locks status --short`로 변경사항이 전부 작업 트리에만 존재, 새 커밋 없음).
+- 근거: `docs/정기점검/매일점검/MW0602-20261022-점검리포트.md`(장후 절 + §10 추록), `docs/정기점검/매일점검/evidence_MW0602-20261022_post.md`.
+
+
+## 2026-10-22 (MW0602 647차 후속 — 장후 자동조치: F-1 차단 게이트 화이트리스트)
+
+- **증상**: 1022 장전·장중·장후 점검 1-2 — 수집기 §11 「차단 게이트 전수 인벤토리」가 `PROFIT_GUARD_BLOCK_VIRTUAL_PRINCIPAL=False`를 「미기록 ⚠」로 매일 표시.
+- **원인**: 645차가 settings 상수와 근거(DECISION_LOG·settings 주석)는 남겼으나 점검 도구 목록 `config/dailycheck_targets.json:documented_disabled_flags`는 별개 파일이라 반영되지 않음.
+- **결정/구현**: 목록에 이름 추가 + `_documented_설명`에 근거 위치(645차) 병기. 회귀 `tests/test_647_dailycheck_documented_flags.py` — 꺼진 `*BLOCK*` 플래그(수집기 `scan_gate_flags`와 같은 정규식·`gate_flag_alert_pattern`) 전수 등록 · 근거 문장 포함 · 유령 항목 부재. 커밋 `1295977`(push 완료, `08807a6` 위에 fast-forward 후).
+- **Why**: A등급(점검 도구 설정, 매매 경로 무변경). 경보 피로 제거. 목록만 늘리면 근거 없는 「기록됨」이 붙으므로 근거 문장 포함을 테스트로 강제.
+- **How to apply**: 새로 꺼진 차단 플래그를 settings에 추가할 때 같은 커밋에서 `dailycheck_targets.json` 목록·근거 문장을 함께 갱신 — 안 하면 test_647이 깨진다.
+- **검증**: 신규 3 + 482·703 = 31 passed, 점검 도구 관련 28파일 205 passed(base anaconda pytest). 라이브: 다음 장전 수집기 §11 적신호 소멸 확인.
+- **이미 반영(미구현)**: 사용자 조치 6번·§10 추록 7번(9842) — `588c143`(647차)에 포함돼 있음. 추록의 「미커밋」 서술은 그 커밋 이전 관측.
+- **미처리**: 사용자 손 작업(미커밋 문서 정리·DECISION_LOG 훑기·621-O2 응답·예약작업 확인)과 F-2(643차 조사)·H-1(집행 금지)은 이월. dev_memory·리포트는 append만 하고 미커밋.
+
+## 2026-10-22 (MW0602 648차 — MW0601 이식 수령: 신동 실거래 대사 b8c7b86 · broker_net dev 스키마 결함 수정)
+
+- **수령**: `origin/dev` `b8c7b86`(MW0601 705차 A·C 선별 이식)을 로컬 `dev` 에 fast-forward. 이식 메모 v9-dev `c293b35`(같은 문서가 b8c7b86 에 포함). 체리픽 아님 — MW0601 이 dev 에 직접 올린 커밋을 받은 것.
+- **결함(dev 전용)**: `exec_recon.broker_net()` 이 `broker_net_source` 컬럼을 무조건 SELECT — 그 컬럼은 v9-dev 에만 있고 MW0602 `daily_broker_pnl` 에는 없다 → OperationalError → 실측 net(10-22 +1,693,981원)이 있는데 리포트가 「브로커 net 미기록」. 테스트 fixture 가 v9-dev 스키마라 못 잡았다.
+- **수정**: `PRAGMA table_info` 로 컬럼 유무 확인 후 없으면 `NULL`(source=None). 회귀 `test_broker_net_without_source_column`(dev 실스키마). test_705 9/9.
+- **메모 §4 확인(10-22 MW0602 실데이터)**: ① 실거래 3포지션 **+169.4만** vs 재생 MAIN +164.8만, 3/3 「일치」(±90초 짝짓기 정상) · 브로커 net 과 차 **+22원**. ② 「실거래만 — 집행 기록 없음」 0건. ③ §4 실집행 참고 행(10-19~) 4일 12포지션 +543.9만 — 판정 기준 아님(무변경).
+- **리포트 재생성**: `docs/신동거래_V2/일일/신동_일일_MW0602_20261022.{md,svg,pdf}` (15:40 판은 이식 전 코드라 §2-1 없음). 메일 재발송 안 함.
+- **기존 결함(이식 무관)**: 신동 테스트 12 실패(test_598 retracted 1 · 626 재생 2 · 632 재생 7 · 662b 2) — 이식 전 코드로 되돌려도 동일 12건. 메모의 test_705 「10건」은 실제 8건(+이번 1건 = 9).
