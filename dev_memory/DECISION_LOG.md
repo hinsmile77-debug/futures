@@ -49238,3 +49238,17 @@ EKS는 366차 이전부터 존재하는 기존 설계이고, 이번 사이클은
 - How to apply: 기존 7행은 `OTHER` 로 남는다(소급 안 함 — 490차 관례). 이 라벨 세대 경계 = 다음 재기동. `exit_stage` 집계 시 2026-10-22 이전 `OTHER` 는 신동·피터2 청산이 섞여 있다.
 - 검증: `test_490` 통과, `test_705b` 12건 통과. 관련 40파일 575 passed / 2 failed — `test_virtual_book::test_main_dispatch_is_isolated`(py37 에 `ast.get_source_segment` 없음) · `test_554::test_missing_reference_skips_check_but_is_not_silent`(test_virtual_book 과 함께 돌 때만 실패, HEAD 코드에서도 동일 재현) — 둘 다 기존 실패.
 - 문서 일괄 커밋: 10-19~10-22 점검리포트·증거 · 신동2 해설/학습 · 피터2 실시간/일일 · 신동 일일 · `config/dailycheck_targets.json`(F-1) · 수익률향상 누적대장.
+
+## 2026-10-23 (MW0601 706차 — CREON 실거래 런처 실패 경로: 08:35 트리거 봉쇄 · 잘못된 세션 방치 · 저장 ID 계측) — 🟢 **사용자 지시 「2–3번 진행하고 개선안 구현해」 · 매매 경로 무변경**
+
+- 증상: 04:12 `CREON Plus` 작업 **수동 실행**(이벤트 110)에서 `/prj:cp /id:smart7na` 가 **Smart1na 계좌 783293269** 로 사인온 → 가드가 실패 처리(주문 위험 없음). 그런데 ① `:end_error` 가 `PAUSE` + `CMD /K` 로 창을 붙잡아 작업이 Running 으로 남음 — 작업은 `MultipleInstances=IgnoreNew`·시간제한 없음이라 **08:35 트리거가 무시될 상태**였다 ② 실패 뒤 Smart1na 세션(CpStart 5596·DibServer 27860)이 그대로 생존 — 10-16 08:35 좀비 크래시 경로 ③ 런처 콘솔에 `'��그램' is not recognized` — 한글 REM 줄(구 218행 「보안 프로그램」)이 잘려 명령으로 실행됨.
+- 조치(운영): 사용자가 창을 닫음 → Smart1na 세션을 `_kill_cybos_procs(_REAL_KILL_NAMES)`(PlusDisconnect)로 정리 → 04:25 재실행 — **재현**(783293269, 7초).
+- 결정(코드):
+  1. `LAUNCH_API.bat :end_error` — `PAUSE`/`CMD /K` 제거 → `TIMEOUT /T 600` + `EXIT /B 1`. 04:25 재실행에서 작업이 rc=1 로 종료(04:26:17)되는 것 확인.
+  2. `scripts/cybos_autologin.py` 계좌 불일치 경로 — 레지스트리 판독 후 **잘못된 세션을 내리고** False. 재시도는 하지 않는다(같은 명령은 같은 계좌로 붙는다 — 10-15 12:20·13:22, 10-23 04:12·04:25). 04:26:04 `IsConnect=0` 확인.
+  3. 같은 파일 `_starter_registry_snapshot()` 신설(읽기 전용) — `CREON\starter`·`CREON\dstarter`·`DAISHIN\starter` 의 LoginID·저장 계좌(PNA-MA-REM)·키 수정시각을 로그인 전/성공/실패 시점에 `[DIAG]` 로 남긴다.
+  4. `LAUNCH_API.bat` 한글 REM 25줄 → ASCII.
+- 관측(가설 D 재료, **미확정**): 실패 2회 모두 로그인 전 `CREON\starter LoginID=SMART7NA`(10-15 13:35 이후 무변경)인데 `CREON\dstarter`(HTS 키: SMART1NA·783293269)와 `DAISHIN\starter`(SMART5NA·783293269)가 **API 로그인 도중에 갱신**됐다 → `/prj:cp` 가 자기 키가 아니라 이 두 키를 쓰고 있다. 다만 HTS 는 매일 08:42 Smart1na 로 로그인하는데 10-16–10-22 아침 API 는 성공했으므로 "dstarter=SMART1NA 이면 실패"로는 설명이 안 된다. 성공일 표본이 쌓이면 대조한다.
+- P2(보류): 로그인 전 dstarter/DAISHIN 저장 ID·계좌를 smart7na/783343908 로 맞추는 안 — HTS 설정과 얽혀 D 확정 전에는 넣지 않는다.
+- How to apply: 오늘 08:35 전에 10-15 방식(CREON Plus 로그인 창에서 smart7na 직접 로그인 + 「아이디 저장」) 으로 복구가 필요하다. 이후 매일 `creon_autologin_diag.log` 의 `[DIAG]` 줄을 성공/실패별로 비교.
+- 검증: `tests/test_706_launcher_fail_path.py` 5건 + 관련(631·692·564) 합계 35 passed.

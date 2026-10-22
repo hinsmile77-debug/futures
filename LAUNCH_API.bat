@@ -3,8 +3,8 @@ SETLOCAL EnableDelayedExpansion
 CHCP 65001 >NUL
 
 REM ============================================================
-REM  machine.cfg 읽기 -- BROKER=cybos|creon
-REM  machine.cfg 가 없으면 machine.cfg.example 을 복사해 설정하세요.
+REM  Read machine.cfg -- BROKER=cybos|creon
+REM  If machine.cfg is missing, copy machine.cfg.example and edit it.
 REM ============================================================
 SET "BROKER="
 IF EXIST "%~dp0machine.cfg" (
@@ -23,7 +23,7 @@ IF "!BROKER!"=="" (
 )
 
 REM ============================================================
-REM  브로커별 설정값
+REM  Per-broker settings
 REM ============================================================
 IF /I "!BROKER!"=="creon" (
     SET "BROKER_LABEL=CREON Plus"
@@ -40,9 +40,9 @@ IF /I "!BROKER!"=="creon" (
 )
 
 REM ============================================================
-REM  관리자 권한 확인 (CREON 전용)
-REM  coStarter.exe 는 UAC 상승 실행 → UIPI 차단 → 배치 자체를 관리자로 실행해야
-REM  SetCursorPos / PostMessage 정상 동작
+REM  Admin rights check (CREON only)
+REM  coStarter.exe runs UAC-elevated -> UIPI blocks us -> the batch itself must run as admin
+REM  for SetCursorPos / PostMessage to work
 REM ============================================================
 IF "!NEED_ADMIN!"=="1" (
     net session >nul 2>&1
@@ -75,9 +75,9 @@ ECHO.
 
 REM ============================================================
 REM  STEP 0: Pre-launch Cleanup
-REM  - 다른 창 최소화 (Cybos GUI 자동화 간섭 방지)
-REM  - SW_MINIMIZE only (프로세스 종료 없음)
-REM  - 마우스 커서 (0,0) 리셋
+REM  - minimize other windows (avoid interfering with Cybos GUI automation)
+REM  - SW_MINIMIZE only (no process is killed)
+REM  - reset mouse cursor to (0,0)
 REM ============================================================
 ECHO [STEP 0] Pre-launch cleanup: 다른 창 최소화, 마우스 리셋...
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\close_other_windows.ps1" -KeepTitle "Mireuk !BROKER_LABEL! Launcher"
@@ -164,10 +164,10 @@ ECHO [INFO] 환경 활성화: %CONDA_DEFAULT_ENV%
 ECHO [INFO] Environment activated: %CONDA_DEFAULT_ENV% >> "!LOG!"
 
 REM ============================================================
-REM  2.5. conda activate.bat 가 내부적으로 ENDLOCAL 을 호출하면
-REM  이 스크립트의 SETLOCAL 이 해제되어 지연 확장이 비활성화될 수 있음.
-REM  여기서 SETLOCAL 과 핵심 변수(BROKER, WORKDIR, LOG)를 복원.
-REM  (start_mireuk.bat 270차에서 발견·적용된 패턴과 동일 -- LAUNCH_API.bat 누락분 보강)
+REM  2.5. If conda activate.bat calls ENDLOCAL internally,
+REM  this script's SETLOCAL is dropped and delayed expansion may be disabled.
+REM  Restore SETLOCAL and key variables (BROKER, WORKDIR, LOG) here.
+REM  (same pattern as start_mireuk.bat session 270 -- backfilled into LAUNCH_API.bat)
 REM ============================================================
 SETLOCAL EnableDelayedExpansion
 
@@ -201,7 +201,7 @@ cd /d "!WORKDIR!"
 IF NOT DEFINED LOG SET "LOG=!WORKDIR!\logs\!LOG_NAME!"
 IF "!LOG!"=="" SET "LOG=!WORKDIR!\logs\!LOG_NAME!"
 
-REM conda init cmd.exe 미실행 경고 (activate.bat 가 PATH 를 못 바꾸는 원인 진단용)
+REM Warn when 'conda init cmd.exe' was never run (why activate.bat may not change PATH)
 reg query "HKCU\Software\Microsoft\Command Processor" /v AutoRun >NUL 2>&1
 IF %ERRORLEVEL% NEQ 0 (
     ECHO [WARN] conda init cmd.exe 미설치 감지 -- activate.bat 가 PATH 를 못 바꿀 수 있습니다.
@@ -210,13 +210,13 @@ IF %ERRORLEVEL% NEQ 0 (
 )
 
 REM ============================================================
-REM  2.6. 32-bit Python 명시적 경로 탐색 (PY32)
-REM  배경: conda init cmd.exe 미실행 시 activate.bat 가 PATH 를 변경하지 못해
-REM  'python' 명령이 64-bit base 환경을 가리킬 수 있음 (Cybos/CREON COM 은 32-bit 필수).
-REM  대응: py37_32\python.exe 를 직접 탐색 -> PY32 변수 저장 -> 이후 모든 python 호출에 사용.
-REM  (start_mireuk.bat 과 동일 로직 -- LAUNCH_API.bat 은 지금까지 bare 'python' 에 의존해
-REM   이 실패 모드에 취약했음. 260707: 보안 프로그램 다이얼로그 대기 중 자동로그인이
-REM   멈추는 등 성공/실패가 실행마다 갈리는 근본 원인 후보로 지목되어 보강함.)
+REM  2.6. Explicit 32-bit Python path discovery (PY32)
+REM  Why: without 'conda init cmd.exe', activate.bat cannot change PATH, so
+REM  'python' may point to the 64-bit base env (Cybos/CREON COM requires 32-bit).
+REM  Fix: locate py37_32\python.exe directly -> store in PY32 -> use it for every python call.
+REM  (same logic as start_mireuk.bat -- LAUNCH_API.bat used to rely on bare 'python'
+REM   and was exposed to this failure mode. 260707: auto-login stalling on the security
+REM   dialog and run-to-run flakiness were traced to it as a root-cause candidate.)
 REM ============================================================
 SET "PY32="
 IF /I "!CONDA_DEFAULT_ENV!"=="py37_32" IF DEFINED CONDA_PREFIX IF EXIST "!CONDA_PREFIX!\python.exe" SET "PY32=!CONDA_PREFIX!\python.exe"
@@ -244,7 +244,7 @@ IF !ERRORLEVEL! NEQ 0 (
 )
 ECHO [INFO] 32-bit Python 확인: !PY32!
 
-REM py37_32 디렉터리를 PATH 맨 앞에 추가 (64-bit DLL/인터프리터 충돌 방지)
+REM Prepend py37_32 dirs to PATH (avoid 64-bit DLL/interpreter conflicts)
 SET "_PY32_DIR=!PY32:\python.exe=!"
 SET "PATH=!_PY32_DIR!;!_PY32_DIR!\Scripts;!_PY32_DIR!\Library\bin;!_PY32_DIR!\Library\mingw-w64\bin;!_PY32_DIR!\Library\usr\bin;!PATH!"
 ECHO [INFO] PATH 앞에 py37_32 경로 추가: !_PY32_DIR!
@@ -333,9 +333,9 @@ IF EXIST "!WORKDIR!\scripts\cybos_plus_preflight.py" (
         SET "ERROR_FLAG=1"
         GOTO :end_error
     )
-    REM [2026-08-06] 계좌 대조 실패 -- preflight CHECK 4/4 신설.
-    REM 연결도 되고 TradeInit 도 됐지만 설정 계좌가 세션에 없는 상태다.
-    REM 그대로 기동하면 잘못된 세션 위에서 하루를 보낸다(2026-08-06 사고).
+    REM [2026-08-06] Account mismatch -- preflight CHECK 4/4 added.
+    REM Connected and TradeInit OK, but the configured account is not in the session.
+    REM Starting anyway would run the whole day on the wrong session (2026-08-06 incident).
     IF "!PREFLIGHT_ERR!"=="4" (
         ECHO [ERROR] 설정 계좌가 브로커 세션에 없습니다 -- 위 preflight 출력의 계좌목록을 확인하세요.
         ECHO [HINT]  모의계좌 재발급 시 config\secrets.py 의 ACCOUNT_NO / ACCOUNT_GOODS_CODE / ACCOUNT_PWD 를 직접 갱신하십시오.
@@ -402,5 +402,11 @@ ECHO   Log: !LOG!
 ECHO ============================================================
 ECHO.
 IF DEFINED LOG ECHO [%DATE:~0,10% %TIME:~0,8%] [ERROR] Launcher failed. >> "!LOG!"
-PAUSE
-CMD /K
+REM [MW0601 2026-10-23] No PAUSE / CMD /K here. The "CREON Plus" task is
+REM MultipleInstances=IgnoreNew with no time limit, so a window left waiting
+REM kept the task Running and the next 08:35 trigger would be ignored
+REM (10-23 04:12 manual run failed and sat at PAUSE). Details stay in the
+REM log files above; the window closes by itself after 10 minutes.
+ECHO   10분 뒤 자동으로 닫힙니다 (아무 키 = 즉시 닫기). 상세는 위 Log 와 creon_autologin_diag.log
+TIMEOUT /T 600
+EXIT /B 1

@@ -2340,6 +2340,48 @@ def _expected_account():
         return ""
 
 
+# [MW0601 2026-10-23] coStarter 가 로그인 상태를 남기는 레지스트리 키 3곳.
+# 10-23 04:12 `/prj:cp /id:smart7na` 가 Smart1na 계좌(783293269)로 붙었을 때, 이 로그인이
+# 쓴 키는 자기 키(CREON\starter)가 아니라 HTS 키(CREON\dstarter)와 DAISHIN\starter 였고
+# 둘 다 저장 계좌 783-293-269 를 들고 있었다. 성공한 날의 값이 없어 가설 D(저장 ID 우선)를
+# 확정할 수 없었다 — 매 로그인 전후로 남겨 표본을 쌓는다. **읽기만 한다.**
+_STARTER_REG_KEYS = (r"Software\CREON\starter\OPTIONS",
+                     r"Software\CREON\dstarter\OPTIONS",
+                     r"Software\DAISHIN\starter\OPTIONS")
+
+
+def _starter_registry_snapshot():
+    """각 키의 LoginID · 저장 계좌(PNA-MA-REM) · 키 마지막 수정 시각을 한 줄로. 실패해도 예외 없음."""
+    try:
+        import winreg
+    except ImportError:
+        import _winreg as winreg   # noqa
+    parts = []
+    for sub in _STARTER_REG_KEYS:
+        short = sub.replace("Software\\", "").replace("\\OPTIONS", "")
+        try:
+            k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, sub)
+        except OSError:
+            parts.append("%s=(없음)" % short)
+            continue
+        try:
+            def _v(name):
+                try:
+                    return str(winreg.QueryValueEx(k, name)[0])
+                except OSError:
+                    return "-"
+            acct = "".join(_v(n) for n in ("PNA", "MA", "REM")).replace("-", "") or "-"
+            # QueryInfoKey[2] = 1601-01-01 기준 100ns 단위 마지막 수정 시각
+            ts = winreg.QueryInfoKey(k)[2] / 10000000.0 - 11644473600
+            parts.append("%s: LoginID=%s 계좌=%s 수정=%s" % (
+                short, _v("LoginID"), acct, time.strftime("%m-%d %H:%M:%S", time.localtime(ts))))
+        except Exception as e:
+            parts.append("%s=(판독실패 %s)" % (short, type(e).__name__))
+        finally:
+            winreg.CloseKey(k)
+    return " | ".join(parts)
+
+
 def _dismiss_costarter_crash():
     """coStarter 「Unhandled exception has occured … ACCESS_VIOLATION」 팝업을 닫는다.
 
@@ -2495,6 +2537,7 @@ def _creon_real_cmdline_login():
         seen_drop = _session_probe()[0] != 1
         print("[INFO] CREON 실거래 로그인 %d/%d: coStarter /prj:cp /id:%s /pwd:*** /pwdcert:*** /autostart"
               % (real_attempt + 1, MAX_LOGIN_ATTEMPTS, uid))
+        print("[DIAG] 로그인 전 starter 레지스트리: %s" % _starter_registry_snapshot())
         win32api.ShellExecute(0, "open", CYBOS_EXE, args, exe_dir, win32con.SW_SHOW)
 
         deadline = time.time() + CREON_REAL_LOGIN_WAIT
@@ -2528,6 +2571,7 @@ def _creon_real_cmdline_login():
             if conn == 1:
                 if _good(st, accs):
                     print("[OK] CREON Plus 실서버 연결 (ServerType=%d 계좌=%s)" % (st, accs))
+                    print("[DIAG] 성공 시점 starter 레지스트리: %s" % _starter_registry_snapshot())
                     _close_plus_notice()
                     for _ in range(6):
                         if _dismiss_error_dialogs() == 0:
@@ -2545,6 +2589,13 @@ def _creon_real_cmdline_login():
                     continue   # 연결 직후 TradeInit 준비 전 — 다음 폴링에서 다시 본다
                 print("[ERROR] 연결됐으나 ServerType=%d 계좌=%s -- 기대(실서버·%s)와 다르다. 실패 처리"
                       % (st, accs, want))
+                print("[DIAG] 실패 시점 starter 레지스트리: %s" % _starter_registry_snapshot())
+                # [MW0601 2026-10-23] 잘못된 세션을 남기고 끝내지 않는다. 10-23 04:13 실패 뒤
+                # Smart1na 세션(CpStart·DibServer)이 그대로 살아 있었다 — 다음 기동이 그 좀비를
+                # 못 내리면 10-16 08:35 처럼 「이미 실행중 → 예」 → coStarter 크래시로 간다.
+                # 같은 명령 재시도는 같은 계좌로 붙으므로(10-15 12:20·13:22) 재시도하지 않는다.
+                _kill_cybos_procs(_REAL_KILL_NAMES)
+                print("[INFO] 잘못된 세션 정리 후 판독: IsConnect=%d" % _session_probe()[0])
                 return False
             # 업데이트(spdn/RepairGiant) 중이면 한 번만 300초 연장 (creon_start.ps1 2026-10-08 실측)
             if not extended and deadline - time.time() < 10 and _updater_running():
