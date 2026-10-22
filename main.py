@@ -894,6 +894,7 @@ class TradingSystem:
         self._sd_exec = {}
         self._sd_exec_day = None
         self._sd_exec_skipped = set()      # 늦어서·조건 미달로 건너뛴 신호 — 한 번만 알린다
+        self._sd_exec_hold_seen = set()    # [705차 B] 보유 중이라 못 친 신호 — 한 번만 알린다(기각 로그와 분리)
         self._sd_exec_orphan_warned = False
         # [MW0601 2026-10-13] 보유 중 재생 대조의 마지막 실행 시각 — 옵션흐름 수집과 분리(_shindong_hold_reconcile).
         #   None = 이 세션에서 아직 대조하지 않음(재기동 직후 → 즉시 1회 대조).
@@ -6011,6 +6012,7 @@ class TradingSystem:
             return
         self._sd_exec_day = day
         self._sd_exec_skipped = set()
+        self._sd_exec_hold_seen = set()
         self._sd_exec_orphan_warned = False
         d = principal_mod.read_json(day, "shindong_exec.json", default=None)
         self._sd_exec = dict(d) if isinstance(d, dict) else {}
@@ -6113,6 +6115,25 @@ class TradingSystem:
             if rec is not None:
                 for act in _ll.sync(rec, by_key.get(rec["trade_key"]), now):
                     self._shindong_apply(rec, act, day, now, src="replay")
+            # [MW0601 705차 B] 보유 중에 나온 새 신호를 **흔적 없이 버리지 않는다**(계측 4원칙 ③).
+            #   2026-10-22 13:25 매수·13:51 매도가 13:22 매도 보유 중에 나와 로그·이벤트 0건으로 사라졌고,
+            #   리포트 재생 MAIN(+259.9만)과 실거래(+112.7만)의 차이 원인을 사후에 추적할 수 없었다.
+            #   신동이 거래주체일 때만 — 가상 주체면 실집행 대상이 아니다. 신호당 1회.
+            if self._principal_state["principal"] == principal_mod.SHINDONG:
+                _hold_key = rec["trade_key"] if rec is not None else "?"
+                for t in trades:
+                    k = t.get("trade_key")
+                    if (t.get("status") != "OPEN" or not k or k == _hold_key
+                            or k in self._sd_exec or k in self._sd_exec_hold_seen):
+                        continue
+                    # ⚠ _sd_exec_skipped 에 넣지 않는다 — 그 집합은 「진입 기각」 로그 1회 억제에도 쓰여,
+                    #   보유가 풀린 뒤 같은 신호가 기각되면 그 로그가 사라진다. 집행 동작은 바꾸지 않는다.
+                    self._sd_exec_hold_seen.add(k)
+                    log_manager.system("[ShindongExec] %s %s 진입 %s — 보유 중(%s), 새 신호 미집행"
+                                       % (t["rule"], "매수" if t["side"] > 0 else "매도",
+                                          str(t["entry_ts"])[11:16] or str(t["entry_ts"]), _hold_key),
+                                       "INFO")
+                    self._sd_exec_event(day, "SKIP_HOLDING", trade_key=k, holding=_hold_key)
             return
         # 포지션이 사라졌는데 기록이 열려 있으면 닫는다(손절·15:10·수동 청산 등 다른 경로)
         _closed_any = False
@@ -15062,7 +15083,8 @@ class TradingSystem:
                                     "data/db/option_flow.db"),
                     levels_db=runtime_settings.PREMARKET_LEVELS_DB,
                     sd_db=runtime_settings.SHINDONG_DB,
-                    out_dir=runtime_settings.SHINDONG_DAILY_REPORT_DIR, now=now)
+                    out_dir=runtime_settings.SHINDONG_DAILY_REPORT_DIR, now=now,
+                    trades_db=runtime_settings.TRADES_DB)   # [705차] §2-1 실거래 대사
                 if _sddr_res.get("ok"):
                     logger.info("[ShindongReport] %s | %s", _sddr_res.get("md_path"), " · ".join(
                         "%s %s" % (v.replace("SHADOW_", ""), format(s["net"], "+,.0f"))

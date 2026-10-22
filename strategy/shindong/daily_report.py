@@ -9,6 +9,7 @@
   0. 한눈에      — 시장 · R1 · 변형별 순손익 · 오늘의 한 줄
   1. 차트        — 변형마다 한 줄: 가격 + 진입·청산 + 맥점 / 맨 아래 개인 콜−풋
   2. 거래 흐름   — MAIN 타임라인(누적 손익 포함)
+  2-1. 실거래 대사 — 실제 체결(trades.db) vs 재생 MAIN · 브로커 net  [705차]
   3. 섀도 흐름   — 섀도별 타임라인 + **MAIN 과 무엇이 달랐나**(차단·시점 이동·청산 차이)
   4. 누적 채점   — 채점 시작 이후 변형별 · 판정 진행(D-n) · R1 적중률
   5. 러너 섀도   — 미륵이 × 신동(장후 기록)
@@ -28,6 +29,7 @@ import sqlite3
 from typing import Any, Dict, List, Optional, Tuple
 
 from strategy.shindong import engine as E
+from strategy.shindong import exec_recon as XR
 from strategy.shindong import runner as RN
 from strategy.shindong import spec as S
 from strategy.shindong.calendar import select_flow_product
@@ -281,7 +283,7 @@ def observations(day: Dict[str, Any], rows: Dict[str, List[Dict]], sums: Dict[st
     lag = [r for r in main if r["detect_px"] is not None and r["detected_at"]]
     if lag:
         cost = sum(r["side"] * (r["entry_px"] - float(r["detect_px"])) * S.PT_VALUE_KRW * S.LEGS for r in lag)
-        obs.append("**탐지 지연** — 라이브 진입 %d건, 규칙가 대비 실현가능가 차 %s(음수 = 늦게 알아채 손해)."
+        obs.append("**탐지 지연** — 재생 진입 %d건, 규칙가 대비 실현가능가 차 %s(음수 = 늦게 알아채 손해)."
                    % (len(lag), _won(cost)))
     best = max(sums, key=lambda v: sums[v]["net"])
     if best != "MAIN":
@@ -408,7 +410,8 @@ def _timeline(rows: List[Dict], live: bool) -> List[str]:
 
 def build(trade_date: str, raw_db: str, flow_db: str, levels_db: str, sd_db: str,
           out_dir: Optional[str] = None, now: Optional[_dt.datetime] = None,
-          pc: Optional[str] = None) -> Dict[str, Any]:
+          pc: Optional[str] = None, trades_db: Optional[str] = None,
+          exec_events: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     now = now or _dt.datetime.now()
     if pc is None:
         from utils.db_utils import pc_id
@@ -422,7 +425,8 @@ def build(trade_date: str, raw_db: str, flow_db: str, levels_db: str, sd_db: str
     w("")
     w("> **%s 리포트** · 생성 %s · 규격 `%s` · 상품 `%s` (%s)" % (pc, now.strftime("%Y-%m-%d %H:%M"), S.SPEC_VERSION,
                                              day["product"], day["product_note"]))
-    w("> 가상거래다 — 주문 없음(절대원칙 §6). 손익은 미니선물 2계약 · CYBOS 요율 · 1틱 슬리피지 기준.")
+    w("> **아래 변형 손익은 엔진 재생(가상)이다** — 장후 최종 흐름으로 하루를 다시 돌린 값. "
+      "미니선물 2계약 · CYBOS 요율 · 1틱 슬리피지 기준. **실제 체결 손익은 §2-1 실거래 대사.**")
     w("")
     if not day["ok"]:
         w("**판정 불가 — %s.**" % day["why"])
@@ -460,9 +464,13 @@ def build(trade_date: str, raw_db: str, flow_db: str, levels_db: str, sd_db: str
         w("| %s | %d | %d | %s | %s | **%s** | %s | %s | %s |" % (
             VLABEL[v], s["n"], s["win"], _man(s["r2"]), _man(s["r3"]), _man(s["net"]), _man(s["worst"]),
             "—" if v == "MAIN" else _man(s["net"] - sums["MAIN"]["net"]),
-            "라이브" if v in live_vs else "재계산"))
+            "재생(장중 기록)" if v in live_vs else "재계산"))
     best = max(S.VARIANTS, key=lambda v: sums[v]["net"])
+    recon = _recon(trade_date, trades_db, rows["MAIN"], exec_events)
     w("")
+    if recon is not None:
+        w("**실거래(실제 체결)** — %s" % _recon_headline(recon, sums["MAIN"]["net"]))
+        w("")
     w("**오늘의 한 줄** — MAIN %s(%d거래 %d승)%s." % (
         _man(sums["MAIN"]["net"]), sums["MAIN"]["n"], sums["MAIN"]["win"],
         "" if best == "MAIN" else ", 최선은 %s %s(MAIN 대비 %s)" % (
@@ -483,6 +491,12 @@ def build(trade_date: str, raw_db: str, flow_db: str, levels_db: str, sd_db: str
     w("## 2. 거래 흐름 — MAIN")
     w("")
     lines.extend(_timeline(rows["MAIN"], True))
+    w("")
+
+    # 2-1. 실거래 대사 [705차]
+    w("## 2-1. 실거래 대사 — 실제 체결 vs 재생 MAIN")
+    w("")
+    lines.extend(_recon_section(recon))
     w("")
 
     # 3. 섀도 흐름
@@ -523,9 +537,19 @@ def build(trade_date: str, raw_db: str, flow_db: str, levels_db: str, sd_db: str
                 VLABEL[v], c["start"], c["days"], c["n"],
                 ("%.0f%%" % (100.0 * c["win"] / c["n"])) if c["n"] else "-", _man(c["net"]), _man(c["worst_day"]),
                 c["r3n"], ("%.0f%%" % (100.0 * c["r3win"] / c["r3n"])) if c["r3n"] else "-", _man(c["r3net"]), jd))
+        # [705차 C] 실집행 누적 — 참고 행. 사전등록 채점(MAIN 재생 · RETRACTED 제외)은 그대로다.
+        cx = XR.cumulative_exec(trades_db, S.SCORING_START, trade_date) if trades_db else None
+        if cx is not None and cx["n"]:
+            w("| **실집행(실제 체결 · 참고)** | %s | %d | %d | %s | **%s** | %s | - | 판정 기준 아님 |" % (
+                cx["start"], cx["days"], cx["n"], "%.0f%%" % (100.0 * cx["win"] / cx["n"]), _man(cx["net"]),
+                _man(cx["worst_day"])))
+        elif trades_db:
+            w("| 실집행(실제 체결 · 참고) | %s | 0 | - | - | - | - | - | 체결 없음 |" % S.SCORING_START)
         w("")
         w("> 판정 전 집계다 — 인용·규격 변경 근거로 쓰지 말 것. R3 중단 기준: 순손익 < 0 **그리고** 승률 < %.0f%%."
           % (100 * S.R3_KILL_WINRATE_MAX))
+        w("> 「실집행」 = `trades.db` 신동 체결(포지션 단위, 거래일 = 체결이 있던 날). 재생에서 철회됐지만 실제로 친 거래가 "
+          "**들어가고**, 보유 중·늦음으로 못 친 재생 거래는 **빠진다**. 사전등록 판정은 위 MAIN 재생 행으로만 한다.")
     else:
         w("- 기록 DB 없음(미배선 — 0건이 아니다)")
     w("")
@@ -563,7 +587,79 @@ def build(trade_date: str, raw_db: str, flow_db: str, levels_db: str, sd_db: str
     w("")
     w("---")
     w("재생성: `python scripts/shindong_daily_report.py %s`" % trade_date)
-    return _write(lines, svg, stem, out_dir, {"ok": True, "sums": sums, "best": best, "hit": hit, "pc": pc})
+    return _write(lines, svg, stem, out_dir, {"ok": True, "sums": sums, "best": best, "hit": hit, "pc": pc,
+                                              "recon": recon})
+
+
+KIND_LABEL = {"MATCH": "일치", "EXEC_RETRACTED": "실거래만 — 재생에서 철회",
+              "EXEC_UNKEYED": "실거래만 — 집행 기록 없음", "REPLAY_ONLY": "재생만 — 미집행"}
+
+
+def _recon(trade_date, trades_db, main_rows, exec_events):
+    """None = 대사 원천 없음(trades_db 미지정·DB 없음) — 0 이 아니다."""
+    if not trades_db:
+        return None
+    pos = XR.real_positions(trades_db, trade_date)
+    if pos is None:
+        return None
+    if exec_events is None:
+        from strategy.runtime import trade_principal as TP
+        exec_events = TP.read_jsonl(trade_date, "shindong_exec.jsonl")
+    rc = XR.reconcile(main_rows, pos, exec_events)
+    rc["broker"] = XR.broker_net(trades_db, trade_date)
+    rc["other"] = XR.other_sources(trades_db, trade_date)
+    return rc
+
+
+def _recon_headline(rc, replay_main):
+    s = "%d포지션 %s" % (rc["n_real"], _man(rc["real_total"]))
+    b = rc.get("broker")
+    o = rc.get("other") or {}
+    if b is not None:
+        s += " · 브로커 net %s%s" % (_man(b["net"]), "" if not o.get("legs") else
+                                   " (계좌 전체 — 다른 출처 %d레그 %s 포함)" % (o["legs"], _man(o["net"])))
+    else:
+        s += " · 브로커 net 미기록"
+    s += " · 재생 MAIN 과 차 %s → §2-1" % _man(rc["real_total"] - replay_main)
+    return s
+
+
+def _recon_section(rc):
+    if rc is None:
+        return ["- 대사 원천 없음(trades_db 미지정 또는 DB 없음) — 실거래 0 이 아니라 **미측정**이다."]
+    out = ["| # | 구분 | 신호 | 실거래 | 재생 MAIN | 비고 |", "|---|---|---|---|---|---|"]
+    for n, it in enumerate(rc["items"], 1):
+        p, r = it["real"], it["replay"]
+        real = ("%s %s %d계약 @%.2f · %s" % (p["entry_ts"][11:16], _side(p["side"]), p["qty"], p["entry_px"],
+                                          _man(p["net"]))) if p else "-"
+        rp = ("%s %s @%.2f · %s" % (r["entry_ts"], _side(r["side"]), r["entry_px"], _man(r["net"]))) if r else "-"
+        note = it.get("note") or ("차 %s" % _man(p["net"] - (r["net"] or 0)) if (p and r) else "")
+        key = ("`%s`" % it["key"].replace("|", "\\|")) if it["key"] else "-"   # 표 칸 구분자와 겹친다
+        out.append("| %d | %s | %s | %s | %s | %s |" % (n, KIND_LABEL[it["kind"]], key, real, rp, note))
+    if not rc["items"]:
+        out.append("| - | 실거래·재생 모두 없음 | | | | |")
+    out.append("")
+    t = rc["totals"]
+    out.append("| 구분 | 건 | 실거래 | 재생 MAIN |")
+    out.append("|---|---|---|---|")
+    for k in ("MATCH", "EXEC_RETRACTED", "EXEC_UNKEYED", "REPLAY_ONLY"):
+        rn, rc_n = t[k]["real"], t[k]["replay"]
+        if rn[1] or rc_n[1]:
+            out.append("| %s | %d | %s | %s |" % (KIND_LABEL[k], max(rn[1], rc_n[1]),
+                                               _man(rn[0]) if rn[1] else "-", _man(rc_n[0]) if rc_n[1] else "-"))
+    out.append("| **합** | | **%s** | **%s** |" % (_man(rc["real_total"]), _man(rc["replay_total"])))
+    b = rc.get("broker")
+    o = rc.get("other") or {}
+    out.append("")
+    if b is not None:
+        out.append("- 브로커 실측 net(계좌 전체, `daily_broker_pnl` · %s): **%s** · 신동 실거래 합과 차 %s%s"
+                   % (b.get("source") or "-", _man(b["net"]), _won(b["net"] - rc["real_total"]),
+                      "" if not o.get("legs") else " — 다른 출처 %d레그 %s 가 섞여 있다" % (o["legs"], _man(o["net"]))))
+    else:
+        out.append("- 브로커 실측 net 미기록(미측정)")
+    out.append("- 재생은 장후 최종 흐름으로 다시 돌린 값이라, 장중에 나왔다가 정정으로 사라진 신호(철회)는 빠지고 "
+               "보유 중·늦음으로 못 친 신호는 들어간다. **실거래 손익은 이 절의 「실거래」 열이다.**")
+    return out
 
 
 def _write(lines, svg, stem, out_dir, meta):

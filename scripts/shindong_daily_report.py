@@ -20,7 +20,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from config.settings import (PREMARKET_LEVELS_DB, RAW_DATA_DB, SHINDONG_DAILY_REPORT_DIR,  # noqa: E402
-                             SHINDONG_DB, WEEKLY_OPTION_FLOW_DB)
+                             SHINDONG_DB, TRADES_DB, WEEKLY_OPTION_FLOW_DB)
 from strategy.shindong import daily_report  # noqa: E402
 
 
@@ -42,7 +42,8 @@ def main(argv=None) -> int:
         days = a.dates or [_dt.date.today().isoformat()]
     flow = WEEKLY_OPTION_FLOW_DB if os.path.isabs(WEEKLY_OPTION_FLOW_DB) else os.path.join(ROOT, WEEKLY_OPTION_FLOW_DB)
     for d in days:
-        r = daily_report.build(d, RAW_DATA_DB, flow, PREMARKET_LEVELS_DB, SHINDONG_DB, out_dir=a.out)
+        r = daily_report.build(d, RAW_DATA_DB, flow, PREMARKET_LEVELS_DB, SHINDONG_DB, out_dir=a.out,
+                               trades_db=TRADES_DB)   # [705차] §2-1 실거래 대사
         if not r["ok"]:
             print("%s  건너뜀 — %s (파일 안 만듦)" % (d, r.get("why", "")))
             continue
