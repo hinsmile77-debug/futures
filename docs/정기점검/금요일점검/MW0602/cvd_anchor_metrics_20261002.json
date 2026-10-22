@@ -1,0 +1,116 @@
+{
+  "generated_at": "2026-10-02T15:54:08",
+  "pc": "MW0602",
+  "git": "0ffcc40",
+  "days_requested": 5,
+  "coverage": {
+    "bars": 1903,
+    "dates": [
+      "2026-09-28",
+      "2026-09-29",
+      "2026-09-30",
+      "2026-10-01",
+      "2026-10-02"
+    ],
+    "anchor_bars": 1903,
+    "shadow_bars": 1903,
+    "recovered_bars": 0
+  },
+  "identities": {
+    "i1_n": 1903,
+    "i1_bad": 7,
+    "i1_max": 13,
+    "i2_n": 1903,
+    "i2_unclassified": 0,
+    "i2_negative_bars": 0,
+    "i3_n": 1903,
+    "i3_bad": 0,
+    "i3_bad_legacy_era": 0,
+    "i3_bad_dates": [],
+    "i4_n": 0,
+    "i4_bad": 0,
+    "i4_unk_total": 0,
+    "i4_absent": 1903
+  },
+  "axis_legacy_vs_anchor": {
+    "n": 1903,
+    "volume": 572157,
+    "mag_net": 0.15054259582597085,
+    "mag_abs": 0.1505985245308543,
+    "sign_bias": 0.004206098843322818,
+    "concentration": 0.999474513925381,
+    "max_abs_bar": 351.0,
+    "worst_ts": "2026-10-01 14:05:00"
+  },
+  "axis_shadow_vs_anchor": {
+    "n": 1903,
+    "volume": 572157,
+    "mag_net": 5.243316082823421e-06,
+    "mag_abs": 5.243316082823421e-06,
+    "sign_bias": 0.0,
+    "concentration": 0.0010509721492380452,
+    "max_abs_bar": 2.0,
+    "worst_ts": "2026-09-29 09:37:00"
+  },
+  "shares": {
+    "legacy": 0.6488341486689843,
+    "shadow": 0.49829679615909617,
+    "anchor": 0.4983089714526416
+  },
+  "daily": [
+    {
+      "date": "2026-09-28",
+      "bars": 384,
+      "anchor_bars": 384,
+      "legacy": 0.6337341499887335,
+      "shadow": 0.4911915930925702,
+      "anchor": 0.4911863816537441
+    },
+    {
+      "date": "2026-09-29",
+      "bars": 368,
+      "anchor_bars": 368,
+      "legacy": 0.6378773885207536,
+      "shadow": 0.49278624140311866,
+      "anchor": 0.492834594827277
+    },
+    {
+      "date": "2026-09-30",
+      "bars": 384,
+      "anchor_bars": 384,
+      "legacy": 0.6448920698164408,
+      "shadow": 0.4840420735056609,
+      "anchor": 0.4840460418442972
+    },
+    {
+      "date": "2026-10-01",
+      "bars": 383,
+      "anchor_bars": 383,
+      "legacy": 0.6513300946545634,
+      "shadow": 0.508143849070025,
+      "anchor": 0.5081520640848429
+    },
+    {
+      "date": "2026-10-02",
+      "bars": 384,
+      "anchor_bars": 384,
+      "legacy": 0.6732844599778365,
+      "shadow": 0.5138862842042452,
+      "anchor": 0.5138906648253757
+    }
+  ],
+  "verdict": "✅ 발견 A 확정",
+  "reason": "앵커 매수비중 49.83%(균형)인데 라이브 legacy는 64.88%(편향) — 발견 A가 라이브에서 재현됐다.",
+  "next_action": "Phase 3 착수 가능. 단 섀도 20거래일 누적 후, 정규화 포화(features/technical/cvd.py:104)를 **동시에** 고칠 것. 틱 원본이 없어 2026-06-08~전환일 구간은 영구 편향(백필 불가)이므로 학습 창 분리가 필요하다.",
+  "thresholds": {
+    "MIN_BARS": 300,
+    "BALANCED": [
+      0.45,
+      0.55
+    ],
+    "BIASED_MIN": 0.58,
+    "IDENTITY_MAX_VIOLATION": 0.01,
+    "SHADOW_MATCH_MAX": 0.02,
+    "calibrated": false
+  }
+}
