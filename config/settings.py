@@ -7895,7 +7895,12 @@ WEEKLY_OPTION_FLOW_PEAK_SKIP = ("09:00", "09:02")
 #   (프로브 → 기간 스냅샷 HTS 대사 → True + 재기동).
 #   그날 최종값(15:45 종가 단일가 포함)은 장중 수집이 아니라 장후 기간 스냅샷
 #   (scripts/strike_investor_snapshot.py, 예약작업 \Mireuk\Mireuk_StrikeInvestorSnapshot)이 맡는다.
-STRIKE_INVESTOR_FLOW_ENABLED = False
+# 🟢 [MW0602 647차 2026-10-22] True 전환 — MW0602(CREON 실계좌) 실측 통과:
+#   ① 프로브 IsConnect=1 · ServerType=2 · 계좌등급 제한 없음 · 콜/풋 343행 미매핑 0
+#   ② 기간 스냅샷 --end 20261021 HTS 대사 2744/2744칸(20261022 는 _P 15:44:57 저장본이라 34칸 차 — 예상대로)
+#   ⚠ CREON 이 관리자 권한(승격)으로 뜬다 — 비승격 프로세스의 COM 은 로그인 안 된 DibServer 를
+#     새로 띄워 IsConnect=0 이 된다. 예약작업은 RunLevel=Highest 로 등록했다.
+STRIKE_INVESTOR_FLOW_ENABLED = True
 # 별도 DB — 하루 수만 행이라 7222(option_flow.db, 라이브가 매분 읽는다)와 섞지 않는다.
 STRIKE_INVESTOR_FLOW_DB = "data/db/strike_investor.db"
 # '1' 최근월 · '2' 차근월. 위클리는 원천이 주지 않는다(2026-10-22 실측).

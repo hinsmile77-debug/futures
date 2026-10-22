@@ -213,7 +213,9 @@ def _read(p):
 
 def test_settings_off_on_dev_and_keys_exist():
     from config import settings
-    assert settings.STRIKE_INVESTOR_FLOW_ENABLED is False     # dev: MW0602 프로브 전까지 꺼짐(이식 메모 §3)
+    # [MW0602 647차] 이식 메모 §3 ①프로브 ②HTS 대사 2744/2744칸 통과 후 True 전환.
+    #   되돌릴 때는 이 단언도 함께 고칠 것(DECISION_LOG 647차).
+    assert settings.STRIKE_INVESTOR_FLOW_ENABLED is True
     assert settings.STRIKE_INVESTOR_FLOW_MONTHS == ("1",)
     assert settings.STRIKE_INVESTOR_FLOW_DB.endswith("strike_investor.db")
     assert settings.STRIKE_INVESTOR_FLOW_DB != settings.WEEKLY_OPTION_FLOW_DB

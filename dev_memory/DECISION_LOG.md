@@ -50161,3 +50161,18 @@ AI 는 10/16 부터 고착을 적었으나 「raw_candles staleness·적재 지�
 - **이식 방식**: `main.py`·`config/settings.py` 는 v9-dev diff 를 3-way 적용(충돌 0, 이식 지점 문맥 동일) 후 `ENABLED` 만 False. 새 파일 5종 복사. `scripts/eod_session_cleanup.ps1`(MW0601 전용, dev 없음) 대기 목록 변경은 제외 — 테스트는 그 파일이 없으면 skip.
 - **검증(dev 트리, py37_32)**: `test_704` 16 통과 · 1 skip · `test_611`·`test_617`·`test_537` 통과. `test_457::test_db_fallback_columns_have_measured_flag` 1건 실패는 dev 기존 결함(`main_dashboard.py peter_paste`, 이식 무관 — 대시보드 무변경).
 - **How to apply (MW0602)**: `docs/정기점검/MW0601_to_MW0602_9842_이식메모_20261022.md` §3 — ① `probe_cpsvr9842.py` ② `strike_investor_snapshot.py --end <미러 _P 날짜>` 2,744칸 대사 ③ True + 재기동 ④ (선택) 예약작업 — **RunLevel 은 MW0602 에서 정상 동작 중인 COM 작업과 같게**.
+
+
+## 2026-10-22 (MW0602 647차 — [9842] 행사가 × 투자자 수집기 MW0602 활성화: 이식 메모 §3 ①~④) — ✅ 판별·대사 통과 · `ENABLED=True` · 예약작업 등록 · 장중 라이브 검증 대기
+
+- **출처**: `origin/dev` `3c0bd03`(MW0601 선별 이식, 원 v9-dev 704차) fast-forward 반영 후, 이식 메모 `docs/정기점검/MW0601_to_MW0602_9842_이식메모_20261022.md` §3 절차 수행. 사용자 지시.
+- **① 프로브(16:44 1차 실패 → 16:48 재실행 통과)**:
+  - 1차 `IsConnect=0 · ServerType=0` — **원인: 권한 수준 불일치.** CREON(`CpStart`·`DibServer` 11300, 08:35 기동)은 **관리자 권한(승격)** 으로 떠 있고 실행 셸은 비승격이라, COM 이 로그인 안 된 `DibServer`(13720, 16:44:36 `-Embedding`)를 새로 띄웠다. 계좌등급 차단이 아니다. (MW0602 의 정상 COM 예약작업 `OptionFlowBackfill_1605`·`RegularCollect_1552` 도 `Highest`.)
+  - 관리자 권한 재실행: `IsConnect=1 · ServerType=2` · 계좌등급 제한 없음 · 당일/기간 콜·풋 각 343행 미매핑 0 · 주체 합 불일치 0 · 차근월 567행 2쪽 · 월물 '3' `near_far_gb` 오류(위클리 미지원 — MW0601 과 동일) · L2(b) `261021_P` 1372/1372칸 ×2.
+  - ⚠ **L2(c) 7222 대사 차가 MW0601(≈1%)보다 크다**: 콜 외인 9842 Σ −3042 vs 7222 `mon_call` 16:06 −3485, 풋 +10 vs +541. 시각 차(16:06 vs 16:48) 가능성 — **미확인, 판정 보류**(프로브 해석 메모 규약).
+- **② 기간 스냅샷 대사**: `--end 20261021`(미러 `_P` 15:49:55 저장) **HTS 대사 2744/2744칸 · rc=0**. 참고 `--end 20261022`(미러 `_P` **15:44:57** 저장) 2710/2744칸 — 34칸 차, MW0601 의 15:45 종가 단일가 이전 저장본 34칸과 개수 동일·개인↔외인 상쇄 패턴. 결함 아님.
+- **③** `config/settings.py:STRIKE_INVESTOR_FLOW_ENABLED = True`. 재기동 시점부터 적용(현재 main.py 미기동 — 다음 장전 기동부터).
+- **④** `\Mireuk\Mireuk_StrikeInvestorSnapshot` 월–금 16:25 **`RunLevel=Highest`**(메모 기본값 Limited 는 MW0601 기준 — MW0602 는 CREON 이 승격이라 Highest). 16:20 OptionFlowBackfill 뒤. 수동 트리거 16:54 실행 `connect=1` 정상, `LastTaskResult=1` 은 오늘 `_P` 15:44:57 저장본 34칸 차 때문(작업 결함 아님).
+- ⚠ **`LastTaskResult=1` 을 실패로 읽지 말 것** — 스크립트는 HTS 대사 불일치도 1 로 낸다. 그날 `_P` 를 15:45 이전에 저장하면 1 이 정상이다. 로그 `logs/<날짜>_STRIKE_SNAPSHOT.log` 에서 `connect=1`·`unmapped=0` 를 볼 것.
+- ⚠ 부산물: 1차 프로브가 띄운 비로그인 `DibServer` 13720 이 남아 있다(종료 시도는 권한 정책에 막힘). 실거래 세션(11300)과 별개 인스턴스.
+- `data/db/strike_investor.db` 에 20261021·20261022 기간 스냅샷 적재(수집 전용, 라이브 미소비).
