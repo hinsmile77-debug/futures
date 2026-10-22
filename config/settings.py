@@ -162,18 +162,18 @@ SIZING_TARGET_CAPITAL_KRW = 15_000_000
 #   정책  위험자본 = SIZING_TARGET_CAPITAL_KRW(dev 는 실운영금 상수가 없다 — 사이징 자본이 곧 손실 한도 분모).
 #   통제  신동 실주문 수량.
 #   모니터 우측패널 「3 주문/체결」 탭 한 줄 + TRADE `[Capital]` — **항상 켜짐(읽기 전용)**.
-#   🔴 dev 는 MW0602 실거래 브랜치라 **동작을 바꾸는 3가지는 기본 꺼짐**이다(704차 9842 와 같은 방식 — MW0602 판단 대기).
-#      꺼져 있어도 모니터가 「켜면 어떻게 되는지」를 같이 보여 준다. 켜는 법·의미는 이식 메모
+#   🔴 [2026-10-23 사용자 지시 「dev에서도 v9-dev와 똑같이 바로 켜줘」] 동작을 바꾸는 3가지 **모두 켜짐**.
+#      (이식 직후 22fdb663 은 기본 꺼짐이었다 — 같은 날 켰다.) 끄면 각각 종전 동작으로 돌아간다. 의미는 이식 메모
 #      (v9-dev docs/정기점검/MW0601_to_MW0602_실전자본3층_이식메모_20261023.md).
 # ① 신동 수량 증거금 연동 — 계획 = min(최대허용수량, 장시작 주문가능수량) · 진입 = min(계획, 진입 직전 가능) · 0 기각.
 #    장시작 = 그날 FLAT 첫 CpTd6722 실측(data/principal/<날짜>/capital_day_start.json, 재기동 승계).
 #    False 면 종전과 같다 — SHINDONG_LIVE_QTY 고정, 최대허용수량·증거금 미적용.
-SHINDONG_QTY_FROM_MARGIN_ENABLED = False
+SHINDONG_QTY_FROM_MARGIN_ENABLED = True
 # ② 위험자본 예탁금 상한 — 일일 손실 2% 분모·A-04 기준을 min(정책값, 당일 시가 예탁금)으로. False 면 종전(정책값).
-RISK_CAPITAL_DEPOSIT_CAP_ENABLED = False
+RISK_CAPITAL_DEPOSIT_CAP_ENABLED = True
 # ③ ProfitGuard 원화 임계 수량 비례 — ×max(1, 선택 주체 실주문 수량 ÷ PROFIT_GUARD_QTY_BASE). False 면 ×1(종전).
 #    ⚠ dev 는 MAX_CONTRACTS=3 이라 켜면 **미륵** 최대허용수량 3 에서도 ×1.5 가 된다.
-PROFIT_GUARD_QTY_SCALE_ENABLED = False
+PROFIT_GUARD_QTY_SCALE_ENABLED = True
 PROFIT_GUARD_QTY_BASE = 2
 # 위험 기준 최대계약수 = 위험자본 × RISK_MDD_LIMIT_PCT ÷ SHINDONG_MDD_PER_CONTRACT_KRW — **경고 표시만**.
 #   90만 = MW0601 신동 v3(R2/R3 2레그) 20거래일 재생 실측. ⚠ dev 신동(FLOWC)은 전략이 달라 dev 실측이 아니다.

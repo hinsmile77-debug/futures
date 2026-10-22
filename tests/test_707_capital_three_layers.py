@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 """[MW0601 707차 → dev 선별 이식 2026-10-23] 실전 자본 3층 — 관측 · 정책 · 통제 (dev 판).
 
-dev 는 MW0602 실거래 브랜치라 **동작을 바꾸는 3가지는 기본 꺼짐**이다:
-  SHINDONG_QTY_FROM_MARGIN_ENABLED · RISK_CAPITAL_DEPOSIT_CAP_ENABLED · PROFIT_GUARD_QTY_SCALE_ENABLED.
-모니터(「3 주문/체결」 탭 · TRADE `[Capital]`)만 항상 켜진다. 이 테스트는 ① 꺼짐 = 종전과 같다
-② 켜면 v9-dev 와 같은 규칙 ③ 배선 을 고정한다. MW0602 가 켜면 ① 의 단언을 그 결정에 맞춰 옮길 것.
+동작을 바꾸는 3가지(SHINDONG_QTY_FROM_MARGIN_ENABLED · RISK_CAPITAL_DEPOSIT_CAP_ENABLED ·
+PROFIT_GUARD_QTY_SCALE_ENABLED)는 [2026-10-23 사용자 지시] **켜짐** — v9-dev 와 같다.
+이 테스트는 ① 운영값(켜짐) ② 끄면 종전과 같다(롤백 경로) ③ 켜진 규칙 ④ 배선 을 고정한다.
+값을 바꾸면 ① 이 깨져 DECISION_LOG 기록을 강제한다.
 """
 import io
 import os
@@ -29,13 +29,16 @@ def _func(src, name):
 
 
 # ── ① 기본 꺼짐 = 종전 동작 ───────────────────────────────────────────
-def test_behavior_flags_default_off():
-    assert ST.SHINDONG_QTY_FROM_MARGIN_ENABLED is False
-    assert ST.RISK_CAPITAL_DEPOSIT_CAP_ENABLED is False
-    assert ST.PROFIT_GUARD_QTY_SCALE_ENABLED is False
+def test_behavior_flags_on():
+    """[2026-10-23 사용자 지시] dev 도 v9-dev 와 같이 켠다."""
+    assert ST.SHINDONG_QTY_FROM_MARGIN_ENABLED is True
+    assert ST.RISK_CAPITAL_DEPOSIT_CAP_ENABLED is True
+    assert ST.PROFIT_GUARD_QTY_SCALE_ENABLED is True
 
 
-def test_risk_capital_unchanged_when_off():
+def test_risk_capital_unchanged_when_off(monkeypatch):
+    """롤백 경로 — 끄면 예탁금을 보지 않는다(종전 동작)."""
+    monkeypatch.setattr(CAP, "RISK_CAPITAL_DEPOSIT_CAP_ENABLED", False)
     base = CAP.sizing_capital(0)
     assert CAP.risk_capital(0, deposit_krw=base / 2) == base          # 꺼짐 — 예탁금 무시
     assert CAP.daily_loss_ratio(base * 0.02, 0, deposit_krw=base / 2) == 0.02 or \
