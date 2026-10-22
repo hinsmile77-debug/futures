@@ -50176,3 +50176,13 @@ AI 는 10/16 부터 고착을 적었으나 「raw_candles staleness·적재 지�
 - ⚠ **`LastTaskResult=1` 을 실패로 읽지 말 것** — 스크립트는 HTS 대사 불일치도 1 로 낸다. 그날 `_P` 를 15:45 이전에 저장하면 1 이 정상이다. 로그 `logs/<날짜>_STRIKE_SNAPSHOT.log` 에서 `connect=1`·`unmapped=0` 를 볼 것.
 - ⚠ 부산물: 1차 프로브가 띄운 비로그인 `DibServer` 13720 이 남아 있다(종료 시도는 권한 정책에 막힘). 실거래 세션(11300)과 별개 인스턴스.
 - `data/db/strike_investor.db` 에 20261021·20261022 기간 스냅샷 적재(수집 전용, 라이브 미소비).
+
+
+## 2026-10-22 (MW0601 → dev 이식: 신동 일일 리포트 「실거래 대사」 §2-1 · 실집행 누적 참고 행 — 원 v9-dev 705차 A·C) — 🟡 **장후 리포트부터 적용 · MW0602 실데이터 미검증**
+
+- **출처**: 원 커밋 `af30d0f7`·`e7076f5b` · 원 PC **MW0601**(`v9-dev`) · 사용자 지시 「A·B·C 구현 커밋 dev에 배포 혹은 이식메모」.
+- **계기**: MW0601 10/22 리포트 MAIN(재생) +259.9만 vs 실거래 +112.7만(브로커 net 일치). 실거래만 3건(진입 뒤 재생에서 철회) −30.0만 · 재생만 3건(늦음·보유 중) +120.1만. 리포트가 실거래를 싣지 않아 원인이 안 보였다.
+- **이식**: A — `strategy/shindong/exec_recon.py` 신설 · 리포트 §0 실거래 한 줄 · §2-1 실거래 대사 · 「라이브」 → 「재생(장중 기록)」. C — §4 「실집행(실제 체결 · 참고)」 행(`SCORING_START` 부터, **판정 기준 아님** — v3 되돌림·섀도 판정 무변경). dev 리포트는 §3·§4 문구가 v9-dev 와 달라 **편집 지점을 dev 기준으로 따로 잡았다**(대사 헬퍼는 v9-dev 와 동일 코드).
+- **B 미이식**: dev `_shindong_exec_step` 은 못 친 신호를 `shindong_exec.json` 에 SKIP_STALE·REJECT(사유)로 이미 남긴다 — v9-dev 의 「보유 중 흔적 없이 버림」 결함이 dev 에는 없다. 대사는 `events_from_exec_json()` 으로 그 json 을 읽는다.
+- **검증(dev 트리, py37_32)**: `test_705` 10건 포함 신동·신동2 199 passed · 26 skipped. 실패 1 `test_598::test_main_retracted_behavior` 는 깨끗한 `origin/dev` 에서도 실패(기존, 가짜 로거에 `exception` 없음).
+- **How to apply (MW0602)**: `docs/정기점검/MW0601_to_MW0602_신동실거래대사_이식메모_20261022.md` §4 — 장후 `python scripts/shindong_daily_report.py 2026-10-22` 로 §2-1 확인. 「실거래만 — 집행 기록 없음」 이 많으면 `at`↔`entry_ts` ±90초 짝짓기 점검.

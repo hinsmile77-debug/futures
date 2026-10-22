@@ -1,0 +1,237 @@
+# -*- coding: utf-8 -*-
+"""[MW0601 705차] 신동 실거래 대사 — 실제 체결(trades.db) vs 재생 MAIN(engine.run_day).
+
+왜 필요한가
+-----------
+신동 일일 리포트의 MAIN 손익은 **장후 재생**이다 — 그날 마지막 흐름 데이터로 하루를 다시 돌린 값.
+실거래는 **장중 그 시점 재생이 낸 신호로 친 수**다. 7222 는 매분 최근 18행을 다시 받아 덮어쓰므로
+과거 분의 흐름이 정정되고, 신호가 생겼다 사라진다(RETRACTED). 그래서 둘은 구조적으로 갈린다.
+
+2026-10-22 실측: 리포트 MAIN +259.9만 vs 실거래 +112.7만(브로커 net +112.7만) — 차 147.2만.
+  · 실거래에만 3건(−30.0만) — 전부 진입 뒤 재생에서 철회된 신호
+  · 재생에만 3건(+120.1만) — 늦게 알아챔 1 · 보유 중 2
+  · 일치 6건 — 실거래 +3.1만(체결가·요율)
+리포트가 실거래를 한 줄도 싣지 않아 「패널과 안 맞는다」로만 드러났다(계측 4원칙 ⑤).
+
+분류
+----
+- MATCH            실거래 ↔ 재생 MAIN 같은 신호(trade_key)
+- EXEC_RETRACTED   실거래가 있는데 그 신호가 최종 재생에 없다(철회)
+- EXEC_UNKEYED     실거래가 있는데 집행 기록(ENTER)과 못 짝지었다(수동·복원 등) — 숨기지 않는다
+- REPLAY_ONLY      재생 MAIN 에만 있다. 사유는 집행 이벤트에서: SKIP_STALE(늦게 알아챔) ·
+                   SKIP_HOLDING(보유 중) · REJECT(기각 사유) · 기록 없음(미측정)
+
+⚠ 읽기 전용. 주문·기록을 바꾸지 않는다.
+⚠ 사전등록 채점(MAIN 재생, RETRACTED 제외)은 이 모듈이 바꾸지 않는다 — 실집행 누적은 **참고 행**이다.
+"""
+import datetime as _dt
+import os
+import sqlite3
+from typing import Any, Dict, List, Optional
+
+SOURCE = "SHINDONG"
+# 실거래 진입 시각과 ENTER 이벤트 시각이 같은 초가 아닐 때 허용하는 차(초) — 같은 방향만.
+MATCH_TOL_SEC = 90
+
+
+def _ts(s: Any) -> Optional[_dt.datetime]:
+    if not s:
+        return None
+    s = str(s).replace("T", " ")[:19]
+    try:
+        return _dt.datetime.strptime(s, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+
+def _ro(db: str) -> Optional[sqlite3.Connection]:
+    if not db or not os.path.exists(db):
+        return None
+    return sqlite3.connect("file:%s?mode=ro" % db.replace("\\", "/"), uri=True)
+
+
+def real_positions(trades_db: str, trade_date: str, source: str = SOURCE) -> Optional[List[Dict[str, Any]]]:
+    """그날 청산된 실거래를 **포지션 단위**로 묶는다(계측 4원칙 ① — 레그 단위로 세지 않는다).
+
+    묶음 키 = (entry_ts, direction). 반환 None = DB 없음(미측정 — 빈 리스트와 다르다).
+    """
+    con = _ro(trades_db)
+    if con is None:
+        return None
+    try:
+        rows = con.execute(
+            "SELECT entry_ts, exit_ts, direction, quantity, entry_price, exit_price, "
+            "       COALESCE(net_pnl_krw, pnl_krw), exit_reason "
+            "FROM trades WHERE entry_source=? AND substr(exit_ts,1,10)=? ORDER BY entry_ts, exit_ts",
+            (source, trade_date)).fetchall()
+    finally:
+        con.close()
+    pos: Dict[tuple, Dict[str, Any]] = {}
+    for ets, xts, dr, q, epx, xpx, net, why in rows:
+        k = (str(ets)[:19], dr)
+        p = pos.setdefault(k, dict(entry_ts=str(ets)[:19], direction=dr,
+                                   side=1 if str(dr).upper() == "LONG" else -1,
+                                   qty=0, entry_px=float(epx or 0), net=0.0, legs=[], exit_ts=None))
+        p["qty"] += int(q or 0)
+        p["net"] += float(net or 0)
+        p["legs"].append((str(xts)[11:16], float(xpx or 0), why))
+        p["exit_ts"] = str(xts)[:19]
+    return sorted(pos.values(), key=lambda p: p["entry_ts"])
+
+
+def other_sources(trades_db: str, trade_date: str, source: str = SOURCE) -> Optional[Dict[str, Any]]:
+    """같은 날 신동 아닌 출처의 청산 — 브로커 net(계좌 전체)과 비교할 때 섞이는 몫."""
+    con = _ro(trades_db)
+    if con is None:
+        return None
+    try:
+        r = con.execute(
+            "SELECT COUNT(*), COALESCE(SUM(COALESCE(net_pnl_krw, pnl_krw)),0) FROM trades "
+            "WHERE COALESCE(entry_source,'')<>? AND substr(exit_ts,1,10)=?", (source, trade_date)).fetchone()
+    finally:
+        con.close()
+    return {"legs": int(r[0]), "net": float(r[1])}
+
+
+def broker_net(trades_db: str, trade_date: str) -> Optional[Dict[str, Any]]:
+    """`daily_broker_pnl.broker_net_krw`(계좌 전체 실측). 없으면 None — 0 으로 두지 않는다."""
+    con = _ro(trades_db)
+    if con is None:
+        return None
+    try:
+        r = con.execute("SELECT broker_net_krw, broker_net_source FROM daily_broker_pnl WHERE date=?",
+                        (trade_date,)).fetchone()
+    except sqlite3.OperationalError:
+        r = None
+    finally:
+        con.close()
+    if not r or r[0] is None:
+        return None
+    return {"net": float(r[0]), "source": r[1]}
+
+
+def reconcile(main_rows: List[Dict[str, Any]], positions: List[Dict[str, Any]],
+              events: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """실거래 포지션 ↔ 재생 MAIN 행을 짝짓는다.
+
+    main_rows: daily_report.trade_rows(MAIN) — key·side·entry_ts(HH:MM)·entry_px·net·legs
+    events:    shindong_exec.jsonl — kind ∈ ENTER/RETRACTED/SKIP_STALE/SKIP_HOLDING/REJECT/…
+    """
+    by_key = {r["key"]: r for r in main_rows}
+    enters = [e for e in events if e.get("kind") == "ENTER" and e.get("trade_key")]
+    skip: Dict[str, str] = {}
+    for e in events:
+        k, kind = e.get("trade_key"), e.get("kind")
+        if not k:
+            continue
+        if kind == "SKIP_STALE":
+            skip.setdefault(k, "늦게 알아챔")
+        elif kind == "SKIP_HOLDING":
+            skip.setdefault(k, "보유 중(%s)" % (e.get("holding") or "?"))
+        elif kind == "REJECT":
+            skip.setdefault(k, "기각 — %s" % (e.get("why") or "?"))
+    retracted = {e["trade_key"] for e in events if e.get("kind") == "RETRACTED" and e.get("trade_key")}
+
+    used_enter = set()
+    items: List[Dict[str, Any]] = []
+    executed_keys = set()
+    for p in positions:
+        pt = _ts(p["entry_ts"])
+        best, best_dt = None, None
+        for i, e in enumerate(enters):
+            if i in used_enter or int(e.get("side") or 0) not in (p["side"], 0):
+                continue
+            et = _ts(e.get("entered_at") or e.get("ts"))
+            if pt is None or et is None:
+                continue
+            dt = abs((pt - et).total_seconds())
+            if dt <= MATCH_TOL_SEC and (best_dt is None or dt < best_dt):
+                best, best_dt = i, dt
+        if best is None:
+            items.append(dict(kind="EXEC_UNKEYED", key=None, real=p, replay=None))
+            continue
+        used_enter.add(best)
+        k = enters[best]["trade_key"]
+        executed_keys.add(k)
+        r = by_key.get(k)
+        if r is not None:
+            items.append(dict(kind="MATCH", key=k, real=p, replay=r))
+        else:
+            items.append(dict(kind="EXEC_RETRACTED", key=k, real=p, replay=None,
+                              note="철회 이벤트 있음" if k in retracted else "최종 재생에 없음"))
+    for r in main_rows:
+        if r["key"] in executed_keys:
+            continue
+        items.append(dict(kind="REPLAY_ONLY", key=r["key"], real=None, replay=r,
+                          note=skip.get(r["key"], "집행 기록 없음(미측정)")))
+
+    def _sum(kind, side):
+        xs = [it[side] for it in items if it["kind"] == kind and it[side] is not None]
+        return sum(float(x["net"] or 0) for x in xs), len(xs)
+
+    tot = {}
+    for kind in ("MATCH", "EXEC_RETRACTED", "EXEC_UNKEYED", "REPLAY_ONLY"):
+        tot[kind] = {"real": _sum(kind, "real"), "replay": _sum(kind, "replay")}
+    real_total = sum(float(p["net"]) for p in positions)
+    replay_total = sum(float(r["net"] or 0) for r in main_rows if r.get("net") is not None)
+    items.sort(key=lambda it: (it["real"] or {}).get("entry_ts", "")[11:16] or (it["replay"] or {}).get("entry_ts", ""))
+    return {"items": items, "totals": tot, "real_total": real_total, "replay_total": replay_total,
+            "n_real": len(positions)}
+
+
+def events_from_exec_json(d: Any) -> List[Dict[str, Any]]:
+    """`shindong_exec.json`(신호별 상태 dict) → reconcile() 이 읽는 이벤트 목록.
+
+    두 갈래의 집행 기록 형식이 다르다:
+      · v9-dev(MW0601) — `shindong_exec.jsonl` 사건 로그(ENTER·RETRACTED·SKIP_*·REJECT)가 1차 원천.
+      · dev(MW0602)   — 사건 로그가 없고 `shindong_exec.json` 에 {trade_key: {status, side, at, filled,
+                        retracted, why}} 만 있다. status ∈ OPEN·CLOSED·NOT_FILLED·SKIP_STALE·REJECT.
+    jsonl 이 비었을 때 이 함수로 json 을 같은 모양으로 바꾼다. 미체결(NOT_FILLED)은 진입으로 세지 않는다.
+    """
+    out: List[Dict[str, Any]] = []
+    if not isinstance(d, dict):
+        return out
+    for k, r in d.items():
+        if not isinstance(r, dict):
+            continue
+        st = str(r.get("status") or "")
+        side = r.get("side")
+        filled = r.get("filled")
+        if st in ("OPEN", "CLOSED") or (not st and filled):
+            if filled is False and st != "CLOSED":
+                continue
+            out.append({"kind": "ENTER", "trade_key": k, "side": side,
+                        "entered_at": r.get("entered_at") or r.get("at")})
+        elif st == "SKIP_STALE":
+            out.append({"kind": "SKIP_STALE", "trade_key": k})
+        elif st == "SKIP_HOLDING":
+            out.append({"kind": "SKIP_HOLDING", "trade_key": k, "holding": r.get("holding")})
+        elif st == "REJECT":
+            out.append({"kind": "REJECT", "trade_key": k, "why": r.get("why")})
+        if r.get("retracted"):
+            out.append({"kind": "RETRACTED", "trade_key": k})
+    return out
+
+
+def cumulative_exec(trades_db: str, start: str, until: str, source: str = SOURCE) -> Optional[Dict[str, Any]]:
+    """[C] 실집행 누적 — 채점 시작일부터, 포지션 단위. 참고 행(사전등록 판정 기준 아님)."""
+    con = _ro(trades_db)
+    if con is None:
+        return None
+    try:
+        rows = con.execute(
+            "SELECT substr(exit_ts,1,10), entry_ts, direction, COALESCE(net_pnl_krw, pnl_krw) FROM trades "
+            "WHERE entry_source=? AND substr(exit_ts,1,10)>=? AND substr(exit_ts,1,10)<=?",
+            (source, start, until)).fetchall()
+    finally:
+        con.close()
+    pos: Dict[tuple, Dict[str, Any]] = {}
+    for d, ets, dr, net in rows:
+        p = pos.setdefault((str(ets)[:19], dr), {"day": d, "net": 0.0})
+        p["net"] += float(net or 0)
+    by_day: Dict[str, float] = {}
+    for p in pos.values():
+        by_day[p["day"]] = by_day.get(p["day"], 0.0) + p["net"]
+    n = len(pos)
+    return dict(start=start, days=len(by_day), n=n, win=sum(1 for p in pos.values() if p["net"] > 0),
+                net=sum(by_day.values()), worst_day=min(by_day.values()) if by_day else None)

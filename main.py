@@ -14202,7 +14202,8 @@ class TradingSystem:
                                     "data/db/option_flow.db"),
                     levels_db=runtime_settings.PREMARKET_LEVELS_DB,
                     sd_db=runtime_settings.SHINDONG_DB,
-                    out_dir=runtime_settings.SHINDONG_DAILY_REPORT_DIR, now=now)
+                    out_dir=runtime_settings.SHINDONG_DAILY_REPORT_DIR, now=now,
+                    trades_db=runtime_settings.TRADES_DB)   # [705차] §2-1 실거래 대사
                 if _sddr_res.get("ok"):
                     logger.info("[ShindongReport] %s | %s", _sddr_res.get("md_path"), " · ".join(
                         "%s %s" % (v.replace("SHADOW_", ""), format(s["net"], "+,.0f"))
