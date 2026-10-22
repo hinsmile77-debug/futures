@@ -150,3 +150,16 @@ def test_events_from_dev_exec_json_shape():
     assert not any(k == "R3|10:30|+1" for _, k in kinds)          # 미체결은 진입이 아니다
     assert ("SKIP_STALE", "R3|09:37|+1") in kinds and ("REJECT", "R3|13:40|-1") in kinds
     assert XR.events_from_exec_json(None) == []
+
+
+def test_broker_net_without_source_column(tmp_path):
+    """[MW0602] dev 스키마(broker_net_source 없음)에서도 실측 net 을 읽는다 — 「미기록」으로 떨어지면 안 된다."""
+    db = str(tmp_path / "dev.db")
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE daily_broker_pnl (date TEXT, pnl_krw REAL, updated_at TEXT, commission_krw REAL,"
+                " pnl_net_krw REAL, deposit_cash_krw REAL, next_day_deposit_cash_krw REAL, broker_net_krw REAL)")
+    con.execute("INSERT INTO daily_broker_pnl (date, broker_net_krw) VALUES ('2026-10-22', 1693981.0)")
+    con.commit()
+    con.close()
+    b = XR.broker_net(db, "2026-10-22")
+    assert b == {"net": 1693981.0, "source": None}

@@ -99,7 +99,11 @@ def broker_net(trades_db: str, trade_date: str) -> Optional[Dict[str, Any]]:
     if con is None:
         return None
     try:
-        r = con.execute("SELECT broker_net_krw, broker_net_source FROM daily_broker_pnl WHERE date=?",
+        # [MW0602] dev 의 daily_broker_pnl 에는 broker_net_source 컬럼이 없다(v9-dev 전용).
+        # 그 컬럼을 무조건 SELECT 하면 OperationalError → 실측 net 이 있어도 「미기록」으로 떨어진다.
+        cols = {c[1] for c in con.execute("PRAGMA table_info(daily_broker_pnl)")}
+        src = "broker_net_source" if "broker_net_source" in cols else "NULL"
+        r = con.execute("SELECT broker_net_krw, %s FROM daily_broker_pnl WHERE date=?" % src,
                         (trade_date,)).fetchone()
     except sqlite3.OperationalError:
         r = None
