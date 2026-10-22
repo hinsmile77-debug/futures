@@ -130,3 +130,22 @@ def test_main_logs_skip_holding_without_touching_reject_dedupe():
     body = body[:body.index("            return")]
     assert '"SKIP_HOLDING"' in body and "새 신호 미집행" in body
     assert "self._sd_exec_skipped.add" not in body                # 기각 로그 1회 억제와 분리
+
+
+def test_events_from_dev_exec_json_shape():
+    """dev(MW0602)는 사건 로그 없이 신호별 상태 dict — 같은 대사가 돌아야 한다."""
+    d = {
+        "R3|09:32|-1": {"status": "CLOSED", "side": -1, "at": "2026-10-22T09:33:04", "filled": True,
+                        "retracted": True},
+        "R3|10:12|-1": {"status": "OPEN", "side": -1, "at": "2026-10-22T10:13:04", "filled": True},
+        "R3|10:30|+1": {"status": "NOT_FILLED", "side": 1, "at": "2026-10-22T10:30:04", "filled": False},
+        "R3|09:37|+1": {"status": "SKIP_STALE", "side": 1},
+        "R3|13:40|-1": {"status": "REJECT", "side": -1, "why": "execute_entry_blocked"},
+    }
+    ev = XR.events_from_exec_json(d)
+    kinds = sorted((e["kind"], e["trade_key"]) for e in ev)
+    assert ("ENTER", "R3|09:32|-1") in kinds and ("RETRACTED", "R3|09:32|-1") in kinds
+    assert ("ENTER", "R3|10:12|-1") in kinds
+    assert not any(k == "R3|10:30|+1" for _, k in kinds)          # 미체결은 진입이 아니다
+    assert ("SKIP_STALE", "R3|09:37|+1") in kinds and ("REJECT", "R3|13:40|-1") in kinds
+    assert XR.events_from_exec_json(None) == []

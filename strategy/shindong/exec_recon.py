@@ -179,6 +179,40 @@ def reconcile(main_rows: List[Dict[str, Any]], positions: List[Dict[str, Any]],
             "n_real": len(positions)}
 
 
+def events_from_exec_json(d: Any) -> List[Dict[str, Any]]:
+    """`shindong_exec.json`(신호별 상태 dict) → reconcile() 이 읽는 이벤트 목록.
+
+    두 갈래의 집행 기록 형식이 다르다:
+      · v9-dev(MW0601) — `shindong_exec.jsonl` 사건 로그(ENTER·RETRACTED·SKIP_*·REJECT)가 1차 원천.
+      · dev(MW0602)   — 사건 로그가 없고 `shindong_exec.json` 에 {trade_key: {status, side, at, filled,
+                        retracted, why}} 만 있다. status ∈ OPEN·CLOSED·NOT_FILLED·SKIP_STALE·REJECT.
+    jsonl 이 비었을 때 이 함수로 json 을 같은 모양으로 바꾼다. 미체결(NOT_FILLED)은 진입으로 세지 않는다.
+    """
+    out: List[Dict[str, Any]] = []
+    if not isinstance(d, dict):
+        return out
+    for k, r in d.items():
+        if not isinstance(r, dict):
+            continue
+        st = str(r.get("status") or "")
+        side = r.get("side")
+        filled = r.get("filled")
+        if st in ("OPEN", "CLOSED") or (not st and filled):
+            if filled is False and st != "CLOSED":
+                continue
+            out.append({"kind": "ENTER", "trade_key": k, "side": side,
+                        "entered_at": r.get("entered_at") or r.get("at")})
+        elif st == "SKIP_STALE":
+            out.append({"kind": "SKIP_STALE", "trade_key": k})
+        elif st == "SKIP_HOLDING":
+            out.append({"kind": "SKIP_HOLDING", "trade_key": k, "holding": r.get("holding")})
+        elif st == "REJECT":
+            out.append({"kind": "REJECT", "trade_key": k, "why": r.get("why")})
+        if r.get("retracted"):
+            out.append({"kind": "RETRACTED", "trade_key": k})
+    return out
+
+
 def cumulative_exec(trades_db: str, start: str, until: str, source: str = SOURCE) -> Optional[Dict[str, Any]]:
     """[C] 실집행 누적 — 채점 시작일부터, 포지션 단위. 참고 행(사전등록 판정 기준 아님)."""
     con = _ro(trades_db)

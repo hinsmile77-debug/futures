@@ -605,6 +605,8 @@ def _recon(trade_date, trades_db, main_rows, exec_events):
     if exec_events is None:
         from strategy.runtime import trade_principal as TP
         exec_events = TP.read_jsonl(trade_date, "shindong_exec.jsonl")
+        if not exec_events:   # dev(MW0602) 형식 — 사건 로그 없이 신호별 상태 dict 만 있다
+            exec_events = XR.events_from_exec_json(TP.read_json(trade_date, "shindong_exec.json", {}))
     rc = XR.reconcile(main_rows, pos, exec_events)
     rc["broker"] = XR.broker_net(trades_db, trade_date)
     rc["other"] = XR.other_sources(trades_db, trade_date)
