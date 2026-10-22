@@ -14,13 +14,12 @@
         손으로 백필해 5,091행을 복구했다. 재기동은 그날만 2회 있었다 -
         사람이 매번 알아차리기를 기대하면 안 된다.
 
-    실행주체  현재 로그온 사용자 · Interactive · **Highest** (`-RunLevel` 로 변경)
-              🔴 Cybos Plus(coStarter)가 승격으로 돌기 때문에 UIPI 가 비승격
-                 프로세스의 접속을 막는다. 무결성 수준이 다르면 COM 이 붙지 않고
-                 `U-CYBOS가 서버에 접속되어 있지 않습니다` 로 실패한다.
-                 (2026-09-21 실측: 비승격 실행이 자기 DibServer 를 새로 띄우고
-                  전량 실패했다. 미륵이 런처도 같은 이유로 스스로 UAC 승격한다.)
-               · Cybos 가 비승격으로 도는 PC 라면 `-RunLevel Limited` 를 쓴다.
+    실행주체  현재 로그온 사용자 · Interactive · RunLevel 은 **자동 판정**
+              (`scripts\lib\ComTaskRunLevel.ps1` — COM 예약작업 4종 공용, 705차).
+              🔴 API 세션(CpStart/DibServer)과 **무결성 수준이 같아야** COM 이 붙는다.
+                 다르면 미접속 DibServer 를 새로 띄워 `U-CYBOS가 서버에 접속되어
+                 있지 않습니다`(IsConnect=0) 로 전량 실패한다
+                 (2026-09-21 MW0602 · 2026-09-21 – 10-02 MW0601 실측).
               ⚠ Highest 로 등록하려면 **설치 스크립트 자체가 관리자**여야 한다.
 
     시각      기본 **16:20** (MW0601 2026-10-04 변경, 종전 16:05).
@@ -45,13 +44,26 @@
         machine.cfg 가 없거나 BROKER 를 못 읽으면 **등록하지 않고 멈춘다**
         (추측으로 등록하면 같은 사고가 난다). -RunLevel 을 주면 그 값이 이긴다.
 
+    🔴 [MW0601 2026-10-22 705차] 위 BROKER 규칙은 **대리 변수**였다 — 판정기로 교체(사료 보존).
+        MW0601 이 BROKER=creon 으로 바뀐 뒤(2026-10-13) 규칙은 Highest 를 냈지만 실제로
+        돌고 있는 작업은 Limited·result 0 이었다(704-6). 원인은 이 PC 의 **UAC 꺼짐
+        (EnableLUA=0)** — 분할 토큰이 없어 Limited·Highest 가 같은 토큰을 받는다.
+        승격 여부를 실제로 가르는 것은 BROKER 가 아니라 ① UAC ② 세션을 띄운 방식이다.
+        판정 순서(공용 판정기 scripts\lib\ComTaskRunLevel.ps1):
+            UAC 꺼짐          → 오늘은 동치. UAC 를 다시 켜도 맞는 쪽(아래 BROKER 판정)을 고른다
+            CpStart 실행 중   → 그 프로세스의 실측 승격 여부
+            BROKER=creon      → Highest (LAUNCH_API/start_mireuk 이 스스로 승격)
+            BROKER=cybos      → 'Cybos Plus' 기동 작업의 RunLevel (없으면 Limited)
+            판정 불가         → 등록 거부
+        등록된 작업 전수 대조: powershell -File scripts\audit_com_task_runlevel.ps1
+
     사용
         등록   TASK_OPTION_BACKFILL_INSTALL.bat
         해제   TASK_OPTION_BACKFILL_INSTALL.bat -Uninstall
         시각   TASK_OPTION_BACKFILL_INSTALL.bat -Time "16:20"
         경로   TASK_OPTION_BACKFILL_INSTALL.bat -PythonPath "C:\...\py37_32\python.exe"
         권한   TASK_OPTION_BACKFILL_INSTALL.bat -RunLevel Limited
-               (Cybos 가 비승격인 PC 에서만. 기본은 Highest - 위 「실행주체」)
+               (판정기를 덮어쓸 때만. 판정과 다르면 WARN)
 
     · 예약작업은 PC별 등록이며 git 으로 공유되지 않는다(CLAUDE.md 멀티PC 컨벤션).
       다른 PC 에서도 쓰려면 그 PC 에서 한 번 더 실행할 것.
@@ -62,7 +74,7 @@ param(
     [string]$PythonPath = '',
     # 08:46 — Cybos 7222 의 첫 행이다(08:45 는 원천에 없다, settings.py WEEKLY_OPTION_FLOW_START_AFTER 주석)
     [string]$From       = '08:46',
-    # 비우면 machine.cfg 의 BROKER 로 정한다(위 「실행주체 기본값」)
+    # 비우면 공용 판정기가 정한다(scripts\lib\ComTaskRunLevel.ps1 — 위 705차 항목)
     [ValidateSet('','Highest','Limited')]
     [string]$RunLevel   = ''
 )
@@ -97,31 +109,15 @@ if ($Uninstall) {
 Write-Head 'option_flow 백필 예약작업 등록'
 
 # -------------------------------------------------------------- 0b) 실행주체
-# BROKER 에서 정한다 — Cybos 와 같은 무결성 수준이어야 COM 이 붙는다.
-$Broker = ''
-$cfg = Join-Path $Root 'machine.cfg'
-if (Test-Path -LiteralPath $cfg) {
-    foreach ($ln in (Get-Content -LiteralPath $cfg -Encoding UTF8)) {
-        if ($ln -match '^\s*BROKER\s*=\s*([A-Za-z]+)\s*$') { $Broker = $Matches[1].ToLower() }
-    }
-}
+# API 세션과 같은 무결성 수준이어야 COM 이 붙는다 — 판정은 공용 판정기 한 곳에서(705차).
+# 추측으로 등록하지 않는다 - 권한 수준이 세션과 다르면 매일 조용히 실패한다.
+. (Join-Path $PSScriptRoot 'lib\ComTaskRunLevel.ps1')
+$RunLevel = Write-ComRunLevelDecision (Resolve-ComTaskRunLevel $Root) $RunLevel
 if (-not $RunLevel) {
-    if ($Broker -eq 'cybos')     { $RunLevel = 'Limited' }
-    elseif ($Broker -eq 'creon') { $RunLevel = 'Highest' }
-    else {
-        Write-Host ("[FAIL] machine.cfg 의 BROKER 를 읽지 못했다 (cfg={0}, BROKER='{1}')." -f $cfg, $Broker) -ForegroundColor Red
-        Write-Host '       추측으로 등록하지 않는다 - 권한 수준이 Cybos 와 다르면 매일 조용히 실패한다.'
-        Write-Host '       직접 지정:  TASK_OPTION_BACKFILL_INSTALL.bat -RunLevel Limited   (Cybos 비승격)'
-        Write-Host '                   TASK_OPTION_BACKFILL_INSTALL.bat -RunLevel Highest   (Cybos 승격)'
-        exit 1
-    }
-    Write-Host ("[0/4] broker : {0} -> RunLevel {1}" -f $Broker, $RunLevel)
-} else {
-    Write-Host ("[0/4] broker : {0} -> RunLevel {1} (명시 지정)" -f $(if ($Broker) { $Broker } else { '?' }), $RunLevel)
-    if (($Broker -eq 'cybos' -and $RunLevel -eq 'Highest') -or ($Broker -eq 'creon' -and $RunLevel -eq 'Limited')) {
-        Write-Host ("[WARN] BROKER={0} 에 RunLevel {1} 은 보통 맞지 않는다 - Cybos 와 권한 수준이 다르면 미접속으로 실패한다." -f $Broker, $RunLevel) -ForegroundColor Yellow
-    }
+    Write-Host '       직접 지정:  TASK_OPTION_BACKFILL_INSTALL.bat -RunLevel Limited|Highest'
+    exit 1
 }
+Write-Host ("[0/4] runlevel : {0}" -f $RunLevel)
 
 # -------------------------------------------------------------- 1) python
 $cands = New-Object System.Collections.Generic.List[string]
@@ -171,18 +167,8 @@ $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
 
-# Cybos Plus 작업과 같은 주체/무결성 - 다르면 COM 이 붙지 않는다.
-if ($RunLevel -eq 'Highest') {
-    $me = New-Object Security.Principal.WindowsPrincipal(
-              [Security.Principal.WindowsIdentity]::GetCurrent())
-    if (-not $me.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        Write-Host '[FAIL] -RunLevel Highest 는 관리자 권한으로 등록해야 한다.' -ForegroundColor Red
-        Write-Host '       관리자 PowerShell 에서 다시 실행할 것.'
-        Write-Host '       Cybos 가 비승격으로 도는 PC 라면:'
-        Write-Host '         TASK_OPTION_BACKFILL_INSTALL.bat -RunLevel Limited'
-        exit 1
-    }
-}
+# API 세션과 같은 주체/무결성 - 다르면 COM 이 붙지 않는다.
+if (-not (Test-CanRegisterRunLevel $RunLevel)) { exit 1 }
 $principal = New-ScheduledTaskPrincipal `
     -UserId ("{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME) `
     -LogonType Interactive -RunLevel $RunLevel

@@ -22,10 +22,13 @@
       The run itself takes a few seconds (2 requests + 2 Dispatch).
 
     RunLevel
-      Default Limited - the two COM tasks that work on this PC
-      (OptionFlowBackfill_1605, RegularCollect_1552) are both Limited with result 0.
+      Resolved by scripts\lib\ComTaskRunLevel.ps1 (705cha; shared by all 4 COM tasks).
       A different integrity level from the API session makes COM spawn a fresh,
       logged-out DibServer and every request fails.
+      704cha hard-coded Limited because the two working COM tasks on MW0601 were Limited.
+      They work there only because MW0601 runs with UAC off (EnableLUA=0) - on a PC with
+      UAC on and an elevated CREON session, Limited would fail every day.
+      Pass -RunLevel to override (a WARN is printed if it differs from the resolver).
 
     Exit codes (LastTaskResult)
       0 ok (holiday skip included) / 1 partial failure or HTS mismatch /
@@ -40,7 +43,7 @@
 param(
     [ValidateSet('Register', 'Unregister', 'Status', 'Run')][string]$Action = 'Status',
     [string]$At = '16:25',
-    [ValidateSet('Limited', 'Highest')][string]$RunLevel = 'Limited',
+    [ValidateSet('', 'Limited', 'Highest')][string]$RunLevel = '',
     [string]$PythonPath = ''
 )
 
@@ -86,6 +89,10 @@ if ($Action -eq 'Register') {
     if ($atDt.Hour -eq 16 -and $atDt.Minute -ge 30) {
         Write-Host "[WARN] $At is at/after 16:30 EodSessionCleanup - the API session may be gone."
     }
+    . (Join-Path $PSScriptRoot 'lib\ComTaskRunLevel.ps1')
+    $RunLevel = Write-ComRunLevelDecision (Resolve-ComTaskRunLevel $Root) $RunLevel
+    if (-not $RunLevel) { Write-Host '       pass -RunLevel Limited|Highest'; exit 1 }
+    if (-not (Test-CanRegisterRunLevel $RunLevel)) { exit 1 }
     $taskAction = New-ScheduledTaskAction -Execute $py -Argument ('"{0}"' -f $Script) -WorkingDirectory $Root
     $trigger   = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday -At $atDt
     $settings  = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries `

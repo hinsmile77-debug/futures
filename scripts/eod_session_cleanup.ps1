@@ -38,7 +38,9 @@
 param(
     [ValidateSet('Run', 'Register', 'Unregister', 'Status')][string]$Action = 'Status',
     [string]$At = '16:30',
-    [int]$BusyWaitMin = 15
+    [int]$BusyWaitMin = 15,
+    # empty = scripts\lib\ComTaskRunLevel.ps1 decides (705cha)
+    [ValidateSet('', 'Limited', 'Highest')][string]$RunLevel = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -116,8 +118,15 @@ if ($Action -eq 'Register') {
     # No StartWhenAvailable: a late boot in the evening may be a session the user is using.
     $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 30) `
         -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-    # Highest: CpStart runs elevated (coStarter UAC); the COM call must reach it.
-    $principal = New-ScheduledTaskPrincipal -UserId ("{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME) -LogonType Interactive -RunLevel Highest
+    # Same integrity level as CpStart, or PlusDisconnect reaches a fresh logged-out DibServer
+    # (was_connected=0) and the zombie session survives the night. Until 705cha this was
+    # hard-coded Highest ("CpStart runs elevated") - wrong on a PC with UAC on whose Cybos
+    # session is not elevated. The shared resolver decides now.
+    . (Join-Path $PSScriptRoot 'lib\ComTaskRunLevel.ps1')
+    $RunLevel = Write-ComRunLevelDecision (Resolve-ComTaskRunLevel $Root) $RunLevel
+    if (-not $RunLevel) { Write-Host '       pass -RunLevel Limited|Highest'; exit 1 }
+    if (-not (Test-CanRegisterRunLevel $RunLevel)) { exit 1 }
+    $principal = New-ScheduledTaskPrincipal -UserId ("{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME) -LogonType Interactive -RunLevel $RunLevel
     Register-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -Action $act -Trigger $trigger -Settings $settings `
         -Principal $principal -Description 'After-market cleanup: ladder + CREON API session (PlusDisconnect) - scripts\eod_session_cleanup.ps1 (MW0601 2026-10-16)' -Force | Out-Null
     Write-Host ("[OK] registered {0}{1} Mon-Fri {2}" -f $TaskPath, $TaskName, $At)

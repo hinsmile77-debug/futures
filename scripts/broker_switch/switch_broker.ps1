@@ -170,6 +170,8 @@ foreach ($kv in @(@('BROKER', $Broker), @('TRADING_MODE', $Mode))) {
 Log "  1) machine.cfg BROKER=$Broker TRADING_MODE=$Mode (백업 machine.cfg.bak_$ts)"
 
 # 2) 기동 작업 RunLevel=Highest (cybos 로 되돌려도 Highest 는 무해하므로 그대로 둔다)
+#    ⚠ [705차] 「무해」는 기동 작업 자신에게만 맞다. UAC 가 켜진 PC 에서 'Cybos Plus' 가 Highest 면
+#      세션이 승격으로 떠서 Limited COM 예약작업이 미접속으로 실패한다 — 아래 5) 가 대조한다.
 foreach ($t in $tasksLaunch) {
     $x = Get-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue
     if (-not $x) { continue }
@@ -190,6 +192,16 @@ if ($h) {
 #    서버 구분 하드게이트가 없어졌다. ui_prefs.json 을 건드리지 않는다.
 #    실제 접속 서버는 대시보드 우측상단 「접속:모의/실서버」 읽기전용 라벨로 확인한다.
 Log "  4) ui_prefs 동기화 불필요 (서버 라디오 폐지 -- 접속 서버는 대시보드 라벨로 확인)"
+
+# 5) [705차] COM 예약작업 RunLevel 대조 — 2) 가 기동 작업을 Highest 로 바꾸면 세션 승격 여부가
+#    달라질 수 있다(UAC 켜진 PC). 어긋난 COM 작업은 크래시 없이 매일 IsConnect=0 으로 실패하므로
+#    여기서 드러낸다. 읽기 전용 — 재등록은 하지 않는다(각 *_task.ps1 이 판정기로 다시 등록).
+try {
+    $aud = & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'scripts\audit_com_task_runlevel.ps1') 2>&1
+    $arc = $LASTEXITCODE
+    foreach ($l in $aud) { Log ("  5) {0}" -f $l) }
+    if ($arc -ne 0) { $warn++; Log "  5) [WARN] COM 작업 RunLevel 대조 rc=$arc -- 해당 *_task.ps1 로 재등록할 것" }
+} catch { $warn++; Log "  5) [WARN] RunLevel 대조 실행 실패: $_" }
 
 Log "=== 적용 완료: BROKER=$Broker TRADING_MODE=$Mode. 다음 무인 기동부터 반영 (WARN=$warn) ==="
 exit 0

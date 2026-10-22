@@ -215,10 +215,11 @@ def test_close_threshold_has_single_source():
 
 # ── C. 예약작업 등록 ──────────────────────────────────────────────────────
 def test_task_runlevel_follows_broker():
+    # 705차: BROKER 규칙은 공용 판정기(scripts/lib/ComTaskRunLevel.ps1)로 옮겼다 —
+    # 상세 불변식은 tests/test_705_com_task_runlevel.py 가 고정한다.
     s = _src(_PS1)
     assert "[string]$RunLevel   = ''" in s       # 기본값이 Highest 면 MW0601 사고가 되풀이된다
-    assert "$Broker -eq 'cybos'" in s and "$RunLevel = 'Limited'" in s
-    assert "$Broker -eq 'creon'" in s and "$RunLevel = 'Highest'" in s
+    assert "lib\\ComTaskRunLevel.ps1" in s and "Resolve-ComTaskRunLevel" in s
     assert "추측으로 등록하지 않는다" in s
 
 

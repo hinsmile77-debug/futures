@@ -31,8 +31,11 @@
               (`ALWAYS_REFETCH_DAYS=7` 이라 최근 7일은 항상 재수집 →
                PC 가 꺼져 있었거나 Cybos 미로그인으로 며칠 걸러도 **스스로 메운다**.
                비용은 TR 2청크뿐)
-    실행주체  현재 로그온 사용자 · Interactive · Limited
-              (Cybos Plus 작업과 같은 무결성 수준이어야 COM 이 붙는다)
+    실행주체  현재 로그온 사용자 · Interactive · RunLevel **자동 판정**
+              (API 세션과 같은 무결성 수준이어야 COM 이 붙는다.
+               [705차] 종전 Limited 고정 → 공용 판정기 scripts\lib\ComTaskRunLevel.ps1.
+               Limited 고정은 「UAC 켜짐 + 세션 승격」 PC(예: CREON)에서 매일 IsConnect=0
+               으로 조용히 실패한다. MW0601 은 UAC 꺼짐이라 그동안 우연히 맞았다)
     설정      StartWhenAvailable(놓치면 복구) · IgnoreNew · 30분 제한
 
   사용법
@@ -41,7 +44,7 @@
     시각   TASK_REGULAR_COLLECT_INSTALL.bat -Time "16:10"
 
   주의
-    · 관리자 권한 불필요.
+    · 관리자 권한은 판정 결과가 Highest 일 때만 필요하다.
     · 예약작업은 PC별 등록이며 git 으로 공유되지 않는다(CLAUDE.md 멀티PC 컨벤션).
       다른 PC 에서도 쓰려면 그 PC 에서 한 번 더 실행할 것.
 #>
@@ -49,7 +52,10 @@ param(
     [switch]$Uninstall,
     [string]$Time       = '15:52',
     [string]$PythonPath = '',
-    [int]   $Days       = 7
+    [int]   $Days       = 7,
+    # 비우면 공용 판정기가 정한다(scripts\lib\ComTaskRunLevel.ps1, 705차)
+    [ValidateSet('','Highest','Limited')]
+    [string]$RunLevel   = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -127,10 +133,14 @@ $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
 
-# Cybos Plus 작업과 같은 주체/무결성 - 다르면 COM 이 붙지 않는다.
+# API 세션과 같은 주체/무결성 - 다르면 COM 이 붙지 않는다(공용 판정기, 705차).
+. (Join-Path $PSScriptRoot 'lib\ComTaskRunLevel.ps1')
+$RunLevel = Write-ComRunLevelDecision (Resolve-ComTaskRunLevel $Root) $RunLevel
+if (-not $RunLevel) { Write-Host '       직접 지정:  -RunLevel Limited|Highest'; exit 1 }
+if (-not (Test-CanRegisterRunLevel $RunLevel)) { exit 1 }
 $principal = New-ScheduledTaskPrincipal `
     -UserId ("{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME) `
-    -LogonType Interactive -RunLevel Limited
+    -LogonType Interactive -RunLevel $RunLevel
 
 $desc = '정규 연결선물(10100) 풀세션 1분봉을 regular_candles.db 에 적재한다. ' +
         '2026-09-11 손 백필 이후 엿새간 갱신이 멈췄고 사흘간 아무 경보도 없었다 (MW0601 595차). ' +
@@ -152,6 +162,7 @@ Write-Host ("        execute    : {0}" -f $t.Actions[0].Execute)
 Write-Host ("        arguments  : {0}" -f $t.Actions[0].Arguments)
 Write-Host ("        catch-up   : {0}" -f $t.Settings.StartWhenAvailable)
 Write-Host ("        logon type : {0}" -f $t.Principal.LogonType)
+Write-Host ("        runlevel   : {0}" -f $t.Principal.RunLevel)
 
 Write-Head 'DONE'
 Write-Host '  리허설 (Cybos 로그인 상태에서):'

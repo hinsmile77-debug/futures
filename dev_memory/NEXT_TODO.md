@@ -23039,9 +23039,10 @@ docs/정기점검/매일점검/evidence_MW0601-20260826_post.md
 - [x] **704-1 구현 완료(2026-10-22 장후)** — `ENABLED=False` 배포. 남은 것: ⓐ 장후 `strike_investor_snapshot.py --end <날짜>` 실행·HTS 대사 ⓑ `ENABLED=True` + 재기동 ⓒ 첫 라이브 날 `[StrikeInvestor] stored=… (오늘 첫 수집 — 전체 저장)` · 상태 테이블 `ok=1` 비율 확인.
 - [ ] **704-4 (신규)** `test_457::test_db_fallback_columns_have_measured_flag` 실패 — `dashboard/main_dashboard.py` `peter_paste` INSERT 의 `or ''`·`or 0.0` 폴백(703차 이후). 704차 무관, 별도 처리.
 - [ ] **704-5 (다음 거래일)** 재기동 후 장중 수집 첫날 확인 — `[StrikeInvestor] stored=… (오늘 첫 수집 — 전체 저장)` · `strike_investor_flow_status` ok=1 비율 · `BLOCKED`/`EMPTY` 0건. 16:25 예약작업 `LastTaskResult=0` · `logs/<date>_STRIKE_SNAPSHOT.log`.
-- [ ] **704-6 (관찰)** `option_flow_backfill_task.ps1` 기본 RunLevel 규칙(creon → Highest)이 이 PC 실동작(Limited)과 어긋남 — 재등록 시 주의.
+- [x] **704-6 (관찰) → 705차 후속 해소** 원인은 이 PC UAC 꺼짐(EnableLUA=0) — Limited·Highest 동치라 실패 위험 없음. COM 작업 설치기 4종을 공용 판정기 `scripts/lib/ComTaskRunLevel.ps1` 로 통일, 점검 `scripts/audit_com_task_runlevel.ps1`.
 
 ### 2026-10-22 (MW0601 705차 — 신동 리포트 실거래 대사)
 - [ ] **705-1 (재기동 후 첫 거래일)** `[ShindongExec] … 보유 중(…), 새 신호 미집행` 로그와 `SKIP_HOLDING` 이벤트 → 리포트 §2-1 「재생만」 사유가 「집행 기록 없음(미측정)」 대신 「보유 중」으로 찍히는지.
 - [ ] **705-2 (조사)** 10/21 리포트 MAIN +104.8만 vs 실거래 +222.7만 — 오늘과 반대 방향 차이. `python scripts/shindong_daily_report.py 2026-10-21` 재생성 후 §2-1로 분해.
 - [ ] **705-3 (결정 대기)** 신동 판정 기준 — 사전등록 MAIN 재생 vs 실집행. 철회 후 집행 거래를 채점에 넣을지는 사전등록 §6(새 버전·재채점) 안건.
+- [ ] **705-4 (조건부)** 이 PC 에서 **UAC 를 다시 켜면**(재부팅 필요) 직후 `powershell -File scripts/audit_com_task_runlevel.ps1` → 백필·정규수집·9842 스냅샷 3종을 각 `*_task.ps1` 로 재등록(Highest). 안 하면 매일 IsConnect=0 으로 조용히 실패.

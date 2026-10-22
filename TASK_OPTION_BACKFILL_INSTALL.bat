@@ -15,11 +15,13 @@ REM       carry a BOM either). Korean prose belongs in the .ps1.
 REM
 REM  [!] The task must run at the SAME integrity level as Cybos Plus.
 REM      If they differ, COM spawns a fresh, logged-out DibServer and every
-REM      request fails (exit 2). RunLevel now defaults from machine.cfg:
-REM        BROKER=cybos (MW0601, Cybos not elevated) -> Limited
-REM        BROKER=creon (MW0602, coStarter elevated) -> Highest (run as admin)
+REM      request fails (exit 2). RunLevel is resolved by the shared
+REM      scripts\lib\ComTaskRunLevel.ps1 (705cha): UAC state first, then the
+REM      live CpStart elevation, then machine.cfg BROKER. BROKER alone was a
+REM      proxy - MW0601 is BROKER=creon with UAC off, where both levels match.
 REM      MW0601 2026-10-04: registered as Highest by the old default, this
 REM      task failed on all 8 trading days since 2026-09-21 - unnoticed.
+REM      Check every COM task:  powershell -File scripts\audit_com_task_runlevel.ps1
 REM
 REM  [!] Default time is 16:20: 7222 writes its final rows after the close
 REM      (HTS 2026-10-02: 15:45 and 16:07). 16:05 missed the 16:07 row.

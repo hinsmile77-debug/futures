@@ -40,7 +40,7 @@ def test_never_touches_a_running_mireuk_session():
 def test_does_not_touch_hts_and_runs_elevated():
     src = _ps1().decode("ascii")
     assert "coMain" not in src.split("#>")[1], "HTS(coMain)는 사람 도구 — 건드리지 않는다"
-    assert "-RunLevel Highest" in src
+    assert "Resolve-ComTaskRunLevel" in src      # 705차: Highest 고정 → 공용 판정기
     assert "StartWhenAvailable" not in src.split("#>")[1].replace("No StartWhenAvailable", "")
 
 

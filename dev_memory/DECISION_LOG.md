@@ -49103,3 +49103,14 @@ EKS는 366차 이전부터 존재하는 기존 설계이고, 이번 사이클은
 - **Why**: 재생 채점은 「친 적 없는 거래를 넣고 친 거래를 뺀다」 — 실제 성과와 구조적으로 다르다. 그 차이를 리포트가 보이지 않으면 판정 근거가 실거래와 어긋난 채 쌓인다(계측 4원칙 ⑤ — 대사는 모든 축).
 - **How to apply**: B 는 **재기동 후** 적용. A·C 는 다음 장후 리포트부터(재생성 `python scripts/shindong_daily_report.py <날짜>`). 10/22 리포트는 재생성 완료. 판정 기준을 실집행으로 바꿀지는 별도 결정(사전등록 §6).
 - **검증**: `tests/test_705_shindong_exec_recon.py` 8건 · 신동 리포트·불변식·섀도 테스트 포함 103 passed(7 skip). 실패 1 = 기존 `test_457` peter_paste(704-4).
+
+## 2026-10-22 (MW0601 705차 후속 — COM 예약작업 RunLevel 공용 판정기 · 704-6 해소) — 🟢 **사용자 지시 · 매매 코드 무변경**
+- **발단(704-6)**: 이 PC `machine.cfg` BROKER=creon 인데 `option_flow_backfill_task.ps1` 규칙(creon → Highest)과 달리 실동작 작업은 Limited·rc=0.
+- **실측(2026-10-22)**: 이 PC는 **UAC 꺼짐(`EnableLUA=0`)** — 분할 토큰이 없어 Limited·Highest 가 같은 토큰을 받는다. 근거: Limited 작업 3종 `connect=1`, Highest `Mireuk_EodSessionCleanup` `was_connected=1`(같은 세션). 10-13 백필 실패 로그의 「이 프로세스 승격 = 예」(Limited 작업인데)도 같은 사실을 가리킨다 — 그날 실패 원인은 권한이 아니라 미로그인.
+- ⇒ **704-6 의 우려(재등록하면 Highest 가 돼 조용히 실패)는 이 PC 에선 성립하지 않는다.** 반대로 진짜 잠재 위험은 **UAC 를 다시 켜는 순간** 생긴다 — creon 런처가 스스로 승격하므로 그때는 Limited 작업 3종(백필·정규수집·9842 스냅샷)이 매일 IsConnect=0 으로 실패한다.
+- **전수 조사**: 예약작업을 등록하는 스크립트 중 COM 을 여는 것은 4종 — `option_flow_backfill_task.ps1`(BROKER 규칙) · `regular_collect_task.ps1`(Limited 고정) · `strike_investor_snapshot_task.ps1`(Limited 고정) · `eod_session_cleanup.ps1`(Highest 고정). 넷이 서로 다른 근거로 서로 다른 값을 들고 있었다. 사다리·신동2·claude_* 는 COM 무관.
+- **조치**: 공용 판정기 `scripts/lib/ComTaskRunLevel.ps1` 신설, 4종 전부 배선(`-RunLevel` 명시 시 그 값 우선 + 판정과 다르면 WARN). 판정 순서: ① UAC 꺼짐 → 오늘은 동치이므로 **UAC 를 다시 켜도 맞는 쪽**(③ 결과) ② `CpStart` 실행 중 → 토큰 실측 승격 여부 ③ BROKER=creon → Highest / cybos → `'Cybos Plus'` 기동 작업 RunLevel(없으면 Limited) ④ 판정 불가 → 등록 거부.
+- **점검 도구**: `scripts/audit_com_task_runlevel.ps1`(읽기 전용) — 등록된 COM 작업 전수 OK/EQUIV/MISMATCH + UAC 꺼짐이면 「UAC 재활성 시 실패할 작업」 목록. exit 0/1/2. `switch_broker.ps1` 적용 끝에 5) 단계로 자동 실행(경고만).
+- `backfill_option_flow.py` 미접속 메시지에 UAC 상태 병기 — UAC 꺼짐이면 「권한은 원인이 아니다, 로그인을 볼 것」.
+- **등록된 작업은 건드리지 않았다** — 오늘 동치이고 전부 rc=0 으로 돈다. 감사 결과: EodSessionCleanup OK, 나머지 3종 EQUIV(UAC 재활성 시 Highest 로 재등록 필요).
+- **검증**: `tests/test_705_com_task_runlevel.py` 6건(설치기 전수 커버리지 포함) · 관련 655/692/704/595 포함 59 passed.
