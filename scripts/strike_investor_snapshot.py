@@ -13,7 +13,12 @@
   conda run --no-capture-output -n py37_32 python scripts\\strike_investor_snapshot.py --from 20260901 --to 20261021
   옵션: --months 1,2  (기본 1)  --no-verify
 
-rc: 0 정상 · 1 일부 실패/대사 불일치 · 3 차단
+rc: 0 정상(휴장일 건너뜀 포함) · 1 일부 실패/대사 불일치 · 2 너무 이름 · 3 차단
+
+🔴 **오늘 날짜는 15:50 이후에만 받는다**(`--force` 로 무시). 2026-10-22 실측: 15:44:57 에 저장한
+   HTS `_P` 와 16:16 API 가 34칸 달랐다 — 15:45 종가 단일가 체결(개인↔외인 15/17 쌍 상쇄)이
+   그 사이에 들어왔다. 예약작업 `\\Mireuk\\Mireuk_StrikeInvestorSnapshot` 이 16:25 에 돈다.
+로그: logs/YYYYMMDD_STRIKE_SNAPSHOT.log
 """
 from __future__ import print_function
 
@@ -39,6 +44,19 @@ import json  # noqa: E402
 HTS_DIR = os.path.join(ROOT, "data", "db", "option_hts")
 # HTS 머리행 이름 → API 투자자 인덱스 (probe_cpsvr9842 와 같은 표)
 HTS_NAME_TO_IDX = {"개인": 0, "외국인": 1, "기관계": 2, "금융투자": 3, "투신": 5}
+
+
+def _log(msg):
+    """화면 + logs/YYYYMMDD_STRIKE_SNAPSHOT.log — 예약작업은 화면이 없다."""
+    line = "%s %s" % (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), msg)
+    print(line)
+    try:
+        p = os.path.join(ROOT, "logs", "%s_STRIKE_SNAPSHOT.log"
+                         % datetime.date.today().strftime("%Y%m%d"))
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
 
 
 def _days(a, b):
@@ -96,17 +114,34 @@ def main():
     ap.add_argument("--to", dest="d_to")
     ap.add_argument("--months", default="1")
     ap.add_argument("--no-verify", action="store_true")
+    ap.add_argument("--force", action="store_true", help="오늘 15:50 이전 실행 허용")
     a = ap.parse_args()
+
+    now = datetime.datetime.now()
+    today = now.strftime("%Y%m%d")
+    if not a.d_from and (a.end or today) == today:
+        # 휴장일은 Cybos 를 부르기 전에 끝낸다 — 예약작업이 월–금 매일 돌므로
+        # 막지 않으면 휴장일 실패가 진짜 실패와 섞인다(backfill_option_flow.py 와 같은 이유).
+        try:
+            from utils.time_utils import is_trading_day
+            if not is_trading_day(now):
+                _log("건너뜀 — %s 는 KRX 휴장일이다." % today)
+                return 0
+        except Exception:
+            pass                                    # 모르면 돌려 본다(실패는 로그에 남는다)
+        if now.time() < datetime.time(15, 50) and not a.force:
+            _log("거부 — 오늘 기간 보유는 15:50 이후에 받는다(15:45 종가 단일가 반영). --force 로 무시.")
+            return 2
 
     from config import settings
     from collection.cybos.strike_investor_flow import StrikeInvestorFlow, BlockedError
     import win32com.client as wc
 
     cy = wc.Dispatch("CpUtil.CpCybos")
-    print("connect=%s server_type=%s remain(1)=%s" % (
+    _log("connect=%s server_type=%s remain(1)=%s" % (
         cy.IsConnect, cy.ServerType, cy.GetLimitRemainCount(1)))
     if cy.IsConnect != 1:
-        print("Cybos 미연결 — 중단")
+        _log("Cybos 미연결 — 중단")
         return 1
 
     if a.d_from:
@@ -123,7 +158,7 @@ def main():
         try:
             res = sif.fetch_period(end, months)
         except BlockedError as exc:
-            print("🔴 계좌등급 차단 — 실계좌 로그인 전용: %s" % exc)
+            _log("🔴 계좌등급 차단 — 실계좌 로그인 전용: %s" % exc)
             return 3
         line = "%s  " % end + "  ".join(
             "%s rows=%s pages=%s unmapped=%s inv_bad=%s%s" % (
@@ -142,8 +177,8 @@ def main():
                 if same != n:
                     rc = 1
                     line += " 불일치 예 %s" % bad
-        print(line)
-    print("DB: %s" % db)
+        _log(line)
+    _log("DB: %s rc=%d" % (db, rc))
     return rc
 
 

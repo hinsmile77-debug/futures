@@ -7768,7 +7768,10 @@ WEEKLY_OPTION_FLOW_PEAK_SKIP = ("09:00", "09:02")
 #   모의계정에서는 쓰지 않는다(2026-10-22 사용자 결정).
 # 수집·장후 분석 전용 — 피처·게이트 미배선(절대원칙 §6 취지).
 # 시작 시각·피크 구간은 위 WEEKLY_OPTION_FLOW_START_AFTER / _PEAK_SKIP 을 같이 쓴다.
-STRIKE_INVESTOR_FLOW_ENABLED = False
+# [2026-10-22 사용자 지시] True — 장후 기간 스냅샷 HTS 대사 2,744/2,744칸 확인 후 전환.
+#   그날 최종값(15:45 종가 단일가 포함)은 장중 수집이 아니라 장후 예약작업
+#   `\Mireuk\Mireuk_StrikeInvestorSnapshot`(16:25, scripts/strike_investor_snapshot.py)이 맡는다.
+STRIKE_INVESTOR_FLOW_ENABLED = True
 # 별도 DB — 하루 수만 행이라 7222(option_flow.db, 라이브가 매분 읽는다)와 섞지 않는다.
 STRIKE_INVESTOR_FLOW_DB = "data/db/strike_investor.db"
 # '1' 최근월 · '2' 차근월. 위클리는 원천이 주지 않는다(2026-10-22 실측).

@@ -18,7 +18,8 @@
     Why 16:30 (measured 2026-10-12..16)
       15:52 RegularCollect (COM)        ends 15:52:19-23
       15:55 shindong2 postmarket (no COM) ends 16:03-16:06  (its panel is shown by the ladder)
-      16:20 OptionFlowBackfill (COM)    ends 16:23:05-09   <- latest
+      16:20 OptionFlowBackfill (COM)    ends 16:23:05-09
+      16:25 StrikeInvestorSnapshot (COM) a few seconds (704cha)   <- latest
       -> 16:30 = latest + ~7 min. If a COM script is still running, wait up to 15 min.
 
     Run
@@ -45,7 +46,7 @@ $Root = Split-Path -Parent $PSScriptRoot
 $TaskPath = '\Mireuk\'
 $TaskName = 'Mireuk_EodSessionCleanup'
 $Ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-$ComScripts = 'collect_regular_futures\.py|backfill_option_flow\.py|cybos_autologin\.py|LAUNCH_API\.bat'
+$ComScripts = 'collect_regular_futures\.py|backfill_option_flow\.py|strike_investor_snapshot\.py|cybos_autologin\.py|LAUNCH_API\.bat'
 
 function Find-Py32 {
     foreach ($p in @("$env:USERPROFILE\anaconda3\envs\py37_32\python.exe",

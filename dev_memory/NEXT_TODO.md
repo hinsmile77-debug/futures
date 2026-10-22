@@ -23038,3 +23038,5 @@ docs/정기점검/매일점검/evidence_MW0601-20260826_post.md
 - [ ] **704-3 (선택)** MW0602(CREON)에서 `scripts/probe_cpsvr9842.py` 1회 — 그쪽에서 쓸 때만.
 - [x] **704-1 구현 완료(2026-10-22 장후)** — `ENABLED=False` 배포. 남은 것: ⓐ 장후 `strike_investor_snapshot.py --end <날짜>` 실행·HTS 대사 ⓑ `ENABLED=True` + 재기동 ⓒ 첫 라이브 날 `[StrikeInvestor] stored=… (오늘 첫 수집 — 전체 저장)` · 상태 테이블 `ok=1` 비율 확인.
 - [ ] **704-4 (신규)** `test_457::test_db_fallback_columns_have_measured_flag` 실패 — `dashboard/main_dashboard.py` `peter_paste` INSERT 의 `or ''`·`or 0.0` 폴백(703차 이후). 704차 무관, 별도 처리.
+- [ ] **704-5 (다음 거래일)** 재기동 후 장중 수집 첫날 확인 — `[StrikeInvestor] stored=… (오늘 첫 수집 — 전체 저장)` · `strike_investor_flow_status` ok=1 비율 · `BLOCKED`/`EMPTY` 0건. 16:25 예약작업 `LastTaskResult=0` · `logs/<date>_STRIKE_SNAPSHOT.log`.
+- [ ] **704-6 (관찰)** `option_flow_backfill_task.ps1` 기본 RunLevel 규칙(creon → Highest)이 이 PC 실동작(Limited)과 어긋남 — 재등록 시 주의.

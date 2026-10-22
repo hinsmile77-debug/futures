@@ -49083,3 +49083,12 @@ EKS는 366차 이전부터 존재하는 기존 설계이고, 이번 사이클은
 - **Why**: 전 행 매분 저장이면 하루 약 26만 행이고 대부분 불변. 재기동이 「바뀐 행만」 기준을 지우는 552-10 계열 결함은 「첫 스냅샷 전체」로 막는다.
 - **How to apply**: 켜기 전 `scripts/strike_investor_snapshot.py --end <오늘>`을 장후 1회 돌려 HTS 대사 일치 확인 → `STRIKE_INVESTOR_FLOW_ENABLED=True` + 재기동. 만기주는 `STRIKE_INVESTOR_FLOW_MONTHS=("1","2")`. ⚠ 과거 날짜 백필은 만기 지난 월물 코드가 `CpOptionCode`에 없어 `strike=NULL`이 된다(원값은 보존) — 기간 모드의 「최근월」이 종료일 기준인지도 미확인.
 - **검증**: `tests/test_704_strike_investor_flow.py` 11건 통과(py37_32) · `test_611`·`test_617` 래칫·`test_537` DLL 감사 통과. `test_457::test_db_fallback_columns_have_measured_flag` 1건 실패는 703차 `main_dashboard.py peter_paste` 기존 결함(이번 변경 무관, 파일 무변경).
+
+## 2026-10-22 (MW0601 704차 후속3 — [9842] 수집기 활성화 · 장후 기간 스냅샷 예약작업 등록) — 🟢 **사용자 지시**
+
+- **대사 결과**: 수정본(후속2) 기간 스냅샷 vs HTS `_P` — 10/21 **2,744/2,744칸 일치** · 미매핑 0 · 주체 대사 위반 0. 10/22 는 2,710/2,744 — HTS `_P` 저장 15:44:57(마감 **전**) vs API 16:16. 차이 34칸은 **개인·외인만**, 17행사가 중 15개가 개인↔외인 정확 상쇄 = 15:45 종가 단일가 체결. 10/21 `_P`는 15:49:55 저장이라 일치. ⇒ API 결함 아님.
+- **결정(사용자)**: ① `STRIKE_INVESTOR_FLOW_ENABLED=True`(다음 재기동부터 장중 수집) ② 예약작업 `\Mireuk\Mireuk_StrikeInvestorSnapshot` 월–금 16:25 등록.
+- **설계**: 스냅샷 스크립트가 오늘 날짜를 15:50 이전엔 거부(rc=2, `--force`) · 휴장일은 Cybos 호출 전 rc=0 · 로그 `logs/YYYYMMDD_STRIKE_SNAPSHOT.log`. 작업 RunLevel = **Limited** — 이 PC에서 정상 동작 중인 COM 작업 2종(`OptionFlowBackfill_1605`·`RegularCollect_1552`)이 모두 Limited·result 0. 16:25 = 16:20 백필 종료(16:23) 뒤 · 16:30 세션 정리 앞. `eod_session_cleanup.ps1 $ComScripts`에 `strike_investor_snapshot.py` 추가(정리가 끝날 때까지 기다린다).
+- ⚠ **관찰**: 이 PC `machine.cfg`는 `BROKER=creon`인데 `option_flow_backfill_task.ps1`의 기본 규칙(creon → Highest)과 달리 실제 동작 중인 작업은 Limited다. 그 스크립트로 재등록하면 Highest가 돼 실패할 수 있다 — 704차 범위 밖, 기록만.
+- **Why**: 장중 수집은 15:35 수급 타이머 정지로 종가 단일가를 못 담는다(7222와 같은 구조). 그날 최종값은 장후 기간 스냅샷이 유일한 원천이고, 사람 손 `_P` 저장은 시각이 흔들린다(오늘 15:44:57).
+- **검증**: `tests/test_704_strike_investor_flow.py` 17건 · 작업 등록 `state=Ready runlevel=Limited next=16:25:25`.

@@ -211,9 +211,9 @@ def _read(p):
     return io.open(os.path.join(ROOT, p), encoding="utf-8").read()
 
 
-def test_settings_default_off_and_keys_exist():
+def test_settings_enabled_and_keys_exist():
     from config import settings
-    assert settings.STRIKE_INVESTOR_FLOW_ENABLED is False     # 배포 시 꺼짐
+    assert settings.STRIKE_INVESTOR_FLOW_ENABLED is True      # 2026-10-22 사용자 지시로 켬
     assert settings.STRIKE_INVESTOR_FLOW_MONTHS == ("1",)
     assert settings.STRIKE_INVESTOR_FLOW_DB.endswith("strike_investor.db")
     assert settings.STRIKE_INVESTOR_FLOW_DB != settings.WEEKLY_OPTION_FLOW_DB
@@ -265,3 +265,21 @@ def test_new_com_object_per_request():
     body = src[src.index("    def _get_obj(self):"):]
     body = body[:body.index("\n    def ")]
     assert "return Dispatch(_PROGID)" in body and "self._obj =" not in body
+
+
+def test_snapshot_task_waited_by_eod_cleanup():
+    """16:30 세션 정리가 스냅샷(COM) 끝까지 기다려야 한다 — 목록에 없으면 세션을 끊는다."""
+    src = _read("scripts/eod_session_cleanup.ps1")
+    line = [l for l in src.splitlines() if l.startswith("$ComScripts")][0]
+    assert "strike_investor_snapshot" in line
+
+
+def test_task_scripts_are_pure_ascii():
+    for p in ("scripts/eod_session_cleanup.ps1", "scripts/strike_investor_snapshot_task.ps1"):
+        raw = io.open(os.path.join(ROOT, p), "rb").read()
+        assert all(b < 0x80 for b in raw), p           # PS 5.1 은 BOM 없는 파일을 ANSI 로 읽는다
+
+
+def test_snapshot_refuses_today_before_close():
+    src = _read("scripts/strike_investor_snapshot.py")
+    assert "datetime.time(15, 50)" in src and "is_trading_day" in src
