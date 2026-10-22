@@ -7762,6 +7762,22 @@ WEEKLY_OPTION_FLOW_START_AFTER = "08:50"
 # 장 개시 직후 서버 피크다(main.py:_fetch_investor_data 주석, 6/26 09:01 실증).
 WEEKLY_OPTION_FLOW_PEAK_SKIP = ("09:00", "09:02")
 
+# ── [MW0601 704차] 먼스리 옵션 행사가 × 투자자 12주체 (CpSvr9842 = HTS [9842]) ──────
+# `collection/cybos/strike_investor_flow.py`. 수급 타이머에 얹혀 돈다(추가 타이머 없음).
+# 🔴 **실계좌 로그인 전용** — 모의 로그인은 계좌등급 차단(그날 재시도 안 함, 상태만 기록).
+#   모의계정에서는 쓰지 않는다(2026-10-22 사용자 결정).
+# 수집·장후 분석 전용 — 피처·게이트 미배선(절대원칙 §6 취지).
+# 시작 시각·피크 구간은 위 WEEKLY_OPTION_FLOW_START_AFTER / _PEAK_SKIP 을 같이 쓴다.
+STRIKE_INVESTOR_FLOW_ENABLED = False
+# 별도 DB — 하루 수만 행이라 7222(option_flow.db, 라이브가 매분 읽는다)와 섞지 않는다.
+STRIKE_INVESTOR_FLOW_DB = "data/db/strike_investor.db"
+# '1' 최근월 · '2' 차근월. 위클리는 원천이 주지 않는다(2026-10-22 실측).
+# 차근월은 연속조회 2쪽(요청 2건)이라 기본은 최근월만 — 만기주에 ('1','2') 로 넓힐 것.
+STRIKE_INVESTOR_FLOW_MONTHS = ("1",)
+STRIKE_INVESTOR_FLOW_MIN_INTERVAL_SEC = 55.0
+# 조회 한도(type1, 15초당 60건) 잔여가 이 값 + 이번 요청 수 미만이면 그 분을 건너뛴다(사유 기록).
+STRIKE_INVESTOR_FLOW_QUOTA_RESERVE = 25
+
 # ── [MW0601 626차] 신동(神童) 가상거래 ─────────────────────────────────────
 # 개인 위클리 옵션 흐름(금액) + 구조·거리맥점 규칙의 **가상거래**. 주문 없음(절대원칙 §6).
 # 위클리 흐름 수집 직후 같은 QTimer 경로에서 하루치를 재생해 기록한다.

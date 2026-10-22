@@ -23036,3 +23036,5 @@ docs/정기점검/매일점검/evidence_MW0601-20260826_post.md
 - [ ] **704-1 (장 마감 후)** `collection/cybos/strike_investor_flow.py` 수집기 구현 — 구현계획 P2. 조건: 실계좌 로그인 한정(차단 시 행 미기록·상태 `ok=0`) · 차근월 `Continue` 루프 · 기관계 소계 저장(합산 제외) · 먼스리만 · `STRIKE_INVESTOR_FLOW_ENABLED=False`로 배포 · 피처/게이트 미배선.
 - [ ] **704-2** P3 대사 — 장후 API 스냅샷 vs HTS `_P` 전 칸 · Σ외인 vs 7222(오늘 ≈1%, 9842가 0 쪽 — 갱신 지연 여부 확인) · 기관계 제외 합 = 0.
 - [ ] **704-3 (선택)** MW0602(CREON)에서 `scripts/probe_cpsvr9842.py` 1회 — 그쪽에서 쓸 때만.
+- [x] **704-1 구현 완료(2026-10-22 장후)** — `ENABLED=False` 배포. 남은 것: ⓐ 장후 `strike_investor_snapshot.py --end <날짜>` 실행·HTS 대사 ⓑ `ENABLED=True` + 재기동 ⓒ 첫 라이브 날 `[StrikeInvestor] stored=… (오늘 첫 수집 — 전체 저장)` · 상태 테이블 `ok=1` 비율 확인.
+- [ ] **704-4 (신규)** `test_457::test_db_fallback_columns_have_measured_flag` 실패 — `dashboard/main_dashboard.py` `peter_paste` INSERT 의 `or ''`·`or 0.0` 폴백(703차 이후). 704차 무관, 별도 처리.

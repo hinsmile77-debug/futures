@@ -49074,3 +49074,12 @@ EKS는 366차 이전부터 존재하는 기존 설계이고, 이번 사이클은
 - **Why**: 「등급 차단」이 최종 결론으로 남아 있으면 다음 세션이 그대로 인용한다. 또 명세만 믿고 수집기를 짰다면 차근월 행사가가 조용히 잘리고(연속조회), 기관이 이중계상됐다(소계) — 둘 다 「조용히 그럴듯한 값」 유형.
 - **How to apply**: 수집기 설계 조건 ① 실계좌 로그인일 때만 — 차단 응답이면 행을 쓰지 않고 상태 테이블에 `ok=0`(미측정 ≠ 0) ② 차근월 `Continue` 루프 ③ 기관계는 소계로 저장·합산 제외 ④ 먼스리만. MW0602(CREON)에서 쓰려면 같은 프로브 1회 선행.
 - **검증**: `scripts/probe_cpsvr9842.py`(읽기전용, 요청 상한 8건+연속 4건) · `logs/probe_9842_20261022_142817.md`(+`.json`) · `logs/20261022_PROBE.log`. 문서 `옵션_행사가별_투자자포지션_수집가능성_MW0601-20261002.md` §7 · `9842_행사가별투자자_분단위수집_구현계획_MW0601-20261004.md` 머리 정정.
+
+## 2026-10-22 (MW0601 704차 후속 — [9842] 행사가 × 투자자 수집기 구현 · `STRIKE_INVESTOR_FLOW_ENABLED=False` 배포) — 🟡 **구현 완료 · 라이브 미검증**
+
+- **무엇**: `collection/cybos/strike_investor_flow.py`(CpSvr9842 당일 모드, 수급 타이머 경로) · `main.py:_fetch_strike_investor_flow`(7222 뒤 호출) · `scripts/strike_investor_snapshot.py`(기간 모드 = HTS `_P`, 백필·HTS 대사) · 설정 `STRIKE_INVESTOR_FLOW_*` · 별도 DB `data/db/strike_investor.db`.
+- **설계(704차 실측 조건)**: ① 등급 차단 문구(「계좌등급」)면 행 없이 상태 1행 + WARNING 1회, **그날 재호출 없음** ② 연속조회 루프(상한 6쪽, 넘으면 `ok=0 truncated`) ③ 행사가는 `CpOptionCode` 필드 4 — 미매핑은 `strike=NULL` + 상태 `unmapped`(문자열 추측 금지) ④ 주체 대사(기관계=Σ3–10 · 기관계 제외 합=0) 위반 행 수를 상태에 ⑤ 조회 한도 잔여 < 25+요청수면 그 분 `SKIP_QUOTA`.
+- **저장 규칙**: 프로세스가 그날 처음 찍는 스냅샷은 전 행(`full=1`), 이후 **바뀐 행만**. 시각 t 값 = `snap_hm<=t` 최신 행, 없으면 0. 그 이전 `ok=1·full=1` 상태가 없으면 **미측정**(`snapshot_at()` → None). DB 쓰기 실패 시 다음 회차를 전체 저장으로 되돌린다.
+- **Why**: 전 행 매분 저장이면 하루 약 26만 행이고 대부분 불변. 재기동이 「바뀐 행만」 기준을 지우는 552-10 계열 결함은 「첫 스냅샷 전체」로 막는다.
+- **How to apply**: 켜기 전 `scripts/strike_investor_snapshot.py --end <오늘>`을 장후 1회 돌려 HTS 대사 일치 확인 → `STRIKE_INVESTOR_FLOW_ENABLED=True` + 재기동. 만기주는 `STRIKE_INVESTOR_FLOW_MONTHS=("1","2")`. ⚠ 과거 날짜 백필은 만기 지난 월물 코드가 `CpOptionCode`에 없어 `strike=NULL`이 된다(원값은 보존) — 기간 모드의 「최근월」이 종료일 기준인지도 미확인.
+- **검증**: `tests/test_704_strike_investor_flow.py` 11건 통과(py37_32) · `test_611`·`test_617` 래칫·`test_537` DLL 감사 통과. `test_457::test_db_fallback_columns_have_measured_flag` 1건 실패는 703차 `main_dashboard.py peter_paste` 기존 결함(이번 변경 무관, 파일 무변경).
