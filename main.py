@@ -6585,6 +6585,37 @@ class TradingSystem:
         for act in _ll.poll(rec, price, now):
             self._shindong_apply(rec, act, day, now, src="poll", price=price)
 
+    def _shindong_retract_shadow(self, rec: dict, day: str, price=None) -> None:
+        """[MW0601 708차] 철회 섀도 — 「미실현 ≥ 본전이면 청산 후 새 신호 수용」을 **기록만** 한다.
+
+        주문·손절·레그 상태는 건드리지 않는다. 장후 평가는 `strategy/shindong/retract_shadow.py`.
+        가격·진입가가 없으면 `measured=False` 로 남긴다(0 으로 채우지 않는다 — 계측 4원칙 ②).
+        """
+        try:
+            from strategy.shindong import retract_shadow as _rs
+            pos = self.position
+            st = str(pos.status or "")
+            side = 1 if st == "LONG" else (-1 if st == "SHORT" else 0)
+            try:
+                px = float(price or self._last_pipeline_price or 0.0) or None
+            except Exception:
+                px = None
+            snap = _rs.snapshot(side, float(pos.entry_price or 0.0) or None, px, int(pos.quantity or 0),
+                                be_pts=float(getattr(runtime_settings, "SHINDONG_RETRACT_SHADOW_BE_PTS", 0.0)))
+            self._sd_exec_event(day, "RETRACT_SHADOW", trade_key=rec["trade_key"], **snap)
+            if snap["measured"]:
+                log_manager.system(
+                    "[ShindongRetractShadow] %s 철회 — 현재가 %.2f · 진입 %.2f · 미실현 %+.2fpt × %d계약 → 섀도 %s "
+                    "(기준 %+.2fpt · 실주문 무변경)"
+                    % (rec["trade_key"], snap["price"], snap["entry_px"], snap["unreal_pts"], snap["qty"],
+                       "청산 후 새 신호 수용" if snap["decision"] == "EXIT" else "보유 유지", snap["be_pts"]),
+                    "INFO")
+            else:
+                log_manager.system("[ShindongRetractShadow] %s 철회 — 가격·진입가 없음, 섀도 미측정"
+                                   % rec["trade_key"], "WARNING")
+        except Exception as _e:
+            logger.warning("[ShindongRetractShadow] 기록 실패: %s", _e)
+
     def _shindong_apply(self, rec: dict, act: tuple, day: str, now, src: str, price=None) -> None:
         from strategy.shindong import live_legs as _ll
         pos = self.position
@@ -6595,6 +6626,7 @@ class TradingSystem:
             self._sd_exec_event(day, "RETRACTED", trade_key=rec["trade_key"])
             log_manager.system("[ShindongExec] %s 재생에서 철회 — 청산 사유 아님, 손절 %.2f·목표로 계속 관리"
                                % (rec["trade_key"], rec.get("stop") or 0.0), "WARNING")
+            self._shindong_retract_shadow(rec, day, price)
             return
         if kind == "set_stop":
             old = rec.get("stop")

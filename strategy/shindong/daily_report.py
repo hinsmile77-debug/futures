@@ -10,6 +10,7 @@
   1. 차트        — 변형마다 한 줄: 가격 + 진입·청산 + 맥점 / 맨 아래 개인 콜−풋
   2. 거래 흐름   — MAIN 타임라인(누적 손익 포함)
   2-1. 실거래 대사 — 실제 체결(trades.db) vs 재생 MAIN · 브로커 net  [705차]
+  2-2. 철회 섀도   — 철회 시 본전 이상이면 청산 → 새 신호 수용(BE) · 무조건 청산(ALL) Δ  [708차]
   3. 섀도 흐름   — 섀도별 타임라인 + **MAIN 과 무엇이 달랐나**(차단·시점 이동·청산 차이)
   4. 누적 채점   — 채점 시작 이후 변형별 · 판정 진행(D-n) · R1 적중률
   5. 러너 섀도   — 미륵이 × 신동(장후 기록)
@@ -30,6 +31,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from strategy.shindong import engine as E
 from strategy.shindong import exec_recon as XR
+from strategy.shindong import retract_shadow as RS
 from strategy.shindong import runner as RN
 from strategy.shindong import spec as S
 from strategy.shindong.calendar import select_flow_product
@@ -499,6 +501,12 @@ def build(trade_date: str, raw_db: str, flow_db: str, levels_db: str, sd_db: str
     lines.extend(_recon_section(recon))
     w("")
 
+    # 2-2. 철회 섀도 [708차]
+    w("## 2-2. 철회 섀도 — 철회 시 본전 이상이면 청산 → 새 신호 수용(계측만)")
+    w("")
+    lines.extend(RS.section(_retract_shadow(trade_date, trades_db, rows["MAIN"], exec_events)))
+    w("")
+
     # 3. 섀도 흐름
     w("## 3. 섀도 흐름 — MAIN 과 무엇이 달랐나")
     w("")
@@ -611,6 +619,28 @@ def _recon(trade_date, trades_db, main_rows, exec_events):
     rc["broker"] = XR.broker_net(trades_db, trade_date)
     rc["other"] = XR.other_sources(trades_db, trade_date)
     return rc
+
+
+def _retract_shadow(trade_date, trades_db, main_rows, exec_events):
+    """[708차] §2-2 — None = 대사 원천 없음(미측정). 실패는 리포트를 막지 않는다."""
+    if not trades_db:
+        return None
+    try:
+        from strategy.runtime import trade_principal as TP
+        if exec_events is None:
+            exec_events = TP.read_jsonl(trade_date, "shindong_exec.jsonl")
+        try:
+            from config import settings as _st
+            be = float(getattr(_st, "SHINDONG_RETRACT_SHADOW_BE_PTS", 0.0))
+            age = float(getattr(_st, "SHINDONG_LIVE_MAX_AGE_MIN", 2))
+        except Exception:
+            be, age = 0.0, 2.0
+        log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "logs")
+        return RS.evaluate(trade_date, main_rows, XR.real_positions(trades_db, trade_date), exec_events,
+                           logp=RS.log_prices(trade_date, log_dir), costs=RS.position_costs(trades_db, trade_date),
+                           max_age_min=age, be_pts=be)
+    except Exception:
+        return None
 
 
 def _recon_headline(rc, replay_main):

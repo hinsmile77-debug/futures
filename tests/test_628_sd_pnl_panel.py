@@ -90,8 +90,9 @@ def _day_krw(p, day=_DAY):
 def test_sd_replaces_gp_origin():
     # [MW0601 668차] "pt2"(피터2 — 실거래) 추가. 신동은 여전히 마지막·단독 배타 키다.
     # [MW0601 677차] "pt2bf"(피터2 백필 — 가상) 추가.
-    assert PnlHistoryPanel._ORIGIN_KEYS == ("auto", "manual", "unknown", "pt2", "pt2bf", "sd")
-    assert PnlHistoryPanel._ORIGIN_LABEL["sd"] == "신동(가상)"
+    # [MW0601 708차] "sdx"(신동 실거래) 추가 · 재생 라벨 「신동(가상)」→「신동(재생)」.
+    assert PnlHistoryPanel._ORIGIN_KEYS == ("auto", "manual", "unknown", "pt2", "sdx", "pt2bf", "sd")
+    assert PnlHistoryPanel._ORIGIN_LABEL["sd"] == "신동(재생)"
     assert "gp" not in PnlHistoryPanel._ORIGIN_LABEL
     tip = PnlHistoryPanel._ORIGIN_TIP["sd"]
     assert "가상" in tip and "전환기준" in tip and "단독" in tip

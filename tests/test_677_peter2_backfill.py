@@ -209,7 +209,7 @@ def _day(p, day="2026-10-07"):
 
 
 def test_origin_keys_and_labels():
-    assert PnlHistoryPanel._ORIGIN_KEYS == ("auto", "manual", "unknown", "pt2", "pt2bf", "sd")
+    assert PnlHistoryPanel._ORIGIN_KEYS == ("auto", "manual", "unknown", "pt2", "sdx", "pt2bf", "sd")   # [708차] sdx
     tip = PnlHistoryPanel._ORIGIN_TIP["pt2bf"]
     assert "가상" in tip and "전환기준" in tip
 

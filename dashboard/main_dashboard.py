@@ -50,7 +50,9 @@ from config.constants import (FUTURES_PT_VALUE, BROKER_CHANNEL_SPECS,
                              # [555차 후속2 / P2] entry_source 분류 정본
                              MANUAL_ENTRY_SOURCES,
                              # [668차] 피터2 — 피터리 트윗 실시간 추종 실거래
-                             PETER2_ENTRY_SOURCE)
+                             PETER2_ENTRY_SOURCE,
+                             # [708차] 신동 — 685차부터 실거래 주체(선택 시 실주문)
+                             SHINDONG_ENTRY_SOURCE)
 from config.settings import (
     FUTURES_COMMISSION_RATE as _LIVE_COMM_RATE,
     FUTURES_COMMISSION_RATE_LEGACY_KIWOOM as _LEGACY_COMM_RATE,
@@ -7184,9 +7186,16 @@ class PnlHistoryPanel(QWidget):
     #   깨진다. 단 「피터2」(실거래)와는 함께 켤 수 있다: 백필 → 실거래로 이어지는 한 줄 추이가
     #   이 출처의 목적이다(사용자 지시 2026-10-09). 신동과 달리 **반사실 탭에도 있다**
     #   (실거래가 CREON 예정이라 그 요율로 보는 것이 사용자 요구다).
-    _ORIGIN_KEYS = ("auto", "manual", "unknown", "pt2", "pt2bf", "sd")
+    # [MW0601 708차 / 사용자 지시 2026-10-23] "sdx"(신동 실거래) 추가 · "sd" 라벨 「신동(가상)」→「신동(재생)」.
+    #   685차부터 신동은 **실거래 주체**다(거래 버튼 [신동] 선택 시 실주문 · entry_source=SHINDONG).
+    #   종전 이 축에는 SHINDONG 이 없어 실거래 신동이 「미측정」으로 떨어졌고(로그 `[출처축] 미분류
+    #   entry_source ['SHINDONG']`), 「신동」이라는 이름의 체크는 shindong.db **재생**뿐이었다 —
+    #   그래서 10/22 「신동」이 +2,599,065원(재생)으로 보이고 브로커는 +1,127,174원이었다.
+    #   sdx 는 피터2(pt2)처럼 **실거래 출처**다: 다른 실거래와 함께 켜며 「실거래 전부 = 브로커
+    #   예탁금 차액」이 그대로 성립한다. sd(재생)는 종전대로 **단독 · 가상**이다.
+    _ORIGIN_KEYS = ("auto", "manual", "unknown", "pt2", "sdx", "pt2bf", "sd")
     _ORIGIN_LABEL = {"auto": "자동", "manual": "수동·외부", "unknown": "미측정",
-                     "pt2": "피터2", "pt2bf": "피터2백필", "sd": "신동(가상)"}
+                     "pt2": "피터2", "sdx": "신동", "pt2bf": "피터2백필", "sd": "신동(재생)"}
     _ORIGIN_TIP = {
         "auto": "미륵이가 스스로 넣고 뺀 거래.\n"
                 "진입 SYSTEM_AUTO + 청산이 TP·스톱·시간 등 시스템 트리거.",
@@ -7215,13 +7224,22 @@ class PnlHistoryPanel(QWidget):
                  "🔴 **가상이다** — 주문이 나간 적 없고 trades 에 없다. 실거래 출처와 배타다.\n"
                  "  「피터2」(실거래)와는 함께 켜 백필 → 실거래를 한 줄로 본다.\n"
                  "  **전환기준 ① 판정에 쓰지 말 것.** 원천 재생성: python tools/peter2_backfill.py",
-        "sd":"신동(神童) — 개인 위클리 옵션 흐름 + 구조·거리맥점 규칙의 **가상거래**(626차).\n"
-              "원천은 shindong.db(MAIN 본안 · 청산 완료분)이며 trades 테이블과 무관하다.\n"
-              "· 주문이 나간 적 없다 — 브로커 예탁금 차액에 들어 있지 않다\n"
+        "sdx": "신동 — **실거래**(685차). 거래 버튼 [신동]을 골랐을 때 계좌에 나간 주문이다.\n"
+               "· 원천 trades.db · 진입 entry_source=SHINDONG · 2계약(1차 익절 1계약 → 본전 손절 → 최종)\n"
+               "· 브로커 예탁금 차액에 들어 있다 — 실거래 출처를 전부 켜면 브로커 net 과 맞는다\n"
+               "· 미륵이 판단이 아니므로 「자동」에 넣지 않는다 — 전환기준 ① 판정은 자동만\n"
+               "· 신동만 보려면 나머지 출처를 끈다\n\n"
+               "⚠ 「신동(재생)」과 숫자가 다르다 — 재생은 장후 최종 흐름으로 다시 돌린 값이라\n"
+               "  장중에 쳤다가 철회된 신호는 빠지고, 보유 중·늦음으로 못 친 신호는 들어간다.\n"
+               "  날마다의 차이 분해: docs/신동거래/일일/신동_일일_<PC>_<날짜>.md §2-1 실거래 대사",
+        "sd":"신동(재생) — MAIN 규격을 shindong.db 에서 **다시 돌린 값**(626차 · 가상).\n"
+              "실제 체결이 아니다 — 신동 실거래 손익은 「신동」 체크(trades.db)다.\n"
+              "· 원천 shindong.db(MAIN 본안 · 청산 완료분 · RETRACTED 제외) — trades 와 무관\n"
+              "· 브로커 예탁금 차액과 맞지 않는다(철회 신호 제외 · 미집행 신호 포함 · 신호분 기준가)\n"
               "· 거래당 2계약(1차·최종 분할) · 미니선물 50,000원/pt\n"
               "· 순손익 = CYBOS 수수료 + 슬리피지 1틱(진입·손절·시간 청산) 차감 후\n\n"
-              "🔴 **단독 표시다** — 체크하면 실거래 출처가 해제되고 신동 손익만 보인다.\n"
-              "  실거래에 더하지 않는다. **전환기준 ① 판정에는 쓰지 말 것.**\n"
+              "🔴 **단독 표시다** — 체크하면 실거래 출처가 해제되고 재생 손익만 보인다.\n"
+              "  사전등록 채점(규격 판정)용 숫자다. **실적·전환기준 ① 판정에 쓰지 말 것.**\n"
               "규격·판정 기준: docs/신동거래/신동_사전등록_20260924.md",
     }
     # 진입 출처 중 "사람/외부" 쪽
@@ -7231,7 +7249,8 @@ class PnlHistoryPanel(QWidget):
     _BF_ORIGIN = "pt2bf"
     _PETER_VIEW = frozenset(("pt2", "pt2bf"))
     #: 피터2 백필과 배타인 실거래 출처 — 이것들이 켜지면 백필이 꺼진다.
-    _BF_EXCLUSIVE = ("auto", "manual", "unknown")
+    #: [708차] 신동 실거래(sdx)도 실거래라 백필과 배타다.
+    _BF_EXCLUSIVE = ("auto", "manual", "unknown", "sdx")
     # [MW0601 555차 후속2 / P2] 정본 레지스트리에서 파생 — 리터럴 사본 금지.
     _MANUAL_SOURCES = MANUAL_ENTRY_SOURCES
     # ── [MW0601 555차 후속] 「자동」 화이트리스트 ────────────────────────────────
@@ -7745,6 +7764,8 @@ class PnlHistoryPanel(QWidget):
                 origin = "unknown"          # 미측정 — auto 도 manual 도 아니다
             elif src == PETER2_ENTRY_SOURCE:
                 origin = "pt2"              # [668차] 피터2 — 청산 사유와 무관하게 포지션 전체
+            elif src == SHINDONG_ENTRY_SOURCE:
+                origin = "sdx"              # [708차] 신동 실거래 — 종전엔 미분류 → 「미측정」
             elif src in self._MANUAL_SOURCES:
                 origin = "manual"
             elif src not in self._AUTO_SOURCES:
@@ -7941,7 +7962,7 @@ class PnlHistoryPanel(QWidget):
                 and self._broker_pnl.get(date_str) is not None)
 
     def _day_has_sd(self, day_rows):
-        """[628차] 그 날 행에 신동(가상)이 있는가."""
+        """[628차] 그 날 행에 신동(재생 · 가상)이 있는가."""
         return any(r.get("is_sd") for r in day_rows)
 
     def _group_is_approx(self, grp):
@@ -8125,13 +8146,19 @@ class PnlHistoryPanel(QWidget):
             _sd_on = bool(_p.get("pnl_cb_origin_%s" % self._SD_ORIGIN, False))
             # [677차] 피터2백필은 저장값이 없을 때 「피터2 단독 보기 중」이면 켠다 —
             #   그 화면을 보던 사람이 백필을 찾는 사람이다. 그 외에는 해제(종전 화면 유지).
+            #   [708차] sdx 는 새 키라 저장값이 없으면 「꺼짐」으로 본다(종전 화면 판정 유지).
             _peter_only = (bool(_p.get("pnl_cb_origin_pt2", False)) and not _sd_on
-                           and not any(_p.get("pnl_cb_origin_%s" % k, True)
+                           and not any(_p.get("pnl_cb_origin_%s" % k, k != "sdx")
                                        for k in self._BF_EXCLUSIVE))
 
             def _default(k):
                 if k == "pt2":
                     return not _sd_on
+                if k == "sdx":
+                    # [708차] 실거래 신동은 종전 「미측정」에 들어 있었다 — 그 체크를 따라가면
+                    #   업그레이드 직후 화면 합계가 바뀌지 않는다.
+                    return (not _sd_on and not _peter_only
+                            and bool(_p.get("pnl_cb_origin_unknown", True)))
                 if k == self._BF_ORIGIN:
                     return _peter_only
                 return k != self._SD_ORIGIN
@@ -8297,8 +8324,10 @@ class PnlHistoryPanel(QWidget):
             xs = [r for r in self._rows if r.get("is_sd")]
             if xs:
                 net = sum(r["pnl_krw"] for r in xs)
-                txt = ("신동(가상) 단독 — 청산 %d건 · 순손익 %s원 (2계약·수수료+슬리피지 차감). "
-                       "실거래 제외 · 실적이 아니며 전환기준 ① 판정에 쓰지 말 것"
+                # [708차] 신동은 실거래 주체다 — 이 화면은 그 실거래가 **아니라** 재생이다.
+                txt = ("신동(재생) 단독 — 청산 %d건 · 순손익 %s원 (MAIN 재생 · 2계약·수수료+슬리피지 차감). "
+                       "실제 체결이 아니다 — 신동 실거래는 「신동」 체크(브로커 대사 대상). "
+                       "실적·전환기준 ① 판정에 쓰지 말 것"
                        % (len(xs), format(net, "+,.0f")))
             elif self._sd_wired:
                 txt = "신동 배선됨 · 청산 거래 0건 (관측 중)"
@@ -13728,7 +13757,7 @@ class MinuteChartDialog(QDialog):
     def _set_status(self, sd_trades=None, sd_wired=False, sd_info=None):
         self._status.setText(
             "%s  |  휠 줌  |  드래그 이동  |  더블클릭 전체보기  |  크로스헤어"
-            "  |  신동(가상) ↑매수 청록 · ↓매도 호박 · 선=목표/손절 · 청산 ⊗  |  %s"
+            "  |  신동(재생) ↑매수 청록 · ↓매도 호박 · 선=목표/손절 · 청산 ⊗  |  %s"
             % (self.SHORTCUT_TEXT,
                self._sd_status_text(sd_trades or [], sd_wired, sd_info))
         )

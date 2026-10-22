@@ -7865,6 +7865,12 @@ PRINCIPAL_SHINDONG_ENABLED = True
 #   ProfitGuard 원화 임계 배율 = max(1, 계획 수량 ÷ PROFIT_GUARD_QTY_BASE). 20거래일 재생 MDD ≈ −288만(N=3, 현행 규칙).
 SHINDONG_LIVE_QTY = 3
 SHINDONG_LIVE_MAX_AGE_MIN = 2   # 진입봉이 끝난 뒤 이 분 안에 알아챈 신호만 쫓는다(재기동·지연분은 건너뜀)
+# [MW0601 708차 / 사용자 지시 2026-10-23] 철회 섀도 — 「보유 신호가 재생에서 철회됐을 때 미실현이 이 값(pt)
+#   이상이면 청산하고 새 신호를 받는다」를 **계측만** 한다. 주문 경로는 그대로다(철회는 여전히 청산 사유 아님).
+#   라이브: 철회 순간 `shindong_exec.jsonl` 에 `RETRACT_SHADOW`(가격·미실현·판단) + SYSTEM `[ShindongRetractShadow]`.
+#   장후: 신동 일일 리포트 §2-2 · 누적 `python scripts/shindong_retract_shadow.py`.
+#   0.0 = 본전. 10/22 실측 철회 2건은 미실현 −0.37·−0.43pt 라 BE 0건(무조건 청산 ALL 이면 Δ +109.4만).
+SHINDONG_RETRACT_SHADOW_BE_PTS = 0.0
 
 # ── [MW0601 668차] 피터2 — 피터리 트윗 실시간 추종 매매 ─────────────────────────
 # 장중 피터리(@PeterLeejoa) 트윗을 Chrome 확장 → 로컬 수신기(127.0.0.1)로 받아

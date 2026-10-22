@@ -289,7 +289,7 @@ ENTRY_SOURCE_REGISTRY = {
     "SIGNAL":                 ENTRY_SOURCE_VIRTUAL,  # 사전등록 채널의 신호 단위 표기
     # 외부 지시 대리 집행 — 실거래이나 미륵이 판단이 아니다(668차)
     PETER2_ENTRY_SOURCE:      ENTRY_SOURCE_EXTERNAL, # 피터리 트윗 실시간 추종(피터2)
-    SHINDONG_ENTRY_SOURCE:    ENTRY_SOURCE_EXTERNAL, # [거래주체분리] 신동 실집행(이 브랜치 비활성)
+    SHINDONG_ENTRY_SOURCE:    ENTRY_SOURCE_EXTERNAL, # [거래주체분리] 신동 실집행 — 685차부터 v9-dev 실거래(선택 주체일 때)
 }
 
 SYSTEM_ENTRY_SOURCES = tuple(
