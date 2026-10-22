@@ -23101,3 +23101,9 @@ docs/정기점검/매일점검/evidence_MW0601-20260826_post.md
 - [ ] **705b-2 (사용자 결정)** 라벨 체계에 외부 주체 사유 분기(`신동1차`→예: `EXT_TARGET1`) 신설 여부 — `test_490_exit_stage::test_실DB의_모든_exit_reason이_분류된다` 실패가 이것을 요구한다(702-1 별건과 동일). 라벨 체계 변경이라 자동조치 범위 밖.
 - [x] **G-1·G-2 구현** — 수집기 근거 추적(`rationale_trace`) · 다른 날짜 파일 오매칭 제외(`foreign_date_in_name`). 다음 장전 다이제스트 §1에 `⚠ 다른 날짜(…) 파일` 주석, §11에서 `retrain_intraday_2026…` 이 다이제스트되지 않는지 1차 확인.
 - [ ] **705b-3 (기존 테스트 실패 6건 — 이번 변경 밖)** `test_498` 2건(704차 `strike_investor_flow.py` IDX_INS/StrikeInvestor · 705차 `shindong/daily_report.py` 대사 문구 태그 미등록) · `test_457` dashboard `peter_paste` 폴백 플래그 · `test_493` `generate_validation_campaign_report.py:7931` 라이브 요율 · `test_483` fuoption 사본 불일치 · `test_490` 실DB 사유 미분류(705b-2). 각 원 커밋 세션이 처리할 것.
+
+### 2026-10-22 (MW0601 705차 후속5 — 사용자 지시)
+- [x] **705b-2 완료** — 청산 라벨 외부 주체 분기(`EXT_TARGET1`·`EXT_TARGET2`·`EXT_INSTRUCTED`) 신설, `test_490` 실DB 커버리지 통과.
+- [ ] **705c-1 (다음 재기동 후 첫 신동 청산일)** `trades.exit_stage` 에 `EXT_TARGET1`/`EXT_TARGET2` 가 찍히고, 1차 익절 뒤 하드스톱은 `TRAIL_AFTER_TP1` · `[ExitStageRecon]` 미대응 0 인지.
+- [x] **장후 사용자 조치 1 완료** — 10-19~10-22 누적 점검 문서 일괄 커밋.
+- [ ] (705b-3 보강) `test_554::test_missing_reference_skips_check_but_is_not_silent` 는 `test_virtual_book` 과 같이 돌 때만 실패(실행 순서 간섭, HEAD 에서도 재현) · `test_virtual_book::test_main_dispatch_is_isolated` 는 py37 미지원 `ast.get_source_segment` 사용.

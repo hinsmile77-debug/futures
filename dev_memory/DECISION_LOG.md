@@ -49226,3 +49226,15 @@ EKS는 366차 이전부터 존재하는 기존 설계이고, 이번 사이클은
 - 실측(10-22): 46파일 중 정확히 2개(`retrain_intraday_20260624_102256.log`·`retrain_intraday_20261015_102200.log`)만 걸림 — 리포트 지목과 일치.
 
 **검증**: `tests/test_705b_postmarket_autofix_recon_and_collector.py` 9건 통과(py37_32). 관련 스위트 37파일 380 passed / 4 failed — 실패 4건 전부 이번 변경 밖 기존 실패(`test_457` dashboard `peter_paste` · `test_483` fuoption 사본 · `test_490` 실DB 신동 사유 미분류 · `test_493` campaign report 7931행). `test_498` 2건도 기존 실패(704차 `strike_investor_flow`·705차 `shindong/daily_report.py` 태그 미등록).
+
+## 2026-10-22 (MW0601 705차 후속5 — 청산 라벨 외부 주체 분기 신설 (705b-2) · 쌓인 점검 문서 일괄 커밋) — 🟢 **사용자 지시 「1, 2 진행해」 · 매매 경로 무변경**
+
+- ⚠ **차수 충돌 기록**: `705차 후속4` 가 두 커밋에 쓰였다 — `ac1958d6`(17:35, 장후 자동조치) · `c293b355`(17:38, 신동 실거래 대사 이식 메모). 둘 다 푸시돼 고쳐 쓰지 않는다. 이 항목부터 `후속5`.
+- 증상: `tests/test_490_exit_stage.py::test_실DB의_모든_exit_reason이_분류된다` 실패 — 실DB 사유 `신동1차`(4) · `신동최종`(2) · `피터2미러(청산)`(1) 이 `OTHER`.
+- 결정: `strategy/position/position_tracker.py:classify_exit_stage()` 에 외부 주체 분기 신설(TIME_EXIT 뒤 · 스톱 계열 앞):
+  `신동1차`(·`신동1차·최종`) → `EXT_TARGET1` · `신동최종` → `EXT_TARGET2` · `피터2미러`(손절 제외) → `EXT_INSTRUCTED`. `피터2미러(손절)` 은 종전대로 스톱 계열, `신동시간청산` 은 종전대로 `TIME_EXIT`.
+- Why: 엔진 TP 와 외부 주체 익절의 출처를 라벨에서 가른다. **`_TP1_NON_PROTECT_STAGES` 에는 넣지 않는다** — 신동1차 뒤 손절이 본전으로 오르므로 그 뒤 하드스톱은 `TRAIL_AFTER_TP1` 이 맞다(705차 후속4 F-27 반박과 같은 근거). 따라서 `_sync_partial_progress()` 동작은 종전(OTHER → else → True)과 동일 — `tp1_protect_armed`·`partial_*_done`·주문 경로 무변경.
+- `recon_exit_stage_labels()` 는 사유 문자열 외에 `exit_stage == "EXT_TARGET1"` 도 신동 1차익절 대응으로 센다.
+- How to apply: 기존 7행은 `OTHER` 로 남는다(소급 안 함 — 490차 관례). 이 라벨 세대 경계 = 다음 재기동. `exit_stage` 집계 시 2026-10-22 이전 `OTHER` 는 신동·피터2 청산이 섞여 있다.
+- 검증: `test_490` 통과, `test_705b` 12건 통과. 관련 40파일 575 passed / 2 failed — `test_virtual_book::test_main_dispatch_is_isolated`(py37 에 `ast.get_source_segment` 없음) · `test_554::test_missing_reference_skips_check_but_is_not_silent`(test_virtual_book 과 함께 돌 때만 실패, HEAD 코드에서도 동일 재현) — 둘 다 기존 실패.
+- 문서 일괄 커밋: 10-19~10-22 점검리포트·증거 · 신동2 해설/학습 · 피터2 실시간/일일 · 신동 일일 · `config/dailycheck_targets.json`(F-1) · 수익률향상 누적대장.

@@ -1548,7 +1548,9 @@ def _migrate_trades_db():
                 # 소비처(`[ExitCooldown]` · CB② 연속손절 카운터 · 캠페인 다수)가
                 # 많아 바꾸면 판정이 조용히 재정의된다(461차 mdd_pct 유형).
                 # 값: INITIAL_STOP / TRAIL_AFTER_TP1 / STOP_UNKNOWN / TIER1_EARLY /
-                #     TP1 / TP2 / TP3 / TIME_EXIT / MANUAL / RECOVERY / OTHER.
+                #     TP1 / TP2 / TP3 / TIME_EXIT / MANUAL / RECOVERY / OTHER /
+                #     EXT_TARGET1 / EXT_TARGET2 / EXT_INSTRUCTED (705차 후속5 — 신동·피터2 자체
+                #     청산. 그 이전 행은 OTHER 로 남아 있다 — 소급하지 않는다).
                 # ⚠ 490차 이전 행은 NULL = **미측정**이다(계측 4원칙 ②).
                 #   `OTHER`(재봤는데 안 맞음)와 구분할 것. 소급 백필하지 않는다 —
                 #   `partial_1_done` 은 청산 시점에만 알 수 있어 복원 불가다(420차와 동일).
@@ -4279,7 +4281,7 @@ def recon_exit_stage_labels(date: str) -> dict:
             g["trail"] += 1
         if stage in _TP_STAGES or "TP" in reason:
             g["tp"] += 1
-        if any(p in reason for p in _EXT_TARGET1_REASONS):
+        if stage == "EXT_TARGET1" or any(p in reason for p in _EXT_TARGET1_REASONS):
             g["ext_t1"] += 1
 
     out = {"trail_legs": 0, "trail_positions": 0, "corresponded": 0,

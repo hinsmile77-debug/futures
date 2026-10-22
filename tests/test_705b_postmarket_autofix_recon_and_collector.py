@@ -76,12 +76,39 @@ def test_f27_no_target1_still_suspect(tmp_path, monkeypatch):
     assert r["external_target"] == 0
 
 
-def test_f27_label_classifier_untouched():
-    """라벨 분류기는 바꾸지 않았다 — 신동1차 뒤 하드스톱은 TRAIL_AFTER_TP1 그대로."""
+def test_f27_trail_after_shindong_target1_keeps_protect_label():
+    """신동1차 뒤 하드스톱은 TRAIL_AFTER_TP1 그대로 — 외부 익절 라벨은 비보호 목록에 넣지 않는다."""
     from strategy.position.position_tracker import PositionTracker as PT
-    assert PT.classify_exit_stage("신동1차", False) == "OTHER"
     assert PT.classify_exit_stage("하드스톱(틱)", True) == "TRAIL_AFTER_TP1"
-    assert "OTHER" not in PT._TP1_NON_PROTECT_STAGES
+    for s in ("OTHER", "EXT_TARGET1", "EXT_TARGET2", "EXT_INSTRUCTED"):
+        assert s not in PT._TP1_NON_PROTECT_STAGES
+
+
+def test_705c_external_principal_reasons_labelled():
+    """[705차 후속5] 신동·피터2 자체 청산 사유가 OTHER 로 새지 않는다."""
+    from strategy.position.position_tracker import PositionTracker as PT
+    C = PT.classify_exit_stage
+    assert C("신동1차", False) == "EXT_TARGET1"
+    assert C("신동1차·최종", False) == "EXT_TARGET1"
+    assert C("신동최종", True) == "EXT_TARGET2"
+    assert C("피터2미러(청산)", False) == "EXT_INSTRUCTED"
+    assert C("피터2미러(체결)", False) == "EXT_INSTRUCTED"
+    assert C("피터2미러(손절)", False) == "INITIAL_STOP"      # 손절은 스톱 계열
+    assert C("신동시간청산", False) == "TIME_EXIT"            # 기존 분기 우선 — 무변경
+    assert C("가상:신동1차", False) == "EXT_TARGET1"
+
+
+def test_705c_shindong_partial_then_stop_still_trail():
+    """라벨 축 회귀 — 신동1차(1계약) 뒤 남은 계약 하드스톱은 TRAIL_AFTER_TP1 (10-22 10:13:05 재현)."""
+    from strategy.position.position_tracker import PositionTracker as PT
+    pt = PT.__new__(PT)
+    pt.tp1_protect_armed = False
+    pt.partial_1_done = pt.partial_2_done = pt.partial_3_done = False
+    pt.get_stage_targets = lambda: (1, 0, 0)
+    pt.get_closed_quantity = lambda: 1
+    pt._sync_partial_progress("신동1차")
+    assert pt.tp1_protect_armed is True
+    assert pt.classify_exit_stage("하드스톱(틱)", pt._tp1_armed()) == "TRAIL_AFTER_TP1"
 
 
 def test_f27_main_log_shows_external_bucket_and_stays_shadow():

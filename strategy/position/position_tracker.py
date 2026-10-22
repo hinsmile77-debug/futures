@@ -615,6 +615,16 @@ class PositionTracker:
         # ── 시간 청산(절대원칙 §1 집행 경로 · 15:18 안전망) ──
         if "15:10" in r or "15:18" in r or "시간청산" in r or "강제청산" in r:
             return "TIME_EXIT"
+        # ── 외부 주체 자체 청산 [MW0601 705차 후속5] — 엔진 TP 와 출처를 가른다 ──
+        #   신동: 1차 목표 익절(`신동1차`, 단일레그면 `신동1차·최종`) → 손절 본전 이동 →
+        #   최종 목표(`신동최종`). `strategy/shindong/live_legs.py:poll()` 이 사유를 만든다.
+        #   피터2: 지시 청산(`피터2미러(청산)`·`(체결)`). `(손절)` 은 아래 스톱 계열로 간다.
+        if "신동1차" in r:
+            return "EXT_TARGET1"
+        if "신동최종" in r:
+            return "EXT_TARGET2"
+        if "피터2미러" in r and "손절" not in r:
+            return "EXT_INSTRUCTED"
         # ── 스톱 계열 — 여기서만 tp1_armed 가 필요하다 ──
         if "하드스톱" in r or "스톱" in r or "손절" in r:
             if tp1_armed is None:
@@ -1771,7 +1781,8 @@ class PositionTracker:
           · TP1/TP2/TP3 사유          → True
           · 이 호출에서 partial_1_done 이 새로 섰고
               - 스톱·손절1차·시간청산 사유 → 그대로(False) + `[ExitStage]` INFO
-              - 그 밖의 사유(수동·복구 등) → True (종전 라벨과 동일)
+              - 그 밖의 사유(수동·복구·외부 주체 익절 EXT_* 등) → True (종전 라벨과 동일 —
+                신동1차 뒤에는 손절이 본전으로 오르므로 보호 트레일이 맞다, 705차 후속4)
               - 사유 없음(브로커 동기화·복원) → False 였으면 None(미상)
         """
         target_1, target_2, target_3 = self.get_stage_targets()
