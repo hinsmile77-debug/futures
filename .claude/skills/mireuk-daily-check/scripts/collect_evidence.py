@@ -173,6 +173,15 @@ DEFAULT_CONFIG = {
         # ⚠ CAP 발생 시 신·구 두 줄이 **같은 사건에 대해 함께** 찍힌다 — 소비부는
         #   state 유무로 나눠 세야 하며 매치 수를 그대로 합산하면 CAP이 중복 계수된다.
         "margin_cap": r"\[MarginCap\]\s*(?:state=(?P<state>OK|CAP|BLOCK)\s+)?(?P<dir>\w+)\s+산출=(?P<calc>\d+)(?:계약\s*→\s*증거금상한=(?P<cap>\d+)계약으로 축소|\s+상한=(?P<cap_new>\d+))",
+        # [MW0602 653차 후속 / 1023 G-2·G-3] 신동 실주문 진입 — 계좌 보유 구간을 「신동」으로
+        # 귀속하는 데만 쓴다. 보유 구간 자체는 `[Position] 진입`~`체결청산` 이 정한다
+        # (`종료 확인` 줄은 실제 청산보다 최대 1분 늦게 찍혀 구간 끝으로 쓰면 안 된다 —
+        # 1023 실측: 체결청산 13:03:16 · 종료 확인 13:04:03, 그 사이 13:03:59 가 OK 였다).
+        "shindong_entry": r"\[ShindongLive\] 진입 (?P<dir>LONG|SHORT) (?P<qty>\d+)계약",
+        # [MW0602 653차 후속 / 1023 G-1] 실전 자본 3층 `[Capital]` 의 위험 기준 초과 —
+        # `config/capital.py:capital_state()` 의 WARN 사유(표시 전용, 차단 아님).
+        # ⚠ 이 줄은 상태가 **바뀔 때만** 찍힌다(main.py `_cap_last_key`) — 건수는 지속 시간이 아니다.
+        "capital_warn": r"\[Capital\].*위험 기준 초과\(실주문 (?P<eff>\d+) > 위험최대 (?P<rmax>\d+)\)",
         # [MW0602 470차 B2] 시간대 존 전환 — 진입 가능 시간 예산을 재구성한다.
         # 추가 계측이 필요 없다. 이 로그를 구간으로 접으면 존별 체류 분수가 그대로 나온다.
         "time_zone": r"\[TimeRouter\] 시간대 전환 → (?P<zone>[A-Z_]+)\s*[:：]\s*(?P<desc>.+?)\s*$",
@@ -3584,6 +3593,80 @@ def group_positions(entries, partials, finals, fill_opens=None):
     return positions, orphans
 
 
+def _hms_to_sec(s):
+    try:
+        h, m, sec = (int(x) for x in (s or "").split(":"))
+        return h * 3600 + m * 60 + sec
+    except (TypeError, ValueError):
+        return None
+
+
+MARGIN_HOLD_BUCKETS = ("신동 보유 중", "그 밖의 보유 중", "미보유(FLAT)")
+
+
+def margin_holding_crosstab(positions, margin_states, shindong_entries, attach_sec=60):
+    """[MW0602 653차 후속 / 1023 G-2·G-3] `[MarginCap] state=` 샘플을 계좌 보유 구간으로 가른다.
+
+    O-649 — 「신동 보유가 같은 계좌의 증거금을 묶어 미륵 자동진입을 막는가」를 매일
+    자동으로 쌓기 위한 **관측 전용** 표다. 판정·게이트·주문 경로와 무관하다.
+
+    - 보유 구간: `group_positions()` 포지션의 진입 시각 ~ 최종청산 레그 시각(반개구간).
+      청산 레그가 없으면 하루 끝까지 보유로 본다.
+    - 신동 귀속: 포지션 진입 시각 ±`attach_sec` 안에 같은 방향 `[ShindongLive] 진입` 이 있으면 신동.
+    - 샘플은 미륵 사이저가 돈 사이클에서만 찍힌다(매분이 아니다) — 「시간 비율」로 읽지 말 것.
+
+    반환: {버킷: {"OK": n, "CAP": n, "BLOCK": n, "n": n}, "_unplaced": 시각 해석 실패 샘플 수}
+    """
+    sd = [(_hms_to_sec(r.get("hhmm")), r.get("dir")) for r in (shindong_entries or [])]
+    spans = []
+    for p in positions or []:
+        st = _hms_to_sec((p.get("entry") or {}).get("hhmm"))
+        if st is None:
+            continue
+        en = None
+        for kind, rec in p.get("legs") or []:
+            if kind == "final":
+                en = _hms_to_sec(rec.get("hhmm"))
+        pdir = (p.get("entry") or {}).get("dir")
+        is_sd = any(t is not None and abs(t - st) <= attach_sec and d == pdir for t, d in sd)
+        spans.append((st, en if en is not None else 10 ** 9, is_sd))
+
+    out = dict((b, {"OK": 0, "CAP": 0, "BLOCK": 0, "n": 0}) for b in MARGIN_HOLD_BUCKETS)
+    out["_unplaced"] = 0
+    for r in margin_states or []:
+        state = r.get("state")
+        if not state:
+            continue
+        t = _hms_to_sec(r.get("hhmm"))
+        if t is None:
+            out["_unplaced"] += 1
+            continue
+        bucket = MARGIN_HOLD_BUCKETS[2]
+        for st, en, is_sd in spans:
+            if st <= t < en:
+                bucket = MARGIN_HOLD_BUCKETS[0] if is_sd else MARGIN_HOLD_BUCKETS[1]
+                break
+        out[bucket][state] = out[bucket].get(state, 0) + 1
+        out[bucket]["n"] += 1
+    return out
+
+
+def capital_warn_flag(hits):
+    """[MW0602 653차 후속 / 1023 G-1] `[Capital] … 위험 기준 초과` → §11 적신호 한 줄(없으면 None).
+
+    표시 전용 경고(차단 아님)지만, 원본 TRADE 로그를 열어야만 보이던 것을 매일 올린다.
+    로그가 상태 변화 때만 찍히므로 건수는 **전환 횟수**이지 지속 시간이 아니다.
+    """
+    if not hits:
+        return None
+    first = hits[0]
+    worst = max(hits, key=lambda h: int(h.get("eff") or 0) - int(h.get("rmax") or 0))
+    return ("`[Capital]` **위험 기준 초과** %d회(상태 전환 기준 — 지속 시간 아님) — 첫 %s · "
+            "최대 실주문 %s계약 > 위험최대 %s계약. 표시 전용 경고(차단 아님) — 실전 자본 3층 "
+            "수량 확대가 위험 기준을 넘었다는 뜻이니 그날 신동 손익과 함께 볼 것 (653차 G-1)"
+            % (len(hits), first.get("hhmm") or "?", worst.get("eff"), worst.get("rmax")))
+
+
 def _pt_to_float(s):
     try:
         return float(s)
@@ -3756,6 +3839,26 @@ def day_summary(digests, cfg, out, root=None, day=None):
     A("> 이익 포지션은 TP1/TP2/TP3로 쪼개져 여러 레그가 되고 손실 포지션은 전량청산 한 레그가 된다 — "
       "레그로 세면 **없는 인과가 만들어진다**(417차가 정확히 그 사고였고, 470차 리포트에서 재발했다).")
     A("")
+
+    # [MW0602 653차 후속 / 1023 G-2·G-3] O-649 — 증거금 상태 × 계좌 보유 교차.
+    # 1023 장후가 29 BLOCK / 2 OK 를 손으로 시각 대조했다. 관측 전용 — 판정 무영향.
+    if _mc_state:
+        xt = margin_holding_crosstab(positions, _mc_state, merged.get("shindong_entry", []))
+        A("### 증거금 상태 × 계좌 보유 구간 (O-649, 관측 전용)")
+        A("")
+        A("| 보유 구간 | 샘플 | BLOCK | CAP | OK |")
+        A("|---|---|---|---|---|")
+        for b in MARGIN_HOLD_BUCKETS:
+            r = xt[b]
+            A("| %s | %d | %d | %d | %d |" % (b, r["n"], r["BLOCK"], r["CAP"], r["OK"]))
+        if xt["_unplaced"]:
+            A("")
+            A("_시각 해석 실패로 빠진 샘플 %d건._" % xt["_unplaced"])
+        A("")
+        A("> 샘플은 미륵 사이저가 돈 사이클에서만 찍힌다(매분 아님) — **시간 비율이 아니다.** "
+          "보유 구간 = `[Position] 진입`~`체결청산`, 신동 귀속 = 진입 ±60초 안의 `[ShindongLive] 진입`. "
+          "판정 문턱은 O-649 사전등록(B등급 이상 margin 차단 1건 또는 20거래일)을 따른다.")
+        A("")
 
     # [MW0602 475차 후속 / 장후 G-1] 비용 축 — 로그에는 수수료가 없다.
     # 청산 줄의 원화는 **net** 이고 pt 는 gross 라, 순액만 보면
@@ -5076,6 +5179,10 @@ def build(root, day, phase, cfg, discover_only=False):
                              "(sizing_inversion_watch 대상)" % (smax, emax))
     except (ValueError, KeyError, TypeError):
         pass
+
+    _cw = capital_warn_flag(merged.get("capital_warn", []))
+    if _cw:
+        flags.append(_cw)
 
     bms = merged.get("block_ms", [])
     over = []
