@@ -14,6 +14,8 @@
   옵션: --months 1,2  (기본 1)  --no-verify
 
 rc: 0 정상(휴장일 건너뜀 포함) · 1 일부 실패/대사 불일치 · 2 너무 이름 · 3 차단
+    [710차] 대사 불일치라도 HTS `_P` 가 그날 15:46 이전에 저장된 파일이면 rc 에 넣지 않는다
+    (로그에 「참고」로만 남긴다) — 종가 단일가가 빠진 쪽은 파일이다.
 
 🔴 **오늘 날짜는 15:50 이후에만 받는다**(`--force` 로 무시). 2026-10-22 실측: 15:44:57 에 저장한
    HTS `_P` 와 16:16 API 가 34칸 달랐다 — 15:45 종가 단일가 체결(개인↔외인 15/17 쌍 상쇄)이
@@ -78,8 +80,20 @@ def _wait_quota(cy, need):
         time.sleep(max(cy.LimitRequestRemainTime, 500) / 1000.0 + 0.2)
 
 
+def hts_saved_before_close(path, end):
+    """[MW0601 710차] HTS 파일이 그날 15:46 이전에 저장됐나 — 그러면 15:45 종가 단일가가 빠져 있다.
+
+    2026-10-22 실측: 15:44:57 저장 `_P` vs 16:25 API 가 34칸 달랐다(rc=1). 틀린 쪽은 파일이다.
+    그런 파일과의 불일치를 수집 실패로 세면 진짜 실패와 섞인다. 반환 (bool, 저장시각 문자열).
+    """
+    mt = datetime.datetime.fromtimestamp(os.path.getmtime(path))
+    close = datetime.datetime.combine(datetime.datetime.strptime(end, "%Y%m%d").date(),
+                                      datetime.time(15, 46))
+    return mt < close, mt.strftime("%Y-%m-%d %H:%M:%S")
+
+
 def _verify(sif, end, months):
-    """같은 날짜 HTS _P 파일과 칸 대사. 반환 (일치, 전체) 또는 None(파일 없음)."""
+    """같은 날짜 HTS _P 파일과 칸 대사. 반환 (일치, 전체, 불일치 예, 경로) 또는 None(파일 없음)."""
     sys.path.insert(0, os.path.join(ROOT, "scripts"))
     from probe_cpsvr9842 import read_hts
     path = os.path.join(HTS_DIR, "%s_P.xls" % end[2:])
@@ -104,7 +118,7 @@ def _verify(sif, end, months):
                 same += 1
             else:
                 bad.append((cp, k, idx, None if av is None else av[idx], hv))
-    return same, n, bad[:5]
+    return same, n, bad[:5], path
 
 
 def main():
@@ -172,11 +186,17 @@ def main():
             if vr is None:
                 line += "  | HTS _P 없음(대사 생략)"
             else:
-                same, n, bad = vr
+                same, n, bad, hpath = vr
                 line += "  | HTS 대사 %d/%d칸" % (same, n)
                 if same != n:
-                    rc = 1
-                    line += " 불일치 예 %s" % bad
+                    early, saved = hts_saved_before_close(hpath, end)
+                    if early:
+                        # 파일이 종가 단일가 전에 저장됨 — 대사 기준이 낡았다. 참고로만 남긴다.
+                        line += (" 불일치 예 %s (참고 — HTS _P 가 %s 저장, 15:45 종가 단일가 이전이라"
+                                 " 대사 기준 아님 · rc 미반영)" % (bad, saved))
+                    else:
+                        rc = 1
+                        line += " 불일치 예 %s" % bad
         _log(line)
     _log("DB: %s rc=%d" % (db, rc))
     return rc

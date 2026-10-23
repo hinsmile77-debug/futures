@@ -163,6 +163,11 @@ def list_dates():
         pass
     for f in _list_9842_files():
         out.setdefault(f["date"], {})["hts9842"] = True
+    try:
+        for d in db9842_dates():                     # [710차] API 수집본도 같은 표식
+            out.setdefault(d, {})["hts9842"] = True
+    except Exception:
+        pass
     today = _dt.date.today().isoformat()
     out.setdefault(today, {})["today"] = True
     return {"dates": out, "today": today}
@@ -922,12 +927,156 @@ def _is_prev_trading_day(hold_day, day):
     return a < b
 
 
+# ── [9842] API 수집본 (CpSvr9842 → strike_investor.db) ──────────────────────
+# [MW0601 710차] HTS 수동 저장을 대신한다. API = HTS 같은 원천이다(704차 기간 모드 콜·풋 1,372/1,372칸 일치).
+#   · 기간 보유(_P)  ← strike_investor_hold (장후 16:25 예약작업 — 15:45 종가 단일가 반영)
+#   · 당일 순매수(_D) ← strike_investor_flow (장중 매분 「바뀐 행만」 — 재구성 규칙은 수집기 docstring)
+# 둘 다 먼스리 최근월('1')만, 단위는 계약. 파일은 지우지 않는다 — 고르는 규칙은 hts9842() 참조.
+STRIKE_DB = os.path.join(DB, "strike_investor.db")
+# API 투자자 인덱스(collection/cybos/strike_investor_flow.INVESTORS) → 사다리 주체 키. 증권 = HTS 「금융투자」.
+_API_WHO = (("ind", 0), ("for", 1), ("ins", 2), ("fin", 3), ("inv_trust", 5))
+_DB_SNAP_MIN = 30          # 시점 칸 간격 — HTS 시점 파일(30분 모니터)과 같은 밀도
+_db9842_cache = {}         # day → (sig, result) — 매분 다시 재구성하지 않는다
+
+
+def _strike_ro():
+    """없으면 None — 미러 PC(MW0602)에는 이 DB 가 없다."""
+    if not os.path.exists(STRIKE_DB):
+        return None
+    return _ro(STRIKE_DB)                    # 절대경로라 DB 와 join 해도 그대로다
+
+
+def _api_cells(cp, qty, keys=None):
+    side = "c" if cp == "C" else "p"
+    out = {}
+    for who, i in _API_WHO:
+        k = "%s_%s" % (side, who)
+        if i < len(qty) and (keys is None or k in keys):
+            out[k] = float(qty[i])
+    return out
+
+
+def _api_rows(items, keys=None):
+    """[(cp, strike, qty)] → {str(strike): {c_for, …, p_for, …}}. 행사가 미매핑(None)은 빼고 개수를 돌려준다."""
+    out, unmapped = {}, 0
+    for cp, k, qty in items:
+        if k is None:
+            unmapped += 1
+            continue
+        out.setdefault(str(float(k)), {}).update(_api_cells(cp, qty, keys))
+    return out, unmapped
+
+
+def db9842_hold(day):
+    """그날 이전 가장 최근 기간 보유. → dict(date, rows, unmapped) 또는 None(없음)."""
+    con = _strike_ro()
+    if con is None:
+        return None
+    try:
+        r = con.execute("SELECT MAX(trade_date) FROM strike_investor_hold WHERE trade_date<? AND month='1'",
+                        (day,)).fetchone()
+        if not r or not r[0]:
+            return None
+        hd = r[0]
+        items = [(cp, k, json.loads(q)) for cp, k, q in con.execute(
+            "SELECT cp, strike, qty FROM strike_investor_hold WHERE trade_date=? AND month='1'", (hd,))]
+    finally:
+        con.close()
+    # 콜·풋이 둘 다 있어야 한 장이다 — 한쪽만 있으면 반쪽 화면이 「다른 쪽 0」으로 읽힌다.
+    if {cp for cp, _, _ in items} != {"C", "P"}:
+        return None
+    rows, unmapped = _api_rows(items)
+    return dict(date=hd, rows=rows, unmapped=unmapped)
+
+
+def _bucket_end(hm):
+    """'09:31' → '10:00' — 그 분이 속한 30분 칸의 끝."""
+    t = int(hm[:2]) * 60 + int(hm[3:])
+    e = -(-t // _DB_SNAP_MIN) * _DB_SNAP_MIN
+    return "%02d:%02d" % (e // 60, e % 60)
+
+
+def db9842_flow(day):
+    """그날 장중 당일 순매수 재구성. → dict(snaps=[{hm, rows}], last=dict(hm, rows), unmapped) 또는 None.
+
+    측정된 시각만 쓴다 — 콜·풋 **둘 다** ok=1 이고, 그 시각 이전에 둘 다 전체 저장(full=1)이 있는 분.
+    한도 부족으로 건너뛴 분(SKIP_QUOTA)·실패 분은 칸을 만들지 않는다(메우지 않는다 — 계측 4원칙 ②).
+    시점 칸 = 30분 칸마다 마지막 측정 분 + 진행 중인 칸은 최신 측정 분. 이름표는 실제 수집 분이다.
+    """
+    con = _strike_ro()
+    if con is None:
+        return None
+    try:
+        st = con.execute("SELECT snap_hm, cp, full FROM strike_investor_flow_status "
+                         "WHERE trade_date=? AND month='1' AND ok=1 ORDER BY snap_hm", (day,)).fetchall()
+        if not st:
+            return None
+        sig = (len(st), st[-1][0])
+        hit = _db9842_cache.get(day)
+        if hit and hit[0] == sig:
+            return hit[1]
+        by_hm, base = {}, {}
+        for hm, cp, full in st:
+            by_hm.setdefault(hm, set()).add(cp)
+            if full and cp not in base:
+                base[cp] = hm
+        if set(base) != {"C", "P"}:
+            _db9842_cache[day] = (sig, None)
+            return None
+        start = max(base.values())
+        good = [hm for hm in sorted(by_hm) if hm >= start and by_hm[hm] == {"C", "P"}]
+        last_in = {}
+        for hm in good:
+            last_in[_bucket_end(hm)] = hm
+        targets = sorted(last_in.values())
+        rows = con.execute("SELECT snap_hm, cp, code, strike, qty FROM strike_investor_flow "
+                           "WHERE trade_date=? AND month='1' AND snap_hm<=? ORDER BY snap_hm",
+                           (day, targets[-1] if targets else "")).fetchall()
+    finally:
+        con.close()
+    cur, snaps, i = {}, [], 0
+    for t in targets:
+        while i < len(rows) and rows[i][0] <= t:
+            _, cp, code, k, q = rows[i]
+            cur[(cp, code)] = (cp, k, q)
+            i += 1
+        items = [(cp, k, json.loads(q)) for cp, k, q in cur.values()]
+        snaps.append(dict(hm=t, items=items))
+    res = None
+    if snaps:
+        full_rows, unmapped = _api_rows(snaps[-1]["items"])
+        res = dict(snaps=[dict(hm=s["hm"], rows=_api_rows(s["items"], _SNAP_KEYS)[0]) for s in snaps],
+                   last=dict(hm=snaps[-1]["hm"], rows=full_rows), unmapped=unmapped)
+    _db9842_cache[day] = (sig, res)
+    return res
+
+
+def db9842_dates():
+    """API 수집본이 있는 날짜 — 날짜 목록의 9842 표식용. 없으면 빈 집합."""
+    con = _strike_ro()
+    if con is None:
+        return set()
+    try:
+        a = {r[0] for r in con.execute("SELECT DISTINCT trade_date FROM strike_investor_flow_status WHERE ok=1")}
+        b = {r[0] for r in con.execute("SELECT DISTINCT trade_date FROM strike_investor_hold")}
+    finally:
+        con.close()
+    return a | b
+
+
 def hts9842(day):
     """그날의 당일 순매수(D) 파일과, 그날 이전 가장 최근의 기간 보유(P) 파일.
 
     당일 순매수 고르는 순서: 시각 없는 YYMMDD_D(마감본·P 차분본) → 없으면 가장 늦은 시점 파일.
     시점 파일(YYMMDD_HHMM_D)은 flow_snaps 로 따로 돌려준다 — 화면이 직전 시점 대비 증감과
     행사가 × 시각 칸을 그린다. 읽기 실패한 시점은 빼고 flow_snaps_err 에 남긴다(메우지 않는다).
+
+    [710차] API 수집본(strike_investor.db)을 함께 본다 — HTS 수동 저장이 없어도 화면이 선다.
+      · 기간 보유: 파일 날짜와 DB 날짜 중 **늦은 쪽**, 같으면 **DB**. DB 는 16:25(종가 단일가 뒤)에 받고,
+        파일은 15:45 전에 저장되는 날이 있다(2026-10-22 실측 34칸 차이 — 틀린 쪽은 파일).
+      · 당일 순매수: 마감본 파일(YYMMDD_D)이 있으면 그것. 없으면 최신 시점 파일과 DB 최신 측정 분 중 늦은 쪽.
+      · 시점 칸: 파일 시점 + DB 30분 칸(같은 분은 파일). 파일 시점이 금액 단위면 섞지 않는다(단위가 다르면
+        화면이 증감을 못 그린다).
     """
     files = _list_9842_files()
     day_d = [f for f in files if f["date"] == day and f["mode"] == "D"]
@@ -951,11 +1100,47 @@ def hts9842(day):
         snap_ok.append(f)
         res["flow_snaps"].append(dict(hm=f["hm"], fn=f["fn"], unit=unit,
                                       rows={k: {x: v[x] for x in _SNAP_KEYS if x in v} for k, v in rows.items()}))
+    dbh = dbf = None
+    try:
+        dbh = db9842_hold(day)
+    except Exception as e:
+        res["flow_snaps_err"].append("strike_investor.db 기간 보유 읽기 실패: %s" % e)
+    try:
+        dbf = db9842_flow(day)
+    except Exception as e:
+        res["flow_snaps_err"].append("strike_investor.db 당일 순매수 읽기 실패: %s" % e)
+    db_src = lambda what, hm, unmapped: "strike_investor.db (%s · 계약 · 기관 = 기관계 · API %s%s)" % (
+        what, hm, (" · 행사가 미매핑 %d행 제외" % unmapped) if unmapped else "")
+
+    if dbf:
+        f_units = {s["unit"] for s in res["flow_snaps"]}
+        if f_units - {"contract"}:
+            res["flow_snaps_err"].append("API 시점 %d개 생략 — 시점 파일이 금액 단위라 섞지 않는다" % len(dbf["snaps"]))
+        else:
+            have = {s["hm"] for s in res["flow_snaps"]}
+            res["flow_snaps"] += [dict(hm=s["hm"], fn="strike_investor.db", unit="contract", rows=s["rows"])
+                                  for s in dbf["snaps"] if s["hm"] not in have]
+            res["flow_snaps"].sort(key=lambda s: s["hm"])
+
     flow_pick = daily[-1] if daily else (snap_ok[-1] if snap_ok else None)
-    if hold_f:
+    flow_from_db = bool(dbf) and not daily and (flow_pick is None or dbf["last"]["hm"] > flow_pick["hm"])
+    if flow_from_db:
+        flow_pick = None
+        res["flow"], res["flow_unit"] = dbf["last"]["rows"], "contract"
+        res["flow_src"] = db_src("당일 순매수", dbf["last"]["hm"] + " 수집", dbf["unmapped"])
+
+    hold_pick = hold_f[-1] if hold_f else None
+    hold_from_db = bool(dbh) and (hold_pick is None or dbh["date"] >= hold_pick["date"])
+    if hold_from_db:
+        hold_pick = None
+        res["hold"], res["hold_unit"] = dbh["rows"], "contract"
+        res["hold_src"] = db_src("기간 보유", "%s 장후" % dbh["date"], dbh["unmapped"])
+        res["hold_date"] = dbh["date"]
+        res["hold_is_prev"] = _is_prev_trading_day(dbh["date"], day)
+    elif hold_f:
         res["hold_date"] = hold_f[-1]["date"]
         res["hold_is_prev"] = _is_prev_trading_day(hold_f[-1]["date"], day)
-    for key, f in (("flow", flow_pick), ("hold", hold_f[-1] if hold_f else None)):
+    for key, f in (("flow", flow_pick), ("hold", hold_pick)):
         if f:
             try:
                 res[key], res[key + "_unit"], note = _read_9842_cached(os.path.join(DOCS_9842, f["fn"]))
