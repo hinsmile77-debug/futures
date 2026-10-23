@@ -50286,3 +50286,12 @@ AI 는 10/16 부터 고착을 적었으나 「raw_candles staleness·적재 지�
 - **검증**: py37_32 런타임 import·`main.py`/`main_dashboard.py` 컴파일 OK. 플래그 3종 True · `risk_capital(dep=800만)=800만`(min 동작). 관련 테스트 338 passed / 12 failed — 실패 12건(test_598 1 · 626 2 · 632 7 · 662b 2)은 **이식 전 `7ce30d0` 에서도 동일 12건**(648차 기록과 같은 기존 결함).
 - 🔴 **MW0602 운영 영향 — 다음 기동부터**: `data/ui_prefs.json` `max_entry_qty=3` · `MAX_CONTRACTS=3` · `SHINDONG_LIVE_QTY=2` 이므로, 장시작 증거금이 3계약분이면 **신동 실주문이 2 → 3계약**이 된다(`SHINDONG_LIVE_QTY` 는 장시작 미측정 시 폴백). 늘리지 않으려면 대시보드 최대허용수량을 2로(미륵 상한도 함께 2). PG 원화 임계는 3계약이면 ×1.5. 일일 손실 2%·A-04 분모 = min(1,500만, 당일 시가 예탁금).
 - **How to apply**: 2026-10-23 경계로 신동·미륵 진입수량 분포가 불연속일 수 있다 — 포지션 단위 비교 시 경계를 나눌 것. 첫 2–3거래일 「3 주문/체결」 탭 `[Capital]` 줄의 가능수량(지금·장시작)이 「미측정」으로 남는지 확인(남으면 CpTd6722 입력 규격 문제, 메모 §3-1). 롤백은 플래그별 False.
+
+## 2026-10-23 (MW0602 651차 — MW0601 이식 수령: 710차 [9842] 사다리 API 폴백 · 장후 스냅샷 대사 오탐) — ✅ **적용**
+
+- **수령**: MW0601이 origin/dev 에 직접 올린 `612594a`(v9-dev `bd61aa66` 와 `git range-diff` **동일 패치**)를 **fast-forward** 로 받았다(`66615cf..612594a`). 체리픽이 아니므로 sha 그대로다. 원 기록은 v9-dev `bf99769`(DECISION_LOG 710차) — 그 커밋은 dev 에 오지 않았으므로 요지를 여기 남긴다.
+- **무엇이 바뀌나**: ① `scripts/strike_investor_snapshot.py:hts_saved_before_close()` — HTS `_P` 가 그날 15:46 이전 저장이면 대사 불일치를 rc 에 넣지 않고 「참고」로만 남긴다. ③ `tools/maekjeom_ladder/ladder_data.py:hts9842()` 가 `strike_investor.db`(CpSvr9842 API 수집본)를 함께 본다 — 기간 보유는 파일·DB 중 늦은 날짜(같으면 DB), 당일 순매수는 마감본 `_D` > (최신 시점 파일 vs DB 최신 측정 분), 측정 분만 사용(계측 4원칙 ②).
+- **MW0602 해당성 — 해당한다(실측)**: 이 PC 도 10-22 `Mireuk_StrikeInvestorSnapshot` **LastTaskResult=1**, `logs/20261022_STRIKE_SNAPSHOT.log` 「HTS 대사 2710/2744칸」 — MW0601 과 같은 34칸이다. 이 PC 의 `_P` 는 미러(`_MIRROR_OF_DESKTOP-MW0601.txt`)인데 `sync_option_hts` 가 원본 mtime 을 보존해(`_sync_arrivals.json` `src_mtime` = 로컬 mtime 15:44:57) `hts_saved_before_close` 가 미러 PC 에서도 그대로 성립한다: 10-22 True · 10-21 False(15:49:55) · 10-20 False(16:23:02).
+  ⚠ 미러 동기화가 mtime 보존을 잃으면(도착 시각으로 찍히면) 이 판정은 항상 False 가 돼 **종전처럼 rc=1** 로 돌아간다 — 오탐 방향이지 누락 방향은 아니다.
+- **검증**: `tests/test_710_ladder_9842_api_fallback.py` + 656·686·704 → **71 passed / 1 skipped**(test_704 `eod_session_cleanup.ps1` 은 MW0601 전용 — 기존 skip). 실데이터(py37_32, 읽기 전용): `hts9842("2026-10-23")` 전일 보유 = DB 2026-10-22 **343 행사가**(hold_is_prev True) · 당일 순매수 = API **09:47** · 시점 칸 09:30·09:47 · `flow_snaps_err` 0건 · 38ms.
+- **How to apply**: 사다리 서버는 **재시작해야** 반영된다(기동 중인 프로세스는 구코드). 장후 스냅샷 rc 판정은 오늘(10-23) 16:25 예약작업부터 새 규칙이다. `derive_9842_daily.py`(P 차분으로 `_D` 복원)는 여전히 파일 기반이다.
