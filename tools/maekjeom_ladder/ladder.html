@@ -317,7 +317,7 @@ function renderFacts(){
   const w = document.getElementById('warnbox'); w.hidden = !(D.warnings && D.warnings.length); w.textContent = (D.warnings || []).join(' · ');
   document.getElementById('srcCandle').textContent = D.candle_src || '—';
   document.getElementById('srcHold').textContent = D.hold_src || '없음';
-  const SNf = D.flow_snaps || []; document.getElementById('srcFlow').textContent = (D.flow_src || '없음') + (SNf.length ? ` · 시점 파일 ${SNf.length}개 (${SNf[0].hm}–${SNf[SNf.length-1].hm})` : '');
+  const SNf = D.flow_snaps || []; document.getElementById('srcFlow').textContent = (D.flow_src || '없음') + (SNf.length ? ` · 시점 ${SNf.length}개 (${SNf[0].hm}–${SNf[SNf.length-1].hm})` : '');
 }
 
 // segmented controls
