@@ -50354,3 +50354,11 @@ AI 는 10/16 부터 고착을 적었으나 「raw_candles staleness·적재 지�
 - **무포지션 동결은 끊지 않는다**(1단계 알림만) — 감시자 오탐 비용을 보유 중으로 한정.
 - **검증**: `tests/test_mw0602_freeze_kill_restart.py` 29건 + 갱신한 가드 테스트(490·523·636·alert_mail_wiring) 72 passed. 전체 17 failed = 기존 기준선과 동일(457·533 은 변경 제외 상태에서도 실패 확인). py37_32 컴파일 · `--once --at-time` 재생 · 실제 psutil 로 임시 main.py 프로세스 종료·기록 스모크 OK.
 - **미검증**: 실제 GIL 동결 → 런처 재기동 → CREON 재접속 → 복원 → 재판정 왕복은 라이브 미관측. 리허설 필요 시 모의 환경에서.
+
+## 2026-10-24 (MW0602 655차 — 집행 장치 A4: 청산 재송신 직전 브로커 잔고 재조회, 섀도) — ✅ **적용(미커밋)**
+- **사용자 지시**: 「재송신 시 잔고 재조회 — 섀도 기록부터 확인한 뒤 승격」 구현.
+- **섀도 기록 확인 결과 — 승격 근거가 없다**: 기존 `EXIT_REJECT_QTY_REDUCE_SHADOW`(closable_qty 기반)의 `[ExitRejectShadow]` 는 보존 로그 1,196파일 전체에서 **0줄**. 10/15 거부 20건(0707, 체결통보 거부)은 비동기 거부 처리(10/17) 이전이라 그 섀도 경로에 닿지 않았고, 이후 거부는 없었다. 원천 `closable_qty` 도 0 오독 실측(2026-09-01)이라 승격 근거가 될 수 없다.
+- **조치 — 원천을 바꿔 섀도부터 다시 쌓는다**: `EXIT_RESEND_BALANCE_MODE = "shadow"`(off/shadow/live). 단일 송신점 `_ts_send_exit_order_core` 에서 **재송신**(거부 에피소드 열림 · 지정가 미체결 취소 뒤 `_exit_resend_since`)일 때만 CpTd0723 을 조회해 `잔고수량` 으로 판정: SEND_AS_IS · SEND_REDUCED(잔량만) · SKIP_FLAT(생략+브로커 동기화) · SKIP_OPPOSITE(생략) · SEND_FALLBACK(미측정 → 종전대로). 15:18 브로커 직접청산은 `balance_checked=True` 로 제외. 생략 반환 -96 은 거부로 세지 않는다.
+- **기록**: TRADE `[ResendBalance]` + `data/exit_resend_balance_shadow.jsonl`.
+- **승격 기준(사전등록, settings 주석)**: 섀도 5건 이상 · 조회 성공 ≥80% · AS_IS 가 아닌 판정마다 직후 체결/잔고가 지지. 하나라도 반증이면 보류.
+- **검증**: `tests/test_mw0602_resend_balance.py` 23 passed. 전체 17 failed = 기준선 동일. py37_32 컴파일 OK. ⚠ 실브로커 조회 경로는 라이브 미관측(거부일에만 돈다).

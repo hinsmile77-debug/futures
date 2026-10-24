@@ -81,6 +81,7 @@ from config.settings import (
     LOSS_TIER1_QTY1_TICK_ENABLED,         # [425차] 위의 틱 확장분 별도 킬스위치
     EXIT_REJECT_BACKOFF_SEC, EXIT_REJECT_WINDOW_SEC,      # [511차 F-21] 청산 거부 백오프
     EXIT_REJECT_ALERT_STREAK, EXIT_REJECT_QTY_REDUCE_SHADOW,
+    EXIT_RESEND_BALANCE_MODE,                                            # [MW0602 2026-10-24] A4
     EXIT_CLOSABLE_QTY_FRESH_SEC,
     EXIT_ASYNC_REJECT_HANDLE, EXIT_LIMIT_FALLBACK_ENABLED,  # [MW0602 2026-10-17] 10/15 청산 거부
     EXIT_LIMIT_SLIP_TICKS, EXIT_LIMIT_UNFILLED_SEC,
@@ -1118,6 +1119,9 @@ class TradingSystem:
         self._exit_limit_mode_reason:  object = None
         # 청산 거부 에피소드 시작 시각 — 열려 있으면 신규 실주문 차단(⑤) · 해소 시 회복 알림.
         self._exit_reject_episode_at:  object = None
+        # [MW0602 2026-10-24 / A4] 지정가 청산이 미체결 취소된 시각 — 다음 청산 송신은 「재송신」이다.
+        #   None = 재송신 아님. FLAT · 거부 에피소드 종료 때 지운다.
+        self._exit_resend_since:       object = None
         # [MW0602 2026-10-17] 긴급 알림 메일 — 서버 라벨(기동 시 1회 캐시) · A-04 당일 누적 · S-06 끊김 시각
         self._alert_server_label:      object = None
         self._alert_day:               object = None
@@ -17560,6 +17564,8 @@ def _ts_record_loss_tier2_shadow(self, price: float) -> None:
 EXIT_RET_THROTTLED = -98   # 우리가 스스로 보류한 것 — **브로커 거부가 아니다**
 # [MW0602 2026-10-17] 송신은 성공(접수)했는데 체결통보가 「거부」로 온 경우 — 10/15 0707 113분.
 EXIT_RET_BROKER_REJECT_ASYNC = -97
+# [MW0602 2026-10-24 / A4] 재송신 직전 잔고 재조회가 송신을 생략했다(live 모드만) — **브로커 거부가 아니다**.
+EXIT_RET_BALANCE_SKIP = -96
 
 # ⚠ 음수(-1/-98/-99)는 이 저장소 코드가 정의한 값이라 확정이다.
 #   양수 1~4는 Cybos BlockRequest 규약으로 알려진 값이나 **이 저장소에 근거가 없다**
@@ -17569,6 +17575,7 @@ EXIT_ORDER_RET_MEANING = {
     0:   "정상",
     -1:  "브로커 거부",
     -97: "브로커 접수 후 거부(체결통보 — 예: 0707 실시간가격제한 해제중 시장가 불가)",
+    -96: "재송신 생략(잔고 재조회 — 실보유 0 또는 반대 방향, 브로커 거부 아님)",
     -98: "자체 백오프 보류(브로커 거부 아님)",
     -99: "BlockRequest 타임아웃",
     1:   "통신 오류(⚠미검증)",
@@ -17646,7 +17653,8 @@ def _ts_on_exit_order_reject(self, *, kind: str, direction: str, qty: int, ret) 
     자동조치 C등급이라 주간회의 승인 전까지 배선하지 않는다.
     """
     # 우리가 스스로 보류한 건은 세지 않는다 — 세면 백오프가 자기 자신을 키운다.
-    if ret == EXIT_RET_THROTTLED:
+    # [MW0602 2026-10-24 / A4] 잔고 재조회 생략(-96)도 같다 — 브로커가 거부한 것이 아니다.
+    if ret in (EXIT_RET_THROTTLED, EXIT_RET_BALANCE_SKIP):
         return
 
     now = datetime.datetime.now()
@@ -17795,13 +17803,145 @@ def _ts_exit_limit_price(self, side: str, code: str):
     return price, src
 
 
+_RESEND_BALANCE_JSONL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data",
+                                     "exit_resend_balance_shadow.jsonl")
+
+
+def _ts_is_exit_resend(self) -> bool:
+    """[A4] 이번 청산 송신이 「재송신」인가 — 거부 에피소드가 열려 있거나 지정가 미체결 취소 뒤."""
+    if self.position.status == "FLAT":
+        self._exit_resend_since = None
+        return False
+    return self._exit_reject_episode_at is not None or self._exit_resend_since is not None
+
+
+def _ts_broker_holding(self, result, code: str) -> dict:
+    """[A4] CpTd0723 결과 → {"measured", "status", "qty", "why"}. 순수 해석(조회하지 않는다).
+
+    `잔고수량`(원장)만 쓴다 — `청산가능`(closable)은 0 오독이 실측돼 쓰지 않는다.
+    결과 None = 조회 실패(미측정). 행은 있는데 이 종목이 없다 = 실보유 0(측정됨).
+    """
+    if result is None:
+        return {"measured": False, "status": None, "qty": None, "why": "잔고 TR 조회 실패(None)"}
+    rows = result.get("nonempty_rows") or result.get("rows") or []
+    want = self._normalize_broker_code(code)
+    for row in rows:
+        if self._normalize_broker_code(row.get("종목코드") or row.get("code") or "") != want:
+            continue
+        try:
+            q = int(str(row.get("잔고수량") or "0").replace(",", "").strip() or "0")
+        except ValueError:
+            return {"measured": False, "status": None, "qty": None,
+                    "why": "잔고수량 해석 불가(%r)" % row.get("잔고수량")}
+        st = _ts_order_side_to_direction(row.get("매매구분", "") or row.get("구분", ""))
+        if q > 0 and st not in ("LONG", "SHORT"):
+            return {"measured": False, "status": None, "qty": q,
+                    "why": "매매구분 해석 불가(%r)" % (row.get("매매구분") or row.get("구분"))}
+        return {"measured": True, "status": st if q > 0 else "FLAT", "qty": max(0, q),
+                "why": "잔고행 %s %s계약" % (st, q)}
+    return {"measured": True, "status": "FLAT", "qty": 0,
+            "why": "잔고행 %d개 중 %s 없음 — 실보유 0" % (len(rows), want)}
+
+
+def _ts_resend_balance_verdict(engine_status: str, engine_qty: int, order_qty: int, held: dict) -> dict:
+    """[A4] 재송신 판정 — 순수 함수. 반환 {"action", "qty", "note"}(qty = live 모드 송신 수량, 생략이면 0)."""
+    oq = int(order_qty or 0)
+    if not held.get("measured"):
+        return {"action": "SEND_FALLBACK", "qty": oq, "note": "미측정 — 종전대로 송신 (%s)" % held.get("why")}
+    hq, hs = int(held.get("qty") or 0), held.get("status")
+    if hq <= 0:
+        return {"action": "SKIP_FLAT", "qty": 0, "note": "실보유 0 — 이미 청산됐다(엔진 %s %s계약)"
+                % (engine_status, engine_qty)}
+    if hs != engine_status:
+        return {"action": "SKIP_OPPOSITE", "qty": 0, "note": "실보유 %s %d계약 ≠ 엔진 %s — 내면 노출 확대"
+                % (hs, hq, engine_status)}
+    if hq < oq:
+        return {"action": "SEND_REDUCED", "qty": hq, "note": "실보유 %d계약 < 주문 %d계약 — 잔량만" % (hq, oq)}
+    note = "실보유 %d계약 ≥ 주문 %d계약" % (hq, oq)
+    if hq != int(engine_qty or 0):
+        note += " · 엔진 %s계약과 불일치" % engine_qty
+    return {"action": "SEND_AS_IS", "qty": oq, "note": note}
+
+
+def _ts_exit_resend_balance_gate(self, *, account_no: str, code: str, side: str, qty: int):
+    """[A4] 재송신 직전 잔고 재조회. 반환: 보낼 수량(int) 또는 None(= live 모드 생략).
+
+    재송신이 아니거나 모드 off 면 조회 없이 qty 그대로. shadow 는 기록만 하고 qty 그대로.
+    어떤 예외도 송신을 막지 않는다(→ qty 그대로).
+    """
+    mode = str(EXIT_RESEND_BALANCE_MODE or "off").lower()
+    if mode not in ("shadow", "live"):
+        return qty
+    try:
+        if not _ts_is_exit_resend(self):
+            return qty
+        pos = self.position
+        _t0 = time.perf_counter()
+        try:
+            result = self.broker.request_futures_balance(account_no)
+        except Exception as _bq_e:
+            result = None
+            logger.warning("[ResendBalance] 잔고 조회 예외: %s", _bq_e)
+        _ms = (time.perf_counter() - _t0) * 1000.0
+        held = _ts_broker_holding(self, result, code)
+        v = _ts_resend_balance_verdict(pos.status, int(pos.quantity or 0), int(qty or 0), held)
+        applied = (mode == "live")
+        log_manager.trade(
+            "[ResendBalance] %s %s %s계약 재송신 직전 잔고 → %s · %s (조회 %.0fms) — %s"
+            % (pos.status, side, qty, v["action"], v["note"], _ms,
+               ("실적용 → %s" % (("%d계약 송신" % v["qty"]) if v["qty"] else "송신 생략"))
+               if applied else "섀도(주문 무변경)"))
+        try:
+            _d = os.path.dirname(_RESEND_BALANCE_JSONL)
+            if not os.path.isdir(_d):
+                os.makedirs(_d)
+            with open(_RESEND_BALANCE_JSONL, "a", encoding="utf-8") as _f:
+                _f.write(json.dumps({
+                    "ts": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "mode": mode, "engine_status": pos.status, "engine_qty": int(pos.quantity or 0),
+                    "entry_source": getattr(pos, "entry_source", None), "side": side,
+                    "order_qty": int(qty or 0), "held": held, "action": v["action"], "live_qty": v["qty"],
+                    "note": v["note"], "query_ms": round(_ms, 1),
+                    "episode_open": self._exit_reject_episode_at is not None,
+                    "limit_cancel_resend": self._exit_resend_since is not None,
+                    "applied": applied,
+                }, ensure_ascii=False) + "\n")
+        except Exception as _jw_e:
+            logger.warning("[ResendBalance] 기록 실패 (무해): %s", _jw_e)
+        if not applied:
+            return qty
+        if v["action"] in ("SEND_AS_IS", "SEND_FALLBACK"):
+            return qty
+        if v["action"] == "SEND_REDUCED":
+            return int(v["qty"])
+        log_manager.system("[ResendBalance] 재송신 생략 — %s · %s" % (v["action"], v["note"]), "ERROR")
+        if v["action"] == "SKIP_FLAT":
+            try:
+                self._sync_position_from_broker()        # 엔진을 브로커(실보유 0)에 맞춘다
+            except Exception as _sy_e:
+                logger.warning("[ResendBalance] 브로커 동기화 예외: %s", _sy_e)
+        return None
+    except Exception as _gate_e:
+        logger.warning("[ResendBalance] 판정 예외 — 종전대로 송신 (무해): %s", _gate_e)
+        return qty
+
+
 def _ts_send_exit_order_core(self, *, account_no: str, code: str, side: str, qty: int,
-                             rqname: str, screen_no: str) -> int:
+                             rqname: str, screen_no: str, balance_checked: bool = False) -> int:
     """모든 청산 주문의 단일 송신점(일반·브로커 직접·긴급). 0=송신 성공.
 
     평소에는 종전과 같은 **시장가**다. ② 래치가 걸린 날만 체결 가능한 지정가로 보낸다.
     지정가 송신이면 미결(`_pending_order`)에 표시를 남겨 미체결 시 취소·재가격(2초 타이머)이 걸린다.
+
+    [MW0602 2026-10-24 / A4] 재송신이면 송신 직전 브로커 잔고를 재조회한다(`EXIT_RESEND_BALANCE_MODE`).
+    `balance_checked=True` = 호출자가 이미 잔고로 수량을 정했다(15:18 브로커 직접청산) → 재조회 생략.
+    live 모드에서 생략 판정이면 EXIT_RET_BALANCE_SKIP(-96)을 돌려준다(거부로 세지 않는다).
     """
+    if not balance_checked:
+        _q2 = _ts_exit_resend_balance_gate(self, account_no=account_no, code=code, side=side, qty=qty)
+        if _q2 is None:
+            return EXIT_RET_BALANCE_SKIP
+        qty = _q2
     if EXIT_LIMIT_FALLBACK_ENABLED and self._exit_limit_mode_reason:
         price, src = _ts_exit_limit_price(self, side, code)
         if price:
@@ -18138,6 +18278,7 @@ def _ts_exit_reject_episode_close(self, reason: str) -> None:
     except Exception as _dash_e:
         logger.debug("[ExitRejectResolved] 대시보드 해제 실패 (무해): %s", _dash_e)
     self._exit_reject_episode_at = None
+    self._exit_resend_since = None                        # [A4]
     _ts_reset_exit_reject_state(self, reason=reason)
     _ts_alert_resolve(self, "S-01", note=reason)          # [MW0602 2026-10-17] 긴급 메일 해소
 
@@ -20086,7 +20227,7 @@ def _ts_broker_direct_force_exit(self, price: float, reason: str = "강제청산
     # [MW0602 2026-10-17] 단일 송신점 — 래치가 걸린 날(시장가 거부일)은 15:18 최종청산도 지정가.
     ret = _ts_send_exit_order_core(
         self, account_no=account_no, code=code, side=close_side, qty=broker_qty,
-        rqname="강제청산", screen_no="1001",
+        rqname="강제청산", screen_no="1001", balance_checked=True,
     )
     log_manager.system(
         f"[BrokerDirectExit] 청산 송신 ret={ret} {broker_side} {broker_qty}계약 reason={reason}",
@@ -22155,6 +22296,8 @@ def _ts_on_chejan_event_cybos_safe(self, payload: dict) -> None:
         if _po_no and _po_no in (str(order_no or ""), str(payload.get("original_order_no") or "")):
             log_manager.trade("[청산지정가] 취소확인 order_no=%s — 미결 해제, 새 호가로 재송신 대기" % _po_no)
             self._clear_pending_order()
+            if self._exit_resend_since is None:      # [A4] 다음 청산 송신 = 재송신(상태 저장만 — §4)
+                self._exit_resend_since = datetime.datetime.now()
             return
 
     if not is_final_fill:
