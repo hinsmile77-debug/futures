@@ -15,7 +15,10 @@
 - [ ] **(2026-10-26) 전환 첫날 확인** — 건식 대조(3단계) 미실시분을 여기서 메운다 · 15:55 `shindong_eod_done_20261026.txt` exit=0 도: `[Engine] 미륵 엔진=off` · `[LightPass] 경량 ATR … 시작` · `raw_candles` 380봉 전후 · 08:50/09:30 맥점 ·
       `[MireukOff]` ERROR **0건** · `[CB] … 진입 정지` 사유에 파이프 지연 없음 · 15:10 `[ForceExitPass]`(보유 시) · 장후 `[DailyClose] 미륵 휴면 …` 1줄.
 - [ ] 되돌리기: `MIREUK_ENGINE="full"` · `PRINCIPAL_LOCK=None` · FLAT 재기동 · `-EnableMireukRetrain` · 재가동 첫날 수동 `retrain_eod` 1회(모델이 휴면 기간만큼 낡음).
-- [ ] (사용자 결정) D3 `SHINDONG_FLOW_STALE_GUARD="live"` 여부 — `[FlowStale]` 실측 먼저. D4 피터 주체 · D5 옵션 체인 수집 · D6 일일 점검 체계.
+- [x] ✅ (661차 후속3 · 2026-10-25) D3 = **shadow 유지** — 2분 규칙과 구조상 중복·실측 지연 0. 재검토: `[FlowStale]` 지연 빈발 확인 또는 2분 규칙 완화 시.
+- [ ] (661차 후속3) **재기동 필요** — 보유 중 지연 감시 `[FlowStaleHold]` · 7222 `collected_at` 첫 도착 보존은 다음 기동부터. 첫 거래일: `option_investor_flow.last_collected_at` 이 채워지는가 · 같은 행 `collected_at` 이 장중 시각(백필 16시대로 안 덮임)인가.
+- [ ] (661차 후속3) 2~4주 뒤 `[FlowStale]`·`[FlowStaleHold]` 실측 + `collected_at` 기반 도착 지연 분포 → 보유 중 조치(예: 지연 N분 시 청산) 필요성 판단.
+- [ ] (사용자 결정) D4 피터 주체 · D5 옵션 체인 수집 · D6 일일 점검 체계.
 - [ ] 7222 수집 실패 시 `[ShindongLive] 7222 수집 실패 중 15:05 경과 — 재생 없이 규격 시간청산` 이 실제로 나오는지(발생일에).
 
 ### 657 [MW0602] 신동 V4 — 첫 실거래 확인 · 결정 대기 (2026-10-26~)

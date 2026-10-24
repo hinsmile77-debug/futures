@@ -65,7 +65,7 @@ def test_3_delta_is_measured_from_first_bar_of_day(tmp_path):
     rows = [("2026-09-21", t, "wk_mon_call", "?", "individual", 0, 0, q, 0, "x")
             for t, q in (("08:56", 2091), ("09:30", 3000), ("14:47", 11264))]
     con.executemany(
-        "INSERT INTO option_investor_flow VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
+        "INSERT INTO option_investor_flow (trade_date,bar_time,product,market_code,investor,sell_qty,buy_qty,net_qty,net_amt,collected_at) VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
     con.commit(); con.close()
 
     d = f.get_individual_session_delta("2026-09-21")
@@ -83,7 +83,7 @@ def test_4_unseen_product_is_absent_not_zero(tmp_path):
 
     f = WeeklyOptionFlow(str(tmp_path / "of.db"))
     con = f._conn()
-    con.execute("INSERT INTO option_investor_flow VALUES "
+    con.execute("INSERT INTO option_investor_flow (trade_date,bar_time,product,market_code,investor,sell_qty,buy_qty,net_qty,net_amt,collected_at) VALUES "
                 "('2026-09-21','09:00','mon_put','F','individual',0,0,5,0,'x')")
     con.commit(); con.close()
     d = f.get_individual_session_delta("2026-09-21")
@@ -97,7 +97,7 @@ def test_5_out_of_window_bars_excluded(tmp_path):
     f = WeeklyOptionFlow(str(tmp_path / "of.db"))
     con = f._conn()
     con.executemany(
-        "INSERT INTO option_investor_flow VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO option_investor_flow (trade_date,bar_time,product,market_code,investor,sell_qty,buy_qty,net_qty,net_amt,collected_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
         [("2026-09-21", t, "mon_call", "E", "individual", 0, 0, q, 0, "x")
          for t, q in (("08:30", 111), ("09:00", 200), ("16:10", 999))])
     con.commit(); con.close()

@@ -734,6 +734,10 @@ class TradingSystem:
         self._sd_flow_lag = None
         self._sd_flow_stale_since = None           # 지연 구간 시작 시각(같은 구간 반복 로그 억제)
         self._sd_fetch_fail_exit_logged = None     # 7222 수집 실패 중 15:05 시간청산 — 날짜당 1회 로그
+        # [FlowStaleHold] 보유 중 입력 지연 감시(661차 후속3) — 마지막 재생 기준분(오늘)과 진행 중 구간.
+        self._sd_last_horizon_dt = None            # 마지막으로 성공한 재생의 기준분(datetime). None = 오늘 미측정
+        self._sd_hold_stale_since = None           # 보유 중 지연 구간 시작 시각
+        self._sd_hold_stale_max = 0                # 그 구간의 최대 지연(분)
         if self._principal_state.get("locked"):
             logger.warning("[Principal] PRINCIPAL_LOCK — 거래주체 %s 고정(파일·대시보드 전환 무시)",
                            principal_mod.label(self._principal_state["principal"]))
@@ -5327,6 +5331,9 @@ class TradingSystem:
             # [MW0602 신동 주체 리뉴얼] 수집이 실패한 분에는 `_run_shindong`(재생·집행 관리)이 돌지 않는다 —
             #   신동 포지션의 15:05 규격 시간청산도 함께 빠진다. 그 하나만은 재생 없이도 판정할 수 있으므로 지킨다.
             self._shindong_fetch_fail_guard(now)
+        finally:
+            # [661차 후속3] 수집 성공·실패·간격 미달 어느 분이든 보유 중 지연 감시는 돈다(재생 직후라 최신 기준분을 본다).
+            self._shindong_hold_flow_watch(now)
 
     def _fetch_strike_investor_flow(self, now: datetime.datetime) -> None:
         """[MW0601 704차] 먼스리 옵션 행사가 × 투자자 12주체 수집 (CpSvr9842 = HTS [9842]).
@@ -5911,6 +5918,11 @@ class TradingSystem:
         """
         mode = str(getattr(runtime_settings, "SHINDONG_FLOW_STALE_GUARD", "shadow") or "shadow").lower()
         lag = None
+        _hz = str(payload.get("horizon") or "")
+        if len(_hz) == 5 and _hz[2] == ":":
+            # 보유 중 감시(_shindong_hold_flow_watch)가 읽는다 — 모드·시간창과 무관하게 기준분만 기억한다.
+            self._sd_last_horizon_dt = datetime.datetime.combine(
+                now.date(), datetime.time(int(_hz[:2]), int(_hz[3:])))
         if mode != "off" and datetime.time(9, 2) <= now.time() <= datetime.time(15, 5):
             hz = str(payload.get("horizon") or "")
             if len(hz) == 5 and hz[2] == ":":
@@ -5934,6 +5946,61 @@ class TradingSystem:
                    "미측정" if lag is None else lag), "INFO")
             self._sd_flow_stale_since = None
         return lag
+
+    def _shindong_hold_flow_watch(self, now: datetime.datetime) -> None:
+        """[661차 후속3] 신동 **보유 중** 입력 지연 감시 — 섀도(기록·알림만, 포지션·주문 무변경).
+
+        흐름이 멈추면 재생이 멈추고 손절 갱신·본전 이동·역행컷·미러 청산이 함께 멈춘다. 진입 쪽 D3 와 달리
+        2분 규칙 같은 대체 장치가 없다. 지연 = (현재 직전 분) − (마지막 재생 기준분). 재생이 아예 돌지 않으면
+        기준분이 멈춰 있으므로 지연이 자란다 — 그래서 분봉 마감과 수급 타이머 **양쪽**에서 부른다(멱등).
+        """
+        try:
+            mode = str(getattr(runtime_settings, "SHINDONG_HOLD_FLOW_WATCH", "shadow") or "shadow").lower()
+            if mode == "off" or not (datetime.time(9, 2) <= now.time() <= datetime.time(15, 5)):
+                return
+            pos = self.position
+            holding = pos.is_external_of(SHINDONG_ENTRY_SOURCE) and int(pos.quantity or 0) > 0
+            if not holding:
+                if self._sd_hold_stale_since is not None:
+                    log_manager.system(
+                        "[FlowStaleHold] 신동 포지션 종료 — 지연 구간 감시 종료(%s 부터 · 최대 %d분)"
+                        % (self._sd_hold_stale_since.strftime("%H:%M"), self._sd_hold_stale_max), "INFO")
+                    self._sd_hold_stale_since = None
+                    self._sd_hold_stale_max = 0
+                return
+            lim = int(getattr(runtime_settings, "SHINDONG_HOLD_FLOW_STALE_MIN", 3) or 3)
+            hz = self._sd_last_horizon_dt
+            cur = (now - datetime.timedelta(minutes=1)).replace(second=0, microsecond=0)
+            # 오늘 재생이 한 번도 성공하지 않았으면 기준분이 없다 — 미측정이지만 보유 중이면 그 자체가 지연이다.
+            lag = None if (hz is None or hz.date() != now.date()) else max(0, int((cur - hz).total_seconds() // 60))
+            stale = lag is None or lag >= lim
+            if stale:
+                if self._sd_hold_stale_since is None:
+                    self._sd_hold_stale_since = now
+                    self._sd_hold_stale_max = lag or 0
+                    msg = ("[FlowStaleHold] 신동 보유 중 입력 지연 %s(기준분 %s · 임계 %d분 · 모드 %s) — "
+                           "재생 손절 갱신·본전 이동·역행컷·미러 청산 정지, 손절은 틱 하드스톱만 | %s %d계약 @%.2f 손절 %s"
+                           % ("미측정(오늘 재생 없음)" if lag is None else "%d분" % lag,
+                              hz.strftime("%H:%M") if hz is not None else "-", lim, mode,
+                              pos.status, int(pos.quantity), float(pos.entry_price or 0.0),
+                              ("%.2f" % float(pos.stop_price)) if pos.stop_price else "미설정"))
+                    log_manager.system(msg, "WARNING")
+                    try:
+                        notify(msg, "WARNING")
+                    except Exception as _ne:
+                        logger.debug("[FlowStaleHold] 알림 실패: %s", _ne)
+                elif lag is not None:
+                    self._sd_hold_stale_max = max(self._sd_hold_stale_max, lag)
+            elif self._sd_hold_stale_since is not None:
+                log_manager.system(
+                    "[FlowStaleHold] 신동 보유 중 입력 지연 해소 — %s 부터 %d분간 · 최대 %d분 · 현재 %d분"
+                    % (self._sd_hold_stale_since.strftime("%H:%M"),
+                       int((now - self._sd_hold_stale_since).total_seconds() // 60),
+                       max(self._sd_hold_stale_max, lag), lag), "INFO")
+                self._sd_hold_stale_since = None
+                self._sd_hold_stale_max = 0
+        except Exception as _we:
+            logger.warning("[FlowStaleHold] 감시 예외(무해): %s", _we)
 
     def _shindong_flow_stale_block(self):
         """D3 — 모드가 "live" 이고 지연이 임계 이상이면 기각 사유, 아니면 None."""
@@ -7164,6 +7231,8 @@ class TradingSystem:
         #   여기 있던 호출이 force-exit 가드 뒤라 15:10~15:34 가 화면에 안 붙었다.
         # [MW0602 신동 주체 리뉴얼] 미륵 휴면이면 9단계 파이프라인 대신 경량 분봉 패스(신동 부품 12개).
         #   위의 세션 봉 적재·맥점 버퍼·차트·프리장·15:10 청산 전용 패스·거래소 CB 해제 감지는 그대로 지난다.
+        # [661차 후속3] 신동 보유 중 입력 지연 감시 — 수급 타이머 쪽과 함께 두 경로에서 부른다(멱등).
+        self._shindong_hold_flow_watch(datetime.datetime.now())
         if not self._mireuk_on():
             try:
                 self._light_minute_pass(candle)

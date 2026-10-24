@@ -8078,6 +8078,13 @@ LIGHT_PASS_DRY_RUN = False
 #   진입을 줄이는 방향이라 "live" 는 사용자 결정 뒤에만. 미륵 off 와 무관한 별건이다.
 SHINDONG_FLOW_STALE_GUARD = "shadow"
 SHINDONG_FLOW_STALE_MIN = 3
+# [661차 후속3] 보유 중 흐름 지연 감시(D3 검토 결과 — 진입이 아니라 **보유 중**이 진짜 위험이다).
+#   흐름이 멈추면 재생이 멈추고 신동 포지션의 손절 갱신·본전 이동·역행컷·미러 청산도 멈춘다(재난손절은 틱 하드스톱).
+#   "shadow" — 신동 보유 중 기준분이 N분 이상 멈추면 [FlowStaleHold] WARNING + 알림 1회, 해소 시 지속시간·최대 지연 기록.
+#            **포지션·주문은 건드리지 않는다**(조치 여부는 실측 뒤 결정). / "off" — 감시 안 함.
+#   분봉 마감과 수급 타이머 **양쪽**에서 부른다 — 7222 수집이 예외로 끝난 분에는 `_run_shindong` 이 돌지 않기 때문.
+SHINDONG_HOLD_FLOW_WATCH = "shadow"
+SHINDONG_HOLD_FLOW_STALE_MIN = 3
 
 # ── [MW0601 668차 / MW0602 이식] 피터2 — 피터리 트윗 실시간 추종 매매 ──────────────
 # 장중 피터리(@PeterLeejoa) 트윗을 Chrome 확장 → 로컬 수신기(127.0.0.1)로 받아

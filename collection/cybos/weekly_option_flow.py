@@ -88,7 +88,8 @@ CREATE TABLE IF NOT EXISTS option_investor_flow (
     buy_qty      INTEGER,
     net_qty      INTEGER,            -- 순매수 수량(계약). 현물은 주식 수
     net_amt      INTEGER,            -- 순매수 금액(백만원). 화면 억원의 100배
-    collected_at TEXT    NOT NULL,
+    collected_at TEXT    NOT NULL,   -- 이 행을 **처음** 받은 시각(덮어쓰지 않는다 — 장중 도착 지연 실측용)
+    last_collected_at TEXT,          -- 마지막으로 다시 받은 시각(매분 18행 재수집 · 장후 백필)
     PRIMARY KEY (trade_date, bar_time, product, investor)
 )
 """
@@ -186,6 +187,11 @@ class WeeklyOptionFlow:
         con.execute("PRAGMA journal_mode=WAL")
         if not self._schema_ready:
             con.execute(_SCHEMA)
+            # [MW0602 661차 후속3] 기존 DB 이행 — 2026-10-25 이전 행은 last_collected_at 이 NULL(미측정)이고,
+            #   그 행들의 collected_at 은 「마지막 수집 시각」이다(장후 백필이 덮어썼다). 직접 비교 금지.
+            cols = {r[1] for r in con.execute("PRAGMA table_info(option_investor_flow)")}
+            if "last_collected_at" not in cols:
+                con.execute("ALTER TABLE option_investor_flow ADD COLUMN last_collected_at TEXT")
             for ix in _INDEX:
                 con.execute(ix)
             con.commit()
@@ -230,13 +236,15 @@ class WeeklyOptionFlow:
                     con.executemany(
                         "INSERT INTO option_investor_flow "
                         "(trade_date,bar_time,product,market_code,investor,"
-                        " sell_qty,buy_qty,net_qty,net_amt,collected_at) "
-                        "VALUES (?,?,?,?,?,?,?,?,?,?) "
+                        " sell_qty,buy_qty,net_qty,net_amt,collected_at,last_collected_at) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?) "
                         "ON CONFLICT(trade_date,bar_time,product,investor) DO UPDATE SET "
                         " sell_qty=excluded.sell_qty, buy_qty=excluded.buy_qty,"
                         " net_qty=excluded.net_qty, net_amt=excluded.net_amt,"
-                        " collected_at=excluded.collected_at",
-                        rows,
+                        # [661차 후속3] collected_at 은 첫 도착 시각으로 둔다 — 종전에는 매 재수집·장후 백필이
+                        #   덮어써 장중 도착 시각(=신동 입력 지연)을 사후에 잴 수 없었다(D3 검토 2026-10-25).
+                        " last_collected_at=excluded.last_collected_at",
+                        [r + (r[-1],) for r in rows],
                     )
                 stored = len(rows)
                 con.close()
