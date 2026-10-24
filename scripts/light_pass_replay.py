@@ -343,10 +343,15 @@ def main(argv=None):
     r = replay(a.date, a.raw_db or S.RAW_DATA_DB, a.sd_db or S.SHINDONG_DB,
                atr_limit=float(getattr(S, "CB_ATR_MULT_LIMIT", 3.0)))
     txt = "\n".join(r["lines"])
-    print(txt)
+    # 파일을 먼저 쓴다 — Windows 콘솔(cp949)은 '—' 등을 못 찍어 print 가 판정 뒤에 죽었다(2026-10-25 실측).
     if a.out:
         with io.open(a.out, "w", encoding="utf-8") as f:
             f.write("```\n" + txt + "\n```\n")
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+    print(txt)
     return r["exit_code"]
 
 

@@ -2,6 +2,21 @@
 
 ---
 
+## 2026-10-25 (MW0602 661차 — 신동 주체 전환: 미륵 휴면 실행 · 브랜치 분리) — 🟢 **전환(다음 기동부터)**
+
+**사용자 결정**: ① 브랜치 분리 — `Sindong-V4` = MW0602 단독 · 신동 주체(신동은 여기서 관리) / `dev` = MW0602 단독 · 미륵 주체 보존(미륵 부활용). CLAUDE.md 「브랜치 역할」 절(양 브랜치). ② 휴무일 장전에 660 전환 절차 1~4단계 검증 후 신동 주체로 전환.
+
+- **설정**(`Sindong-V4`): `MIREUK_ENGINE="off"` · `PRINCIPAL_LOCK="SHINDONG"` · `LIGHT_PASS_DRY_RUN=False`. `dev` 는 `full`/`None` 그대로.
+- **검증**(상세 `docs/미륵중단/전환검증_20261025/README.md`):
+  1. 재기동 — 🟡 대체: 격리 사본(저장소+data)에서 py37_32·offscreen·가짜 브로커로 실 `TradingSystem` + 10/23 실분봉 30개. 파이프라인 0회 · ERROR 0 · paint 정상 · 미륵 진입/주체 전환/재학습 거부.
+  2. 신동 EOD 작업 — ✅ `\Mireuk\Shindong_EOD_1555` 등록 · 예약작업 경로 LastTaskResult=0.
+  3. 병행 건식 대조 — ⛔ **미실시**(휴무일; 가짜 브로커로는 미륵 파이프라인이 로그인 후 객체 부재로 미완주). **전환 첫날 감시로 대체** — 사용자 지시로 전환 진행.
+  4. 장후 재생 — ✅ 8거래일(10/14~10/23) 전부 PASS. 단 CB④ 발동일 표본 0(전부 0 vs 0).
+- **이 PC에서 드러난 결함 3건 수정**: W1 `light_pass_replay.py` 콘솔 cp949 로 판정 직후 exit=1 · W2 `shindong_eod.py` 콘솔 로깅 오류 · W3 🔴 `-DisableMireukRetrain` 이 `MireukiEODRetrain` 만 찾아 이 PC 의 `\Maitreya_EODretrain` 을 못 끔(두 이름 매칭 + 권한 거부 안내).
+- **불연속 마커**: `strategy_registry.db` `strategy_events` **id=128** `METRIC_REDEFINITION` — 10/26 세션부터 미륵 예측·학습·장후 지표 중단, 전후 직접 비교 금지.
+- 🔴 **미완**: `\Maitreya_EODretrain`(RunLevel=Highest) 비활성은 관리자 권한 필요 — 사용자가 10/26 15:50 전에 관리자 프롬프트에서 `TASK_SHINDONG_EOD_INSTALL.bat -DisableMireukRetrain`.
+- 수량은 무변경(`SHINDONG_LIVE_QTY=2` · X% 규칙) — 660 「첫날 1계약 권장」은 사용자 결정 사항으로 남김.
+
 ## 2026-10-24 (MW0602 660차 — 신동 주체 리뉴얼 · 미륵 휴면 스위치 구현) — 🟢 **배포(기본값 full — 동작 무변경)**
 
 - **지시**: 「미륵을 더 이상 사용하지 않는다는 전제로 신동을 프로그램 주체로 리뉴얼」 → 구현계획 수립 → 「꼼꼼하게 구현해」(사용자, 2026-10-24).

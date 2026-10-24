@@ -8063,9 +8063,12 @@ SHINDONG_LIVE_MAX_AGE_MIN = 2      # 진입봉이 끝난 뒤 이 분 수가 지�
 #   🔴 **기동 시 한 번만 읽는다**(`TradingSystem.__init__`). 장중 핫리로드로 바뀌지 않는다 — 바꾸려면 FLAT 에서 재기동.
 #   🔴 "off" 로 바꾸기 전 확인: 병행 건식 실행(LIGHT_PASS_DRY_RUN) 불일치 0 · 장후 재생(scripts/light_pass_replay.py) ·
 #      `SHINDONG_EOD.bat` 병행 성공(맥점 이력 캐시 — 미륵 재학습 스크립트 안에 있던 결합, 계획서 §1 P4).
-MIREUK_ENGINE = "full"
+#   🟢 [2026-10-25 사용자 결정 / MW0602 Sindong-V4] "off" 전환 — 장후 재생 8거래일(10/14~10/23) PASS ·
+#      신동 EOD 예약작업 LastTaskResult=0. ⚠ 병행 건식 실행(Phase 6-A)은 휴무일이라 미실시 — 전환 첫날 감시로 대체.
+#      `dev` 브랜치는 "full"(미륵 주체) 그대로다 — 미륵 부활은 그 브랜치에서 한다(CLAUDE.md 「브랜치 역할」).
+MIREUK_ENGINE = "off"
 # PRINCIPAL_LOCK — None 이면 종전(대시보드에서 주체 전환). "SHINDONG" 이면 파일·전환 요청과 무관하게 신동 고정.
-PRINCIPAL_LOCK = None
+PRINCIPAL_LOCK = "SHINDONG"
 # LIGHT_PASS_DRY_RUN — MIREUK_ENGINE="full" 일 때만 의미. 매분 미륵 파이프라인 뒤에 경량 패스를
 #   **계산만** 병행해(DB 쓰기·주문·CB 기록·화면 갱신 없음) 미륵 경로 값과 대조하고 `[LightPassDry]` 로 남긴다.
 #   실거래를 멈추지 않는 전환 검증 수단이다(계획서 Phase 6-A).

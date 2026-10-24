@@ -60,6 +60,11 @@ def _setup_log():
         fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
         fh = logging.FileHandler(LOG_PATH, encoding="utf-8")
         fh.setFormatter(fmt)
+        # Windows 콘솔(cp949)이 '—' 를 못 찍어 logging 오류가 나던 것(2026-10-25 실측) — 파일 로그는 원래 UTF-8
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
         sh = logging.StreamHandler(sys.stdout)
         sh.setFormatter(fmt)
         log.addHandler(fh)

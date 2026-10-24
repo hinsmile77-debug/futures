@@ -72,7 +72,9 @@ def test_K5_no_lock_keeps_legacy_shape(tmp_path, monkeypatch):
 
 def test_settings_defaults_are_conservative():
     from config import settings as S
-    assert S.MIREUK_ENGINE == "full"          # 머지 시점 기본값 — off 는 전환일에 사람이 바꾼다
-    assert S.PRINCIPAL_LOCK is None
-    assert S.LIGHT_PASS_DRY_RUN is False
+    # [2026-10-25 사용자 결정] Sindong-V4 브랜치 = 신동 주체 · 미륵 휴면(CLAUDE.md 「브랜치 역할」).
+    # 머지 시점(full/None)은 dev 브랜치에 그대로 남아 있다 — 미륵 부활은 그쪽에서 한다.
+    assert S.MIREUK_ENGINE == "off"
+    assert S.PRINCIPAL_LOCK == "SHINDONG"
+    assert S.LIGHT_PASS_DRY_RUN is False      # off 에서는 의미 없음(full 전용)
     assert S.SHINDONG_FLOW_STALE_GUARD in ("off", "shadow", "live")

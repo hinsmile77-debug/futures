@@ -113,6 +113,9 @@ dt.strftime("GP진입 %H:%M")     # ← UnicodeEncodeError → paintEvent → �
 > 사용자 전제: **미륵을 더 이상 사용하지 않는다.** 단, 지우지 않고 **스위치로 재운다**(되살릴 수 있다).
 > 계획·근거: `docs/신동거래_V4/신동주체_리뉴얼_구현계획_미륵휴면_MW0602-20261024.md` · 결정 `dev_memory/DECISION_LOG.md` 660차.
 
+> 🟢 **[2026-10-25 MW0602 661차] 이 브랜치(`Sindong-V4`)는 전환됐다 — `MIREUK_ENGINE="off"` · `PRINCIPAL_LOCK="SHINDONG"`.**
+> 아래 표의 「기본」 열은 머지 시점 값이며 `dev` 브랜치(미륵 주체 보존)에 그대로 남아 있다. 이 PC 검증 기록: `docs/미륵중단/전환검증_20261025/README.md`.
+
 | 설정(`config/settings.py`) | 기본 | 뜻 |
 |---|---|---|
 | `MIREUK_ENGINE` | `"full"` | `"off"` = 9단계 파이프라인 대신 `_light_minute_pass`(신동 필수 부품 12개). **기동 시 1회만 읽는다** — 바꾸려면 FLAT 재기동 |
@@ -123,7 +126,7 @@ dt.strftime("GP진입 %H:%M")     # ← UnicodeEncodeError → paintEvent → �
 - 🔴 **미륵 파이프라인 안에는 신동이 쓰는 부품이 섞여 있다** — 1분봉 저장(`raw_candles`) · 08:50/09:30 맥점 · 대기주문 타임아웃·고착 해소 ·
   틱 하드스톱 폴백 · STEP 8 청산 감시 · ATR(CB④ 입력·실주문 atr) · CB⑤ 입력 · 화면 갱신. 미륵 코드를 고칠 때 이것들을 함께 끄지 말 것.
   부품은 **공유 메서드**로 뽑혀 있다(파이프라인·경량 패스가 같은 함수를 부른다 — 두 벌 금지). 회귀: `tests/test_renewal_light_pass.py`(12부품 호출 단언).
-- 🔴 **맥점 이력 캐시 EOD 갱신이 미륵 재학습 스크립트 안에만 있었다.** 재학습 예약작업(`MireukiEODRetrain`)을 끄기 **전에**
+- 🔴 **맥점 이력 캐시 EOD 갱신이 미륵 재학습 스크립트 안에만 있었다.** 재학습 예약작업(`MireukiEODRetrain` · ⚠ **MW0602 는 `\Maitreya_EODretrain`**, RunLevel=Highest 라 끄려면 관리자 프롬프트)을 끄기 **전에**
   `TASK_SHINDONG_EOD_INSTALL.bat`(→ `scripts/shindong_eod.py`)가 한 번 이상 성공해야 한다 — 그렇지 않으면 신동 V4 ATR14·맥점이 조용히 낡는다.
 - 휴면 중 미륵 `SYSTEM_AUTO` 진입은 `_ts_execute_entry` 입구에서 ERROR 로 거부된다(`[MireukOff]`). 그 로그가 보이면 도달 경로 결함이다.
 - 휴면 중에도 **원천 수집은 끄지 않는다**(1분봉·7222·외국인 선물·맥점·연결선물). 미륵 모델·학습 상태 파일은 덮어쓰지 않는다(되살림 = 마지막 실가동 상태).

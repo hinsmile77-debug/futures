@@ -1,0 +1,74 @@
+# -*- coding: utf-8 -*-
+# 격리 사본 전용 스모크 (py37_32) — docs/미륵중단/검증자료/스모크_스크립트_smoke_off.py.txt 의 Windows 판
+import os, sys, io, datetime, sqlite3, time
+from utils.dll_bootstrap import ensure_conda_dll_path; ensure_conda_dll_path()
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+from utils.runtime_mode import enable_test_mode; enable_test_mode()
+import main
+from PyQt5.QtWidgets import QApplication
+from collection.kiwoom.latency_sync import LatencySync
+
+
+class FakeBroker(object):
+    name = "cybos"
+    def create_latency_sync(self): return LatencySync()
+    def __getattr__(self, n):
+        def f(*a, **k): return None
+        return f
+
+
+main.create_broker = lambda: FakeBroker()
+mode = sys.argv[1]
+day = sys.argv[2] if len(sys.argv) > 2 else "2026-10-23"
+main.runtime_settings.MIREUK_ENGINE = mode
+main.runtime_settings.LIGHT_PASS_DRY_RUN = (mode == "full")
+import config.settings as S
+S.PRINCIPAL_LOCK = "SHINDONG"
+logs = []
+_orig = main.log_manager.system
+main.log_manager.system = lambda msg, level="INFO": logs.append((level, msg))
+t0 = time.time()
+ts = main.TradingSystem()
+print("init %.1fs" % (time.time() - t0), "engine", ts._mireuk_engine, "dry", ts._light_pass_dry,
+      "principal", ts._principal_state["principal"], ts._principal_state.get("locked"))
+main.is_pre_market = lambda now=None: False
+main.is_market_open = lambda now=None: True
+main.is_force_exit_time = lambda now=None: False
+calls = {"pipe": 0}
+if mode == "off":
+    main.TradingSystem.run_minute_pipeline = lambda self, bar: calls.__setitem__("pipe", calls["pipe"] + 1)
+app = QApplication.instance()
+con = sqlite3.connect(S.RAW_DATA_DB)
+rows = con.execute("SELECT ts,open,high,low,close,volume FROM raw_candles WHERE ts>=? AND ts<? ORDER BY ts",
+                   (day + " 10:00:00", day + " 10:30:00")).fetchall()
+con.close()
+ms = []
+for r in rows:
+    c = {"ts": datetime.datetime.strptime(r[0][:19], "%Y-%m-%d %H:%M:%S"), "open": r[1], "high": r[2],
+         "low": r[3], "close": r[4], "volume": r[5], "buy_vol": r[5] // 2, "sell_vol": r[5] - r[5] // 2}
+    a = time.time()
+    ts._on_candle_closed(c)
+    app.processEvents()
+    ms.append((time.time() - a) * 1000)
+print("bars:", len(rows), "per-bar ms max %.0f p50 %.0f" % (max(ms), sorted(ms)[len(ms) // 2]))
+print("pipeline calls(off 모드 가로챔):", calls["pipe"])
+print("atr ctx:", ts._manual_entry_ctx.get("atr"), "light last ts:", ts._light_last_ts)
+print("dry stats:", ts._light_dry_stats)
+ts.dashboard._win.grab(); app.processEvents(); print("grab+paint ok")
+errs = [x for x in logs if x[0] in ("ERROR", "CRITICAL")]
+print("ERROR logs(%d):" % len(errs), [m[:200] for _, m in errs][:8])
+print("light/dry/engine logs:", [m[:160] for _, m in logs if "LightPass" in m or "Engine" in m][:8])
+if mode == "off":
+    main._ts_execute_entry(ts, "LONG", 1050.0, 1, 2.0, "A", entry_source="SYSTEM_AUTO")
+    print("reject:", [m[:100] for l, m in logs if "MireukOff" in m][:1])
+    ts._on_principal_change_requested("MIREUK")
+    print("switch:", [m[:100] for l, m in logs if "PRINCIPAL_LOCK" in m][:1], ts._principal_state["principal"])
+    print("retrain started?", ts._start_gbm_retrain_subprocess(force=True, reason="smoke", is_warmup=False))
+print("SMOKE_DONE")
+sys.stdout.flush(); sys.stderr.flush()
+os._exit(0)

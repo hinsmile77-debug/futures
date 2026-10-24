@@ -46,7 +46,10 @@ $TaskPath = '\Mireuk\'
 $FullName = ($TaskPath.TrimEnd('\')) + '\' + $TaskName
 $Root     = Split-Path -Parent $PSScriptRoot
 $Script   = Join-Path $Root 'scripts\shindong_eod.py'
-$MireukRetrainName = 'MireukiEODRetrain'
+# Mireuk EOD retrain task names differ per PC: MW0602 registered it as 'Maitreya_EODretrain'
+# (root folder), other installs use 'MireukiEODRetrain'. Match every known name (2026-10-25).
+$MireukRetrainNames = @('MireukiEODRetrain', 'Maitreya_EODretrain')
+$MireukRetrainName = $MireukRetrainNames -join ' / '
 
 function Write-Head($t) {
     Write-Host ''
@@ -56,7 +59,7 @@ function Write-Head($t) {
 }
 
 function Set-MireukRetrain([bool]$enable) {
-    $ts = @(Get-ScheduledTask -TaskName $MireukRetrainName -ErrorAction SilentlyContinue)
+    $ts = @(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object { $MireukRetrainNames -contains $_.TaskName })
     if ($ts.Count -eq 0) {
         Write-Host "[SKIP] no task named $MireukRetrainName on this PC"
         return
@@ -66,7 +69,14 @@ function Set-MireukRetrain([bool]$enable) {
             Enable-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath | Out-Null
             Write-Host ("[OK] enabled : {0}{1}" -f $t.TaskPath, $t.TaskName)
         } else {
-            Disable-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath | Out-Null
+            try {
+                Disable-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath -ErrorAction Stop | Out-Null
+            } catch {
+                # RunLevel=Highest tasks (MW0602 Maitreya_EODretrain) can only be toggled from an elevated shell.
+                Write-Host ("[FAIL] {0}{1}: {2}" -f $t.TaskPath, $t.TaskName, $_.Exception.Message) -ForegroundColor Red
+                Write-Host '       Re-run TASK_SHINDONG_EOD_INSTALL.bat -DisableMireukRetrain from an ADMIN prompt (Run as administrator).' -ForegroundColor Red
+                exit 1
+            }
             Write-Host ("[OK] disabled: {0}{1}  (not deleted - re-enable with -EnableMireukRetrain)" -f $t.TaskPath, $t.TaskName)
         }
     }

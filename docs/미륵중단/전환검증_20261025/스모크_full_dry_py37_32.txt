@@ -1,0 +1,8 @@
+init 16.0s engine full dry True principal SHINDONG True
+bars: 30 per-bar ms max 126 p50 15
+atr ctx: None light last ts: None
+dry stats: {'day': '2026-10-23', 'bars': 30, 'mismatch': 30, 'atr_n': 0, 'atr_maxrel': 0.0, 'ms_max': 3.463999999997469}
+grab+paint ok
+ERROR logs(30): ["[ERR-FATAL] minute_pipeline: 'NoneType' object has no attribute 'get_features' | 자동진입 OFF + 15분 쿨다운", "[ERR-FATAL] minute_pipeline: 'NoneType' object has no attribute 'get_features' | 자동진입 OFF + 15분 쿨다운", "[ERR-FATAL] minute_pipeline: 'NoneType' object has no attribute 'get_features' | 자동진입 OFF + 15분 쿨다운", "[ERR-FATAL] minute_pipeline: 'NoneType' object has no attribute 'get_features' | 자동진입 OFF + 15분 쿨다운", "[ERR-FATAL] minute_pipeline: 'NoneType' object has no attribute 'get_features' | 자동진입 OFF + 15분 
+light/dry/engine logs: ['[LightPassDry] 불일치 ts=2026-10-23 10:00:00 — 가드=통과 · 파이프라인완주=False', '[LightPassDry] 불일치 ts=2026-10-23 10:01:00 — 가드=통과 · 파이프라인완주=False', '[LightPassDry] 불일치 ts=2026-10-23 10:02:00 — 가드=통과 · 파이프라인완주=False', '[LightPassDry] 불일치 ts=2026-10-23 10:03:00 — 가드=통과 · 파이프라인완주=False', '[LightPassDry] 불일치 ts=2026-10-23 10:04:00 — 가드=통과 · 파이프라인완주=False', '[LightPassDry] 불일치 ts=2026-10-23 10:05:00 — 가드=통과 · 파이
+SMOKE_DONE

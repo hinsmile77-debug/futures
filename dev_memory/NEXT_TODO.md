@@ -2,17 +2,17 @@
 
 > 검증 필요 항목, 예정된 작업, 알려진 잠재 이슈.
 
-### 660 [MW0602] 신동 주체 리뉴얼 — 미륵 휴면 전환 절차 (코드 배포 완료 · 기본값 full)
+### 660 [MW0602] 신동 주체 리뉴얼 — 미륵 휴면 전환 절차 (🟢 2026-10-25 661차 전환 — `Sindong-V4` off · 다음 기동부터)
 
-- [ ] **장전 재기동** — 기본값(full)이라 동작은 같아야 한다. `[Engine]` 로그 없음 · 파이프라인 정상 · 신동 실집행 정상.
-- [ ] `TASK_SHINDONG_EOD_INSTALL.bat` 등록 → 장후 `logs\shindong_eod_<날짜>.log` · `data\shindong_eod_done_<날짜>.txt` exit=0 ·
+- [~] 🟡 (661차 대체 검증 — 격리 사본 py37_32 스모크, 실기동은 10/26) **장전 재기동** — 기본값(full)이라 동작은 같아야 한다. `[Engine]` 로그 없음 · 파이프라인 정상 · 신동 실집행 정상.
+- [x] ✅ (661차 · LastTaskResult=0) `TASK_SHINDONG_EOD_INSTALL.bat` 등록 → 장후 `logs\shindong_eod_<날짜>.log` · `data\shindong_eod_done_<날짜>.txt` exit=0 ·
       `[ShindongEOD] 맥점 이력 캐시 last_date=<오늘>`. (미륵 재학습과 병행 — 같은 캐시를 두 번 갱신해도 증분이라 무해)
-- [ ] `LIGHT_PASS_DRY_RUN = True` 로 2거래일+ → `[LightPassDry] 요약` 불일치 0 · ATR 최대 상대오차 확인. 불일치는 원인 확인 후 재개.
-- [ ] 장후 `python scripts\light_pass_replay.py --date <날짜>` → PASS (보유 구간 있는 날 12/12).
-- [ ] **전환일(주 시작일 · 장전 · FLAT)**: `MIREUK_ENGINE="off"` · `PRINCIPAL_LOCK="SHINDONG"` · `LIGHT_PASS_DRY_RUN=False` →
+- [-] ⛔ (661차 미실시 — 휴무일 · 사용자 지시로 전환, 첫날 감시로 대체) `LIGHT_PASS_DRY_RUN = True` 로 2거래일+ → `[LightPassDry] 요약` 불일치 0 · ATR 최대 상대오차 확인. 불일치는 원인 확인 후 재개.
+- [x] ✅ (661차 · 10/14~10/23 8일 PASS) 장후 `python scripts\light_pass_replay.py --date <날짜>` → PASS (보유 구간 있는 날 12/12).
+- [~] 🟡 (661차 설정·마커 id=128 완료 · 🔴 **`\Maitreya_EODretrain` 비활성 미완 — 관리자 권한 필요, 10/26 15:50 전**) **전환일(주 시작일 · 장전 · FLAT)**: `MIREUK_ENGINE="off"` · `PRINCIPAL_LOCK="SHINDONG"` · `LIGHT_PASS_DRY_RUN=False` →
       재기동 → `TASK_SHINDONG_EOD_INSTALL.bat -DisableMireukRetrain`(신동 EOD 성공 이력 없으면 거부된다).
       `strategy_events` `METRIC_REDEFINITION` 마커(실거래 대사 불연속). 첫날 신동 수량 1계약 권장.
-- [ ] 전환 첫날 확인: `[Engine] 미륵 엔진=off` · `[LightPass] 경량 ATR … 시작` · `raw_candles` 380봉 전후 · 08:50/09:30 맥점 ·
+- [ ] **(2026-10-26) 전환 첫날 확인** — 건식 대조(3단계) 미실시분을 여기서 메운다 · 15:55 `shindong_eod_done_20261026.txt` exit=0 도: `[Engine] 미륵 엔진=off` · `[LightPass] 경량 ATR … 시작` · `raw_candles` 380봉 전후 · 08:50/09:30 맥점 ·
       `[MireukOff]` ERROR **0건** · `[CB] … 진입 정지` 사유에 파이프 지연 없음 · 15:10 `[ForceExitPass]`(보유 시) · 장후 `[DailyClose] 미륵 휴면 …` 1줄.
 - [ ] 되돌리기: `MIREUK_ENGINE="full"` · `PRINCIPAL_LOCK=None` · FLAT 재기동 · `-EnableMireukRetrain` · 재가동 첫날 수동 `retrain_eod` 1회(모델이 휴면 기간만큼 낡음).
 - [ ] (사용자 결정) D3 `SHINDONG_FLOW_STALE_GUARD="live"` 여부 — `[FlowStale]` 실측 먼저. D4 피터 주체 · D5 옵션 체인 수집 · D6 일일 점검 체계.

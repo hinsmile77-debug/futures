@@ -30,6 +30,9 @@ def tp_tmp(tmp_path, monkeypatch):
     monkeypatch.setattr(TP, 'STATE_PATH', str(tmp_path / 'trade_principal.json'))
     monkeypatch.setattr(TP, 'LOG_PATH', str(tmp_path / 'trade_principal_log.jsonl'))
     monkeypatch.setattr(TP, 'DAY_ROOT', str(tmp_path / 'principal'))
+    # 파일 기준 동작을 본다 — Sindong-V4 는 PRINCIPAL_LOCK="SHINDONG" 이라 고정을 풀어 둔다(고정은 test_renewal_principal_lock).
+    from config import settings as _s
+    monkeypatch.setattr(_s, 'PRINCIPAL_LOCK', None, raising=False)
     return tmp_path
 
 
