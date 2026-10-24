@@ -2,6 +2,35 @@
 
 ---
 
+## 2026-10-24 (MW0602 660차 — 신동 주체 리뉴얼 · 미륵 휴면 스위치 구현) — 🟢 **배포(기본값 full — 동작 무변경)**
+
+- **지시**: 「미륵을 더 이상 사용하지 않는다는 전제로 신동을 프로그램 주체로 리뉴얼」 → 구현계획 수립 → 「꼼꼼하게 구현해」(사용자, 2026-10-24).
+  계획: `docs/신동거래_V4/신동주체_리뉴얼_구현계획_미륵휴면_MW0602-20261024.md`(선행 조사 3건 같은 폴더).
+- **원칙**: 미륵을 지우지 않고 **스위치로 재운다**. `MIREUK_ENGINE="full"`(기본)이면 오늘과 같다 — 추출한 공유 메서드 외 동작 무변경.
+  신동 규격(`SD-2026-10-26-v4`)·집행 장치·계좌 안전장치는 손대지 않았다 → v5 아님, 채점 연속.
+- **무엇**
+  · settings: `MIREUK_ENGINE`(기동 시 1회 판정) · `PRINCIPAL_LOCK` · `LIGHT_PASS_DRY_RUN` · `SHINDONG_FLOW_STALE_GUARD`(shadow)/`_MIN`(3).
+  · `trade_principal`: PRINCIPAL_LOCK 이면 파일 무관 고정(`locked=True`), 전환 요청 거부, `save` 이력 prev 는 파일 기준(`load_file`).
+  · 미륵 off 에서 `SYSTEM_AUTO` 진입은 `_ts_execute_entry` 입구에서 ERROR 로 거부(주문 주체는 하나).
+  · 파이프라인 블록 5개를 공유 메서드로 추출(두 벌 금지): 09:30 맥점 · 08:50 맥점 · 분봉 가드 C0~C2 · 대기주문 타임아웃/고착 해소 · 청산·손익 패널.
+  · `_light_minute_pass` — 미륵 파이프라인에 섞여 있던 신동 필수 부품 12개(P1~P12, 계획서 §1). `_on_candle_closed` 에서 15:10 패스·거래소 CB 감지 **뒤** 분기.
+  · 프리장 off: 봉 저장 + 경량 ATR + 08:50 맥점만(종전 봉 저장은 「모델 준비 + 피처 성공」에 묶여 있었다).
+  · 경량 ATR = 미륵 피처와 같은 계산기·같은 **일 리셋**. 전날 봉 예열 금지(시가 갭 → CB④ 오발동 방지).
+  · 휴면 시 생략: 재학습 spawn(진입점 1곳) · 장전 Canary/워밍업/PreRetrain · daily_close 미륵 전용 항목(학습 상태 저장 · 재보정 4종 ·
+    scaler_daily · CUSUM · mc-conf · StrategyRegistry 스냅샷 · Phase5 · 섀도 후보 · 챔피언). 브로커 net·대사·신동 리포트·리셋은 그대로.
+  · 🔴 **발견한 숨은 결합**: 맥점 이력 캐시 EOD 갱신(`premarket_levels_eod`)이 **미륵 재학습 스크립트 안에만** 있었다 →
+    `scripts/shindong_eod.py` + `TASK_SHINDONG_EOD_INSTALL.bat`(평일 15:55, 비 COM)로 분리. `-DisableMireukRetrain` 은 신동 EOD 성공 이력이 없으면 거부, 비활성(삭제 아님).
+  · 🔴 **발견한 구멍(미륵 off 와 무관)**: 7222 수집이 예외로 끝난 분에는 `_run_shindong`(재생·집행 관리)이 통째로 안 돌아
+    신동 15:05 시간청산이 빠지고 15:10 까지 보유했다 → `_shindong_fetch_fail_guard` 가 시간 조건만으로 규격 청산.
+  · D3 흐름 신선도: 기본 **shadow**(`[FlowStale]` 계측만). 낡은 신호 진입은 이미 `SHINDONG_LIVE_MAX_AGE_MIN`(2분)이 막고 있어 live 차단 실익이 작다 — 사용자 결정 전 live 금지.
+  · 전환 검증(실거래 중단 없음): 병행 건식 실행 `[LightPassDry]`(부작용 없음) · 장후 재생 `scripts/light_pass_replay.py`(사전 고정 판정 4종).
+- **그대로 둔 것(의도)**: 미륵 모델·학습 객체 **생성**은 유지(로드 생략은 None 체크가 퍼져 위험) · `daily_stats.sgd_accuracy` 는 휴면 중 0.5 폴백이 그대로 기록된다
+  (컬럼 의미 없음 — 스키마 변경은 범위 밖) · 스코어카드 저변동 축은 R3(v1) 전용이고 1분봉 범위 축으로 자동 강등돼 수정 불요.
+- **검증**: 신규 테스트 48건(`tests/test_renewal_*.py` 4파일) · 전체 스위트 신규 실패 0(기준선 47건은 DB 부재 등 환경성 — 변경 전 사본에서 동일) ·
+  실객체 스모크(가짜 브로커 · offscreen): off 에서 파이프라인 0회 · 경량 패스 완주 · paint 정상 · ERROR 0 · 미륵 진입/주체 전환/재학습 거부 확인,
+  full+dry 에서 건식 대조가 파이프라인 미완주를 불일치로 포착. `scripts/audit_dll_bootstrap.py --fail-on-gap` 통과.
+- ⚠ **라이브 미검증**: 이 PC(Windows·Cybos)에서 아직 돌린 적 없다. 전환 절차는 `NEXT_TODO` 660.
+
 ## 2026-10-24 (MW0602 659차 — ProfitGuard 원화 임계 배율이 사용자 임계를 기본값으로 덮어씀 · V4 ATR 연동 수량 점검) — ✅ **수정(재기동 시 적용)**
 
 - **점검 지시**: 「ProfitGuard 가 ATR 연동에 따른 수량 변경으로 L1·2·3·4 가 변경되는지 점검」.
