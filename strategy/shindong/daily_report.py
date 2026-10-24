@@ -37,11 +37,14 @@ from strategy.shindong import spec as S
 from strategy.shindong.calendar import select_flow_product
 
 # [604차] 라벨은 spec.SHADOW_META 가 준다. v1 시대 이름은 종료됐지만 옛 리포트 재생성을 위해 남긴다.
-VLABEL = {"MAIN": "MAIN(v3 HYBR60)", "SHADOW_E2F2": "E2F2(흐름순응)",
+VLABEL = {"MAIN": S.MAIN_LABEL, "SHADOW_E2F2": "E2F2(흐름순응)",
           "SHADOW_X4NF": "X4NF(가까운목표·flip금지)", "SHADOW_TR44": "TR44(R3 트레일 4/4)",
           "SHADOW_X4NFA": "X4NFA(X4NF+깨진맥점금지)",
           # [v3] 종료 — 옛 리포트 재생성용 라벨
-          "SHADOW_V1": "V1(현행 R1/R2/R3)", "SHADOW_V1X4": "V1X4(R2+X4NF)", "SHADOW_FLOWF": "FLOWF(외국인선물 추종)"}
+          "SHADOW_V1": "V1(현행 R1/R2/R3)", "SHADOW_V1X4": "V1X4(R2+X4NF)", "SHADOW_FLOWF": "FLOWF(외국인선물 추종)",
+          # [v4] 종료 — 옛 리포트 재생성용 라벨
+          "SHADOW_V22": "V22(v2.2 MAIN 그대로)", "SHADOW_V22S": "V22S(v2.2 + 손절 방향 금지)",
+          "SHADOW_HYBL": "HYBL(첫 FLOWC → 주도 지표)"}
 VLABEL.update({k: m["label"] for k, m in S.SHADOW_META})
 
 
@@ -83,6 +86,7 @@ def load_day(trade_date: str, raw_db: str, flow_db: str, levels_db: str) -> Dict
         out["why"] = "봉 없음" if not candles else "08:50 맥점 없음"
         return out
     L = E.prepare_levels(lvrows)
+    out["atr14_v4"], out["atr14_v4_src"] = RN.attach_atr14_v4(L, trade_date, lvrows, levels_db)   # [v4] runner.compute 와 같다
     d = E.DayFrame(candles, flow, fx=RN.load_fx(trade_date, raw_db))
     out.update(ok=True, L=L, d=d)
     # [604차] runner.compute 와 같은 분기 — v1 판정 한 번, family 는 그 decision 을 실어 받는다
@@ -298,7 +302,7 @@ def observations(day: Dict[str, Any], rows: Dict[str, List[Dict]], sums: Dict[st
                    % (VLABEL[best], _man(sums[best]["net"]), _man(sums[best]["net"] - sums["MAIN"]["net"]), S.JUDGE_AFTER_DAYS))
     else:
         obs.append("**오늘은 MAIN 이 최선** (%s)." % _man(sums["MAIN"]["net"]))
-    rb = getattr(S, "ROLLBACK_VARIANT", "SHADOW_V1")          # [v3] 되돌림 기준 = SHADOW_V22
+    rb = getattr(S, "ROLLBACK_VARIANT", "SHADOW_V1")          # [v4] 되돌림 기준 = SHADOW_V3
     if rb in sums:
         obs.append("**되돌림 대조** — %s %s vs MAIN %s (차 %s). 되돌림 판정은 20거래일 누적으로만." % (
             VLABEL.get(rb, rb), _man(sums[rb]["net"]), _man(sums["MAIN"]["net"]), _man(sums["MAIN"]["net"] - sums[rb]["net"])))
@@ -544,7 +548,7 @@ def build(trade_date: str, raw_db: str, flow_db: str, levels_db: str, sd_db: str
                 w("| %s | %s | 0 | - | - | - | - | - | 기록 전 |" % (VLABEL[v], c.get("start", "-")))
                 continue
             if v == "MAIN":
-                jd = "v3 vs %s 되돌림 판정 %d/%d일" % (S.ROLLBACK_VARIANT.replace("SHADOW_", ""), c["days"], S.JUDGE_AFTER_DAYS)
+                jd = "%s vs %s 되돌림 판정 %d/%d일" % (S.SPEC_TAG, S.ROLLBACK_VARIANT.replace("SHADOW_", ""), c["days"], S.JUDGE_AFTER_DAYS)
             elif v == S.ROLLBACK_VARIANT:
                 jd = "되돌림 기준 %d/%d일" % (c["days"], S.JUDGE_AFTER_DAYS)
             elif v == "SHADOW_V1":
@@ -564,8 +568,8 @@ def build(trade_date: str, raw_db: str, flow_db: str, levels_db: str, sd_db: str
         elif trades_db:
             w("| 실집행(실제 체결 · 참고) | %s | 0 | - | - | - | - | - | 체결 없음 |" % S.SCORING_START)
         w("")
-        w("> 판정 전 집계다 — 인용·규격 변경 근거로 쓰지 말 것. 되돌림: %s 가 MAIN 보다 순손익·최악일 **둘 다** 나으면 v2.2 복귀. "
-          % S.ROLLBACK_VARIANT.replace("SHADOW_", "") +
+        w("> 판정 전 집계다 — 인용·규격 변경 근거로 쓰지 말 것. 되돌림: %s 가 MAIN 보다 순손익·최악일 **둘 다** 나으면 %s 복귀. "
+          % (S.ROLLBACK_VARIANT.replace("SHADOW_", ""), S.ROLLBACK_TO) +
           "섀도: MAIN 대비 순손익 우위 **그리고** 최악일 개선 → 채택 후보(자동 승격 없음).")
         w("> 「실집행」 = `trades.db` 신동 체결(포지션 단위, 거래일 = 체결이 있던 날). 재생에서 철회됐지만 실제로 친 거래가 "
           "**들어가고**, 보유 중·늦음·기각으로 못 친 재생 거래는 **빠진다**. 사전등록 판정은 위 재생 행으로만 한다.")
@@ -678,6 +682,15 @@ def _recon_section(rc):
                       "" if not o.get("legs") else " — 다른 출처 %d레그 %s 가 섞여 있다" % (o["legs"], _man(o["net"]))))
     else:
         out.append("- 브로커 실측 net 미기록(미측정)")
+    # [MW0602 657차 · V4] 본전청산 실측 슬립 — 사전등록 V4 §3-2 되돌림 조건(평균 > V4_BE_SLIP_REVIEW_PT, 누적 V4_BE_SLIP_MIN_N 건)
+    sl = XR.be_exit_slips(rc)
+    if sl:
+        xs = [x["slip_pt"] for x in sl]
+        out.append("- [v4] 본전청산 실측 슬립(일치 %d건, + = 불리): 평균 %+.2fpt · 최악 %+.2fpt — 되돌림 검토선 평균 %.1fpt"
+                   "(누적 %d건 이상, `scripts/shindong_v4_be_slip.py`)"
+                   % (len(xs), sum(xs) / len(xs), max(xs), S.V4_BE_SLIP_REVIEW_PT, S.V4_BE_SLIP_MIN_N))
+    elif sl is not None and hasattr(S, "V4_BE_SLIP_REVIEW_PT"):
+        out.append("- [v4] 본전청산 실측 슬립: 오늘 본전청산 일치 거래 없음")
     out.append("- 재생은 장후 최종 흐름으로 다시 돌린 값이라, 장중에 나왔다가 정정으로 사라진 신호(철회)는 빠지고 "
                "보유 중·늦음으로 못 친 신호는 들어간다. **실거래 손익은 이 절의 「실거래」 열이다.**")
     return out

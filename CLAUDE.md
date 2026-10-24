@@ -193,6 +193,9 @@ CLAUDE.md처럼 git으로 커밋되는 문서에 적어야** 양쪽 PC 세션이
 
 > 🔴 **[2026-10-13 MW0602 사용자 결정 — 실거래 전환] CB②는 복원됐다: `CB_CONSEC_STOP_LIMIT = 3`** (같은 날 2 → 3 재결정 — 피터 재진입 패턴과 충돌).
 > ⚠ 코드상 CB②는 위 「5분 내」 창이 **없다** — pnl≤0(본전 포함) 포지션이 출처 무관 연속 3회면 당일 정지(`main._post_exit`).
+> 🟢 **[2026-10-24 MW0602 658차 사용자 결정] 예외 1건 — 신동 V4 본전청산은 CB②에 세지 않는다(중립).** 판정 `main._shindong_be_exit`
+> (출처 SHINDONG + 손절 출처 `shindong_be` 또는 사유 `신동미러:BE`). 신동 재난손절·역행컷·미륵·피터는 종전대로 센다. ProfitGuard L4 는 무변경.
+> 근거: `docs/신동거래_V4/신동_사전등록_V4_20261024.md` §7 · 회귀 `tests/test_658_shindong_be_cb2_exempt.py`.
 > 아래 「9999 유지」 서술은 전부 **이력**이다. D2가 묶은 대로 ⑧ 해제(`SIZING_TARGET_CAPITAL_KRW`
 > 5천만 → **1,500만원**)와 같은 커밋이며, 같은 커밋에서 `REAL_TRADING_ARMED = True`(실서버
 > 자동주문 잠금 해제)와 `SHINDONG_LIVE_QTY = 1`도 바뀌었다. ⚠ `MAX_CONTRACTS=3`은 실전 자본

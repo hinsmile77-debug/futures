@@ -151,6 +151,7 @@ from config.capital import (
     profit_guard_krw_scale as _capital_pg_scale,
     shindong_planned_qty as _capital_sd_planned_qty,
     shindong_entry_qty as _capital_sd_entry_qty,
+    shindong_risk_qty as _capital_sd_risk_qty,      # [MW0602 657차 · 신동 V4] 한 거래 위험 한도(X%) 수량
 )
 from config import secrets as _secrets
 
@@ -700,6 +701,9 @@ class TradingSystem:
         self._sd_last = {}
         self._sd_day = None
         self._sd_warned = False
+        # [MW0602 657차 · 신동 V4] 그날 신동 ATR14 (값, 출처) — 재생(`runner.resolve_atr14_v4`)이 매분 채운다.
+        #   (None, None) = 아직 재생 전(미측정). 실주문 X% 수량이 이 값을 쓴다 — 엔진의 재난손절·역행컷과 같은 ATR.
+        self._sd_atr_v4 = (None, None)
         # [MW0602 거래주체분리] 현재 거래주체 — 파일(data/trade_principal.json)이 정본이고 이것은 캐시다.
         #   전환은 `_on_principal_change_requested` 한 곳에서만 일어나며 그때 둘을 함께 바꾼다.
         self._principal_state = principal_mod.load()
@@ -5318,6 +5322,7 @@ class TradingSystem:
                 self._sd_day = day
                 self._sd_seen = {}
                 self._sd_last = {}
+                self._sd_atr_v4 = (None, None)
             payload = _sd.run_and_store(
                 day,
                 raw_db=runtime_settings.RAW_DATA_DB,
@@ -5326,6 +5331,12 @@ class TradingSystem:
                 levels_db=runtime_settings.PREMARKET_LEVELS_DB,
                 sd_db=runtime_settings.SHINDONG_DB,
                 now=now, live=True)
+            # [V4] 집행 단계(아래 `_shindong_exec_step`)보다 먼저 갱신한다 — 진입 수량이 이 ATR 을 쓴다.
+            _atr_new = (payload.get("atr14_v4"), payload.get("atr14_v4_src"))
+            if _atr_new != self._sd_atr_v4:
+                self._sd_atr_v4 = _atr_new
+                logger.info("[Shindong] V4 ATR14 %s (%s) — 재난손절 0.6× · 역행컷 0.4× · 실주문 X%% 수량 기준",
+                            ("%.2f" % _atr_new[0]) if _atr_new[0] is not None else "미확보", _atr_new[1] or "-")
             # 진입·청산이 **바뀔 때만** TRADE 로그 한 줄 — 복기의 두 번째 증인이다.
             _newly_closed = False
             for t in payload.get("trades") or []:
@@ -5428,9 +5439,13 @@ class TradingSystem:
                 if act[0] == "set_stop":
                     old = rec.get("stop")
                     rec["stop"] = act[1]
-                    pos.set_external_levels(stop=act[1], src="shindong_trail")
+                    # [MW0602 658차] 손절이 규칙 진입가로 올라오면 = V4 본전이동. 출처를 따로 표시해
+                    #   그 손절로 닫힌 포지션을 CB② 연속 손절에서 뺀다(`_shindong_be_exit`). 트레일은 진입가 위라 갈린다.
+                    _be = _shindong_is_be_stop(rec, act[1])
+                    pos.set_external_levels(stop=act[1], src="shindong_be" if _be else "shindong_trail")
                     changed = True
-                    log_manager.trade("[ShindongLive] 손절 %s → %.2f (재생 stop_now)" % (old, act[1]))
+                    log_manager.trade("[ShindongLive] 손절 %s → %.2f (재생 stop_now%s)"
+                                      % (old, act[1], " · 본전이동 — CB② 제외 대상" if _be else ""))
                 elif act[0] == "retracted":
                     rec["retracted"] = True
                     changed = True
@@ -5503,9 +5518,11 @@ class TradingSystem:
                     # FLAT 에서 먼저 건다 — 체결 경로 어디서든 open_position 끝에서 SHINDONG 일 때 적용된다
                     pos.set_external_levels(stop=stop, target=target, src="shindong", clear_target=True)
                     log_manager.trade(
-                        "[ShindongLive] 진입 %s %d계약 @%.2f(규격 %.2f %s) 손절 %s 목표 %s — %s"
+                        "[ShindongLive] 진입 %s %d계약 @%.2f(규격 %.2f %s) 손절 %s 목표 %s — %s · X%%위험 %s(ATR %s)"
                         % (_lx.SIDE_DIR[side], qty, price, pick["entry_px"],
-                           str(pick["entry_ts"])[11:16], stop, target, key))
+                           str(pick["entry_ts"])[11:16], stop, target, key,
+                           _capital_sd_risk_qty(self._sd_atr_v4[0]),
+                           ("%.2f" % self._sd_atr_v4[0]) if self._sd_atr_v4[0] is not None else "미측정"))
                     self._execute_entry(_lx.SIDE_DIR[side], price, qty, atr, "S",
                                         entry_source=SHINDONG_ENTRY_SOURCE)
                     _sent = (self._has_pending_order()
@@ -5663,11 +5680,14 @@ class TradingSystem:
         1 이면 1차 목표에서 전량 청산된다(`_shindong_apply` 의 `qty_all >= 2` 분기, 685차).
         """
         _cfg = max(1, int(getattr(runtime_settings, "SHINDONG_LIVE_QTY", 2) or 2))
+        # [MW0602 657차 · 신동 V4] 한 거래 위험 한도(X%) — ATR14 미측정(재생 전)이면 None = 이 항 없음.
+        _rq = _capital_sd_risk_qty(self._sd_atr_v4[0])
         if not bool(getattr(runtime_settings, "SHINDONG_QTY_FROM_MARGIN_ENABLED", False)):
-            return _cfg        # [dev] 증거금 연동 꺼짐 — 종전과 같다(SHINDONG_LIVE_QTY 고정)
+            # [dev] 증거금 연동 꺼짐 — SHINDONG_LIVE_QTY 고정(+ X% 상한)
+            return _cfg if _rq is None else min(_cfg, _rq)
         return _capital_sd_planned_qty(
             int(self._max_entry_qty or 0),
-            self._cap_day_start_qty(datetime.date.today().isoformat()), _cfg)
+            self._cap_day_start_qty(datetime.date.today().isoformat()), _cfg, _rq)
 
     def _principal_live_qty(self, principal: str) -> int:
         """선택 주체의 실주문 수량 — ProfitGuard 원화 임계 배율의 기준."""
@@ -5731,7 +5751,10 @@ class TradingSystem:
             ui_max_qty=self._max_entry_qty,
             day_start_margin_qty=self._cap_day_start_qty(datetime.date.today().isoformat()),
             qty_from_margin=_margin_on,
-            deposit_cap=bool(getattr(runtime_settings, "RISK_CAPITAL_DEPOSIT_CAP_ENABLED", False)))
+            deposit_cap=bool(getattr(runtime_settings, "RISK_CAPITAL_DEPOSIT_CAP_ENABLED", False)),
+            # [MW0602 657차 · 신동 V4] X% 위험 수량 — `_shindong_live_qty` 와 같은 값·같은 ATR
+            risk_qty=_capital_sd_risk_qty(self._sd_atr_v4[0]),
+            risk_atr=self._sd_atr_v4[0], risk_atr_src=self._sd_atr_v4[1])
         # PG 배율은 **선택 주체** 기준이다(신동 기준 계산값을 실제 적용값으로 덮는다 — 표시·판정 일치).
         self._pg_sync_scale()
         st["pg_scale"] = self.profit_guard.krw_scale
@@ -13475,10 +13498,16 @@ class TradingSystem:
             self.circuit_breaker.record_win()
             if not _is_ext:
                 self.kelly.record(win=True, pnl_pts=pnl)
-        else:
+        elif not _shindong_be_exit(result):      # [658차] 신동 본전청산은 CB② 중립 — 아래 else
             self.circuit_breaker.record_stop_loss()
             if not _is_ext:
                 self.kelly.record(win=False, pnl_pts=pnl)
+        else:
+            # [MW0602 658차 · 사용자 결정 2026-10-24] 신동 V4 본전청산은 CB② 연속 손절에 세지 않는다(중립 —
+            #   카운터를 올리지도 초기화하지도 않는다). 규격상 본전청산은 「손절」이 아니다(상한·방향 금지 제외와 같다).
+            #   켈리는 원래 외부 주체라 기록하지 않는다. ⚠ 이 분기는 kelly 호출 아래에 둔다(test_586 구조 가드 8줄).
+            log_manager.system("[CB] 신동 본전청산 %.2fpt — CB② 연속 손절 카운트 제외(중립 · 현재 연속=%d)"
+                               % (pnl, self.circuit_breaker.status_dict().get("consec_stops", -1)), "INFO")
         if _is_p2 and self._peter2 is not None:
             try:
                 _now = datetime.datetime.now()
@@ -21560,6 +21589,28 @@ def _ts_real_trading_block_reason(self, entry_source):
 #   주체의 진입이 실주문으로 못 나가면(비선택 주체 · 실서버 자동주문 잠금) 가상 장부에서 연다.
 #   🔴 격리: 가상 레그는 trades · CB(②포함) · 켈리 · 앙상블 학습 어디에도 들어가지 않는다.
 #      `strategy/runtime/virtual_book.py` 는 그 경로들을 부르지 않으며, 여기서도 부르지 않는다.
+
+def _shindong_is_be_stop(rec, stop) -> bool:
+    """[MW0602 658차] 신동 실집행 손절 갱신값이 규칙 진입가(= V4 본전이동)인가. 규칙가 미기록이면 False(보수적)."""
+    try:
+        return rec.get("rule_px") is not None and abs(float(stop) - float(rec["rule_px"])) < 1e-6
+    except (TypeError, ValueError):
+        return False
+
+
+def _shindong_be_exit(result) -> bool:
+    """[MW0602 658차 · 사용자 결정 2026-10-24] 이 청산이 신동 V4 **본전청산**인가 — CB② 연속 손절 제외 판정.
+
+    둘 중 하나면 본전청산이다:
+      · 손절 출처가 `shindong_be`(실집행이 손절을 규칙 진입가로 올렸고 그 손절로 닫힘 — 틱 하드스톱 경로)
+      · 청산 사유가 `신동미러:BE`(재생이 본전청산을 냈고 미러 청산)
+    출처가 신동이 아니면 항상 False — 미륵·피터의 CB② 는 그대로다.
+    """
+    if (result or {}).get("pos_entry_src") != SHINDONG_ENTRY_SOURCE:
+        return False
+    return (result.get("pos_ext_stop_src") == "shindong_be"
+            or "신동미러:BE" in str(result.get("exit_reason") or ""))
+
 
 def _ts_vbook(self):
     """오늘 가상 장부(없으면 만들고 저장본 복원). 실패하면 None — 가상은 부가 기능이다."""

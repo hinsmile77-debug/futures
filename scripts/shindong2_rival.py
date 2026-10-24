@@ -63,7 +63,8 @@ SHORT = {v: v.replace("SHADOW_", "") for v in VARIANTS}
 # [640차 이식] 규격 자동 감지 — dev(MW0602) = 신동 v3 「계열」(families · SHADOW_META · MAIN_FAMILY),
 #   v9-dev(MW0601) = 신동 v2 R1/R2/R3 엔진(engine.run_day · 섀도 E2F2·X4NF·TR44·X4NFA). 같은 파일이 두 브랜치에서 돈다.
 RULESET = "family" if hasattr(S, "SHADOW_META") and hasattr(S, "MAIN_FAMILY") else "v1"
-LABEL = {"MAIN": ("MAIN(v3 %s)" % S.MAIN_FAMILY.upper()) if RULESET == "family" else ("MAIN(%s R1/R2/R3)" % S.SPEC_VERSION)}
+LABEL = {"MAIN": getattr(S, "MAIN_LABEL", "MAIN(v3 %s)" % S.MAIN_FAMILY.upper()) if RULESET == "family"
+         else ("MAIN(%s R1/R2/R3)" % S.SPEC_VERSION)}
 LABEL.update({k: m["label"] for k, m in getattr(S, "SHADOW_META", ())})
 SIDE_KO = {1: "매수", -1: "매도"}
 
@@ -407,7 +408,7 @@ def _fp(x: Optional[float]) -> str:
 
 def summary_lines(r: Dict[str, Any]) -> List[str]:
     """snapshot 용 「상대의 수」 요약. 변형별 한 줄 + MAIN 거래 상세."""
-    L = ["### 상대의 수 — 신동 v3 MAIN · 섀도 (%s)" % r.get("unit", "pt/계약")]
+    L = ["### 상대의 수 — 신동 %s MAIN · 섀도 (%s)" % (getattr(S, "SPEC_TAG", "v3"), r.get("unit", "pt/계약"))]
     if not r.get("present"):
         L.append("미측정 — %s" % (r.get("why") or "기록 없음"))
         return L

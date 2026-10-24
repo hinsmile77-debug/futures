@@ -51,6 +51,15 @@ except ImportError:
     PROFIT_GUARD_QTY_BASE, FUTURES_MARGIN_RATE_INITIAL = 2, 0.0
     RISK_CAPITAL_DEPOSIT_CAP_ENABLED = False
 
+try:
+    # [MW0602 657차 · 신동 V4] 한 거래 위험 한도(X%) 수량 — config/settings.py ④ 절.
+    from config.settings import (SHINDONG_RISK_QTY_ENABLED, SHINDONG_RISK_CAPITAL_KRW,
+                                 SHINDONG_TRADE_RISK_PCT)
+except ImportError:
+    SHINDONG_RISK_QTY_ENABLED, SHINDONG_RISK_CAPITAL_KRW, SHINDONG_TRADE_RISK_PCT = False, 0, 0.0
+
+SHINDONG_PT_VALUE_KRW = 50_000   # 미니선물 1pt — strategy/shindong/spec.PT_VALUE_KRW 와 같다(테스트가 고정)
+
 # 최대노출 레버리지 경고 임계 (기준자본 대비 MAX_CONTRACTS 총 계약가치 배수).
 # 자동 조치는 하지 않는다 — 경고만.
 LEVERAGE_WARN_MULT = 5.0
@@ -147,7 +156,29 @@ def profit_guard_krw_scale(live_qty) -> float:
     return max(1.0, q / base)
 
 
-def shindong_planned_qty(ui_max_qty, day_start_margin_qty=None, configured_qty=None) -> int:
+def shindong_risk_qty(atr14, capital_krw=None, risk_pct=None, cat_atr=None, pt_value=None):
+    """[MW0602 657차 · 신동 V4] 한 거래 위험 한도 수량 = floor(자본 × X% ÷ (재난손절 배수 × ATR14 × 1pt 원)), 최소 1.
+
+    ATR14 를 모르면 **None**(미측정 — 이 항을 걸지 않는다. 신동 엔진도 그날 진입을 내지 않는다).
+    꺼져 있으면(SHINDONG_RISK_QTY_ENABLED=False) None. 재난손절 배수는 신동 규격(spec.FLOW_CAT_STOP_ATR) 단일 출처.
+    """
+    if not SHINDONG_RISK_QTY_ENABLED:
+        return None
+    a = _f(atr14, 0.0)
+    if a <= 0:
+        return None
+    if cat_atr is None:
+        from strategy.shindong import spec as _sd_spec     # 지연 import — 규격 단일 출처
+        cat_atr = _sd_spec.FLOW_CAT_STOP_ATR
+    cap = _f(SHINDONG_RISK_CAPITAL_KRW if capital_krw is None else capital_krw)
+    pct = _f(SHINDONG_TRADE_RISK_PCT if risk_pct is None else risk_pct)
+    per = _f(cat_atr) * a * _f(SHINDONG_PT_VALUE_KRW if pt_value is None else pt_value)
+    if cap <= 0 or pct <= 0 or per <= 0:
+        return None
+    return max(1, int((cap * pct) // per))
+
+
+def shindong_planned_qty(ui_max_qty, day_start_margin_qty=None, configured_qty=None, risk_qty=None) -> int:
     """신동 계획 수량 = min(최대허용수량, 장시작 주문가능수량). 장시작 미측정이면 min(최대허용수량, SHINDONG_LIVE_QTY).
 
     [MW0601 707차 후속 / 사용자 결정 2026-10-23] 「장시작 증거금에 따라 부족하면 줄이고 충분하면 늘리되
@@ -159,7 +190,10 @@ def shindong_planned_qty(ui_max_qty, day_start_margin_qty=None, configured_qty=N
         base = max(0, int(_f(day_start_margin_qty, 0)))
     else:
         base = max(1, int(_f(configured_qty, 1)))
-    return min(ui, base) if ui > 0 else base
+    q = min(ui, base) if ui > 0 else base
+    if risk_qty is not None and q > 0:
+        q = min(q, max(1, int(_f(risk_qty, 1))))    # [V4] X% 위험 수량 — 0(증거금 없음)은 그대로 둔다
+    return q
 
 
 def shindong_entry_qty(planned_qty, margin_qty_now=None) -> int:
@@ -172,13 +206,16 @@ def shindong_entry_qty(planned_qty, margin_qty_now=None) -> int:
 
 def capital_state(policy_krw=None, deposit_krw=None, price=None, pt_value=0.0,
                   margin_qty=None, configured_qty=None, ui_max_qty=None,
-                  day_start_margin_qty=None, qty_from_margin=True, deposit_cap=True) -> dict:
+                  day_start_margin_qty=None, qty_from_margin=True, deposit_cap=True,
+                  risk_qty=None, risk_atr=None, risk_atr_src=None) -> dict:
     """실전 운영 상태 한 덩어리 — 우측패널 「3 주문/체결」 모니터와 `[Capital]` 로그가 같은 값을 쓴다.
 
     margin_qty          : 지금 신규주문가능수량(CpTd6722, 매수·매도 중 작은 값). None = 미측정.
     day_start_margin_qty: 그날 장시작(FLAT 첫 실측) 주문가능수량. None = 미측정 → SHINDONG_LIVE_QTY 폴백.
     configured_qty      : SHINDONG_LIVE_QTY(폴백) · ui_max_qty: 진입관리탭 최대허용수량(MAX_CONTRACTS 상한).
     level               : OK / WARN(위험 기준 초과 — 사람이 판단) / BLOCK(가능 0 — 신동 진입 기각).
+    risk_qty            : [V4] X% 위험 수량(`shindong_risk_qty`). None = 미적용(꺼짐 또는 ATR14 미측정).
+                          risk_atr·risk_atr_src 는 사유 표시용(그 수량을 만든 ATR14 와 출처).
     [dev] qty_from_margin=False(SHINDONG_QTY_FROM_MARGIN_ENABLED 꺼짐) → 실주문 = SHINDONG_LIVE_QTY 고정,
           계획 수량은 「켜면」 값으로만 보여 준다. deposit_cap=False → 위험자본 = 정책값(예탁금 상한 미적용).
     """
@@ -194,14 +231,21 @@ def capital_state(policy_krw=None, deposit_krw=None, price=None, pt_value=0.0,
     rmax = risk_max_qty(rcap)
     cq = int(_f(configured_qty, 0)) if configured_qty is not None else None
     uq = int(_f(ui_max_qty, 0)) if ui_max_qty is not None else None
-    planned = shindong_planned_qty(uq, day_start_margin_qty, cq) if (uq is not None or cq is not None) else None
+    planned = (shindong_planned_qty(uq, day_start_margin_qty, cq, risk_qty)
+               if (uq is not None or cq is not None) else None)
     eff = None if planned is None else shindong_entry_qty(planned, margin_qty)
     level, reasons = "OK", []
     if not qty_from_margin:
         # [dev] 증거금 연동 꺼짐 — 실주문은 SHINDONG_LIVE_QTY 고정. 연동 시 값은 사유에만 남긴다.
         reasons.append("증거금 연동 꺼짐 — 켜면 %s계약" % ("미측정" if eff is None else eff))
-        eff = cq
-        planned = cq
+        eff = cq if (cq is None or risk_qty is None) else min(cq, max(1, int(risk_qty)))
+        planned = eff
+    if risk_qty is not None:
+        reasons.append("X%%위험 %d계약(ATR %s%s)" % (int(risk_qty),
+                                                  "미측정" if risk_atr is None else "%.1f" % _f(risk_atr),
+                                                  "" if not risk_atr_src or risk_atr_src == "0850" else " · " + str(risk_atr_src)[:40]))
+    elif SHINDONG_RISK_QTY_ENABLED:
+        reasons.append("X%위험 미적용(ATR14 미측정)")
     if eff is not None and eff <= 0:
         level = "BLOCK"
         reasons.append("주문가능 0 — 신동 진입 기각")
@@ -211,8 +255,10 @@ def capital_state(policy_krw=None, deposit_krw=None, price=None, pt_value=0.0,
         pass
     elif day_start_margin_qty is None:
         reasons.append("장시작 가능수량 미측정 — SHINDONG_LIVE_QTY=%s 폴백" % cq)
-    elif cq is not None and planned is not None and planned != cq:
-        reasons.append("장시작 증거금 기준 %s %d→%d" % ("확대" if planned > cq else "축소", cq, planned))
+    elif cq is not None and planned is not None:
+        _pm = shindong_planned_qty(uq, day_start_margin_qty, cq)    # [V4] 증거금 몫만 — X% 축소는 위 사유가 따로 말한다
+        if _pm != cq:
+            reasons.append("장시작 증거금 기준 %s %d→%d" % ("확대" if _pm > cq else "축소", cq, _pm))
     if eff is not None and rmax is not None and eff > rmax:
         if level == "OK":
             level = "WARN"
@@ -230,7 +276,7 @@ def capital_state(policy_krw=None, deposit_krw=None, price=None, pt_value=0.0,
         "margin_qty": None if margin_qty is None else int(margin_qty),
         "day_start_margin_qty": None if day_start_margin_qty is None else int(day_start_margin_qty),
         "risk_max_qty": rmax, "configured_qty": cq, "ui_max_qty": uq,
-        "planned_qty": planned, "effective_qty": eff,
+        "planned_qty": planned, "effective_qty": eff, "risk_qty": None if risk_qty is None else int(risk_qty),
         "daily_loss_limit_krw": rcap * _f(DAILY_LOSS_LIMIT_PCT),
         "pg_scale": profit_guard_krw_scale(eff or 0),
         "level": level, "reasons": reasons,

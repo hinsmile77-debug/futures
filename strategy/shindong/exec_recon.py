@@ -183,6 +183,33 @@ def reconcile(main_rows: List[Dict[str, Any]], positions: List[Dict[str, Any]],
             "n_real": len(positions)}
 
 
+def be_exit_slips(rc: Optional[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
+    """[MW0602 657차 · 신동 V4] 본전청산 실측 슬립 — 사전등록 V4 §3-2 되돌림 조건의 계측.
+
+    대상 = MATCH 중 재생 MAIN 청산 사유가 본전(BE)인 거래. 본전 손절가 = 재생 진입가(규칙가 —
+    실집행 손절도 이 값에 걸린다). 슬립 = side × (본전가 − 실청산 평균가) pt, **+ = 불리**.
+    실청산가는 그 포지션 청산 레그 가격의 단순 평균(레그별 수량 미기록 — 본전 청산은 보통 1레그).
+    None = 대사 원천 없음(미측정) · [] = 본전청산 일치 거래 없음.
+    """
+    if rc is None:
+        return None
+    out: List[Dict[str, Any]] = []
+    for it in rc.get("items") or []:
+        p, r = it.get("real"), it.get("replay")
+        if it.get("kind") != "MATCH" or not p or not r:
+            continue
+        rs = [g[2] for g in (r.get("legs") or []) if g and len(g) > 2]
+        if not rs or rs[0] != "BE":
+            continue
+        px = [float(g[1]) for g in (p.get("legs") or []) if g and g[1]]
+        if not px:
+            continue
+        xp = sum(px) / len(px)
+        out.append({"key": it.get("key"), "side": int(r["side"]), "be_px": float(r["entry_px"]),
+                    "real_exit_px": xp, "slip_pt": int(r["side"]) * (float(r["entry_px"]) - xp)})
+    return out
+
+
 def events_from_exec_json(d: Any) -> List[Dict[str, Any]]:
     """`shindong_exec.json`(신호별 상태 dict) → reconcile() 이 읽는 이벤트 목록.
 

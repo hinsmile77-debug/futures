@@ -423,6 +423,8 @@ class PositionTracker:
             "pnl_krw":      round(pnl_krw, 0),
             # [668차] 진입 출처를 리셋 전에 실어 보낸다 — _post_exit 가 켈리·앙상블에서 피터2를 뺀다
             "pos_entry_src": self.entry_source,
+            # [MW0602 658차] 외부 손절 출처 스냅샷 — 신동 V4 본전청산(`shindong_be`)을 CB② 에서 빼는 데 쓴다
+            "pos_ext_stop_src": self.ext_stop_src,
             "forward_pnl_pts": round(forward_pnl_pts, 4),
             "forward_pnl_krw": round(forward_pnl_krw, 0),
             "commission":   round(commission, 0),
@@ -818,6 +820,8 @@ class PositionTracker:
             "pnl_krw":      round(pnl_krw, 0),
             # [668차] 진입 출처를 리셋 전에 실어 보낸다 — _post_exit 가 켈리·앙상블에서 피터2를 뺀다
             "pos_entry_src": self.entry_source,
+            # [MW0602 658차] 외부 손절 출처 스냅샷 — 신동 V4 본전청산(`shindong_be`)을 CB② 에서 빼는 데 쓴다
+            "pos_ext_stop_src": self.ext_stop_src,
             "forward_pnl_pts": round(forward_pnl_pts, 4),
             "forward_pnl_krw": round(forward_pnl_krw, 0),
             "exit_reason":  reason,
@@ -1404,6 +1408,7 @@ class PositionTracker:
             "pnl_pts": round(pnl_pts, 4),
             "pnl_krw": round(pnl_krw, 0),
             "pos_entry_src": self.entry_source,   # [668차] 피터2 학습 격리용(리셋 전 스냅샷)
+            "pos_ext_stop_src": self.ext_stop_src,   # [MW0602 658차] 신동 본전청산 판별(CB② 제외)
             "exit_reason": reason,
             "hold_minutes": self._hold_minutes(),
             "entry_ts": entry_ts_str,

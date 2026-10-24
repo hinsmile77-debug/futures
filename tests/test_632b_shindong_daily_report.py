@@ -38,9 +38,10 @@ def test_report_matches_engine_and_attributes_causes(tmp_path):
     r = _build("2026-09-28", tmp_path)
     if not r["ok"]:
         pytest.skip("그날 봉이 이 PC DB 에 없다")
-    # [v3] MW0602 DB 실측(2026-10-18). MAIN = HYBR60, V22 = v2.2 MAIN(= v2 시절 MAIN 값 2,711,319 그대로)
-    net = {v: round(s["net"]) for v, s in r["sums"].items() if v in ("MAIN", "SHADOW_V22")}
-    assert net == pytest.approx({"MAIN": 2491259, "SHADOW_V22": 2711319}, abs=2)
+    # [v4] MW0602 DB 실측(2026-10-24). MAIN = v4, V3 = v3 MAIN(hybr60 — 2026-10-18 실측 2,491,259 그대로).
+    #   9/28 은 V4 = V3 인 날이다(본전 무장은 됐지만 청산이 TR·TP 로 같다 — 반사실 표 V4−V3 = 0).
+    net = {v: round(s["net"]) for v, s in r["sums"].items() if v in ("MAIN", "SHADOW_V3")}
+    assert net == pytest.approx({"MAIN": 2491259, "SHADOW_V3": 2491259}, abs=2)
     md = open(r["md_path"], encoding="utf-8").read()
     for sec in ("## 0. 한눈에", "## 1. 차트", "## 2. 거래 흐름", "## 3. 섀도 흐름",
                 "## 4. 누적 채점", "## 5. 러너 섀도", "## 6. 개선 방향"):

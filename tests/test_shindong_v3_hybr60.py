@@ -6,7 +6,9 @@
   ② HYBR60: 하루 첫 거래 = FLOWC 신호(rule FLOW) · 2·3번째 = FLOWR60 신호(rule R60, 첫 신호 10:00).
   ③ 손절 방향 **누적** 금지(sticky): 손절 난 방향은 그날 막고 반대 방향은 연다 · 두 방향 모두 손절이면 당일 끝.
      덮어쓰기(same, 605차 반사실)와 갈리는 유일한 경우 = 「매도 손절 → 매수 손절 → 매도 신호」.
-  ④ 섀도: V22(v2.2 그대로 · 되돌림 기준) · V22S · HYBL · FLOWR60 · BRKC. V1·V1X4·FLOWF 종료.
+  ④ 섀도(v3 창): V22(v2.2 그대로 · 되돌림 기준) · V22S · HYBL · FLOWR60 · BRKC. V1·V1X4·FLOWF 종료.
+     [v4 · 657차] v3 창은 10/19~10/23 로 닫혔다 — v3 MAIN 규칙은 SHADOW_V3(family hybr60)가, V22·V22S·HYBL 규칙은
+     family 이름(flowc·flowc_s·hybl)으로 계속 재현된다. 현행 MAIN·섀도 구성은 `tests/test_shindong_v4.py` 가 고정한다.
   ⑤ 실데이터 재현: 공식 경로 16일(9/21~10/16) 합계 = 반사실(`docs/신동거래_V3/v3후보_반사실_20261018/`).
 근거: docs/신동거래_V3/신동_v3_규칙제안_섀도재구성_MW0602_20261018.md
 """
@@ -25,21 +27,20 @@ from test_604_shindong_v2 import _flat, _flow, _levels  # noqa: E402
 
 # ── ① 규격 ────────────────────────────────────────────────────────────────
 def test_v3_spec_is_preregistered():
-    assert spec.SPEC_VERSION == "SD-2026-10-19-v3"
-    assert (spec.SCORING_START, spec.V22_SPEC_VERSION, spec.V22_SCORING_START) == \
-        ("2026-10-19", "SD-2026-10-15-v2.2", "2026-10-15")
-    assert (spec.MAIN_KIND, spec.MAIN_FAMILY) == ("family", "hybr60")
+    # [v4] v3 창은 사료 — 버전·창 시작은 V3_* 로 남고, v3 MAIN 규칙은 SHADOW_V3 가 그대로 기록한다
+    assert (spec.V3_SPEC_VERSION, spec.V3_SCORING_START) == ("SD-2026-10-19-v3", "2026-10-19")
+    assert (spec.V22_SPEC_VERSION, spec.V22_SCORING_START) == ("SD-2026-10-15-v2.2", "2026-10-15")
+    assert spec.MAIN_KIND == "family" and spec.SHADOW_META_D["SHADOW_V3"]["family"] == "hybr60"
     assert spec.HYB_SL_HALT_MODE == spec.SL_BAN_STICKY == "sticky"
     # 새 값 없음 — v2 사전등록값 그대로
     assert (spec.FLOWC_K, spec.FLOWR_WIN_MIN, spec.FLOWR_K) == (300, 60, 150)
     assert (spec.FLOW_CAT_STOP_ATR, spec.FLOW_TRAIL, spec.FLOW_TP, spec.FLOW_MAX_TRADES, spec.FLOW_LAST_ENTRY) == \
         (0.6, (6.0, 4.0), 12.0, 3, "14:50")
     assert (spec.LEAD_WIN_MIN, spec.LEAD_C_MIN, spec.LEAD_K_CP, spec.LEAD_K_FX) == (60, 0.3, 150.0, 400.0)
-    assert spec.VARIANTS == ("MAIN", "SHADOW_V22", "SHADOW_V22S", "SHADOW_HYBL", "SHADOW_FLOWR60", "SHADOW_BRKC")
-    assert spec.ROLLBACK_VARIANT == "SHADOW_V22" and spec.SHADOW_META_D["SHADOW_V22"]["family"] == "flowc"
-    assert {"SHADOW_V1", "SHADOW_V1X4", "SHADOW_FLOWF"} <= set(spec.RETIRED_SHADOWS)
+    # v3 창의 섀도·되돌림 기준(사료)
+    assert spec.V3_ROLLBACK_VARIANT == "SHADOW_V22"
+    assert {"SHADOW_V1", "SHADOW_V1X4", "SHADOW_FLOWF", "SHADOW_V22", "SHADOW_V22S", "SHADOW_HYBL"} <= set(spec.RETIRED_SHADOWS)
     assert not (set(spec.RETIRED_SHADOWS) & set(spec.VARIANTS))
-    assert all(v == "2026-10-19" for v in spec.LATE_SHADOW_START.values())
     assert len(spec.VARIANTS) - 1 <= 5
 
 
@@ -64,13 +65,13 @@ def test_v22_shadow_reenters_with_flowc_unchanged():
     assert [(t["entry_ts"], t["rule"]) for t in r["trades"]][:2] == [("09:05", "FLOW"), ("09:21", "FLOW")]
 
 
-def test_main_dispatch_uses_hybr60():
+def test_shadow_v3_dispatch_uses_hybr60():
+    # [v4] v3 MAIN 규칙 = SHADOW_V3. MAIN 은 v4(tests/test_shindong_v4.py)
     from strategy.shindong import runner
     d = _hyb_day()
-    m = runner.run_variant(d, _levels(), "MAIN")
+    m = runner.run_variant(d, _levels(), "SHADOW_V3")
     assert m["decision"]["family"] == "hybr60"
-    v22 = runner.run_variant(d, _levels(), "SHADOW_V22")
-    assert v22["decision"]["family"] == "flowc"
+    assert runner.run_variant(d, _levels(), "MAIN")["decision"]["family"] == "v4"
 
 
 # ── ③ 손절 방향 누적 금지 ─────────────────────────────────────────────────
@@ -156,13 +157,18 @@ def test_official_path_reproduces_counterfactual_16days():
     from config.settings import PREMARKET_LEVELS_DB, RAW_DATA_DB, WEEKLY_OPTION_FLOW_DB
     from strategy.shindong import daily_report as DR
     flow = WEEKLY_OPTION_FLOW_DB if os.path.isabs(WEEKLY_OPTION_FLOW_DB) else os.path.join(_ROOT, WEEKLY_OPTION_FLOW_DB)
-    tot = {v: 0.0 for v in spec.VARIANTS}
+    # [v4] v3 창의 변형 이름 → family. 규칙은 family 로 재현한다(spec.VARIANTS 는 v4 구성으로 바뀌었다).
+    fam = {"MAIN": "hybr60", "SHADOW_V22": "flowc", "SHADOW_V22S": "flowc_s", "SHADOW_HYBL": "hybl",
+           "SHADOW_FLOWR60": "flowr60", "SHADOW_BRKC": "brkc"}
+    tot = {v: 0.0 for v in fam}
     for day in _DAYS:
         o = DR.load_day(day, RAW_DATA_DB, flow, PREMARKET_LEVELS_DB)
         if not o.get("ok"):
             pytest.skip("%s 봉 없음 — 이 PC DB 범위 밖" % day)
-        for v in spec.VARIANTS:
-            tot[v] += sum(engine.trade_net(t) for t in o["results"][v]["trades"] if t["status"] == "CLOSED")
+        v1 = engine.run_day(o["d"], o["L"], "SHADOW_V1")
+        for v, f in fam.items():
+            r = families.run_family_day(o["d"], o["L"], f, v1_decision=v1["decision"])
+            tot[v] += sum(engine.trade_net(t) for t in r["trades"] if t["status"] == "CLOSED")
     # MW0602 DB 실측(2026-10-18). 반사실 v3_candidates.py(가드 전 기간) · rule12_check.py 와 같다.
     assert {v: round(x) for v, x in tot.items()} == pytest.approx(
         {"MAIN": 17268164, "SHADOW_V22": 17727850, "SHADOW_V22S": 18342777, "SHADOW_HYBL": 17574291,

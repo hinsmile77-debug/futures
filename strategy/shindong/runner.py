@@ -94,6 +94,85 @@ def load_fx(trade_date: str, raw_db: str) -> Dict[str, float]:
     return out
 
 
+# ── [v4 · MW0602 657차] ATR14 폴백 해석 ─────────────────────────────────────
+# ((trade_date, levels_db, cache_path) → (값, 출처)). 08:50 행이 있는 날만 담는다 — 재계산·이월은 그날 안에서
+#   결정적이라 매분 다시 하지 않는다. 키에 원천 경로를 넣는 것은 테스트·백필이 다른 DB 로 같은 날짜를 돌리기 때문이다.
+_ATR_V4_CACHE: Dict[Tuple[str, str, Optional[str]], Tuple[Optional[float], str]] = {}
+
+
+def _valid_atr(v) -> bool:
+    return isinstance(v, (int, float)) and v > 0
+
+
+def resolve_atr14_v4(trade_date: str, lvrows: Dict[str, Dict[str, Any]], levels_db: str,
+                     cache_path: Optional[str] = None) -> Tuple[Optional[float], str]:
+    """[v4] 신동 ATR14 = ① 08:50 `premarket_levels.atr14` → ② 이력 캐시로 **재계산**(`premarket_levels.atr_of` —
+    08:50 산출과 같은 공식·같은 이력 · 이전 세션 ≥ V4_ATR_RECOMPUTE_MIN · 마지막 세션이 V4_ATR_RECOMPUTE_STALE_DAYS 일 이내)
+    → ③ **직전 기록일 ATR14 이월**(최근 V4_ATR_CARRY_MAX_DAYS 개 기록일) → ④ (None, "미확보") = 그날 신규 진입 없음.
+
+    고정 pt 폴백은 없다(v3 의 20pt 는 실제의 1/3 이하 — 정리본 §3). 반환 출처 문자열은 notes 와 `[Capital]` 에 그대로 쓴다.
+    어떤 실패도 예외로 내보내지 않는다 — 다음 순위로 넘어가고, 넘어간 사실을 출처에 남긴다(계측 4원칙 ④)."""
+    z = (lvrows or {}).get("0850") or {}
+    if _valid_atr(z.get("atr14")):
+        return float(z["atr14"]), "0850"
+    ck = (trade_date, levels_db, cache_path)
+    if z and ck in _ATR_V4_CACHE:
+        return _ATR_V4_CACHE[ck]
+    skipped = []
+    out: Tuple[Optional[float], str] = (None, "")
+    try:                                                   # ② 재계산
+        from features.levels import levels_store as _LS
+        from features.levels import premarket_levels as _PL
+        summaries, _bars = _LS.history_from_cache(cache_path)
+        past = [x for x in summaries if x.d < trade_date]
+        if len(past) < spec.V4_ATR_RECOMPUTE_MIN:
+            skipped.append("재계산 불가(이전 세션 %d개 < %d)" % (len(past), spec.V4_ATR_RECOMPUTE_MIN))
+        else:
+            gap = (_dt.date.fromisoformat(trade_date) - _dt.date.fromisoformat(past[-1].d)).days
+            if gap > spec.V4_ATR_RECOMPUTE_STALE_DAYS:
+                skipped.append("재계산 불가(이력 마지막 %s · %d일 전 — 낡음)" % (past[-1].d, gap))
+            else:
+                v = _PL.atr_of(past, len(past))
+                if _valid_atr(v):
+                    out = (float(v), "재계산(이력 캐시 · 이전 세션 %d개 · 마지막 %s)" % (min(len(past), _PL.ATR_N), past[-1].d))
+                else:
+                    skipped.append("재계산 결과 없음")
+    except Exception as e:                                 # 캐시 없음·손상 — 다음 순위
+        skipped.append("재계산 실패(%s)" % (type(e).__name__,))
+    if out[0] is None and os.path.exists(levels_db):       # ③ 이월
+        try:
+            con = _ro(levels_db)
+            try:
+                rows = con.execute("SELECT date, atr14 FROM premarket_levels WHERE stage='0850' AND date<? "
+                                   "ORDER BY date DESC LIMIT ?", (trade_date, spec.V4_ATR_CARRY_MAX_DAYS)).fetchall()
+            finally:
+                con.close()
+            hit = next((r for r in rows if _valid_atr(r["atr14"])), None)
+            if hit is not None:
+                out = (float(hit["atr14"]), "직전 기록일 %s 이월" % hit["date"])
+            else:
+                skipped.append("이월 불가(최근 %d개 기록일에 ATR14 없음)" % len(rows))
+        except sqlite3.Error as e:
+            skipped.append("이월 실패(%s)" % (type(e).__name__,))
+    if out[0] is None:
+        out = (None, "미확보")
+    if skipped:
+        out = (out[0], out[1] + " ← " + " · ".join(skipped))
+    if z:
+        _ATR_V4_CACHE[ck] = out
+    return out
+
+
+def attach_atr14_v4(L: Dict[str, Dict[str, Any]], trade_date: str, lvrows: Dict[str, Dict[str, Any]],
+                    levels_db: str) -> Tuple[Optional[float], str]:
+    """[v4] `L["0850"]` 에 `atr14_v4`·`atr14_v4_src` 를 붙인다(families._v4_atr 가 읽는다). v3 이하 규칙은 `atr14` 만 본다."""
+    v, src = resolve_atr14_v4(trade_date, lvrows, levels_db)
+    if L is not None and "0850" in L:
+        L["0850"]["atr14_v4"] = v
+        L["0850"]["atr14_v4_src"] = src
+    return v, src
+
+
 def run_variant(d: "engine.DayFrame", L, variant: str, v1_decision: Optional[Dict[str, Any]] = None):
     """[604차] 변형 하나 — kind 로 분기. "MAIN" 은 spec.MAIN_KIND(v2 = family/flowc)."""
     from strategy.shindong import families
@@ -150,13 +229,14 @@ def compute(trade_date: str, raw_db: str, flow_db: str, levels_db: str,
             cands.append(max(flow))
         horizon = min(cands) if candles else None
     out = {"product": product, "product_note": note, "horizon": horizon,
-           "last_close": None, "results": {}}
+           "last_close": None, "results": {}, "atr14_v4": None, "atr14_v4_src": None}
     if not candles or not lvrows or "0850" not in lvrows:
         why = "봉 없음" if not candles else "08:50 맥점 없음"
         for v in spec.VARIANTS:
             out["results"][v] = {"decision": {"notes": [why]}, "trades": []}
         return out
     L = engine.prepare_levels(lvrows)
+    out["atr14_v4"], out["atr14_v4_src"] = attach_atr14_v4(L, trade_date, lvrows, levels_db)   # [v4]
     d = engine.DayFrame(candles, flow, horizon=horizon, fx=fx)
     if d.idx:
         out["last_close"] = d.c.get(d.idx[-1])
@@ -181,5 +261,7 @@ def run_and_store(trade_date: str, raw_db: str, flow_db: str, levels_db: str, sd
     return {"trade_date": trade_date, "product": r["product"],
             "product_note": r["product_note"], "horizon": r["horizon"],
             "last_close": r["last_close"],       # [598차] RETRACTED 로그의 현재가
+            # [v4] 재난손절·역행컷·실주문 수량(X%)이 같은 ATR14 를 쓴다 — main 의 `_shindong_live_qty` 가 읽는다
+            "atr14_v4": r.get("atr14_v4"), "atr14_v4_src": r.get("atr14_v4_src"),
             "decision": r["results"]["MAIN"]["decision"],
             "trades": store.load_trades(sd_db, trade_date, "MAIN")}

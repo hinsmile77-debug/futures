@@ -16,9 +16,13 @@ v2 규칙·섀도 메타는 이 파일 끝 「v2」 절에 있다.
 """
 
 V1_SPEC_VERSION = "SD-2026-09-24-v1"   # v1(R1/R2/R3) — SHADOW_V1 이 이 규칙으로 계속 기록한다
-SPEC_VERSION = "SD-2026-10-19-v3"      # [v3 · 2026-10-18 사용자 결정] MAIN = 첫 거래 FLOWC → 이후 FLOWR60 + 손절 방향 누적 금지.
-#   파일 끝 「v3」 절. 근거: `docs/신동거래_V3/신동_v3_규칙제안_섀도재구성_MW0602_20261018.md`
+SPEC_VERSION = "SD-2026-10-26-v4"      # [v4 · 2026-10-24 사용자 결정 · MW0602 657차] MAIN = v3 + 본전이동@3 · 본전청산 상한 제외 ·
+#   첫 FLOW 역행컷 0.4×ATR · R60 누적일관성 · ATR14 폴백(재계산→이월→진입 없음). 파일 끝 「v4」 절.
+#   사전등록 `docs/신동거래_V4/신동_사전등록_V4_20261024.md`. v3 행(10/19~10/23)은 DB 에 그대로 남는다.
+V3_SPEC_VERSION = "SD-2026-10-19-v3"   # [v3 · 2026-10-18 사용자 결정] MAIN = 첫 거래 FLOWC → 이후 FLOWR60 + 손절 방향 누적 금지.
+#   근거: `docs/신동거래_V3/신동_v3_규칙제안_섀도재구성_MW0602_20261018.md`
 #   · 사전등록 `docs/신동거래_V3/신동_사전등록_V3_20261018.md`. v2.2 행(10/15~10/16)은 DB 에 그대로 남는다.
+V3_SCORING_START = "2026-10-19"       # v3 창(사료) — 5거래일(10/19~10/23)로 종료. 규칙은 SHADOW_V3 가 계속 기록한다
 #   [604차] v2 = MAIN FLOWC. v2.1 = 채점 전(9/30) 재난 손절 사전 정정.
 #   [2026-10-15 사용자 결정] v2.2 = R1 반대 방향 재진입 금지(`FLOW_R1_CTR_REENTRY_BLOCK`).
 V21_SPEC_VERSION = "SD-2026-09-30-v2.1"
@@ -87,7 +91,7 @@ TR44_DIST = 4.0
 #   대체공휴일로 잘못 알고 있었다(krx_holidays 오등록 정정). 채점 전 정정이라 표본 영향 없음 —
 #   규칙 값은 그대로이므로 SPEC_VERSION 은 올리지 않는다(사전등록 문서 §6-1에 기록).
 V1_SCORING_START = "2026-09-28"   # v1 창 — SHADOW_V1 의 R3 중단 판정은 이 날부터 센다(레거시 창)
-SCORING_START = "2026-10-19"      # [v3] 채점 재시작(배포 다음 거래일 — 10/18 일요일 배포). v2.2 창은 V22_SCORING_START
+SCORING_START = "2026-10-26"      # [v4] 채점 재시작(배포 다음 거래일 — 10/24 토요일 배포). v3 창은 V3_SCORING_START · v2.2 창은 V22_SCORING_START
 R3_KILL_AFTER_DAYS = 10       # 채점 시작 후 이 거래일 수가 차면 판정
 R3_KILL_NET_MAX = 0           # R3 누적 순손익이 이것 미만이고
 R3_KILL_WINRATE_MAX = 0.35    # R3 승률(거래 단위)이 이것 미만이면 R3 중단
@@ -132,7 +136,7 @@ LOWVOL_RANGE_BARS = 60
 # 🔴 값을 바꾸면 v3 다. 조용히 바꾸지 않는다.
 # ══════════════════════════════════════════════════════════════════════════
 MAIN_KIND = "family"
-MAIN_FAMILY = "hybr60"         # [v3] v2/v2.2 는 "flowc" — 그 규칙은 SHADOW_V22 가 그대로 기록한다
+MAIN_FAMILY = "v4"             # [v4] v3 는 "hybr60"(SHADOW_V3 가 그대로 기록) · v2/v2.2 는 "flowc"(families 가 계속 재현)
 
 # FLOWC — 개인 위클리 콜−풋 누적(09:00 대비) 장중 역추종. R1·R2 의 원리를 하루 전체로 확장한 규칙.
 FLOW_BASE = "09:00"            # 기준점(없으면 09:00 이후 첫 값 — 09:00 결손일)
@@ -203,19 +207,62 @@ LEAD_WIN_MIN = 60
 LEAD_C_MIN = 0.3
 LEAD_K_CP = float(FLOWR_K)
 LEAD_K_FX = float(FLOWR_K) * FLOWF_K / FLOWC_K
-ROLLBACK_VARIANT = "SHADOW_V22"   # v3 되돌림 기준 — 순손익·최악일 둘 다 v3 보다 나으면 v2.2 복귀(v4 재사전등록)
+V3_ROLLBACK_VARIANT = "SHADOW_V22"   # [v3 창 · 사료] v3 되돌림 기준이었다 — v4 에서 SHADOW_V3 로 한 세대 올라갔다
+
+# ══════════════════════════════════════════════════════════════════════════
+# v4 — [2026-10-24 사용자 결정 · MW0602 657차] MAIN = v3 + 본전이동 · 본전청산 상한 제외 · 첫 FLOW 역행컷 ·
+#      R60 누적일관성 · ATR14 폴백. **섀도 단계를 건너뛰고 MAIN 직행**(사용자 지시 「다음 개장에서 실거래」).
+# 근거: `docs/신동거래_V4/신동_V4_최종안_V22_V3_V4_반사실비교_MW0602-20261024.md` §1
+#       `docs/신동거래_V4/신동_SHADOW_BE3A_사전등록안_정리본_MW0602-20261024.md` §1·§3·§5
+#       사전등록 `docs/신동거래_V4/신동_사전등록_V4_20261024.md`(판정·되돌림 — 결과 보기 전에 고정)
+#       구현계획 `docs/신동거래_V4/신동_V4_구현계획_및_섀도리뉴얼_MW0602-20261024.md`
+# 🔴 새로 고른 수치는 없다 — 아래 둘은 기존 값에서 파생한다. 값을 바꾸면 v5 다.
+#   21일(9/21~10/23) 반사실: v3 +2,242.6만 · 최악일 −236.8 → v4 +2,671.0만 · 최악일 −29.9(가상 2계약).
+#   ⚠ 그 21일을 보고 만든 규칙이다 — 표본 밖 검증 0. 수치는 「상한」으로 읽고 판정은 20거래일로만 한다.
+# ══════════════════════════════════════════════════════════════════════════
+# ① 본전이동 — 진입 뒤 최대 유리(MFE)가 V4_BE_AT 에 닿으면 손절 = 진입가(트레일이 점화된 뒤에는 트레일 우선).
+#    본전에서 닫힌 거래(사유 "BE")는 ② 하루 상한(FLOW_MAX_TRADES)에 **세지 않고** 손절 방향 금지도 **걸지 않는다**
+#    (같은 방향 재진입 허용 — 10/20). 재진입 신호는 기존대로 첫 거래 뒤 = FLOWR60.
+V4_BE_AT = FLOW_TRAIL[0] / 2.0          # 3.0pt = 트레일 발동값의 1/2
+V4_BE_FREE = True                       # 본전청산 상한 제외 · 방향 금지 없음
+# ③ 첫 FLOW 역행컷 — 하루 **첫 거래(FLOWC)**만. 본전이동 전(MFE<V4_BE_AT)·트레일 전 구간에서 그 봉 고(저)가 기준
+#    역행 ≥ V4_FIRST_CUT_ATR × ATR14 이면 **그 봉 종가로 청산**. 사유는 "SL" — 손절 방향 누적 금지 · 하루 상한 포함
+#    (본전청산과 다르다). 2·3번째(FLOWR60) 거래에는 적용하지 않는다. 21일 발동 0회 — 수익 장치가 아니라 안전핀.
+V4_FIRST_CUT_ATR = 0.4                 # = 재난손절 0.6 의 2/3. 리터럴로 둔다(0.6*2/3 = 0.3999… 부동소수 — 반사실 sim6 은 0.4)
+# ④ R60 누적일관성 — 2·3번째 진입 시각의 FLOWC 누적 신호(09:00 대비 ±FLOWC_K)가 진입 방향과 **반대면** 진입 안 함.
+#    누적이 중립이면 진입한다. 막힌 분 수는 decision.notes 에 남긴다(계측 4원칙 ③).
+V4_R60_AGREE = True
+# ⑤ ATR14 폴백 — 고정 20pt(v2.1~v3)는 실제 ATR(78일 26.5~111.9)의 1/3 이하라 틀렸다(정리본 §3).
+#    08:50 값 → 이력 캐시로 재계산(`premarket_levels.atr_of` 와 같은 공식 · 이전 세션 V4_ATR_RECOMPUTE_MIN 이상 ·
+#    마지막 세션이 V4_ATR_RECOMPUTE_STALE_DAYS 일 이내) → 직전 기록일 ATR14 이월(최근 V4_ATR_CARRY_MAX_DAYS 개 기록일) →
+#    둘 다 없으면 그날 **신규 진입 없음**(기록만). 재난손절·역행컷·실주문 수량이 모두 같은 값을 쓴다.
+#    해석은 `runner.resolve_atr14_v4` 가 하고 `L["0850"]["atr14_v4"]` 로 넘긴다.
+V4_ATR_RECOMPUTE_MIN = 5
+V4_ATR_RECOMPUTE_STALE_DAYS = 10
+V4_ATR_CARRY_MAX_DAYS = 5
+# ⑥ 실주문 수량(규격 밖 — 채점은 가상 2계약 그대로): config/settings.py SHINDONG_RISK_* · config/capital.shindong_risk_qty.
+# ⑦ 청산 재시도 단계 상향은 실행 계층(settings EXIT_LIMIT_ESCALATION_*, 656차) — 규격 밖.
+# 되돌림 판정용 슬립 조건(사전등록 §3-2): 본전청산 실측 슬립 평균이 V4_BE_SLIP_REVIEW_PT 를 넘으면(V4_BE_SLIP_MIN_N 건 이상) 재검토.
+V4_BE_SLIP_REVIEW_PT = 0.8
+V4_BE_SLIP_MIN_N = 20
+ROLLBACK_VARIANT = "SHADOW_V3"    # [v4] 되돌림 기준 — 순손익 그리고 최악일 둘 다 v4 보다 나으면 v3 복귀(v5 재사전등록)
+SPEC_TAG = SPEC_VERSION.rsplit("-", 1)[-1]   # "v4" — 리포트·채점표 문구용(하드코딩 「v3」 금지)
+MAIN_LABEL = "MAIN(v4 · v3+본전이동·역행컷·일관성)"   # 리포트·라이벌 표 라벨
+ROLLBACK_TO = "v3"                           # 되돌림 시 복귀할 규격 이름(ROLLBACK_VARIANT 가 기록하는 규칙)
 
 # 섀도 메타 — 순서 = 리포트·차트 패널 순서. kind: "v1"(engine.run_day) / "family"(families.run_family_day)
-# [v3] 상시 섀도 5개 상한. V1·V1X4·FLOWF 종료(RETIRED_SHADOWS) · V22·V22S·HYBL 신설 · FLOWR60·BRKC 유지.
+# [v4] 상시 섀도 5개 상한. V22·V22S·HYBL 종료(RETIRED_SHADOWS) · V3·BE3·HYBL4 신설 · FLOWR60·BRKC 유지.
+#   리뉴얼 근거: 구현계획 §2 — 되돌림 기준은 직전 MAIN(v3) · 최소 변경 대안은 「v3 + 본전이동만」 ·
+#   HYBL 은 청산을 V4 로 맞춰 신호원 단일 축 비교로.
 SHADOW_META = (
-    ("SHADOW_V22", {"kind": "family", "family": "flowc", "label": "V22(v2.2 MAIN 그대로)", "start": SCORING_START,
-                    "origin": "v3", "why": "되돌림 기준 — v2.2 MAIN(FLOWC · R1 반대 재진입 금지 · 손절 시 당일 중단)"}),
-    ("SHADOW_V22S", {"kind": "family", "family": "flowc_s", "label": "V22S(v2.2 + 손절 방향 금지)", "start": SCORING_START,
-                     "origin": "v3", "why": "최소 변경 대안 — 16일 순손익 1위(+1,834.3만). v3 의 10:00 공백 비용 대조"}),
-    ("SHADOW_HYBL", {"kind": "family", "family": "hybl", "label": "HYBL(첫 FLOWC → 주도 지표)", "start": SCORING_START,
-                     "origin": "v3", "why": "사용자 제안 원형 — CP·FX 중 가격이 따라가는 지표로 2·3번째 진입"}),
+    ("SHADOW_V3", {"kind": "family", "family": "hybr60", "label": "V3(v3 MAIN 그대로)", "start": SCORING_START,
+                   "origin": "v4", "why": "되돌림 기준 — v3 MAIN(첫 FLOWC → FLOWR60 · 손절 방향 누적 금지 · 20pt 폴백)"}),
+    ("SHADOW_BE3", {"kind": "family", "family": "be3", "label": "BE3(v3 + 본전이동만)", "start": SCORING_START,
+                    "origin": "v4", "why": "최소 변경 대안 — V4 이득 중 본전이동 몫 vs 역행컷·일관성 몫(요소 분리)"}),
+    ("SHADOW_HYBL4", {"kind": "family", "family": "hybl4", "label": "HYBL4(V4 + 주도 지표 재진입)", "start": SCORING_START,
+                      "origin": "v4", "why": "HYBL 승계 — 청산을 V4 로 맞춰 2·3번째 신호원(R60 vs 주도 지표)만 비교"}),
     ("SHADOW_FLOWR60", {"kind": "family", "family": "flowr60", "label": "FLOWR60(콜−풋 최근60분 변화)",
-                        "start": "2026-10-02", "origin": "605차", "why": "v3 후반 신호원 단독 — 첫 거래 FLOWC 의 값 대조"}),
+                        "start": "2026-10-02", "origin": "605차", "why": "후반 신호원 단독 — 첫 거래 FLOWC 의 값 대조"}),
     ("SHADOW_BRKC", {"kind": "family", "family": "brkc", "label": "BRKC(방향일 맥점돌파·보류일 FLOWC)",
                      "start": SCORING_START, "origin": "604차", "why": "콜−풋 계열이 아닌 유일한 슬롯(신호원 다양성)"}),
 )
@@ -224,10 +271,13 @@ VARIANTS = ("MAIN",) + tuple(k for k, _ in SHADOW_META)
 # [v2.2] 채점 시작 = max(등록 시작, SCORING_START). MAIN 규칙이 바뀌면 섀도 비교 창도 함께 다시 연다
 #   (MAIN 대비 판정이므로). FLOWR60 의 등록 시작 「2026-10-02」 은 SHADOW_META 에 사료로 남는다.
 LATE_SHADOW_START = {k: max(m["start"], SCORING_START) for k, m in SHADOW_META}
-# 종료된 v1 시대 섀도 — DB 행은 보존(사료). 채점표는 「종료」 한 줄로만 보인다.
-RETIRED_SHADOWS = {"SHADOW_V1": "[v3] v2 되돌림 기준 — v2.1·v2.2 두 창 모두 MAIN 에 짐. v3 되돌림 기준은 SHADOW_V22",
+# 종료된 섀도 — DB 행은 보존(사료). 채점표는 「종료」 한 줄로만 보인다. 엔진은 family 이름을 계속 알아듣는다.
+RETIRED_SHADOWS = {"SHADOW_V22": "[v4] v3 되돌림 기준(v2.2 MAIN) — 되돌림 기준이 SHADOW_V3 로 한 세대 올라감. 규칙은 family 'flowc'",
+                   "SHADOW_V22S": "[v4] v2.2 최소 변경 대안 — v4 의 최소 변경 대안은 SHADOW_BE3 가 승계. 규칙은 family 'flowc_s'",
+                   "SHADOW_HYBL": "[v4] SHADOW_HYBL4 로 승계(같은 주도 지표 · 청산만 V4). 규칙은 family 'hybl'",
+                   "SHADOW_V1": "[v3] v2 되돌림 기준 — v2.1·v2.2 두 창 모두 MAIN 에 짐. v3 되돌림 기준은 SHADOW_V22",
                    "SHADOW_V1X4": "[v3] V1 계열 최선 수정판 — 평가 10일 PF 1.05",
-                   "SHADOW_FLOWF": "[v3] 외국인 선물 단독 — 16일 약세(사전 6일 −20만). 외국인 신호는 SHADOW_HYBL 이 쓴다",
+                   "SHADOW_FLOWF": "[v3] 외국인 선물 단독 — 16일 약세(사전 6일 −20만). 외국인 신호는 SHADOW_HYBL(→HYBL4) 이 쓴다",
                    "SHADOW_E2F2": "v1 R3 의 변형 — V1 안에서 의미가 끝남",
                    "SHADOW_X4NF": "SHADOW_V1X4 로 승계",
                    "SHADOW_TR44": "PC 간 재현 실패(9/29 §4-3) — 판정 없이 종료",

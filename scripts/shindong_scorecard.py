@@ -259,11 +259,17 @@ def build(db=SHINDONG_DB, since=spec.SCORING_START, raw_db=RAW_DATA_DB, levels_d
     w("\n".join(_daily_section(live, days, raw_db, flow_db, levels_db, ctxs)))
     w("")
     sec = 3
-    w("## %d. v3 vs %s 되돌림 판정 (사전등록 V3 §3)" % (sec, spec.ROLLBACK_VARIANT))
+    w("## %d. %s vs %s 되돌림 판정 (사전등록 %s §3)" % (sec, spec.SPEC_TAG, spec.ROLLBACK_VARIANT, spec.SPEC_TAG.upper()))
     w("")
     w("\n".join(_rollback_judge(live, days)))
     w("")
     sec += 1
+    if spec.MAIN_FAMILY == "v4":
+        w("## %d. v4 보고 항목 (사전등록 V4 §3-3 — 판정 아님)" % sec)
+        w("")
+        w("\n".join(_v4_items(live, days)))
+        w("")
+        sec += 1
     for v, m in spec.SHADOW_META:
         if v in ("SHADOW_V1", spec.ROLLBACK_VARIANT):
             continue
@@ -554,23 +560,56 @@ def _by_day(live, xdays, v):
     return m
 
 
+def _v4_items(live, days):
+    """[MW0602 657차] v4 보고 항목 — 본전청산 · 첫 FLOW 역행컷 · R60 누적일관성 차단 · ATR14 폴백. 표시만(판정 아님).
+    원천: MAIN 거래 청산 사유(BE) · `shindong_day.notes` 의 「[v4] …」 문구(families._v4_trades 가 남긴다)."""
+    import re as _re
+    mdays = sorted({d["trade_date"] for d in days if d["variant"] == "MAIN"})
+    if not mdays:
+        return ["- 기록 없음 — MAIN 채점 시작 %s 이후 판정 행이 없다(미측정 ≠ 0)" % spec.SCORING_START]
+    notes = {d["trade_date"]: str(d.get("notes") or "") for d in days if d["variant"] == "MAIN"}
+    out = ["| 날짜 | 본전청산(MAIN) | 본전청산(BE3) | 역행컷 | 일관성 차단(분) | ATR14 |", "|---|---|---|---|---|---|"]
+    tot = {"be": 0, "be3": 0, "cut": 0, "agree": 0, "fb": 0}
+    for day in mdays:
+        be = sum(1 for t in live if t["variant"] == "MAIN" and t["trade_date"] == day and t.get("leg1_reason") == "BE")
+        be3 = sum(1 for t in live if t["variant"] == "SHADOW_BE3" and t["trade_date"] == day and t.get("leg1_reason") == "BE")
+        n = notes.get(day, "")
+        cut = n.count("첫 FLOW 역행컷 발동")
+        m = _re.search(r"누적일관성 차단 — 첫 \S+ · 신호 (\d+)분", n)
+        agree = int(m.group(1)) if m else 0
+        fb = "미확보 — 진입 없음" if "ATR14 미확보" in n else ("폴백" if "[v4] ATR14 폴백" in n else "08:50")
+        tot["be"] += be
+        tot["be3"] += be3
+        tot["cut"] += cut
+        tot["agree"] += agree
+        tot["fb"] += int(fb != "08:50")
+        out.append("| %s | %d | %d | %d | %d | %s |" % (day, be, be3, cut, agree, fb))
+    out.append("")
+    out.append("- 합: 본전청산 MAIN %d · BE3 %d건 · 역행컷 %d회 · 일관성 차단 %d분 · ATR 폴백일 %d/%d. "
+               "본전청산 실측 슬립(되돌림 조건 §3-2)은 `python scripts/shindong_v4_be_slip.py`."
+               % (tot["be"], tot["be3"], tot["cut"], tot["agree"], tot["fb"], len(mdays)))
+    out.append("- ⚠ 역행컷 청산은 사유가 `SL`(손절 취급)이라 「재난 손절 발동일」 절에도 함께 잡힌다 — "
+               "그 절의 반사실은 v2.1 FLOWC 기준이다.")
+    return out
+
+
 def _rollback_judge(live, days):
-    """[v3] 되돌림 — ROLLBACK_VARIANT(SHADOW_V22)가 MAIN(v3)보다 순손익이 크고 **그리고** 최악일도 덜 나쁘면 v2.2 복귀.
-    ([604차] v2 시절 기준은 SHADOW_V1 이었다 — 같은 형식.)"""
+    """[v4] 되돌림 — ROLLBACK_VARIANT(SHADOW_V3)가 MAIN(v4)보다 순손익이 크고 **그리고** 최악일도 덜 나쁘면 v3 복귀.
+    ([604차] v2 시절 기준은 SHADOW_V1 · [v3] SHADOW_V22 였다 — 같은 형식.)"""
     rb = spec.ROLLBACK_VARIANT
     xdays = sorted({d["trade_date"] for d in days if d["variant"] == "MAIN"})
     if not xdays:
         return ["- 기록 없음 — MAIN 채점 시작 %s 이후 MAIN 판정 행이 없다(미측정 ≠ 0)" % spec.SCORING_START]
     mm, vv = _by_day(live, xdays, "MAIN"), _by_day(live, xdays, rb)
     out = ["| 변형 | 거래일 | 순손익(원) | 최악일(원) |", "|---|---|---|---|"]
-    for v, m in (("MAIN(v3)", mm), (rb, vv)):
+    for v, m in (("MAIN(%s)" % spec.SPEC_TAG, mm), (rb, vv)):
         out.append("| %s | %d | %s | %s |" % (v, len(m), _fmt(sum(m.values())), _fmt(min(m.values()))))
     if len(xdays) < spec.JUDGE_AFTER_DAYS:
         out.append("- 판정: **대기** — %d/%d 거래일" % (len(xdays), spec.JUDGE_AFTER_DAYS))
     else:
         back = sum(vv.values()) > sum(mm.values()) and min(vv.values()) > min(mm.values())
         out.append("- 판정: **%s** (기준: %s 가 순손익 우위 **그리고** 최악일 개선이면 복귀)" % (
-            "v2.2 복귀 — v4 로 재사전등록" if back else "v3 유지", rb))
+            ("%s 복귀 — 새 버전으로 재사전등록" % spec.ROLLBACK_TO) if back else ("%s 유지" % spec.SPEC_TAG), rb))
     return out
 
 

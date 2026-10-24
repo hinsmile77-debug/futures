@@ -175,7 +175,7 @@ def test_daily_report_survives_missing_0900_bar(tmp_path):
     assert r["ok"] is True
     md = open(r["md_path"], encoding="utf-8").read()
     assert "09:00봉 결손" in md                                     # 결손을 숨기지 않는다(계측 4원칙 ④)
-    assert "V22S(v2.2 + 손절 방향 금지)" in md and "MAIN(v3 HYBR60)" in md   # [v3] 변형 라벨
+    assert "BE3(v3 + 본전이동만)" in md and spec.MAIN_LABEL in md          # [v4] 변형 라벨
 
 
 # ── D. 채점표 ─────────────────────────────────────────────────────────────

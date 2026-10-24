@@ -179,6 +179,16 @@ PROFIT_GUARD_QTY_BASE = 2
 #   90만 = MW0601 신동 v3(R2/R3 2레그) 20거래일 재생 실측. ⚠ dev 신동(FLOWC)은 전략이 달라 dev 실측이 아니다.
 RISK_MDD_LIMIT_PCT = 0.15
 SHINDONG_MDD_PER_CONTRACT_KRW = 900_000
+# ④ [MW0602 657차 · 신동 V4 · 사용자 결정 2026-10-24] 신동 실주문 **한 거래 위험 한도**(X%) 수량 —
+#    수량 = min(위 계획 수량, floor(SHINDONG_RISK_CAPITAL_KRW × SHINDONG_TRADE_RISK_PCT ÷ (재난손절 0.6 × ATR14 × 5만))), 최소 1.
+#    ATR14 는 신동 엔진과 같은 값(runner.resolve_atr14_v4 — 08:50 → 재계산 → 직전 기록일 이월).
+#    3,000만 × 7% = 한 거래 최대손실 210만 → 2계약은 ATR ≤ 35.0, 3계약은 ATR ≤ 23.3(21일 중 0일) — 사실상 최대 2 · 고변동일 1.
+#    🔴 SIZING_TARGET_CAPITAL_KRW(1,500만)와 **별개 상수**다 — 그쪽은 MDD·일일한도 분모라 함께 움직이면 다른 판정이 바뀐다.
+#    규격 밖(채점은 가상 2계약 그대로). 근거: docs/신동거래_V4/신동_SHADOW_BE3A_사전등록안_정리본_MW0602-20261024.md §5.
+#    False 면 종전과 같다(X% 항 없음).
+SHINDONG_RISK_QTY_ENABLED = True
+SHINDONG_RISK_CAPITAL_KRW = 30_000_000
+SHINDONG_TRADE_RISK_PCT = 0.07
 CAPITAL_MONITOR_MARGIN_REFRESH_SEC = 300
 
 # [2026-07-12 311차 후속] 미니선물 최소 진입 계약 수 — 기존 3의 도입 근거가

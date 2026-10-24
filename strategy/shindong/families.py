@@ -9,9 +9,12 @@
   FLOWC : 개인 위클리 콜−풋 누적(09:00 대비)이 +K 이상 → 매도 / −K 이하 → 매수(역방향)
   FLOWF : 외국인 선물 순매수 누적(09:00 이후 첫 수신 대비)이 −K 이하 → 매도 / +K 이상 → 매수(순방향)
   BRKC  : R1 방향일 = 종가가 구조맥점을 R1 방향으로 새로 넘으면 진입(손절 = 깬 맥점 ∓ 2) / 보류일 = FLOWC
-  [v3] HYBR60 : 첫 거래 = FLOWC · 2·3번째 = FLOWR60(최근 60분 변화) · 재난 손절 뒤 손절 방향 누적 금지 — MAIN
+  [v3] HYBR60 : 첫 거래 = FLOWC · 2·3번째 = FLOWR60(최근 60분 변화) · 재난 손절 뒤 손절 방향 누적 금지 — v3 MAIN(= v4 의 SHADOW_V3)
   [v3] HYBL   : 첫 거래 = FLOWC · 2·3번째 = 주도 지표(CP·FX 중 가격 추종 상관 높은 쪽) · 손절 방향 누적 금지
   [v3] FLOWC_S: FLOWC(v2.2 R1 가드 포함) · 손절 방향 누적 금지(당일 전면 중단 대신)
+  [v4] V4     : HYBR60 + 본전이동@3 · 본전청산 상한 제외 · 첫 FLOW 역행컷 0.4×ATR · R60 누적일관성 · ATR 폴백 — MAIN
+  [v4] BE3    : HYBR60 + 본전이동@3 · 본전청산 상한 제외 · ATR 폴백(컷·일관성 없음) — SHADOW_BE3
+  [v4] HYBL4  : V4 에서 2·3번째 신호만 주도 지표 — SHADOW_HYBL4
   청산  : 손절(BRK 만) → 트레일(유리 act pt → 극값 ∓ dist, 그 봉 극값은 다음 봉부터) → 익절 지정가 →
           15:05 시간 청산. 한 봉에서 손절·익절이 함께 닿으면 **손절**(보수적). 신규 진입 14:50 까지.
   수량  : 2계약 일괄 — 두 다리가 같은 가격·같은 사유로 닫힌다(legs 형식 유지).
@@ -159,30 +162,49 @@ def _brk_signal(d: "E.DayFrame", L, bias: int) -> Tuple[Callable[[str], int], Di
 
 
 def _run_position(d: "E.DayFrame", side: int, t0: str, stop: Optional[float],
-                  trail: Tuple[float, float], tp: Optional[float]) -> Dict[str, Any]:
-    """진입 뒤 청산까지. `run_trade` 와 같은 반환 형식(두 다리 동일)."""
+                  trail: Tuple[float, float], tp: Optional[float],
+                  be_at: Optional[float] = None, cut_pts: Optional[float] = None) -> Dict[str, Any]:
+    """진입 뒤 청산까지. `run_trade` 와 같은 반환 형식(두 다리 동일).
+
+    [v4] be_at   : MFE 가 이 pt 에 닿으면 손절 = 진입가(트레일 점화 전만). 그 손절에 닿으면 사유 "BE".
+         cut_pts : 본전·트레일 전(MFE < be_at) 구간에서 그 봉 고(저)가 기준 역행(MAE) ≥ 이 pt 이면
+                   **그 봉 종가로 청산**(사유 "SL" — 손절 취급). 첫 FLOW 역행컷.
+    한 봉 판정 순서(반사실 `docs/신동거래_V4/수익최대화_딥다이브_20261023_MW0602/sim6.py` 와 한 줄씩 같다):
+      손절가 닿음(TR > BE > SL) → 익절 → MFE·MAE 갱신 → 역행컷 → 트레일 갱신 → 본전 무장.
+    둘 다 None 이면 v3 이전과 같다(재현 테스트가 고정)."""
     e = d.c[t0]
     tp_px = (e + side * tp) if tp else None
     st = stop
     mfe = 0.0
+    mae = 0.0
     trail_on = False
+    be = False                        # [v4] 본전 무장
+    cut = False                       # [v4] 첫 FLOW 역행컷 발동
     exit_ts = exit_px = reason = None
     mkt = True
     bars = [k for k in d.idx if t0 < k <= S.TIME_EXIT and k in d.h]
     for k in bars:
         h, l = d.h[k], d.l[k]
         if st is not None and ((l <= st) if side > 0 else (h >= st)):
-            exit_ts, exit_px, reason, mkt = k, st, ("TR" if trail_on else "SL"), True
+            exit_ts, exit_px, reason, mkt = k, st, ("TR" if trail_on else ("BE" if be else "SL")), True
             break
         if tp_px is not None and ((h >= tp_px) if side > 0 else (l <= tp_px)):
             exit_ts, exit_px, reason, mkt = k, tp_px, "TP", False
             break
         fav = (h - e) if side > 0 else (e - l)
         mfe = max(mfe, fav)
+        mae = max(mae, (e - l) if side > 0 else (h - e))
+        if (cut_pts is not None and not be and not trail_on
+                and (be_at is None or mfe < be_at) and mae >= cut_pts):
+            exit_ts, exit_px, reason, mkt = k, d.c[k], "SL", True
+            cut = True
+            break
         if trail is not None and mfe >= trail[0]:
             ns = (e + side * mfe) - side * trail[1]
             if st is None or side * (ns - st) > 0:
                 st, trail_on = ns, True
+        if be_at is not None and not trail_on and mfe >= be_at and (st is None or side * (e - st) > 0):
+            st, be = e, True
     horizon = d.idx[-1] if d.idx else None
     if exit_ts is None and horizon is not None and horizon >= S.TIME_EXIT:
         tx = d.last_at_or_before(S.TIME_EXIT)
@@ -197,14 +219,16 @@ def _run_position(d: "E.DayFrame", side: int, t0: str, stop: Optional[float],
         legs.append(g)
     return {"side": side, "entry_ts": t0, "entry_px": e, "stop_init": stop, "t1": tp_px, "t2": tp_px,
             "legs": legs, "status": "OPEN" if exit_ts is None else "CLOSED", "exit_ts": exit_ts,
-            "stop_now": st}
+            "stop_now": st, "be_armed": be, "cut": cut}
 
 
 def _run_signal(d: "E.DayFrame", sig: Callable[[str], int], rule: str, stop_fn, trail, tp, max_trades: int,
                 start: str = "09:00", level_of=None, halt_on_sl: bool = False,
                 notes: Optional[List[str]] = None, halt_mode: Optional[str] = None,
                 r1_bias: int = 0, ctr_max: Optional[int] = None,
-                sig_after: Optional[Callable[[str], int]] = None, rule_after: Optional[str] = None
+                sig_after: Optional[Callable[[str], int]] = None, rule_after: Optional[str] = None,
+                be_at: Optional[float] = None, first_cut_pts: Optional[float] = None,
+                be_free: bool = False, agree: Optional[Callable[[str], int]] = None
                 ) -> List[Dict[str, Any]]:
     """stop_fn(side, entry_px) -> 손절가 또는 None.
     halt_mode: "all"(손절 뒤 당일 전면 중단 — v2.1 규격) · "same"(손절 난 방향만 중단 — [605차] 반사실 계측용,
@@ -212,6 +236,10 @@ def _run_signal(d: "E.DayFrame", sig: Callable[[str], int], rule: str, stop_fn, 
     sig_after: [v3] 주어지면 하루 **두 번째 거래부터** 이 신호로 진입한다(첫 거래는 sig). rule 표기는 rule_after.
                sig 는 그 뒤에도 매분 불러 상태(BRK 직전 종가 등)를 잇는다.
     halt_on_sl=True 는 halt_mode="all" 과 같다(호환).
+    [v4] be_at        : 모든 거래에 본전이동(`_run_position(be_at=)`).
+         first_cut_pts: 하루 **첫 거래**에만 역행컷(`_run_position(cut_pts=)`) — 사유 "SL" 이라 손절 방향 금지·상한 포함.
+         be_free      : 본전청산(사유 "BE")은 하루 상한(max_trades)에 세지 않는다. 방향 금지는 원래 "SL" 에만 걸린다.
+         agree        : 2번째 거래부터, 그 분의 agree 신호(FLOWC 누적)가 진입 방향과 **반대면** 진입하지 않는다(중립은 진입).
     halt_on_sl=True (v2.1 재난 손절): 손절(SL)이 한 번 발동하면 **그날 신규 진입을 멈춘다** —
     신호가 살아 있어 곧바로 같은 방향으로 재진입하는 것을 끊는다(9/29 실측: 손절 8·12pt 가 재진입으로 손실을 키웠다)."""
     trades: List[Dict[str, Any]] = []
@@ -224,13 +252,21 @@ def _run_signal(d: "E.DayFrame", sig: Callable[[str], int], rule: str, stop_fn, 
     # [v2.2] R1 반대 방향 재진입 금지 — ctr_max 가 None 이면 꺼짐(섀도·반사실은 종전과 같다)
     ctr_n = 0
     ctr_blocked = []                  # 막힌 분(탈락 가시화 — 계측 4원칙 ③)
+    agree_blocked = []                # [v4] 누적일관성으로 막힌 분(탈락 가시화)
+
+    def _counted() -> int:
+        # [v4] be_free 면 본전에서 닫힌 거래는 상한에 세지 않는다(열린 거래·다른 사유는 센다)
+        if not be_free:
+            return len(trades)
+        return sum(1 for t in trades
+                   if not (t["status"] == "CLOSED" and t["legs"][0].get("reason") == "BE"))
     for k in d.idx:
         if k < start or k not in d.c:
             continue
         if busy is not None and k <= busy:
             sig(k)                    # 상태(직전 종가)는 계속 갱신
             continue
-        if halted or k > S.FLOW_LAST_ENTRY or len(trades) >= max_trades:
+        if halted or k > S.FLOW_LAST_ENTRY or _counted() >= max_trades:
             sig(k)
             continue
         after = sig_after is not None and len(trades) >= 1
@@ -246,9 +282,13 @@ def _run_signal(d: "E.DayFrame", sig: Callable[[str], int], rule: str, stop_fn, 
         if ctr and ctr_max is not None and ctr_n >= ctr_max:
             ctr_blocked.append(k)
             continue
+        if agree is not None and trades and agree(k) == -side:
+            agree_blocked.append(k)
+            continue
         e = d.c[k]
         stop = stop_fn(side, e) if stop_fn else None
-        tr = _run_position(d, side, k, stop, trail, tp)
+        tr = _run_position(d, side, k, stop, trail, tp, be_at=be_at,
+                           cut_pts=(first_cut_pts if not trades else None))
         tr.update(rule=(rule_after or rule) if after else rule,
                   touch_level=(level_of() if level_of else None), touch_ts=None)
         trades.append(tr)
@@ -275,6 +315,9 @@ def _run_signal(d: "E.DayFrame", sig: Callable[[str], int], rule: str, stop_fn, 
     if ban_hits and notes is not None:
         notes.append("[v3] 손절 방향 금지로 막힌 신호 %d분 (금지 %s)" % (
             ban_hits, "·".join("매수" if x > 0 else "매도" for x in sorted(banned))))
+    if agree_blocked and notes is not None:
+        notes.append("[v4] R60 누적일관성 차단 — 첫 %s · 신호 %d분 (누적 FLOWC 와 반대 방향)"
+                     % (agree_blocked[0], len(agree_blocked)))
     if ctr_blocked and notes is not None:
         # 신호가 켜져 있던 분마다 세면 수십 개라 첫 시각·분 수만 남긴다(…외 N 형식 — 계측 4원칙 ③).
         notes.append("[v2.2] R1 반대 재진입 차단 — 첫 %s · 신호 %d분 (R1 %s · 허용 %d건 소진)"
@@ -294,6 +337,63 @@ def _cat_stop_pts(L, notes: Optional[List[str]] = None) -> float:
     if notes is not None:
         notes.append("ATR14 없음 — 재난 손절 폴백 %.0fpt" % S.FLOW_CAT_STOP_FALLBACK_PT)
     return S.FLOW_CAT_STOP_FALLBACK_PT
+
+
+def _v4_atr(L, notes: Optional[List[str]] = None) -> Optional[float]:
+    """[v4] ATR14 — `runner.resolve_atr14_v4` 가 `L["0850"]["atr14_v4"]`(+ `_src`)로 넘긴 값.
+    그 키가 없으면(테스트·직접 호출) 08:50 `atr14` 만 쓴다. 고정 pt 폴백은 **없다** — 못 구하면 None(그날 신규 진입 없음).
+    08:50 값이 아니면 출처를 notes 에 남긴다(계측 4원칙 ④)."""
+    try:
+        z = L["0850"]
+    except (KeyError, TypeError):
+        z = {}
+    if "atr14_v4" in z:
+        v, src = z.get("atr14_v4"), z.get("atr14_v4_src") or "?"
+    else:
+        v, src = z.get("atr14"), "0850"
+    if isinstance(v, (int, float)) and v > 0:
+        if src != "0850" and notes is not None:
+            notes.append("[v4] ATR14 폴백 %.2f — %s" % (float(v), src))
+        return float(v)
+    if notes is not None:
+        notes.append("[v4] ATR14 미확보(08:50 · 재계산 · 이월 모두 없음) — 신규 진입 없음(기록만)")
+    return None
+
+
+def _v4_trades(d: "E.DayFrame", L, dec: Dict[str, Any], after: str, cut: bool, agree: bool
+               ) -> List[Dict[str, Any]]:
+    """[v4] MAIN(v4) · SHADOW_BE3 · SHADOW_HYBL4 공통 골격 — 첫 거래 FLOWC · 2·3번째 after("r60"|"lead") ·
+    손절 방향 누적 금지 · 본전이동@V4_BE_AT · 본전청산 상한 제외. cut=첫 FLOW 역행컷 · agree=R60 누적일관성."""
+    notes = dec["notes"]
+    atr = _v4_atr(L, notes)
+    if atr is None:
+        return []
+    sig, why = _flow_signal(d, d.sp, S.FLOWC_K, -1)
+    if sig is None:
+        notes.append("FLOWC %s — 거래 없음(미측정)" % why)
+        return []
+    cat = S.FLOW_CAT_STOP_ATR * atr
+    if after == "lead":
+        if not d.fx:
+            notes.append("HYBL 외국인 선물 원천 없음 — 주도 지표는 CP 만으로 판정(미측정 ≠ 0)")
+        sig_after, _lst = _lead_signal(d)
+        rule_after = RULE_LEAD
+    else:
+        sig_after, rule_after = _roll_signal(d.sp, S.FLOWR_WIN_MIN, S.FLOWR_K, -1), RULE_R60
+    trades = _run_signal(d, sig, RULE_FLOW, lambda side, e: e - side * cat, S.FLOW_TRAIL, S.FLOW_TP,
+                         S.FLOW_MAX_TRADES, notes=notes, halt_mode=S.HYB_SL_HALT_MODE,
+                         sig_after=sig_after, rule_after=rule_after,
+                         be_at=S.V4_BE_AT, first_cut_pts=(S.V4_FIRST_CUT_ATR * atr) if cut else None,
+                         be_free=S.V4_BE_FREE, agree=sig if agree else None)
+    n_be = sum(1 for t in trades if t["status"] == "CLOSED" and t["legs"][0].get("reason") == "BE")
+    n_cut = sum(1 for t in trades if t.get("cut"))
+    if n_be:
+        notes.append("[v4] 본전청산 %d건 — 하루 상한·방향 금지 제외" % n_be)
+    if n_cut:
+        t = next(t for t in trades if t.get("cut"))
+        notes.append("[v4] 첫 FLOW 역행컷 발동(%s · 컷 %.2fpt = %.1f×ATR %.2f) — 손절 취급(그 방향 당일 금지)"
+                     % (t["exit_ts"], S.V4_FIRST_CUT_ATR * atr, S.V4_FIRST_CUT_ATR, atr))
+    return trades
 
 
 def run_family_day(d: "E.DayFrame", L, family: str,
@@ -324,7 +424,14 @@ def run_family_day(d: "E.DayFrame", L, family: str,
                            r1_bias=bias if r1_guard else 0,
                            ctr_max=S.FLOW_R1_CTR_MAX if r1_guard else None)
 
-    if family == "flowc":
+    if family in ("v4", "be3", "hybl4"):
+        # [v4] MAIN = v4 · SHADOW_BE3 = v3 + 본전이동만(컷·일관성 없음) · SHADOW_HYBL4 = v4 + 주도 지표 재진입.
+        #   셋 다 ATR14 를 `_v4_atr`(재계산·이월 폴백, 고정 pt 없음)로 쓴다 — `cat` 위 계산(20pt 폴백)은 쓰지 않는다.
+        #   위 `_cat_stop_pts` 가 남긴 「ATR14 없음 — 20pt 폴백」 문구는 v4 계열에서 사실이 아니므로 지운다.
+        dec["notes"] = [n for n in dec["notes"] if not n.startswith("ATR14 없음 — 재난 손절 폴백")]
+        trades = _v4_trades(d, L, dec, after=("lead" if family == "hybl4" else "r60"),
+                            cut=(family != "be3"), agree=(family != "be3" and S.V4_R60_AGREE))
+    elif family == "flowc":
         # [v2.2] v2.2 MAIN(= v3 의 SHADOW_V22)의 FLOWC 만 R1 반대 재진입 금지를 쓴다. BRKC 보류일 대체(아래)는
         # R1=0 이라 어차피 무영향이지만 규격을 섞지 않으려 명시적으로 끈다.
         trades = flowc(r1_guard=S.FLOW_R1_CTR_REENTRY_BLOCK)

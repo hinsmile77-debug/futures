@@ -50,7 +50,7 @@ def test_v2_spec_is_preregistered():
     assert (spec.FLOW_CAT_STOP_ATR, spec.FLOW_CAT_STOP_FALLBACK_PT, spec.FLOW_CAT_STOP_HALT_DAY) == (0.6, 20.0, True)
     assert spec.V1_SPEC_VERSION == "SD-2026-09-24-v1"
     assert spec.V1_SCORING_START == "2026-09-28"
-    assert spec.SHADOW_META_D["SHADOW_V22"]["family"] == "flowc"     # [v3] v2.2 MAIN 규칙은 SHADOW_V22 가 그대로 기록
+    assert "SHADOW_V22" in spec.RETIRED_SHADOWS                     # [v4] v2.2 MAIN 규칙은 family "flowc" 로 계속 재현
     assert (spec.FLOW_BASE, spec.FLOWC_K, spec.FLOW_TRAIL, spec.FLOW_TP, spec.FLOW_MAX_TRADES, spec.FLOW_LAST_ENTRY) == \
         ("09:00", 300, (6.0, 4.0), 12.0, 3, "14:50")
     assert spec.FLOWF_K == 800
@@ -60,7 +60,8 @@ def test_v2_spec_is_preregistered():
     assert spec.SHADOW_META_D["SHADOW_FLOWR60"]["start"] == "2026-10-02"
     assert (spec.FLOWR_WIN_MIN, spec.FLOWR_K) == (60, 150)
     assert set(spec.RETIRED_SHADOWS) == {"SHADOW_E2F2", "SHADOW_X4NF", "SHADOW_TR44", "SHADOW_X4NFA",
-                                         "SHADOW_V1", "SHADOW_V1X4", "SHADOW_FLOWF"}   # [v3] 셋 추가 종료
+                                         "SHADOW_V1", "SHADOW_V1X4", "SHADOW_FLOWF",       # [v3] 셋 추가 종료
+                                         "SHADOW_V22", "SHADOW_V22S", "SHADOW_HYBL"}       # [v4] 셋 추가 종료
     assert not (set(spec.RETIRED_SHADOWS) & set(spec.VARIANTS))
     assert len(spec.VARIANTS) - 1 <= 5                       # 상시 섀도 5개 상한
 
@@ -222,15 +223,18 @@ def test_runner_compute_dispatches_by_kind(tmp_path):
     r = runner.compute(DAY, raw, fl, lv)
     assert tuple(r["results"]) == spec.VARIANTS
     main = r["results"]["MAIN"]
-    assert main["decision"]["bias"] == -1 and main["decision"]["family"] == "hybr60"  # v1 R1 판정을 실어 받는다
-    assert main["trades"] and main["trades"][0]["rule"] == "FLOW"                   # [v3] 첫 거래는 FLOWC
+    assert main["decision"]["bias"] == -1 and main["decision"]["family"] == "v4"      # v1 R1 판정을 실어 받는다
+    assert main["trades"] and main["trades"][0]["rule"] == "FLOW"                   # [v3·v4] 첫 거래는 FLOWC
     assert {t["rule"] for t in main["trades"]} <= {"FLOW", "R60"}
-    assert {t["rule"] for t in r["results"]["SHADOW_V22"]["trades"]} == {"FLOW"}
+    assert r["atr14_v4"] == 30.0 and r["atr14_v4_src"] == "0850"                    # [v4] ATR14 해석 결과가 실린다
+    assert r["results"]["SHADOW_V3"]["decision"]["family"] == "hybr60"
+    assert {t["rule"] for t in r["results"]["SHADOW_V3"]["trades"]} <= {"FLOW", "R60"}
     assert "SHADOW_V1" not in r["results"] and "SHADOW_FLOWF" not in r["results"]   # [v3] 종료
-    # [v3] HYBL 은 외국인 선물 원천이 없으면 CP 만으로 판정하고 그 사실을 남긴다(미측정 ≠ 0)
+    assert "SHADOW_V22" not in r["results"] and "SHADOW_HYBL" not in r["results"]   # [v4] 종료
+    # [v3·v4] 주도 지표는 외국인 선물 원천이 없으면 CP 만으로 판정하고 그 사실을 남긴다(미측정 ≠ 0)
     raw2, fl2, lv2 = _write_dbs(tmp_path / "nofx", with_fx=False) if (tmp_path / "nofx").mkdir() is None else (None,) * 3
     r2 = runner.compute(DAY, raw2, fl2, lv2)
-    assert any("HYBL 외국인 선물 원천 없음" in n for n in r2["results"]["SHADOW_HYBL"]["decision"]["notes"])
+    assert any("HYBL 외국인 선물 원천 없음" in n for n in r2["results"]["SHADOW_HYBL4"]["decision"]["notes"])
     # 종료된 FLOWF 규칙 자체는 families 에 남아 있다(재현용)
     rf = families.run_family_day(engine.DayFrame(_flat(), _flow(lambda k: 0.0)), _levels(), "flowf")
     assert rf["trades"] == [] and any("FLOWF" in n for n in rf["decision"]["notes"])
@@ -256,7 +260,7 @@ def test_run_and_store_then_report_and_scorecard(tmp_path, monkeypatch):
     rows = con.execute("SELECT variant, rule, spec_version, count(*) FROM shindong_trades GROUP BY 1,2,3").fetchall()
     con.close()
     assert any(v == "MAIN" and rule == "FLOW" and sv == spec.SPEC_VERSION and n >= 1 for v, rule, sv, n in rows)
-    assert any(v == "SHADOW_V22" and rule == "FLOW" for v, rule, _sv, _n in rows)
+    assert any(v == "SHADOW_V3" and rule == "FLOW" for v, rule, _sv, _n in rows)
     assert not any(v == "SHADOW_V1" for v, _r, _sv, _n in rows)                    # [v3] 종료 — 새 행 없음
     # 일일 리포트
     from strategy.shindong import daily_report
@@ -265,15 +269,16 @@ def test_run_and_store_then_report_and_scorecard(tmp_path, monkeypatch):
     md = open(r["md_path"], encoding="utf-8").read()
     for sec in ("## 0. 한눈에", "## 1. 차트", "## 2. 거래 흐름 — MAIN", "## 3. 섀도 흐름", "## 4. 누적 채점"):
         assert sec in md
-    assert "MAIN(v3 HYBR60)" in md and "V22(v2.2 MAIN 그대로)" in md and "HYBL(첫 FLOWC → 주도 지표)" in md
-    assert "v3 vs V22 되돌림 판정 1/20일" in md
+    assert spec.MAIN_LABEL in md and "V3(v3 MAIN 그대로)" in md and "HYBL4(V4 + 주도 지표 재진입)" in md
+    assert "v4 vs V3 되돌림 판정 1/20일" in md
     assert "| FLOW " in md                      # 규칙별 열
     # 채점표
     sc = _scorecard()
     txt = sc.build(sd, spec.SCORING_START, raw, lv)
-    assert "## 3. v3 vs SHADOW_V22 되돌림 판정" in txt and "판정: **대기** — 1/20 거래일" in txt
-    assert "SHADOW_HYBL 판정" in txt and "SHADOW_BRKC 판정" in txt and "SHADOW_V22S 판정" in txt
-    assert "SHADOW_V22 판정" not in txt                  # 되돌림 기준은 §3 에서 따로 본다
+    assert "## 3. v4 vs SHADOW_V3 되돌림 판정" in txt and "판정: **대기** — 1/20 거래일" in txt
+    assert "## 4. v4 보고 항목" in txt                    # [v4] 본전청산·역행컷·일관성·ATR 폴백
+    assert "SHADOW_HYBL4 판정" in txt and "SHADOW_BRKC 판정" in txt and "SHADOW_BE3 판정" in txt
+    assert "SHADOW_V3 판정" not in txt                   # 되돌림 기준은 §3 에서 따로 본다
     assert "V1 레거시 — R3 중단 판정" in txt
     assert "FLOWC ↔ FLOWF 대조" not in txt              # [v3] FLOWF 종료 — 절도 빠진다
 
