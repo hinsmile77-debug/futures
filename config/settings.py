@@ -7104,7 +7104,21 @@ FREEZE_SENTINEL_STALL_SEC = 300.0       # [524차] 3신호 복원으로 원본�
 #     확인할 것(`dev_memory/NEXT_TODO.md` 524차 O-3).
 FREEZE_SENTINEL_WINDOW = ("09:00", "16:30")
 FREEZE_SENTINEL_POPUP = True            # 동결 확정 시 Windows 메시지박스
-FREEZE_SENTINEL_KILL_ENABLED = False    # ⚠ 2단계(하드 종료) — 미구현. 주간회의 승인 전 금지
+# ── [MW0602 2026-10-24 사용자 결정] 2단계 — 보유 중 동결이면 강제 재기동 ──────────────
+#   종전 `False  # 미구현. 주간회의 승인 전 금지`. 사용자 지시(「동결 시 강제 재기동 + 기동 직후
+#   손절 재판정」 1순위)로 구현·활성화했다. 근거: Cybos/CREON API 에 서버 측 스톱이 없어 동결 =
+#   손절 부재다(`docs/신동거래_V4/서버측_스톱주문_지원여부_조사_MW0602-20261024.md`).
+#   흐름: 센티넬 하드 종료 → 런처 RESTART_LOOP(10초) → 포지션·손절선 복원 →
+#         `main._ts_restart_stop_check_tick` 이 첫 실시간가로 손절 재판정.
+#   조건(전부): 창 안 · position_state.json 오늘자 보유 · 아래 임계로 judge CRITICAL ·
+#         FZ-1 하트비트 파일과 [TS] 둘 다 정체 · 하트비트 pid = 살아 있는 이 저장소 main.py ·
+#         하루 상한·쿨다운. 무포지션 동결은 끊지 않는다(1단계 알림만).
+#   끄려면 False — 1단계(알림·메일)는 그대로 돈다.
+FREEZE_SENTINEL_KILL_ENABLED = True
+FREEZE_SENTINEL_KILL_STALL_SEC = 180.0   # FZ-1 스레드 신호는 30초마다 — 180초 = 6회 연속 누락
+FREEZE_SENTINEL_KILL_WINDOW = ("09:00", "15:05")   # 런처는 15:10 이후 재기동 안 함 → 재기동 여유 5분
+FREEZE_SENTINEL_KILL_MAX_PER_DAY = 2     # 넘으면 사람 몫(재기동이 동결을 못 풀고 있다)
+FREEZE_SENTINEL_KILL_COOLDOWN_SEC = 600.0   # 새 프로세스 기동(CREON 재접속·모델 로드) 여유
 # ── [MW0602 F-1009 / 2026-10-17 사용자 결정] 동결 경보를 메일로 사람에게 보낸다 ──
 #   종전에는 CRITICAL 이 로그·마커·팝업에만 남았다 — 트레이딩 PC 앞에 없으면 아무도
 #   몰랐다(실계좌 전환 2026-10-13 이후 그 공백의 비용이 커졌다).
@@ -7139,6 +7153,10 @@ ALERT_BROKER_LOST_SEC = 60.0
 #   정상이면 틱 하드스톱이 즉시 청산하고, 거부면 S-01 이 뜬다 — S-07 은 「거부 없이 청산이 안 나간」
 #   경우(주문 미송신 · 미결 고착 · 경로 누락)까지 잡는 최종 감시다. 지정가 래치 8초 + 재송신 여유.
 ALERT_STOP_BREACH_SEC = 20.0
+# [MW0602 2026-10-24] S-08 재기동 뒤 복원 포지션이 있는데 장중 실시간가가 이 초 넘게 안 들어오면 경보.
+#   재기동 직후 손절 재판정(`_ts_restart_stop_check_tick`)은 첫 실시간가로 돈다 — 가격이 없으면
+#   틱 하드스톱·S-07 모두 멈춘다. CREON 재접속 + 실시간 구독 여유를 둔 값.
+RESTART_STOP_CHECK_NOPRICE_SEC = 90.0
 # B-02 주문가능수량 조회 실패가 하루 이 횟수 이상이면 장후 1통
 ALERT_MARGINQTY_FAIL_MIN = 5
 # S-05 장전 미기동 — 센티넬이 이 시각까지 그날 SYSTEM.log 가 신선하지 않으면 경보

@@ -26,11 +26,14 @@ FZ-1 워치독(478차 후속)은 라이브 프로세스 **안의 파이썬 스�
 한다:  3신호(하트비트 · `[TS]` · SYSTEM.log)의 나이를 재고, 셋 다 정체면 경보를
        로그 · 마커 파일 · (옵션)메시지박스로 남긴다.
 
-하지 않는다: **하드 종료.** `FREEZE_SENTINEL_KILL_ENABLED` 는 자리만 있고 구현이
-       없다. F-2 가드가 「알림 전용 — 주문 없음」으로 시작한 것과 같은 이유이며,
-       승격은 주간회의 안건이다 — 감시자가 새 사고를 만드는 것이 여기서 가장
-       피해야 할 결과다. 특히 하드 종료는 15:10 이후에는 런처 재기동을 유발하지
-       않으므로(오버나이트 금지 정책) 이득 없이 마감 절차만 더 확실히 죽인다.
+2단계(**[MW0602 2026-10-24 사용자 결정]** `FREEZE_SENTINEL_KILL_ENABLED`):
+       **보유 중** 동결에 한해 프로세스를 끊어 런처 재기동 → 포지션 복원 → 손절 즉시
+       재판정 왕복을 태운다. 조건 6종(장중 창 · 보유 중 · FZ-1 신호 2종 정지 ·
+       PID 확인 · 하루 상한/쿨다운 · 수동 진단 제외)은 `kill_decision()` 위 주석.
+       종전(490차)에는 「알림 전용 — 승격은 주간회의 안건」이었다. 바뀐 이유:
+       Cybos/CREON API 에 서버 측 스톱이 없어(2026-10-24 조사) 동결 = 손절 부재이고,
+       실계좌(2026-10-13~)에서 그 구멍의 비용이 사람이 PC 앞에 있는지에 달려 있었다.
+       ⚠ 15:10 이후에는 런처가 재기동하지 않으므로 창을 15:05 에서 닫는다.
 
 ## 왜 3신호를 함께 보는가
 
@@ -470,7 +473,7 @@ def log_line(root, day, text):
         return False
 
 
-def log_armed(root, day, window, stall, check):
+def log_armed(root, day, window, stall, check, kill_note="알림 전용 — 하드 종료 없음"):
     """감시 개시를 파일에 남긴다 — **센티넬 자신의 생존 증거**.
 
     F-2 가드의 `log_armed()` 와 같은 취지다. 이 콘솔은 아무도 보지 않으므로,
@@ -478,10 +481,9 @@ def log_armed(root, day, window, stall, check):
     감시자가 스스로 「조용한 부재」에 빠지는 것이 가장 나쁘다.
     """
     return log_line(root, day, (
-        "[FreezeSentinel] %s ARMED pid=%s 창=%s~%s 정지임계=%.0fs 주기=%.0fs "
-        "(알림 전용 — 하드 종료 없음)"
+        "[FreezeSentinel] %s ARMED pid=%s 창=%s~%s 정지임계=%.0fs 주기=%.0fs (%s)"
         % (datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), os.getpid(),
-           window[0], window[1], stall, check)
+           window[0], window[1], stall, check, kill_note)
     ))
 
 
@@ -653,6 +655,254 @@ def send_mail_async(root, day, subject, body, sender=None, slack_too=False, slac
     return th
 
 
+# ── [MW0602 2026-10-24 사용자 결정] 2단계 — 동결 시 강제 재기동 ────────────────
+#
+# 왜: 신동·피터·미륵 손절은 **프로그램이 가격을 보고 내는 주문**이다. Cybos/CREON Plus
+#   API 에는 서버 측 스톱(감시) 주문이 없다(`docs/신동거래_V4/서버측_스톱주문_지원여부_조사_
+#   MW0602-20261024.md`). 그래서 프로세스가 얼어붙으면 손절이 **아예 나가지 않는다** —
+#   1단계(알림)는 사람이 PC 앞에 있을 때만 구멍을 막는다.
+#   2단계는 얼어붙은 프로세스를 끊어 런처 RESTART_LOOP 를 태운다 →
+#   새 프로세스가 `position_state.json` 에서 포지션·손절선(`ext_stop` 포함)을 복원 →
+#   `main._ts_restart_stop_check_tick` 이 첫 실시간가로 손절을 즉시 재판정한다.
+#
+# 🔴 감시자가 새 사고를 만드는 것이 여기서 가장 피해야 할 결과다 — 그래서 조건을 전부 건다:
+#   ① 장중 창(`FREEZE_SENTINEL_KILL_WINDOW`, 기본 09:00~15:05). 런처는 15:10 이후 종료에서
+#      재기동하지 않으므로(오버나이트 금지) 그 뒤의 하드 종료는 이득 없이 마감만 죽인다.
+#   ② **보유 중**(`position_state.json` 오늘자 · FLAT 아님). 무포지션 동결은 위험이 없다.
+#   ③ 정체 임계 `FREEZE_SENTINEL_KILL_STALL_SEC`(기본 180초)로 `judge()` 가 CRITICAL 이고,
+#      **FZ-1 스레드 신호 2종(하트비트 파일 · `[TS]`)이 둘 다 측정되고 둘 다 정체**.
+#      이 둘은 메인 루프와 무관한 스레드가 30초마다 쓰므로, 둘 다 180초 멎었다는 것은
+#      GIL 까지 잡힌 동결이다(메인 루프만 멎은 동결은 FZ-1 이 스스로 os._exit 한다).
+#   ④ 대상 PID = **하트비트 파일의 pid**. psutil 로 살아 있는 python · 이 저장소의
+#      `main.py` · 하트비트보다 먼저 생성됨(PID 재사용 차단)을 모두 확인한다.
+#      재기동 중인 새 프로세스는 아직 하트비트를 안 썼으므로(옛 PID = 이미 죽음) 대상이 아니다.
+#   ⑤ 하루 최대 `FREEZE_SENTINEL_KILL_MAX_PER_DAY`(2)회 · 직전 종료 뒤 `..._COOLDOWN_SEC`(600초).
+#      기록은 `data/freeze_kill_<date>.json` — 센티넬이 재기동돼도 잊지 않는다.
+#   ⑥ `--once`(수동 진단)는 **판정만 출력하고 절대 죽이지 않는다.**
+
+KILL_RECORD_TPL = "data/freeze_kill_%s.json"
+
+
+def position_state(root, now):
+    """`data/position_state.json` → {status, quantity, entry_source, stop_price} 또는 None(미측정).
+
+    오늘 저장분만 인정한다(어제 파일은 미측정). FLAT 도 그대로 돌려준다 — 판정은 호출자 몫.
+    """
+    try:
+        with io.open(os.path.join(root, "data", "position_state.json"), "r", encoding="utf-8") as f:
+            st = json.load(f)
+        saved = datetime.datetime.strptime(str(st.get("saved_at"))[:19], "%Y-%m-%dT%H:%M:%S")
+    except Exception:
+        return None
+    if saved.date() != now.date():
+        return None
+    return {"status": str(st.get("status") or ""),
+            "quantity": int(st.get("quantity") or 0),
+            "entry_source": st.get("entry_source"),
+            "stop_price": st.get("stop_price"),
+            "saved_at": saved}
+
+
+def _heartbeat_pid(root, day, pc=None):
+    """하트비트 파일의 (pid, written_at) — 없거나 깨졌으면 (None, None)."""
+    try:
+        from config.settings import FREEZE_WATCHDOG_HEARTBEAT_PATH as tpl
+    except Exception:
+        tpl = "data/heartbeat_{pc}_{date}.json"
+    path = os.path.join(root, tpl.format(pc=pc or _pc_id(), date=day.strftime("%Y%m%d")))
+    try:
+        with io.open(path, "r", encoding="utf-8") as f:
+            hb = json.load(f)
+        pid = int(hb.get("pid"))
+        written = datetime.datetime.strptime(str(hb.get("written_at"))[:19], "%Y-%m-%dT%H:%M:%S")
+        return pid, written
+    except Exception:
+        return None, None
+
+
+def resolve_target(root, day, pc=None, psutil_mod=None):
+    """하드 종료 대상 확인 — {"ok": bool, "pid": int|None, "why": str}.
+
+    하트비트의 pid 가 지금도 살아 있는 **이 저장소의 main.py python 프로세스**이고,
+    그 프로세스가 하트비트 기록 시각보다 먼저 생성됐을 때만 ok.
+    """
+    pid, written = _heartbeat_pid(root, day, pc)
+    if pid is None:
+        return {"ok": False, "pid": None, "why": "하트비트 pid 미측정"}
+    try:
+        ps = psutil_mod
+        if ps is None:
+            import psutil as ps
+    except Exception as exc:
+        return {"ok": False, "pid": pid, "why": "psutil 없음(%s)" % type(exc).__name__}
+    try:
+        p = ps.Process(pid)
+        name = (p.name() or "").lower()
+        cmd = p.cmdline() or []
+        cwd = ""
+        try:
+            cwd = p.cwd() or ""
+        except Exception:
+            pass
+        created = datetime.datetime.fromtimestamp(p.create_time())
+    except Exception as exc:
+        return {"ok": False, "pid": pid, "why": "pid %d 프로세스 없음/접근 불가(%s)" % (pid, type(exc).__name__)}
+    if "python" not in name:
+        return {"ok": False, "pid": pid, "why": "pid %d 는 python 이 아니다(%s)" % (pid, name)}
+    tgt = os.path.normcase(os.path.join(os.path.abspath(root), "main.py"))
+    mains = [os.path.normcase(c if os.path.isabs(c) else os.path.join(cwd or "?", c))
+             for c in cmd if (c or "").lower().endswith("main.py")]
+    if tgt not in mains:
+        return {"ok": False, "pid": pid, "why": "pid %d 는 이 저장소의 main.py 가 아니다(%s)" % (pid, " ".join(cmd))}
+    if created > written + datetime.timedelta(seconds=2):
+        return {"ok": False, "pid": pid, "why": "pid %d 가 하트비트(%s)보다 나중에 생겼다 — PID 재사용"
+                % (pid, written.strftime("%H:%M:%S"))}
+    return {"ok": True, "pid": pid, "why": "pid %d main.py (생성 %s · 하트비트 %s)"
+            % (pid, created.strftime("%H:%M:%S"), written.strftime("%H:%M:%S"))}
+
+
+def load_kill_history(root, day):
+    """오늘 강제 종료 기록(list of dict) — 없으면 []."""
+    try:
+        with io.open(os.path.join(root, KILL_RECORD_TPL % day.strftime("%Y%m%d")), "r", encoding="utf-8") as f:
+            rows = json.load(f)
+        return rows if isinstance(rows, list) else []
+    except Exception:
+        return []
+
+
+def append_kill_record(root, day, rec):
+    path = os.path.join(root, KILL_RECORD_TPL % day.strftime("%Y%m%d"))
+    rows = load_kill_history(root, day) + [rec]
+    try:
+        d = os.path.dirname(path)
+        if not os.path.isdir(d):
+            os.makedirs(d)
+        tmp = path + ".tmp"
+        with io.open(tmp, "w", encoding="utf-8") as f:
+            f.write(json.dumps(rows, ensure_ascii=False, indent=1))
+        os.replace(tmp, path)
+        return True
+    except Exception as exc:
+        print("[FreezeSentinel] 강제 종료 기록 실패: %s" % exc, file=sys.stderr)
+        return False
+
+
+def kill_decision(ages, now, kill_stall_sec, window, position, history,
+                  max_per_day=2, cooldown_sec=600.0,
+                  exit_flag_age=None, close_done_age=None, shutdown_age=None):
+    """강제 재기동을 할 것인가 — 순수 함수(대상 PID 확인은 호출자가 따로 한다).
+
+    Returns: {"kill": bool, "reason": str, "verdict": judge 결과}
+    """
+    v = judge(ages, stall_sec=kill_stall_sec, exit_flag_age=exit_flag_age,
+              close_done_age=close_done_age, shutdown_age=shutdown_age)
+
+    def _no(why):
+        return {"kill": False, "reason": why, "verdict": v}
+
+    if not _in_window(now, window):
+        return _no("강제 재기동 창(%s~%s) 밖" % (window[0], window[1]))
+    if v["level"] != "CRITICAL":
+        return _no("정체 %.0fs 기준 %s" % (kill_stall_sec, v["level"]))
+    for sig in (SIG_HEARTBEAT, SIG_TS):
+        if sig not in v["stale"]:
+            return _no("%s 가 정체로 측정되지 않았다(미측정 또는 신선) — FZ-1 스레드 신호 2종이 "
+                       "둘 다 멎어야 한다" % sig)
+    if position is None:
+        return _no("포지션 상태 미측정(position_state.json 오늘자 없음) — 보유 중일 때만 끊는다")
+    if position.get("status") in ("", "FLAT") or int(position.get("quantity") or 0) <= 0:
+        return _no("무포지션(FLAT) — 동결이어도 손절 위험이 없다")
+    if len(history) >= int(max_per_day):
+        return _no("오늘 강제 재기동 %d회 — 상한 %d회 도달(사람이 볼 것)" % (len(history), int(max_per_day)))
+    if history:
+        try:
+            last = datetime.datetime.strptime(str(history[-1].get("at"))[:19], "%Y-%m-%d %H:%M:%S")
+            if (now - last).total_seconds() < float(cooldown_sec):
+                return _no("직전 강제 재기동 %s 뒤 %.0fs — 쿨다운 %.0fs"
+                           % (last.strftime("%H:%M:%S"), (now - last).total_seconds(), float(cooldown_sec)))
+        except Exception:
+            pass
+    return {"kill": True, "verdict": v,
+            "reason": "보유 중(%s %d계약) 동결 — 정체 %.0fs 이상 · FZ-1 신호 2종 정지"
+                      % (position.get("status"), int(position.get("quantity") or 0), kill_stall_sec)}
+
+
+def hard_kill(pid, psutil_mod=None, wait_sec=10.0):
+    """대상 프로세스를 끊는다 — (ok, 설명). `_exit_normally` 를 쓰지 않으므로 런처가 재기동한다."""
+    try:
+        ps = psutil_mod
+        if ps is None:
+            import psutil as ps
+        p = ps.Process(pid)
+        p.kill()
+        try:
+            p.wait(timeout=wait_sec)
+        except Exception:
+            pass
+        return True, "pid %d 종료 요청 완료" % pid
+    except Exception as exc:
+        return False, "pid %d 종료 실패(%s: %s)" % (pid, type(exc).__name__, exc)
+
+
+def build_kill_mail(decision, target, ok, msg, pc, now, position):
+    """강제 재기동 메일의 (제목, 본문). S-04 의 2단계 — 같은 동결로 1단계 메일이 따로 가지 않는다."""
+    subject = "%s[%s][%s] 미륵이 동결 — 강제 재기동 %s %s" % (
+        MAIL_TAG_ALERT, pc, ALERT_CODE_FREEZE, "실행" if ok else "실패", now.strftime("%H:%M"))
+    pos = position or {}
+    lines = [
+        "%s PC 의 미륵이가 보유 중에 얼어붙어 동결 센티넬이 프로세스를 끊었습니다%s." % (
+            pc, "" if ok else " — **종료에 실패했습니다**"),
+        "",
+        "보유 포지션(마지막 저장): %s %s계약 · 진입 주체 %s · 손절선 %s" % (
+            pos.get("status"), pos.get("quantity"), pos.get("entry_source") or "미륵", pos.get("stop_price")),
+        "조치: %s" % msg,
+        "",
+        "이후 흐름",
+        "  1. 런처가 10초 뒤 미륵이를 다시 띄웁니다 (15:10 이후면 재기동 없음)",
+        "  2. 새 프로세스가 포지션·손절선을 복원하고 첫 실시간가로 손절을 즉시 재판정합니다",
+        "  3. 신호가 다시 들어오면 [이상해소] 메일이 옵니다 — 안 오면 HTS 에서 직접 청산하세요",
+        "",
+        "판정 근거",
+        "  " + decision.get("reason", ""),
+        "  대상 확인: " + target.get("why", ""),
+    ]
+    lines += ["  · " + str(d) for d in decision.get("verdict", {}).get("details", [])]
+    lines += ["", "— 미륵이 %s 동결 센티넬(FZ-2) 자동 발송." % pc]
+    return subject, chr(10).join(lines)
+
+
+def try_kill(root, now, ages, kcfg, flags, pc, psutil_mod=None, execute=True):
+    """판정 → 대상 확인 → (execute 면) 기록 · 종료. 반환: dict(done, decision, target, ok, msg, position)."""
+    position = position_state(root, now)
+    history = load_kill_history(root, now.date())
+    dec = kill_decision(ages, now, kcfg["stall"], kcfg["window"], position, history,
+                        max_per_day=kcfg["max_per_day"], cooldown_sec=kcfg["cooldown"],
+                        exit_flag_age=flags.get("exit"), close_done_age=flags.get("close"),
+                        shutdown_age=flags.get("shutdown"))
+    out = {"done": False, "decision": dec, "target": None, "ok": False, "msg": "", "position": position}
+    if not dec["kill"]:
+        return out
+    tgt = resolve_target(root, now.date(), pc, psutil_mod)
+    out["target"] = tgt
+    if not tgt["ok"]:
+        dec["kill"] = False
+        dec["reason"] = "대상 확인 실패 — " + tgt["why"]
+        return out
+    if not execute:
+        out["msg"] = "수동 진단 — 실행하지 않음(판정만)"
+        return out
+    # 기록을 **먼저** 남긴다 — 새 프로세스가 기동하며 이 파일로 「동결 강제 재기동 뒤」임을 안다.
+    append_kill_record(root, now.date(), {
+        "at": now.strftime("%Y-%m-%d %H:%M:%S"), "pid": tgt["pid"], "reason": dec["reason"],
+        "ages": dict((k, (None if v is None else round(float(v), 1))) for k, v in ages.items()),
+        "position": dict((k, v) for k, v in (position or {}).items() if k != "saved_at"),
+    })
+    ok, msg = hard_kill(tgt["pid"], psutil_mod)
+    out.update(done=True, ok=ok, msg=msg)
+    return out
+
+
 # ── 진입점 ────────────────────────────────────────────────────────────────
 
 def _cfg(name, default):
@@ -765,12 +1015,15 @@ def main(argv=None):
         print("[FreezeSentinel] 설정 비활성(FREEZE_SENTINEL_ENABLED=False) — 종료")
         return RC_NOT_APPLICABLE
 
-    # 🔴 하드 종료 승격은 주간회의 안건이다. 플래그가 켜져 있어도 여기서 멈춘다 —
-    #    구현 없이 켠 플래그가 조용히 "동작한다"고 읽히는 것을 막는다.
-    if _cfg("FREEZE_SENTINEL_KILL_ENABLED", False):
-        print("[FreezeSentinel] ⚠ FREEZE_SENTINEL_KILL_ENABLED=True 인데 **하드 종료는 "
-              "미구현**이다. 알림 전용으로 계속 진행한다 (승격은 주간회의 안건).",
-              file=sys.stderr)
+    # [MW0602 2026-10-24] 2단계 — 보유 중 동결이면 강제 재기동(조건은 kill_decision 주석)
+    kill_on = bool(_cfg("FREEZE_SENTINEL_KILL_ENABLED", False))
+    kcfg = {"stall": float(_cfg("FREEZE_SENTINEL_KILL_STALL_SEC", 180.0)),
+            "window": _cfg("FREEZE_SENTINEL_KILL_WINDOW", ("09:00", "15:05")),
+            "max_per_day": int(_cfg("FREEZE_SENTINEL_KILL_MAX_PER_DAY", 2)),
+            "cooldown": float(_cfg("FREEZE_SENTINEL_KILL_COOLDOWN_SEC", 600.0))}
+    kill_note = ("보유 중 동결 강제 재기동 ON — 정체 %.0fs · 창 %s~%s · 하루 %d회"
+                 % (kcfg["stall"], kcfg["window"][0], kcfg["window"][1], kcfg["max_per_day"])
+                 if kill_on else "알림 전용 — 하드 종료 없음")
 
     now = datetime.datetime.now()
     if args.at_time:
@@ -795,9 +1048,19 @@ def main(argv=None):
                         close_done_age=close_done_age(root, now, now.date()),
                         shutdown_age=shutdown_marker_age(root, now, now.date()))
         emit(root, now.date(), verdict, popup=popup, manual=True)
+        if kill_on:
+            # ⚠ 수동 진단은 **절대 죽이지 않는다**(execute=False) — 판정만 보여준다.
+            _ages = collect(root, now, now.date())
+            _k = try_kill(root, now, _ages, kcfg,
+                          {"exit": exit_flag_age(root, now),
+                           "close": close_done_age(root, now, now.date()),
+                           "shutdown": shutdown_marker_age(root, now, now.date())},
+                          _pc_id(), execute=False)
+            print("[FreezeSentinel] 강제 재기동 판정(수동 — 실행 안 함): %s · %s" % (
+                "대상" if _k["decision"]["kill"] else "아님", _k["decision"]["reason"]))
         return verdict["rc"]
 
-    log_armed(root, now.date(), window, stall, check)
+    log_armed(root, now.date(), window, stall, check, kill_note)
     # [F-1009] 메일 상태도 생존 증거와 함께 남긴다 — 「켜져 있는 줄 알았는데 꺼져
     # 있었다」를 사후에 가를 수 있게(계측 4원칙 ④).
     try:
@@ -808,8 +1071,8 @@ def main(argv=None):
     except Exception as exc:
         _mail_state = "OFF(메일 모듈 로드 실패: %s)" % type(exc).__name__
     log_line(root, now.date(), "[FreezeSentinel] 메일 경보 %s" % _mail_state)
-    print("[FreezeSentinel] 감시 시작 pid=%d 창=%s~%s (알림 전용)"
-          % (os.getpid(), window[0], window[1]))
+    print("[FreezeSentinel] 감시 시작 pid=%d 창=%s~%s (%s)"
+          % (os.getpid(), window[0], window[1], kill_note))
 
     pc = _pc_id()
     premarket = PremarketWatch(root, _hm(_cfg("ALERT_PREMARKET_START_HM", "08:52"),
@@ -836,11 +1099,43 @@ def main(argv=None):
             time.sleep(min(60.0, check))
             continue
 
-        verdict = judge(collect(root, now, now.date()), stall_sec=stall,
-                        exit_flag_age=exit_flag_age(root, now),
-                        close_done_age=close_done_age(root, now, now.date()),
-                        shutdown_age=shutdown_marker_age(root, now, now.date()))
+        _ages = collect(root, now, now.date())
+        _flags = {"exit": exit_flag_age(root, now),
+                  "close": close_done_age(root, now, now.date()),
+                  "shutdown": shutdown_marker_age(root, now, now.date())}
+        verdict = judge(_ages, stall_sec=stall, exit_flag_age=_flags["exit"],
+                        close_done_age=_flags["close"], shutdown_age=_flags["shutdown"])
         last_rc = verdict["rc"]
+        if kill_on:
+            # [MW0602 2026-10-24] 2단계 — 1단계 경보(300초)보다 먼저(180초) 온다.
+            #   실행했으면 이번 주기의 1단계 경보는 건너뛴다(같은 동결로 메일 2통 금지).
+            #   alerted=True 로 두어 새 프로세스 신호가 들어오면 회복 메일이 나간다.
+            try:
+                _k = try_kill(root, now, _ages, kcfg, _flags, pc)
+            except Exception as exc:
+                _k = None
+                log_line(root, now.date(), "[FreezeSentinel] %s 강제 재기동 판정 예외(%s: %s) — 알림만 계속"
+                         % (now.strftime("%Y-%m-%d %H:%M:%S"), type(exc).__name__, exc))
+            if _k is not None and _k["decision"]["kill"] and not _k["done"]:
+                log_line(root, now.date(), "[FreezeSentinel] %s 강제 재기동 보류 — %s"
+                         % (now.strftime("%Y-%m-%d %H:%M:%S"), _k["decision"]["reason"]))
+            elif _k is not None and not _k["decision"]["kill"] and _k["target"] is not None:
+                log_line(root, now.date(), "[FreezeSentinel] %s 강제 재기동 보류 — %s"
+                         % (now.strftime("%Y-%m-%d %H:%M:%S"), _k["decision"]["reason"]))
+            if _k is not None and _k["done"]:
+                emit(root, now.date(), _k["decision"]["verdict"], popup=False, manual=False)
+                log_line(root, now.date(), "[FreezeSentinel] %s 🔴 강제 재기동 %s — %s · %s"
+                         % (now.strftime("%Y-%m-%d %H:%M:%S"), "실행" if _k["ok"] else "실패",
+                            _k["decision"]["reason"], _k["msg"]))
+                if mail_on:
+                    _s, _b = build_kill_mail(_k["decision"], _k["target"], _k["ok"], _k["msg"],
+                                             pc, now, _k["position"])
+                    send_mail_async(root, now.date(), _s, _b, slack_too=slack_too)
+                if not alerted:
+                    alerted_at = now
+                alerted = True
+                time.sleep(check)
+                continue
         if verdict.get("state") == "NORMAL_CLOSE":
             # [MW0601 498차 / F-10] 정상 마감 뒤 정지 — **감시는 계속하되** 최고
             # 등급 경보를 내지 않는다. 종전에는 여기서 매 주기 CRITICAL 이 나가

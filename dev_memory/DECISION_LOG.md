@@ -50345,3 +50345,12 @@ AI 는 10/16 부터 고착을 적었으나 「raw_candles staleness·적재 지�
 - **How to apply**: 샘플은 미륵 사이저 사이클에서만 찍힘(매분 아님) — 시간 비율로 인용 금지. 판정 문턱은 O-649 사전등록 그대로(B등급 이상 margin 차단 1건 또는 20거래일).
 - **검증**: `tests/test_653_collector_capital_margin_crosstab.py` 6건 + 기존 수집기 테스트 포함 45 passed(base anaconda pytest; py37_32 import 스모크 OK). 1023 실로그 재현: 신동 보유 중 BLOCK 29 · FLAT OK 2 — 리포트 수기 대조와 일치.
 - **C등급/미처리**: F-9/G-1 BarGap 이중가드(사용자 결정 대기) · `MAX_CONTRACTS` 재산출(사이징 토글) — 둘 다 NEXT_TODO 기존 등록 유지. R-1은 G-3 배선으로 전제 충족(집행 보류 유지).
+
+## 2026-10-24 (MW0602 654차 — 동결 시 강제 재기동 + 기동 직후 손절 재판정) — ✅ **적용(미커밋)**
+- **사용자 결정**: 「동결 시 강제 재기동 + 기동 직후 손절 재판정(1순위) 구현」. 종전 `FREEZE_SENTINEL_KILL_ENABLED=False  # 미구현. 주간회의 승인 전 금지`(490차)를 이 지시로 **대체**한다.
+- **왜**: Cybos/CREON Plus API 에 서버 측 스톱(감시) 주문이 없다(`docs/신동거래_V4/서버측_스톱주문_지원여부_조사_MW0602-20261024.md`) → 프로세스 동결 = 손절 부재. FZ-1(프로세스 안 스레드)은 메인 루프만 멎은 동결에서 이미 os._exit 하지만, GIL 까지 잡힌 동결에서는 FZ-1 도 같이 멎어 FZ-2(밖) 알림만 남았다.
+- **센티넬(`scripts/freeze_sentinel.py`)**: `kill_decision()` · `resolve_target()` · `try_kill()` · `hard_kill()`(psutil, 종료 경로 단일). 조건 전부: 창 09:00~15:05(런처 15:10 이후 재기동 없음) · `position_state.json` 오늘자 보유 · 정체 180초로 judge CRITICAL · FZ-1 하트비트 파일과 `[TS]` 둘 다 측정·정체 · 하트비트 pid = 살아 있는 이 저장소 main.py · 하트비트보다 먼저 생성(PID 재사용 차단) · 하루 2회 · 쿨다운 600초. `--once` 는 판정만. 기록 `data/freeze_kill_<date>.json` 을 **끊기 전에** 남긴다. 끊으면 S-04 「강제 재기동 실행」 메일 1통 · 같은 동결로 1단계 메일 재발송 없음 · 신호 회복 시 [이상해소].
+- **main**: `_ts_restart_stop_check_tick`(2초 타이머, 독립 try) — 복원 포지션을 장중 첫 실시간가로 1회 재판정, 손절선 밖이면 틱 하드스톱과 같은 `_process_tick_stop` 예약(이미 예약·미결 주문·CB HALT 면 주문 없음). 가격 미수신 90초(`RESTART_STOP_CHECK_NOPRICE_SEC`) → 신규 **S-08** 「재기동 뒤 보유 포지션 가격 미수신」, 가격 수신 시 해소. 기동 로그에 강제 재기동 기록(30분 이내)을 남긴다.
+- **무포지션 동결은 끊지 않는다**(1단계 알림만) — 감시자 오탐 비용을 보유 중으로 한정.
+- **검증**: `tests/test_mw0602_freeze_kill_restart.py` 29건 + 갱신한 가드 테스트(490·523·636·alert_mail_wiring) 72 passed. 전체 17 failed = 기존 기준선과 동일(457·533 은 변경 제외 상태에서도 실패 확인). py37_32 컴파일 · `--once --at-time` 재생 · 실제 psutil 로 임시 main.py 프로세스 종료·기록 스모크 OK.
+- **미검증**: 실제 GIL 동결 → 런처 재기동 → CREON 재접속 → 복원 → 재판정 왕복은 라이브 미관측. 리허설 필요 시 모의 환경에서.

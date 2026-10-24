@@ -3,7 +3,7 @@
 
 고정하는 불변식
   · 카탈로그의 모든 코드가 **어딘가에서 발송**된다(죽은 코드 금지) — 보내는 주체가 맞다
-      main: S-01 S-02 S-03 S-06 S-07 A-01 A-02 A-03 A-04 B-02 B-03 B-04
+      main: S-01 S-02 S-03 S-06 S-07 S-08 A-01 A-02 A-03 A-04 B-02 B-03 B-04
       동결 센티넬: S-04 S-05 (main 이 죽었거나 안 떴으면 main 은 보낼 수 없다)
       EOD 재학습: B-01
   · 상태형(S-02 · S-07 · A-01 · A-03)은 한 함수에서 발생과 해소를 같이 판정한다 — 해소 누락 방지
@@ -88,6 +88,9 @@ class _Self(object):
         self._pending_order = None
         self._alert_stop_breach_since = None
         self._px = 863.00
+        self._restart_stop_check = None     # [2026-10-24] 재기동 직후 손절 재판정 — None = 대상 없음
+        self._tick_stop_triggered = False
+        self._tick_stop_price = 0.0
 
     def _peter2_last_price(self):
         return self._px
@@ -107,7 +110,7 @@ def test_1_every_catalog_code_has_a_sender():
     main_src = _src("main.py")
     sent_by_main = set(re.findall(r'_ts_alert\(self, "([SAB]-\d\d)"', main_src))
     # S-05 는 센티넬(오늘 SYSTEM.log 없음)과 main(브로커 로그인 실패로 기동 중단) 둘이 나눠 맡는다
-    assert sent_by_main == {"S-01", "S-02", "S-03", "S-05", "S-06", "S-07", "A-01", "A-02", "A-03", "A-04",
+    assert sent_by_main == {"S-01", "S-02", "S-03", "S-05", "S-06", "S-07", "S-08", "A-01", "A-02", "A-03", "A-04",
                             "B-02", "B-03", "B-04"}, sent_by_main
     fs = _src(os.path.join("scripts", "freeze_sentinel.py"))
     assert 'ALERT_CODE_FREEZE = "S-04"' in fs and 'ALERT_CODE_NOT_STARTED = "S-05"' in fs
@@ -117,7 +120,7 @@ def test_1_every_catalog_code_has_a_sender():
 
 def test_2_resolvers_exist_for_episodes():
     s = _src("main.py")
-    for code in ("S-01", "S-02", "S-03", "S-06", "S-07", "A-01", "A-03"):
+    for code in ("S-01", "S-02", "S-03", "S-06", "S-07", "S-08", "A-01", "A-03"):
         assert '_ts_alert_resolve(self, "%s"' % code in s, code
 
 

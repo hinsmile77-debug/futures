@@ -88,6 +88,7 @@ from config.settings import (
     ALERT_FORCE_EXIT_CHECK_HM, ALERT_LOSS_TRADE_KRW, ALERT_LOSS_DAY_PCT,   # [MW0602 2026-10-17] 긴급 알림
     ALERT_BROKER_LOST_SEC, ALERT_MARGINQTY_FAIL_MIN, ALERT_LOSS_CAPITAL_KRW,
     ALERT_STOP_BREACH_SEC,                                               # [MW0602 2026-10-24] S-07
+    RESTART_STOP_CHECK_NOPRICE_SEC,                                      # [MW0602 2026-10-24] S-08
     TP1_TICK_ENABLED,                     # [403차 종합 P1-5] tick-level TP1 킬스위치
     TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED, TOXICITY_SEVERE_SPREAD_BLOCK_TICKS,
     TOXICITY_REDUCE_MULT_SHADOW_HI, TOXICITY_REDUCE_MULT_SHADOW_LO,
@@ -805,6 +806,9 @@ class TradingSystem:
         self._session_start_ts: str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         # 재시작 시 이전 포지션 복원 (당일 데이터만)
+        # [MW0602 2026-10-24] 복원됐으면 첫 실시간가로 손절을 즉시 재판정한다(`_ts_restart_stop_check_tick`).
+        #   None = 재판정 대상 없음(무복원 · 이미 판정 끝).
+        self._restart_stop_check: object = None
         if self.position.load_state():
             msg = (
                 f"[Position] 이전 포지션 복원: {self.position.status} "
@@ -813,6 +817,16 @@ class TradingSystem:
             )
             logger.warning(msg)           # SYSTEM 로그 파일 + 콘솔
             log_manager.system(msg, "WARNING")   # 대시보드 1 시스템 탭
+            self._restart_stop_check = {
+                "since": datetime.datetime.now(),
+                "kill": _ts_latest_freeze_kill(datetime.datetime.now()),
+                "noprice_alerted": False,
+            }
+            if self._restart_stop_check["kill"]:
+                _kr = self._restart_stop_check["kill"]
+                log_manager.system(
+                    "[RestartStopCheck] 동결 센티넬 강제 재기동(%s · 옛 pid %s) 뒤 기동 — "
+                    "첫 실시간가로 손절 재판정 대기" % (_kr.get("at"), _kr.get("pid")), "WARNING")
 
         # ── 챔피언-도전자 Shadow 엔진 (대시보드 주입 전 먼저 초기화) ───
         self.challenger_engine = None  # type: ignore
@@ -17901,6 +17915,7 @@ def _ts_alert_state_tick(self, now=None) -> None:
 
       S-02  15:12 이후 포지션 잔존(오버나이트 위험) ↔ FLAT
       S-07  보유 중 실시간가가 손절선 밖에 ALERT_STOP_BREACH_SEC 이상 ↔ FLAT  [MW0602 2026-10-24]
+      S-08  재기동 뒤 복원 포지션 장중 실시간가 미수신 RESTART_STOP_CHECK_NOPRICE_SEC ↔ 가격 수신·FLAT
       A-01  거래소 CB 중단(재개 대기) ↔ 재개
       A-03  미륵 서킷브레이커 PAUSED/HALTED ↔ NORMAL
     """
@@ -17920,6 +17935,10 @@ def _ts_alert_state_tick(self, now=None) -> None:
                  "청산 지정가 래치: %s" % (self._exit_limit_mode_reason or "없음")])
         elif self.position.status == "FLAT" and _ts_alert_is_open("S-02"):
             _ts_alert_resolve(self, "S-02", note="포지션 FLAT 확인")
+        try:                                          # 재기동 직후 손절 재판정 · S-08 — 독립 try
+            _ts_restart_stop_check_tick(self, now)
+        except Exception as _rs_e:
+            logger.warning("[RestartStopCheck] 판정 예외 (무해): %s", _rs_e)
         try:                                          # S-07 — 독립 try: 예외가 뒤의 A-01·A-03 판정을 막지 않게
             _ts_alert_stop_breach_tick(self, now)
         except Exception as _sb_e:
@@ -17944,6 +17963,88 @@ def _ts_alert_state_tick(self, now=None) -> None:
                     _ts_alert_resolve(self, "A-03", key=_k, note="CB NORMAL 복귀")
     except Exception as _st_e:
         logger.warning("[AlertMail] 상태 점검 예외 (무해): %s", _st_e)
+
+
+def _ts_latest_freeze_kill(now) -> object:
+    """[MW0602 2026-10-24] 오늘 동결 센티넬 강제 재기동 기록(`data/freeze_kill_<date>.json`)의 마지막 행 —
+    30분 이내면 dict, 아니면 None. 기동 로그에 「강제 재기동 뒤」임을 남기는 용도(판정 무영향)."""
+    try:
+        _p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data",
+                          "freeze_kill_%s.json" % now.strftime("%Y%m%d"))
+        with open(_p, "r", encoding="utf-8") as _f:
+            _rows = json.load(_f)
+        _last = _rows[-1] if isinstance(_rows, list) and _rows else None
+        if not _last:
+            return None
+        _at = datetime.datetime.strptime(str(_last.get("at"))[:19], "%Y-%m-%d %H:%M:%S")
+        return _last if 0 <= (now - _at).total_seconds() <= 1800 else None
+    except Exception:
+        return None
+
+
+def _ts_restart_stop_check_tick(self, now) -> None:
+    """[MW0602 2026-10-24] 재기동 직후 손절 재판정 — 2초 타이머(`_ts_alert_state_tick`)에서 부른다.
+
+    재기동(동결 센티넬 강제 재기동 · 크래시 재기동 · 수동 재시작) 뒤 `position_state.json` 에서 복원한
+    포지션의 손절을 **장중 첫 실시간가**로 한 번 판정한다.
+      · 손절선 통과면 틱 하드스톱과 **같은 경로**(`_process_tick_stop`)를 즉시 예약한다 — 틱 콜백이
+        같은 틱에서 이미 예약했으면(플래그·미결 주문) 건너뛴다(중복 주문 없음).
+      · CB HALT 면 틱 하드스톱이 제외되는 상태라 여기서도 주문하지 않고 경고만 남긴다(S-07 이 이어 감시).
+      · 장중인데 RESTART_STOP_CHECK_NOPRICE_SEC 넘게 가격이 없으면 S-08 — 가격이 오면 해소.
+    판정은 1회다(끝나면 `_restart_stop_check = None`). 이후는 틱 하드스톱·S-07 이 맡는다.
+    """
+    chk = self._restart_stop_check
+    if chk is None:
+        return
+    pos = self.position
+    if pos.status == "FLAT":
+        log_manager.system("[RestartStopCheck] 복원 포지션이 이미 FLAT — 재판정 종료", "INFO")
+        if chk.get("noprice_alerted"):
+            _ts_alert_resolve(self, "S-08", note="포지션 FLAT 확인")
+        self._restart_stop_check = None
+        return
+    if not is_market_open(now):
+        return
+    px = self._peter2_last_price()
+    waited = (now - chk["since"]).total_seconds()
+    if not px:
+        if waited >= float(RESTART_STOP_CHECK_NOPRICE_SEC) and not chk.get("noprice_alerted"):
+            chk["noprice_alerted"] = True
+            log_manager.system(
+                "[RestartStopCheck] 재기동 %.0f초째 실시간가 없음 — 복원 포지션 %s %s계약 손절 %.2f 판정 불가"
+                % (waited, pos.status, pos.quantity, float(pos.stop_price or 0.0)), "ERROR")
+            _ts_alert(self, "S-08", "%s %s계약 보유 · 재기동 %.0f초째 실시간가 없음" % (
+                pos.status, pos.quantity, waited),
+                ["진입 주체 %s · 진입가 %.2f · 손절선 %.2f" % (
+                    pos.entry_source or "미륵", float(pos.entry_price or 0.0), float(pos.stop_price or 0.0)),
+                 "동결 강제 재기동 뒤: %s" % ((chk.get("kill") or {}).get("at") or "아님"),
+                 "가격이 없으면 틱 하드스톱·S-07(손절선 통과 뒤 미청산)이 돌지 않는다"])
+        return
+    stop = float(pos.stop_price or 0.0)
+    hit = stop > 0.0 and pos.is_stop_hit(px)
+    _kill = chk.get("kill")
+    log_manager.system(
+        "[RestartStopCheck] %s복원 포지션 %s %s계약 @%.2f 주체=%s 손절 %.2f · 첫 실시간가 %.2f (기동 뒤 %.0fs) → %s"
+        % ("동결 강제 재기동 뒤 · " if _kill else "", pos.status, pos.quantity, float(pos.entry_price or 0.0),
+           pos.entry_source or "미륵", stop, px, waited,
+           ("**손절선 통과**" if hit else ("손절선 없음(0) — 판정 불가" if stop <= 0.0 else "손절선 안쪽 — 보유 유지"))),
+        "WARNING" if (hit or stop <= 0.0) else "INFO")
+    if hit:
+        if self._tick_stop_triggered or self._pending_order is not None:
+            log_manager.system("[RestartStopCheck] 청산이 이미 진행 중(틱 하드스톱 예약 또는 미결 주문) — 추가 주문 없음",
+                               "INFO")
+        elif self.circuit_breaker.state == CB_STATE_HALTED:
+            log_manager.system("[RestartStopCheck] CB HALT — 틱 하드스톱 경로 제외 상태라 주문하지 않음 "
+                               "(CB 청산 경로 · S-07 감시)", "WARNING")
+        else:
+            self._tick_stop_triggered = True
+            self._tick_stop_price = px
+            logger.warning("[TickStop] 스톱 히트 감지 (재기동 재판정) %s px=%.2f stop=%.2f → 즉시 처리 예약",
+                           pos.status, px, stop)
+            QTimer.singleShot(0, self._process_tick_stop)
+    if chk.get("noprice_alerted"):
+        _ts_alert_resolve(self, "S-08", note="실시간가 수신 %.2f — 손절 재판정 완료" % px)
+    self._restart_stop_check = None
 
 
 def _ts_alert_stop_breach_tick(self, now) -> None:

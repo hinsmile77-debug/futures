@@ -62,10 +62,18 @@ def _shutdown_marker_wired():
 
 
 def test_sentinel_is_alert_only():
-    """🔴 하드 종료 금지 — Phase 0의 전제다(주간회의 승인 전)."""
-    from config.settings import FREEZE_SENTINEL_KILL_ENABLED
-    assert FREEZE_SENTINEL_KILL_ENABLED is False, \
-        "FZ-2는 알림 전용이다. 하드 종료 승격은 주간회의 안건이다"
+    """[MW0602 2026-10-24 사용자 결정] 2단계(강제 재기동) 활성 — 단 조건이 좁게 걸려 있어야 한다.
+
+    종전 「하드 종료 금지 — 주간회의 승인 전」. 사용자 지시로 승격했다. 대신 창이 15:10 런처
+    재기동 한계 안에서 닫히고 · 하루 상한 · 쿨다운이 있어야 한다(감시자가 새 사고를 만들지 않게).
+    """
+    from config import settings as st
+    assert st.FREEZE_SENTINEL_KILL_ENABLED is True
+    hh, mm = [int(x) for x in str(st.FREEZE_SENTINEL_KILL_WINDOW[1]).split(":")]
+    assert hh * 60 + mm <= 15 * 60 + 5, "강제 재기동 창이 15:05 뒤까지 열려 있다(15:10 이후 재기동 없음)"
+    assert 1 <= st.FREEZE_SENTINEL_KILL_MAX_PER_DAY <= 3
+    assert st.FREEZE_SENTINEL_KILL_COOLDOWN_SEC >= 300
+    assert st.FREEZE_SENTINEL_KILL_STALL_SEC >= 120, "FZ-1 스레드 신호(30초 주기) 4회 이상 누락은 봐야 한다"
 
 
 def test_stall_threshold_has_margin_over_measured_quiet_gap():

@@ -94,7 +94,11 @@ def test_판정문에_세_신호가_모두_적힌다():
 
 
 def test_하드_종료_경로가_없다():
-    """🔴 1단계는 알림 전용이다. 승격은 주간회의 안건 — 코드가 앞서가면 안 된다."""
+    """🔴 하드 종료는 `hard_kill()`(psutil) **한 곳**뿐이다 — os._exit · os.kill · taskkill 금지.
+
+    [MW0602 2026-10-24 사용자 결정] 2단계(보유 중 동결 강제 재기동)가 들어왔다. 그래도 종료 경로가
+    여기저기 생기면 조건(kill_decision · resolve_target)을 우회할 수 있으므로 한 함수로 묶는다.
+    """
     src = io.open(_SRC, encoding="utf-8").read()
     tree = ast.parse(src)
     banned = []
@@ -111,7 +115,14 @@ def test_하드_종료_경로가_없다():
         "FZ-2 에 하드 종료 경로가 생겼다 — 1단계는 알림 전용이다 (490차 F-M): %s"
         % banned
     )
-    assert "taskkill" not in src, "FZ-2 가 taskkill 을 부른다 — 알림 전용 규약 위반"
+    assert "taskkill" not in src, "FZ-2 가 taskkill 을 부른다 — 종료 경로는 hard_kill() 하나뿐"
+    kills = [n.lineno for n in ast.walk(tree)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "kill"]
+    fn = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "hard_kill"]
+    assert fn, "hard_kill() 이 없다"
+    lo, hi = fn[0].lineno, max(getattr(x, "lineno", fn[0].lineno) for x in ast.walk(fn[0]))
+    assert kills and all(lo <= ln <= hi for ln in kills), \
+        ".kill() 호출이 hard_kill() 밖에 있다: %s" % kills
 
 
 def test_TS_꼬리_탐색이_점진적으로_넓어진다():

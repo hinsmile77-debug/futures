@@ -251,7 +251,9 @@ def test_6_수동_once_는_메일을_보내지_않는다():
 def test_7_설정_기본값():
     from config import settings as st
     assert st.FREEZE_SENTINEL_MAIL_ENABLED is True
-    assert st.FREEZE_SENTINEL_KILL_ENABLED is False   # 메일 추가가 하드 종료 승격이 아니다
+    # [MW0602 2026-10-24] 2단계(보유 중 동결 강제 재기동)는 사용자 결정으로 별도 승격됐다 —
+    #   메일 설정과 무관하다(tests/test_mw0602_freeze_kill_restart.py 가 고정).
+    assert st.FREEZE_SENTINEL_KILL_ENABLED is True
 
 
 # ── G-1i closeEvent ────────────────────────────────────────────────────────
