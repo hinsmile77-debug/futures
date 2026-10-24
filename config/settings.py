@@ -8042,7 +8042,13 @@ SHINDONG_DAILY_REPORT_DIR = os.path.join(BASE_DIR, "docs", "신동거래_V2", "�
 # 리포트 생성 뒤 백그라운드 스레드에서 PDF 인쇄 + 메일 발송. 자격 정보·받는 주소는 **환경변수에만**
 #   (MIREUK_SMTP_USER / MIREUK_SMTP_PASSWORD / MIREUK_REPORT_MAIL_TO — `utils/mailer.py`).
 #   환경변수가 없으면 PDF 만 만들고 발송은 건너뛴다(로그에 빠진 이름을 남긴다).
-SHINDONG_REPORT_MAIL_ENABLED = True
+#   🟢 [2026-10-25 사용자 결정 / MW0602 661차 후속5 · D6] 15:40 즉시 메일은 끈다 — 장후 종합 메일 한 통으로 합쳤다.
+#   (리포트 md 생성은 그대로다. 수동 발송: `python scripts/shindong_report_mail.py <날짜>`)
+SHINDONG_REPORT_MAIL_ENABLED = False
+# [661차 후속5 · D6] 장후 종합 메일 — `scripts/shindong_daily_mail.py`(예약작업 \Mireuk\Shindong_DailyMail_1810, 평일 18:10).
+#   장후 점검 리포트(한 줄 결론·사용자 조치·자동조치 결과·관측) + 신동 일일 리포트 → 하루 한 통.
+#   점검 리포트가 없으면 신동 리포트만 보내고 제목에 「점검 리포트 없음」(메일이 안 오는 날을 만들지 않는다).
+SHINDONG_DAILY_MAIL_ENABLED = True
 
 # ── [MW0602 거래주체분리] 신동 V2(FLOWC) 실집행 — 거래주체가 「신동」일 때만 ─────────────
 # 대시보드 헤더 [미륵][신동][피터] 에서 신동을 고른 동안 MAIN 재생의 새 진입을 실주문으로 옮긴다

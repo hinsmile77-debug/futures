@@ -2,6 +2,38 @@
 
 ---
 
+## 2026-10-25 (MW0602 661차 후속5 — D6 결정: 신동 일일 점검 체계 · 장후 종합 메일 · 예약 흐름 개편) — 🟢 **배포(10/26부터)**
+
+**사용자 결정(D 1~4 일괄)**: ① 장중 정식 점검 폐지(주문·청산 경로 배포 첫날만) + 장중 확인 항목은 장후 판정·태그 규칙
+② 15:40 신동 메일 off → 18:10 장후 종합 메일 한 통(폴백 포함) ③ Cowork 점검 → 신동 기준 개편 + 자동조치 가드·push `Sindong-V4`
+④ 장전 Cowork ≈08:51 로 당기기.
+
+**조사에서 확인한 사실(현행 흐름)**
+- 🔴 17:23 자동조치(`~/.claude/scheduled-tasks/mireuk-postmarket-autofix`)의 가드가 「`dev` 가 아니면 즉시 중단」·push `origin dev` 였다 →
+  `Sindong-V4` 로 바뀐 10/26 부터 **매일 무동작**이 될 상태였다(안전 방향이지만 기능 정지).
+- Cowork 예약 3건(`~/Claude/Scheduled/mireuk-daily-check-{pre,intra,post}`, 08:55/12:30/16:30 + 지터)은 미륵 기준(재학습·P8·`ensemble_decisions`·CORE) —
+  휴면 중엔 매일 거짓 적신호. 스킬 문서 6개에 「신동」 0회.
+- Cowork 는 샌드박스라 커밋 불가 · 자동조치는 자기 코드만 커밋 → 리포트·dev_memory 는 수동 정리 커밋(10-22 「10-09~10-22」)에 의존. 10-23 리포트도 「커밋 대기」로 끝났다.
+- 15:40 신동 메일 본문에 「가상거래(주문 없음)」 — 10-13 실거래 전환 전 문구가 남아 있었다.
+
+**구현**
+- 신규 스킬 `.claude/skills/shindong-daily-check/`(SKILL.md + `scripts/collect_shindong_evidence.py`). 수집기는 미륵 수집기를 import 해 공통 기반
+  (DB 3단 폴백·git 잠금 방지·PC 판별·거래일·미결 관측 스캔)을 재사용하고 신동 섹션만 신설: 설정 · 로그 계수(기대값 대비) · 장전 준비 ·
+  **3원 대사(로그 진입 = shindong.db MAIN live = trades.db 신동 포지션 · 브로커 net)** · 케이스 표(규격 vs 실체결 슬립) · 섀도 대조 ·
+  7222 첫 도착 지연 · 장후 마커 · 사전등록 진행 · 미결 관측·태그 · 커밋. 증거 파일에 메일 주소를 남기지 않는다.
+  10-23 실데이터 검증: 대사 2=2=2 · 브로커 net − trades 신동 net = −81원 · 진입 슬립 +0.71/+0.25pt.
+- 리포트 절 제목 규약(기계가 읽음): `한 줄 결론`·`사용자 조치`·`다음 거래일 관측`(메일), `Fix 작업 구현계획`·`고도화 방안`·`수익률 향상방안`(자동조치) — 테스트 K1 고정.
+- `scripts/shindong_daily_mail.py` + `\Mireuk\Shindong_DailyMail_1810`(평일 18:10, `TASK_SHINDONG_MAIL_INSTALL.bat`/`scripts/shindong_mail_task.ps1`, 등록 완료).
+  본문 = 장후 한 줄 결론·손익(브로커 net)·사용자 조치·자동조치 결과·관측 + 신동 리포트 요약, 첨부 PDF 2개. 장후 절 없으면 「점검 리포트 없음」 폴백.
+  휴장일·중복(`data/shindong_daily_mail_done_<날짜>.txt`) 미발송. 로그 `logs/shindong_daily_mail_<날짜>.log`. SMTP·PDF 변환(750KB) 사전 확인, 실발송은 10/26 첫 실행.
+- 설정: `SHINDONG_REPORT_MAIL_ENABLED=False`(리포트 md 생성은 유지) · `SHINDONG_DAILY_MAIL_ENABLED=True` 신설. `report_mail` 본문 문구 실거래 기준으로 정정.
+- 저장소 밖(PC 파일, 원본 백업 `~/Claude/Scheduled/_backup_20261025_pre_D6/`): Cowork 프롬프트 3건 신동 기준 교체(장중은 배포 첫날 판정 후 1줄 종료) ·
+  자동조치 정의 — 브랜치·엔진 가드 `Sindong-V4`/`off`, push `origin Sindong-V4`, C등급에 신동 집행·규격·사전등록 문턱 추가, **§6-B 당일 점검 산출물 커밋 책임**, pytest 는 base anaconda.
+- `mireuk-daily-check` SKILL.md 머리에 「휴면이면 shindong-daily-check」 안내. CLAUDE.md 「일일 점검·장후 흐름」 절.
+- 검증: `tests/test_661_daily_check_d6.py` 9건 + 관련 17건 · 기존 수집기/스킬 테스트 237건 통과.
+
+**사용자 조치**: Cowork 앱에서 장전 예약 시각을 ≈08:51 로(시각은 앱에 등록 — 파일로 안 바뀐다).
+
 ## 2026-10-25 (MW0602 661차 후속4 — D5 결정: 옵션 체인 수집 유지) — 🟢 **결정(코드·설정 무변경)**
 
 **사용자 결정**: 옵션 체인 수집(`_poll_option_chain` → `OptionChainWorker`, 5분)을 미륵 휴면 중에도 **유지**한다.

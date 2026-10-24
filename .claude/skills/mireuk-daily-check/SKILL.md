@@ -6,6 +6,10 @@ description: 미륵이(futures, KOSPI 200 선물 자동매매)의 장전·장중
 
 # 미륵이 일일 운영 점검
 
+> 🔴 **[2026-10-25 D6] `MIREUK_ENGINE="off"`(미륵 휴면 · `Sindong-V4` 브랜치)이면 이 스킬을 쓰지 마라 —
+> `.claude/skills/shindong-daily-check/SKILL.md` 를 쓴다.** 이 스킬은 재학습·P8·`ensemble_decisions`·CORE 를 필수로 봐서
+> 휴면 중엔 매일 거짓 적신호를 낸다. 미륵을 되살리는 `dev` 브랜치에서는 이 스킬이 그대로 정본이다.
+
 > 🔴 **이 문서는 사본일 수 있다. 정본은 저장소 안에 있다.**
 > 세션을 시작하면 **가장 먼저** 리포 루트의
 > `.claude/skills/mireuk-daily-check/SKILL.md` 를 `Read` 로 읽고, **그쪽과 이 사본이
