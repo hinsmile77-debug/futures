@@ -8053,6 +8053,29 @@ SHINDONG_REPORT_MAIL_ENABLED = True
 SHINDONG_LIVE_QTY = 2              # 2계약(사용자 결정 2026-10-21, 10-13 실거래 전환 때 2→1 → 다시 2) — 청산은 전량 1회(live_exec.manage)
 SHINDONG_LIVE_MAX_AGE_MIN = 2      # 진입봉이 끝난 뒤 이 분 수가 지나면 쫓지 않는다(재기동·지연)
 
+# ── [MW0602 신동 주체 리뉴얼] 미륵 휴면 스위치 ─────────────────────────────────
+# 계획: docs/신동거래_V4/신동주체_리뉴얼_구현계획_미륵휴면_MW0602-20261024.md
+# MIREUK_ENGINE
+#   "full" — 오늘과 같다(미륵 9단계 파이프라인 · 학습 · 재학습 · 미륵 장후 체인).
+#   "off"  — 미륵 휴면. 분봉마다 `_light_minute_pass` 가 신동이 쓰는 부품 12개
+#            (봉 저장 · 맥점 · 대기주문 타임아웃 · 틱 하드스톱 폴백 · STEP 8 · ATR · CB④⑤ 입력 · 대시보드)만 돌린다.
+#            예측·학습·미륵 진입·재학습 spawn·미륵 EOD 항목은 건너뛴다. 미륵 코드·모델·DB 는 지우지 않는다.
+#   🔴 **기동 시 한 번만 읽는다**(`TradingSystem.__init__`). 장중 핫리로드로 바뀌지 않는다 — 바꾸려면 FLAT 에서 재기동.
+#   🔴 "off" 로 바꾸기 전 확인: 병행 건식 실행(LIGHT_PASS_DRY_RUN) 불일치 0 · 장후 재생(scripts/light_pass_replay.py) ·
+#      `SHINDONG_EOD.bat` 병행 성공(맥점 이력 캐시 — 미륵 재학습 스크립트 안에 있던 결합, 계획서 §1 P4).
+MIREUK_ENGINE = "full"
+# PRINCIPAL_LOCK — None 이면 종전(대시보드에서 주체 전환). "SHINDONG" 이면 파일·전환 요청과 무관하게 신동 고정.
+PRINCIPAL_LOCK = None
+# LIGHT_PASS_DRY_RUN — MIREUK_ENGINE="full" 일 때만 의미. 매분 미륵 파이프라인 뒤에 경량 패스를
+#   **계산만** 병행해(DB 쓰기·주문·CB 기록·화면 갱신 없음) 미륵 경로 값과 대조하고 `[LightPassDry]` 로 남긴다.
+#   실거래를 멈추지 않는 전환 검증 수단이다(계획서 Phase 6-A).
+LIGHT_PASS_DRY_RUN = False
+# 흐름 신선도 가드(계획서 D3 — 사용자 미결): 7222 개인 콜·풋 흐름의 마지막 수집 성공이 이 분 수보다 오래되면
+#   "shadow" — 신동 신규 진입은 그대로 두고 `[FlowStale]` 로그만(실측 먼저) / "live" — 신규 진입 보류 / "off" — 검사 안 함.
+#   진입을 줄이는 방향이라 "live" 는 사용자 결정 뒤에만. 미륵 off 와 무관한 별건이다.
+SHINDONG_FLOW_STALE_GUARD = "shadow"
+SHINDONG_FLOW_STALE_MIN = 3
+
 # ── [MW0601 668차 / MW0602 이식] 피터2 — 피터리 트윗 실시간 추종 매매 ──────────────
 # 장중 피터리(@PeterLeejoa) 트윗을 Chrome 확장 → 로컬 수신기(127.0.0.1)로 받아
 # `data/peter_feed/_raw/<날짜>.jsonl` 에 적고, main.py 가 2초마다 새 줄을 읽어

@@ -37,19 +37,49 @@ SOURCE_PRINCIPAL = {'SYSTEM_AUTO': MIREUK, SHINDONG_ENTRY_SOURCE: SHINDONG,
 PRINCIPAL_SOURCE = {v: k for k, v in SOURCE_PRINCIPAL.items()}
 
 
-def load():
-    """→ dict(principal, set_at, reason, measured). 파일이 없거나 깨졌으면 기본값(미륵)이고
-    `measured=False` 로 그 사실을 남긴다(계측 4원칙 ②·④ — 기본값을 선택값처럼 보이지 않게)."""
+def locked_principal(lock=None):
+    """[MW0602 신동 주체 리뉴얼] `config.settings.PRINCIPAL_LOCK` → 고정 주체 또는 None.
+
+    lock 을 주면 설정 대신 그 값을 쓴다(테스트). 알 수 없는 값은 **고정하지 않는다**(None) —
+    오타 하나로 엉뚱한 주체가 고정되는 것보다 종전 동작(파일)이 안전하다. 그 사실은 호출부가 로그로 남긴다.
+    """
+    if lock is None:
+        try:
+            from config import settings as _s
+            lock = getattr(_s, 'PRINCIPAL_LOCK', None)
+        except Exception:
+            lock = None
+    p = str(lock or '').upper()
+    return p if p in PRINCIPALS else None
+
+
+def load(lock=None):
+    """→ dict(principal, set_at, reason, measured, locked). 파일이 없거나 깨졌으면 기본값(미륵)이고
+    `measured=False` 로 그 사실을 남긴다(계측 4원칙 ②·④ — 기본값을 선택값처럼 보이지 않게).
+
+    [신동 주체 리뉴얼] `PRINCIPAL_LOCK` 이 유효하면 파일과 무관하게 그 주체이고 `locked=True` 다.
+    파일은 건드리지 않는다(고정을 풀면 파일의 마지막 선택으로 돌아간다)."""
+    lp = locked_principal(lock)
+    if lp is not None:
+        return {'principal': lp, 'set_at': None, 'reason': 'PRINCIPAL_LOCK', 'measured': True,
+                'locked': True}
+    return load_file()
+
+
+def load_file():
+    """파일(data/trade_principal.json)의 선택만 — 고정(PRINCIPAL_LOCK)을 보지 않는다.
+    `save()` 의 이력 `prev` 와 고정 해제 뒤 복귀값이 이것이다."""
     try:
         with io.open(STATE_PATH, encoding='utf-8') as f:
             d = json.load(f)
         p = str(d.get('principal') or '').upper()
         if p in PRINCIPALS:
             return {'principal': p, 'set_at': d.get('set_at'), 'reason': d.get('reason'),
-                    'measured': True}
+                    'measured': True, 'locked': False}
     except (OSError, IOError, ValueError, TypeError, AttributeError):
         pass
-    return {'principal': DEFAULT, 'set_at': None, 'reason': 'default(파일 없음)', 'measured': False}
+    return {'principal': DEFAULT, 'set_at': None, 'reason': 'default(파일 없음)', 'measured': False,
+            'locked': False}
 
 
 def current():
@@ -71,7 +101,7 @@ def save(principal, reason='', now=None):
     if p not in PRINCIPALS:
         raise ValueError('unknown principal: %r' % (principal,))
     now = now or datetime.datetime.now()
-    prev = load()
+    prev = load_file()
     rec = {'principal': p, 'set_at': now.isoformat(timespec='seconds'), 'reason': reason}
     d = os.path.dirname(STATE_PATH)
     if not os.path.isdir(d):

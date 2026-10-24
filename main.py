@@ -707,6 +707,40 @@ class TradingSystem:
         # [MW0602 거래주체분리] 현재 거래주체 — 파일(data/trade_principal.json)이 정본이고 이것은 캐시다.
         #   전환은 `_on_principal_change_requested` 한 곳에서만 일어나며 그때 둘을 함께 바꾼다.
         self._principal_state = principal_mod.load()
+        # [MW0602 신동 주체 리뉴얼] 미륵 휴면 스위치 — **기동 시 한 번만** 읽는다(장중 핫리로드 무시).
+        #   "full" 이 아닌 알 수 없는 값은 full 로 다룬다(오타로 미륵이 조용히 꺼지는 것보다 종전 동작이 안전) —
+        #   그 사실은 남긴다(계측 4원칙 ④). 판정은 `_mireuk_on()` 한 곳에서만.
+        _me_raw = str(getattr(runtime_settings, "MIREUK_ENGINE", "full") or "full").strip().lower()
+        if _me_raw not in ("full", "off"):
+            logger.error("[Engine] MIREUK_ENGINE=%r 알 수 없는 값 — full 로 동작", _me_raw)
+            _me_raw = "full"
+        self._mireuk_engine = _me_raw
+        # 경량 패스 상태 — off(실집행) 또는 full+LIGHT_PASS_DRY_RUN(대조)에서 쓴다.
+        #   ATR 은 미륵 피처와 같은 계산기(features/technical/atr.py) — dry 대조가 같은 정의를 비교하게 한다.
+        from features.technical.atr import ATRCalculator as _LightATR
+        self._light_atr = _LightATR()
+        self._light_atr_dry = _LightATR()          # dry-run 전용(실집행 상태와 섞지 않는다)
+        self._light_atr_primed = False             # DB 최근 봉 예열 여부(첫 경량 패스에서 1회)
+        self._light_atr_dry_primed = False
+        self._light_pass_dry = bool(getattr(runtime_settings, "LIGHT_PASS_DRY_RUN", False)) \
+            and self._mireuk_engine == "full"
+        self._light_last_ts = None                 # 경량 패스 중복 분봉 가드
+        self._light_dry_stats = {"day": None, "bars": 0, "mismatch": 0, "atr_n": 0,
+                                 "atr_maxrel": 0.0, "ms_max": 0.0}
+        self._flow_stale_logged_at = None          # [FlowStale] 같은 지연 구간 반복 로그 억제
+        if self._principal_state.get("locked"):
+            logger.warning("[Principal] PRINCIPAL_LOCK — 거래주체 %s 고정(파일·대시보드 전환 무시)",
+                           principal_mod.label(self._principal_state["principal"]))
+        elif getattr(runtime_settings, "PRINCIPAL_LOCK", None):
+            logger.error("[Principal] PRINCIPAL_LOCK=%r 알 수 없는 값 — 고정하지 않음(파일 선택 사용)",
+                         getattr(runtime_settings, "PRINCIPAL_LOCK", None))
+        if self._mireuk_engine == "off":
+            logger.warning("[Engine] 미륵 엔진=off — 예측·학습·재학습·미륵 진입·미륵 장후 항목 생략, "
+                           "경량 분봉 패스 사용 (거래주체=%s)",
+                           principal_mod.label(self._principal_state["principal"]))
+            if self._principal_state["principal"] == principal_mod.MIREUK:
+                logger.error("[Engine] 미륵 off 인데 거래주체=미륵 — 자동진입이 나가지 않는다. "
+                             "PRINCIPAL_LOCK=\"SHINDONG\" 또는 대시보드에서 주체를 바꿀 것")
         # [2026-10-20 MW0602] 저장된 주체가 피터인데 피터2 수집·추종이 꺼져 있으면 알린다.
         #   주체를 몰래 바꾸지 않는다(파일이 정본) — 사람이 대시보드에서 고르게 둔다.
         if self._principal_state["principal"] == principal_mod.PETER:
@@ -2779,6 +2813,10 @@ class TradingSystem:
                 if op == "candle_features":
                     _, _bar, _ts, _feats = item
                     save_candle_and_features(_bar, _ts, _feats)
+                elif op == "candle":
+                    # [MW0602 신동 주체 리뉴얼] 미륵 휴면의 경량 분봉 패스 — 피처 없이 봉만(raw_candles)
+                    _, _bar = item
+                    save_candle(_bar)
                 elif op == "horizon_features":
                     _, _ts, _h_name, _h_feats, _regime = item
                     save_horizon_features(_ts, _h_name, _h_feats)
@@ -3268,7 +3306,12 @@ class TradingSystem:
     # 🔴 15:10 강제청산·15:18 안전망·CB⑤·킬스위치는 피터2 포지션에도 그대로다.
     # ── [MW0602 거래주체분리] 거래주체 전환 ─────────────────────────────────────
     def _principal_locked(self) -> bool:
-        return self.position.status != "FLAT" or self._has_pending_order()
+        return (self.position.status != "FLAT" or self._has_pending_order()
+                or bool(self._principal_state.get("locked")))      # [신동 주체 리뉴얼] PRINCIPAL_LOCK
+
+    def _mireuk_on(self) -> bool:
+        """[MW0602 신동 주체 리뉴얼] 미륵 엔진이 돌고 있는가(MIREUK_ENGINE="full"). 기동 시 고정값."""
+        return self._mireuk_engine != "off"
 
     def _push_principal_ui(self) -> None:
         """대시보드 버튼·배지를 실제 상태에 맞춘다(2초 폴링 + 전환 직후)."""
@@ -3282,6 +3325,12 @@ class TradingSystem:
         cur = self._principal_state["principal"]
         principal = str(principal or "").upper()
         if principal == cur or principal not in principal_mod.PRINCIPALS:
+            self._push_principal_ui()
+            return
+        if self._principal_state.get("locked"):
+            # [신동 주체 리뉴얼] PRINCIPAL_LOCK — 파일도 바꾸지 않는다(고정을 풀면 파일 선택으로 돌아간다).
+            log_manager.system("[Principal] 전환 거부 %s → %s — PRINCIPAL_LOCK 으로 고정됨(settings.py)"
+                               % (principal_mod.label(cur), principal_mod.label(principal)), "WARNING")
             self._push_principal_ui()
             return
         ok, why = principal_mod.can_switch(self.position.status, self._has_pending_order())
@@ -6542,6 +6591,17 @@ class TradingSystem:
         self._pre_market_bars.append(candle)
         n_bars = len(self._pre_market_bars)
 
+        # [MW0602 신동 주체 리뉴얼] 미륵 휴면 — 봉 저장(P1)과 08:50 맥점(P2)만. GapOffset·피처·스케일러
+        #   재적합·프리장 예측은 미륵 모델 전용이라 건너뛴다. 종전에는 봉 저장이 「모델 준비 + 피처 계산 성공」에
+        #   묶여 있었다(`save_candle_and_features`) — off 에서는 조건 없이 저장한다.
+        if not self._mireuk_on():
+            try:
+                self._db_write_queue.put_nowait(("candle", candle))
+            except _queue.Full:
+                save_candle(candle)
+            self._maybe_compute_levels_0850(now_dt)
+            return
+
         # ① GapOffset 사전 설정 — 첫 프리장 분봉의 close를 기준으로 갭 오프셋 산정
         # 본장 첫 분봉(09:00)보다 최대 15분 선행 → z경고 원천 억제
         if not self._pre_market_gap_offset_set:
@@ -6666,6 +6726,15 @@ class TradingSystem:
             except Exception as _pme2:
                 logger.debug("[PreMarket] 예측 스킵: %s", _pme2)
 
+        self._maybe_compute_levels_0850(now_dt)
+
+        # [MW0601 589차] 차트 갱신 호출은 `_on_candle_closed` 선두로 **일원화**됐다.
+        #   여기서 또 부르면 같은 봉이 두 번 들어간다(무해하지만 중복).
+
+    def _maybe_compute_levels_0850(self, now_dt) -> None:
+        """[MW0602 신동 주체 리뉴얼] 08:50 맥점·ATR14 산출 — `_on_pre_market_bar` 끝 블록을 그대로 옮겼다
+        (동작 무변경). 미륵 휴면 프리장 경로도 부른다 — 신동 V4 재난손절·역행컷·수량의 ATR14 원천이다(계획서 §1 P2).
+        """
         # ── [MW0601 534차] 08:50 맥점 산출 (거리 모델 M1 + 구조 후보) ──────
         # 08:45 시가 하나만 쓰므로 언제 계산해도 같지만, **처음 계산한 값을 굳혀**
         # 화면·로그·장후 채점이 같은 수를 보게 한다(가이드 §4 굳히기).
@@ -6674,9 +6743,6 @@ class TradingSystem:
             # [597차] 08:45 결손이면 미룬다 — 스케줄러 틱의 차트 보충이 이어 산출한다.
             if self._compute_premarket_levels("0850"):
                 self._premarket_levels_0850_done = True
-
-        # [MW0601 589차] 차트 갱신 호출은 `_on_candle_closed` 선두로 **일원화**됐다.
-        #   여기서 또 부르면 같은 봉이 두 번 들어간다(무해하지만 중복).
 
     def _levels_have_0845(self) -> bool:
         """[597차] 메모리 버퍼에 08:45 시가 봉(08:50 이하 첫 봉)이 있는가."""
@@ -6997,6 +7063,22 @@ class TradingSystem:
 
         # [MW0601 589차] 차트 갱신은 이 함수 **선두**에서 이미 끝났다 —
         #   여기 있던 호출이 force-exit 가드 뒤라 15:10~15:34 가 화면에 안 붙었다.
+        # [MW0602 신동 주체 리뉴얼] 미륵 휴면이면 9단계 파이프라인 대신 경량 분봉 패스(신동 부품 12개).
+        #   위의 세션 봉 적재·맥점 버퍼·차트·프리장·15:10 청산 전용 패스·거래소 CB 해제 감지는 그대로 지난다.
+        if not self._mireuk_on():
+            try:
+                self._light_minute_pass(candle)
+            except Exception as exc:
+                apply_error_policy(
+                    system=self,
+                    level=classify_exception(exc, default=ErrorLevel.FATAL),
+                    context="light_minute_pass",
+                    exc=exc,
+                    logger=logger,
+                    dashboard_logger=log_manager.system,
+                )
+            return
+        _dry_mark = self._last_real_pipeline_dt      # 병행 건식 실행: 이번 봉 파이프라인 완주 판정용
         try:
             self.run_minute_pipeline(candle)
             self._pipeline_fatal_streak = 0
@@ -7030,6 +7112,9 @@ class TradingSystem:
                 logger=logger,
                 dashboard_logger=log_manager.system,
             )
+        # [MW0602 신동 주체 리뉴얼] 병행 건식 실행(LIGHT_PASS_DRY_RUN) — 파이프라인 뒤 계산만(부작용 없음).
+        if self._light_pass_dry:
+            self._light_minute_pass_dry(candle, self._last_real_pipeline_dt is not _dry_mark)
 
     def _persist_session_bar(self, candle: dict) -> None:
         """[533차] `session_bars` 적재 — 세션 태그는 봉 ts 기준으로 여기서 박는다.
@@ -7703,32 +7788,11 @@ class TradingSystem:
     # 입력: bar(분봉), 실시간 누적 피처 상태, 현재 포지션/리스크 상태
     # 출력: decision, 주문 요청, DB/대시보드 업데이트
     # ── 매분 파이프라인 ────────────────────────────────────────
-    def run_minute_pipeline(self, bar: dict):
+    def _maybe_compute_levels_0930(self, ts_raw) -> None:
+        """[MW0602 신동 주체 리뉴얼] 09:30 맥점 재산출(08:50 미발화 소급 포함) — `run_minute_pipeline`
+        첫머리 블록을 그대로 옮겼다(동작 무변경). 미륵 휴면의 `_light_minute_pass` 도 부른다 — 맥점은
+        신동(사다리·BRKC 섀도)이 쓰는 부품이다(계획서 §1 P2·P3).
         """
-        매분 실행되는 9단계 파이프라인
-
-        Args:
-            bar: {ts, open, high, low, close, volume, buy_vol, sell_vol,
-                  bid_price, ask_price, bid_qty, ask_qty}
-        """
-        _pipe_t0 = time.perf_counter()
-        _st: list = [("start", _pipe_t0)]
-        ts_raw = bar.get("ts", datetime.datetime.now())
-        ts     = ts_raw.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts_raw, "strftime") else str(ts_raw)
-
-        # ── [MW0601 453차 D4] 동일 분봉 중복 주입 가드 ────────────────────────
-        # 같은 ts가 두 번 들어오면 누산기(CVD·VWAP·OFI·ATR)와 N분봉 격자가 이중
-        # 급식된다. 453차 D1로 복구 재실행이 사라졌으므로 남은 중복 경로는 전부
-        # 버그다(대표: stale oscillation 중복 BAR-CLOSE — 경고만 찍고 콜백은
-        # 그대로 나간다, collection/cybos/realtime_data.py). 여기서 차단한다.
-        if ts == getattr(self, "_last_pipeline_bar_ts", None):
-            log_manager.system(
-                f"[Pipeline] 중복 분봉 주입 차단 ts={ts} — 이미 처리된 봉 (453차 D4)",
-                "WARNING",
-            )
-            return
-        self._last_pipeline_bar_ts = ts
-
         # ── [MW0601 534차] 09:30 맥점 재산출 (거리 모델 P1 + 오프닝 레인지) ──
         # HHMM 정수 비교 관용구. 09:30을 지난 첫 봉에서 1회만 — 09:40에 실행해도
         # 컷(09:30)은 같지만 **처음 계산한 값**을 굳힌다(가이드 §4).
@@ -7754,138 +7818,53 @@ class TradingSystem:
             except Exception as _lv930_e:
                 logger.warning("[LEVELS] 09:30 훅 실패 (무해): %s", _lv930_e)
 
-        # ── [S0-A] 64비트 GBM subprocess 완료 체크 ────────────────────────
-        # [226차] poll()은 non-blocking — subprocess가 완료되면 returncode 반환.
-        # [381차 후속] 로직을 _poll_gbm_retrain_subprocess()로 추출 — daily_close()도
-        # 동일 로직을 재사용해 15:10~15:40 무분봉 구간의 완료 감지 공백을 메운다.
-        self._poll_gbm_retrain_subprocess()
+    def _bar_price_guard(self, bar: dict, ts: str, notify: bool = True):
+        """[MW0602 신동 주체 리뉴얼] 분봉 유효성 가드 C0~C2 — 통과면 (close, high, low, volume), 차단이면 None.
 
-        # ── [S0-B] ConstOut 재적합 완료 콜백 큐 drain — P1 QTimer 불안정 대체 ──
-        # ConstOut refit worker → _deferred_callbacks.put("const_out_done") →
-        # 여기서 메인 스레드 소비. GBM done은 [226차] subprocess poll로 이동.
-
-        # ── [S0-C] tick-level 하드스톱 처리 (폴백 안전망) ────────────────────
-        # [348차] 실제 주문 전송 경로는 이제 _on_tick_price_update에서 직접
-        # QTimer.singleShot(0, ...)으로 예약 — 최악 60초(다음 분봉 롤오버)
-        # 지연되던 것을 다음 이벤트루프 패스(수십ms)로 단축. 이 블록은 그
-        # 싱글샷이 어떤 이유로든(이벤트루프 기아 등) 못 돈 경우를 대비한
-        # 폴백일 뿐이며, _process_tick_stop() 내부에서 flag를 즉시 클리어하는
-        # 멱등 설계라 두 경로가 겹쳐도 중복 주문은 발생하지 않는다.
-        self._process_tick_stop()
-
-        while True:
-            try:
-                _dcb = self._deferred_callbacks.get_nowait()
-            except _queue.Empty:
-                break
-            try:
-                _dcb_tag = _dcb[0]
-                if _dcb_tag == "const_out_done":
-                    self._on_const_out_refit_done(_dcb[1])
-                # gbm_done 태그: [226차] subprocess 이관 — 큐에서 수신 시 무시(잔여 배출)
-            except Exception as _dcb_e:
-                logger.warning("[DeferredCB] 콜백 처리 오류 (tag=%s): %s", _dcb[0] if _dcb else "?", _dcb_e)
-
-        # ── [P3] CB③ HALT 주기적 해제 재시도 ─────────────────────────────
-        # ConstOut 재적합 + GBM 재학습이 완료됐으나 콜백 누락으로 lift 안 된 경우 복구.
-        # 15분마다 조건 확인: HALTED + cb3 원인 + 재학습·스케일러 재적합 미실행.
-        if (not getattr(self, "_gbm_retrain_running", False)
-                and not getattr(self, "_scaler_refresh_running", False)):
-            _cb3_state = self.circuit_breaker
-            if (_cb3_state.state == "HALTED"
-                    and getattr(_cb3_state, "_halt_cause", "") == "cb3"):
-                _ts_min_for_cb3 = int(ts[14:16]) if len(ts) >= 16 else -1
-                if _ts_min_for_cb3 >= 0 and _ts_min_for_cb3 % 15 == 0:
-                    if _cb3_state.lift_cb3_halt():
-                        log_manager.system(
-                            "[CB③→RESUME] 주기적 재시도 → HALT 해제 "
-                            "(ConstOut 재적합·GBM 재학습 완료 누락 복구)",
-                            "INFO",
-                        )
-
-        # ── [S0] 재학습 완료 모델 교체 — predict_proba 전 안전 지점 ─────────
-        # _on_gbm_retrain_done 이 플래그를 세우면 여기서 소비.
-        # 파이프라인 실행 중 모델 객체 교체 race condition 방지 (193차).
-        # [MW0602 462차 P2] 이 사이클의 모델 교체 소요시간 — CB⑤/Health 지연 판정에서 차감.
-        # 매 사이클 0으로 리셋해야 직전 값이 새는 것을 막는다.
-        self._model_swap_ms = 0.0
-        if getattr(self, "_pending_model_reload", False):
-            _swap_t0 = time.perf_counter()
-            self._pending_model_reload = False
-            _bad = self.model._load_all()
-            if _bad:
-                logger.error(
-                    "[Model] 재학습 후 %d개 호라이즌 차원 불일치: %s → 재학습 재트리거",
-                    len(_bad), _bad,
-                )
-                self._start_manual_retrain(force=True, reason="resync_mismatch")
-            try:
-                self.rf_model.load_all()
-            except Exception:
-                pass
-            self._rebuild_sgd_feat_indices()   # [P2] feature_names 교체 반영
-            self._model_swap_ms = (time.perf_counter() - _swap_t0) * 1000.0
-            logger.info(
-                "[Model] 재학습 완료 모델 교체 적용 (S0) — %.0fms", self._model_swap_ms
-            )
-
-        # [S2-A] 지연 SGD 학습 변수 — S2에서 채워지고 "end" 이후에 소비
-        # 초기값 [] 로 설정해 early return 시에도 NameError 방지
-        _sgd_deferred_verified: list = []
-        _sgd_deferred_stuck: bool = False
-
-        # ── 분봉 데이터 유효성 가드 ───────────────────────────────
-        # 비정상 분봉이 피처/진입/청산 오발동을 일으키지 않도록 파이프라인 앞단 차단
+        `run_minute_pipeline` 앞단 블록을 그대로 옮겼다(동작 무변경). 차단 시 워치독 카운터를 리셋한다
+        (`notify_pipeline_ran`) — 비정상 봉도 「파이프라인이 살아 있다」는 신호이기 때문이다(종전과 같다).
+        notify=False 는 병행 건식 실행(dry-run) 전용: 로그·워치독을 건드리지 않고 판정만 한다.
+        """
         try:
             _c = float(bar.get("close", 0))
             _h = float(bar.get("high",  0))
             _l = float(bar.get("low",   0))
             _v = int(float(bar.get("volume", 0)))
         except (ValueError, TypeError) as _e:
-            log_manager.system(
-                f"[Guard-C0] bar 타입 변환 오류 차단 — 브로커 데이터 이상: {_e} ({ts})",
-                "WARNING",
-            )
-            self.dashboard.notify_pipeline_ran()
-            return
+            if notify:
+                log_manager.system(
+                    f"[Guard-C0] bar 타입 변환 오류 차단 — 브로커 데이터 이상: {_e} ({ts})",
+                    "WARNING",
+                )
+                self.dashboard.notify_pipeline_ran()
+            return None
 
         if _c <= 0 or _h <= 0 or _l <= 0:
-            log_manager.system(
-                f"[Guard-C1] 비정상 가격 분봉 차단 — close={_c} high={_h} low={_l} ({ts})",
-                "WARNING",
-            )
-            self.dashboard.notify_pipeline_ran()   # 워치독 카운터 리셋
-            return
+            if notify:
+                log_manager.system(
+                    f"[Guard-C1] 비정상 가격 분봉 차단 — close={_c} high={_h} low={_l} ({ts})",
+                    "WARNING",
+                )
+                self.dashboard.notify_pipeline_ran()   # 워치독 카운터 리셋
+            return None
 
         if _h < _l:
-            log_manager.system(
-                f"[Guard-C2] 고가<저가 역전 분봉 차단 — high={_h} low={_l} ({ts})",
-                "WARNING",
-            )
-            self.dashboard.notify_pipeline_ran()   # 워치독 카운터 리셋
-            return
+            if notify:
+                log_manager.system(
+                    f"[Guard-C2] 고가<저가 역전 분봉 차단 — high={_h} low={_l} ({ts})",
+                    "WARNING",
+                )
+                self.dashboard.notify_pipeline_ran()   # 워치독 카운터 리셋
+            return None
+        return _c, _h, _l, _v
 
-        _bar_volume_zero = (_v == 0)
-        if _bar_volume_zero:
-            log_manager.system(
-                f"[Guard-C3] volume=0 분봉 — VWAP/CVD 신호 신뢰도 저하, 진입 보류 ({ts})",
-                "WARNING",
-            )
+    def _check_pending_order_timeout(self) -> None:
+        """[MW0602 신동 주체 리뉴얼] 대기주문 타임아웃 · 부분체결 고착 해소 — 분봉마다 1회.
 
-        close  = _c
-        # [225차 P0] _last_pipeline_price 는 _on_tick_price_update(현재 봉 tick)에 의해
-        # 파이프라인 진입 전 이미 cur_p 로 덮어써져 ret=0 고착 → 전용 변수 사용
-        _prev_pipeline_price      = self._sigma_prev_price     # sigma 계산용 이전 종가
-        self._last_pipeline_price = close  # 잔고 UI 합성에 사용
-        self._last_close = close           # 옵션체인 QTimer 폴링용 최신 종가
-
-        # 대시보드 실시간 가격 동기화
-        self.dashboard.update_price(
-            price  = close,
-            change = close - bar.get("open", close),
-            code   = self.realtime_data.code if self.realtime_data else "",
-        )
-
+        `run_minute_pipeline` 앞단에 있던 블록을 **그대로** 옮긴 것이다(동작 무변경). 미륵 휴면(off)의
+        `_light_minute_pass` 도 같은 함수를 부른다 — 신동 진입·청산 주문이 응답 없이 걸렸을 때 푸는
+        유일한 매분 경로라 두 벌로 두지 않는다(한쪽만 고쳐지는 419차 「죽은 상수」 유형 방지).
+        """
         # ── PendingOrder 타임아웃 체크 ────────────────────────────
         # [B55] 접수 상태(order_no 확인) vs 미접수(order_no="")를 분리:
         #   미접수: 60s → Kiwoom 서버에 주문 자체가 없는 것으로 간주 (빠른 폐기)
@@ -7992,6 +7971,414 @@ class TradingSystem:
                     )
                     if not _ts_resolve_stuck_exit_pending(self):
                         self._clear_pending_order()
+
+    def _push_position_panels(self, close, atr, bar, atr_ok=None, open_gap_ok=None) -> None:
+        """[MW0602 신동 주체 리뉴얼] 청산·손익·진입통계·주문 메트릭 패널 갱신 — STEP 8 직후 블록을 그대로
+        옮겼다(동작 무변경). 미륵 휴면의 `_light_minute_pass` 도 부른다(atr_ok·open_gap_ok 는 미륵 게이트
+        산출물이라 그때는 None = 미측정).
+        """
+        # ── 청산 패널 갱신 (매분 — 실제 PositionTracker 값 전달) ──
+        _pos = self.position
+        _pending = self._pending_order or {}
+        _pending_kind = str(_pending.get("kind") or "")
+        _pending_reason = str(_pending.get("reason") or "")
+        _now = datetime.datetime.now()
+        _force_dt = datetime.datetime.combine(_now.date(), self.time_exit.FORCE_EXIT)
+        _time_left_s = int((_force_dt - _now).total_seconds())
+        if _time_left_s < 0:
+            _time_left_s = 0
+        self.dashboard.update_position({
+            "status":     _pos.status,
+            "entry":      _pos.entry_price,
+            "current":    close,
+            "qty":        _pos.quantity,
+            "pt_value":   self._pt_value,
+            "atr":        atr,
+            "stop":       _pos.stop_price,
+            "trail_basis": _pos.get_trailing_reference_price(close, atr),
+            "tp1":        _pos.tp1_price,
+            "tp2":        _pos.tp2_price,
+            "tp3":        _pos.tp3_price,
+            "partial1":   _pos.partial_1_done,
+            "partial2":   _pos.partial_2_done,
+            "partial3":   _pos.partial_3_done,
+            "stage_plan": _pos.get_stage_plan(),
+            "entry_time": _pos.entry_time,
+            "pending_active": bool(_pending),
+            "pending_kind": _pending_kind,
+            "pending_reason": _pending_reason,
+            "pending_stage": int(_pending.get("stage") or 0),
+            "pending_filled": int(_pending.get("filled_qty") or 0),
+            "pending_qty": int(_pending.get("qty") or 0),
+            "time_exit_countdown_sec": _time_left_s,
+            "stop_move_reason": _pos.last_update_reason or "",
+            "bar_low":  bar.get("low",  0.0) if bar else 0.0,
+            "bar_high": bar.get("high", 0.0) if bar else 0.0,
+            "atr_ok":      atr_ok,
+            "open_gap_ok": open_gap_ok,
+        })
+
+        # ── 대시보드 PnL 패널 갱신 (매분) ──────────────────────────
+        _daily   = self.position.daily_stats()
+        _forward_daily = self.position.daily_forward_stats()
+        _unreal  = self.position.unrealized_pnl_pts(close) * self._pt_value
+        _forward_unreal = self.position.unrealized_forward_pnl_pts(close) * self._pt_value
+        _var_krw = -(atr * 1.65 * self.position.quantity * self._pt_value) if self.position.quantity else 0.0
+        self.dashboard.update_pnl_metrics(
+            _unreal,
+            _daily["pnl_krw"],
+            _var_krw,
+            forward_unrealized_krw=_forward_unreal,
+            forward_daily_pnl_krw=_forward_daily["pnl_krw"],
+            # [MW0601 493차 / F-5] 브로커 실측 net 병기 — None이면 패널은 종전대로.
+            broker_net_krw=self._broker_net_today,
+        )
+
+        # 당일 진입 통계 갱신 — STEP 9 예외와 무관하게 항상 실행
+        _ds = self.position.daily_stats()
+        self.dashboard.update_entry_stats(_ds["trades"], _ds["wins"], _ds["pnl_pts"])
+
+        # 주문/체결 탭 메트릭 갱신 (LatencySync — Cybos에서는 항상 0ms)
+        _ls = self.latency_sync.summary()
+        _latency_ms = float(_ls.get("offset_ms", 0.0) or 0.0)
+        self.dashboard.update_order_metrics(
+            trades      = _ds["trades"],
+            avg_lat_ms  = _latency_ms,
+            peak_lat_ms = _ls["peak_ms"],
+            samples     = _ls["sample_count"],
+        )
+
+    # ── [MW0602 신동 주체 리뉴얼] 미륵 휴면(MIREUK_ENGINE="off") 경량 분봉 패스 ─────────────────
+    #   계획서: docs/신동거래_V4/신동주체_리뉴얼_구현계획_미륵휴면_MW0602-20261024.md §1·Phase 2
+    #   미륵 9단계 파이프라인 안에 섞여 있던 「신동이 쓰는 부품」만 돈다. 부품 이름(P1~P12)은 계획서 §1 표와 같다.
+    #   🔴 순서를 바꾸지 말 것 — `run_minute_pipeline` 의 해당 블록 순서(맥점 → 틱스톱 → 가드 → 대기주문)를 따른다.
+    #   🔴 새 블록을 복사해 넣지 말 것 — 파이프라인과 **같은 메서드**를 부른다(_maybe_compute_levels_0930 ·
+    #      _bar_price_guard · _check_pending_order_timeout · _check_exit_triggers · _push_position_panels).
+    #   회귀: tests/test_renewal_light_pass.py (부품 12개 호출 단언).
+    LIGHT_PASS_PARTS = (
+        "P5_dup_guard", "P3_levels_0930", "P7_tick_stop", "P5_bar_guard", "P6_pending_timeout",
+        "P1_save_candle", "P10_atr", "P10_cb4_record_atr", "P8_exit_triggers", "P10_vbook_on_bar",
+        "P12_panels", "P11_cb5_record_latency",
+    )
+
+    def _light_atr_prime(self, calc) -> int:
+        """경량 ATR 계산기를 DB 최근 봉으로 예열한다(기동 직후 첫 봉). → 넣은 봉 수.
+
+        미륵 피처의 ATR 은 같은 계산기(features/technical/atr.py, 14봉)라 예열 없이 시작하면 첫 14봉 동안
+        값이 다르다. 예열 실패는 진행을 막지 않는다 — 그 사실만 남긴다(계측 4원칙 ④).
+        """
+        try:
+            rows = fetch_recent_raw_candles(limit=calc.period * 3)
+        except Exception as _e:
+            logger.warning("[LightPass] ATR 예열 실패 — 냉시작(첫 %d봉 동안 미륵 피처 ATR 과 다를 수 있음): %s",
+                           calc.period, _e)
+            return 0
+        n = 0
+        for r in rows:
+            try:
+                calc.update(float(r["high"]), float(r["low"]), float(r["close"]))
+                n += 1
+            except Exception:
+                continue
+        return n
+
+    def _light_minute_pass(self, bar: dict) -> None:
+        """[MW0602 신동 주체 리뉴얼] 미륵 휴면의 분봉 처리 — 신동이 쓰는 부품 12개만 실행한다.
+
+        미륵 파이프라인과 달리 하지 않는 것: 예측 채점 · SGD/MetaGate 학습 · GBM 재학습 트리거 ·
+        피처 생성/저장 · 6호라이즌 예측 · 앙상블·게이트 · 미륵 진입 · 예측 DB 저장 · 챔피언 섀도.
+        신동 재생·집행은 여기가 아니라 수급 타이머(`_fetch_weekly_option_flow` → `_shindong_exec_step`)에서 돈다.
+        """
+        _t0 = time.perf_counter()
+        ts_raw = bar.get("ts", datetime.datetime.now())
+        ts = ts_raw.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts_raw, "strftime") else str(ts_raw)
+
+        # P5 중복 분봉 가드 — 같은 ts 이중 처리 방지(파이프라인 453차 D4 와 같은 취지)
+        if ts == self._light_last_ts:
+            log_manager.system(f"[LightPass] 중복 분봉 주입 차단 ts={ts} — 이미 처리된 봉", "WARNING")
+            return
+        self._light_last_ts = ts
+
+        # P3 09:30 맥점(08:50 미발화 소급 포함)
+        self._maybe_compute_levels_0930(ts_raw)
+        # P7 틱 하드스톱 폴백 — 신동 손절 터치 청산도 이 경로다(멱등)
+        self._process_tick_stop()
+        # P5 분봉 유효성 가드(C0~C2) — 차단이면 워치독만 리셋하고 끝(파이프라인과 같다)
+        _guard = self._bar_price_guard(bar, ts)
+        if _guard is None:
+            return
+        close, high, low, _vol = _guard
+        self._last_pipeline_price = close
+        self._last_close = close
+        self.dashboard.update_price(
+            price=close,
+            change=close - bar.get("open", close),
+            code=self.realtime_data.code if self.realtime_data else "",
+        )
+        # P6 대기주문 타임아웃 · 부분체결 고착 해소
+        self._check_pending_order_timeout()
+
+        # P1 1분봉 저장(raw_candles) — 신동 재생의 가격 원천. 피처 없이 봉만.
+        try:
+            self._db_write_queue.put_nowait(("candle", bar))
+        except _queue.Full:
+            logger.warning("[DBQueue] 큐 포화 — candle 동기 write fallback")
+            save_candle(bar)
+
+        # P10 분봉 ATR · ATR 비율 — 미륵 피처와 같은 계산기
+        if not self._light_atr_primed:
+            self._light_atr_primed = True
+            _np = self._light_atr_prime(self._light_atr)
+            log_manager.system(f"[LightPass] 경량 분봉 패스 시작 — 미륵 휴면 · ATR 예열 {_np}봉", "INFO")
+        _ar = self._light_atr.update(high, low, close)
+        atr = float(_ar.get("atr") or 0.0) or 0.5          # 0 이면 STEP 8 기본값(0.5)과 같게
+        atr_ratio = float(_ar.get("atr_ratio") or 1.0)
+        # P10 CB④ 입력 — 미륵 피처 대신 같은 정의의 경량 ATR 비율
+        self.circuit_breaker.record_atr(atr_ratio)
+        feats = {"atr": atr, "atr_ratio": atr_ratio}
+        # 신동·피터 실주문의 atr 인자(`_execute_entry(..., atr)`)가 읽는다. qty=0 이라 수동 진입 버튼은
+        #   「산출 수량 0」으로 막힌다(미륵 등급·수량이 없다 — 의도됨).
+        self._manual_entry_ctx = {"price": close, "qty": 0, "atr": atr, "grade": "X", "confidence": 0.0}
+
+        # P8 청산 감시(STEP 8) — decision={} (미륵 판단 없음). 유지보수·15:10 패스와 같은 규약이다.
+        if self.position.status != "FLAT":
+            self._check_exit_triggers(close, feats, {}, bar)
+        # P10 가상 장부도 같은 봉으로 청산 사다리 평가(주문 없음)
+        _ts_vbook_on_bar(self, bar, atr)
+        # P12 화면(청산·손익·진입통계·주문 메트릭)
+        self._push_position_panels(close, atr, bar, None, None)
+
+        # P11 CB⑤ 입력 — 이 패스의 경과 시간(미륵 연산이 빠져 데이터 콜백 지연만 남는다)
+        _ms = (time.perf_counter() - _t0) * 1000.0
+        self._last_pipe_ms = _ms
+        self.circuit_breaker.record_pipe_latency(_ms)
+        try:
+            self.dashboard.update_system_status(
+                cb_state=self.circuit_breaker.state, latency_ms=_ms, accuracy=None, cb3_samples=0)
+        except Exception as _ds_e:
+            logger.debug("[Dashboard] update_system_status 실패: %s", _ds_e)
+        self._light_push_profit_guard_badge(ts)
+        if _ms >= 1000.0:
+            log_manager.system(f"[LightPass] total={_ms:.0f}ms ts={ts} — 1초 초과", "WARNING")
+
+        # 시계·컨텍스트 — 파이프라인 완주와 같은 의미(워치독·ExchangeCB 감지·유지보수 패스가 읽는다)
+        self._sigma_prev_price = close
+        self._last_real_pipeline_dt = datetime.datetime.now()
+        self._maint_ctx = (feats, {}, ts)
+        self.dashboard.notify_pipeline_ran()
+
+    def _light_push_profit_guard_badge(self, ts: str) -> None:
+        """경량 패스용 ProfitGuard 배지 — 신동 진입 관문(`_pg_principal_entry_block`)과 **같은 축**으로 그린다."""
+        try:
+            _dt = datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+            _st = self.profit_guard.guard_status(float(self._sys_daily_net_krw), None, _dt)
+            _st["pnl_source"] = ("account_principals" if PROFIT_GUARD_ACCOUNT_AXIS
+                                 else "engine_system_only")
+            _st["system_only"] = bool(PROFIT_GUARD_SYSTEM_ONLY_PNL)
+            _st["system_legs"] = self._sys_daily_legs
+            _st["other_net_krw"] = self._sys_daily_other_krw
+            _st["other_legs"] = self._sys_daily_other_legs
+            self.dashboard.update_profit_guard_badge(_st)
+        except Exception as _pg_e:
+            if not self._pg_badge_err_logged:
+                self._pg_badge_err_logged = True
+                log_manager.system("[ProfitGuard] 배지 갱신 실패(경량 패스) — %r" % (_pg_e,), "WARNING")
+            try:
+                self.dashboard.update_profit_guard_badge(None)
+            except Exception:
+                pass
+
+    def _light_minute_pass_dry(self, bar: dict, pipeline_completed: bool) -> None:
+        """[MW0602 신동 주체 리뉴얼] 병행 건식 실행 — full 모드에서 미륵 파이프라인 **뒤에** 경량 패스를 계산만 한다.
+
+        🔴 부작용 없음: DB 쓰기 · 주문 · CB 기록 · 화면 · 워치독 · 시계를 건드리지 않는다. 예외는 삼킨다
+           (대조 도구가 실거래 경로를 죽이면 안 된다).
+        대조 항목(같은 봉, 같은 시점):
+          · 가드 통과 여부 vs 파이프라인 완주 여부(`_last_real_pipeline_dt` 이번 봉 갱신)
+          · ATR · ATR 비율 vs 미륵 피처(`_maint_ctx[0]`) — 상대오차 10% 초과면 불일치
+          · 청산 감시 호출 여부(포지션 보유) — 경량·미륵 모두 같은 조건이라 구조적으로 같아야 한다
+        불일치만 즉시 로그, 30봉마다 요약 1줄. 장후 `daily_close` 가 하루 요약을 남긴다.
+        """
+        try:
+            ts_raw = bar.get("ts", datetime.datetime.now())
+            ts = ts_raw.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts_raw, "strftime") else str(ts_raw)
+            _day = ts[:10]
+            st = self._light_dry_stats
+            if st["day"] != _day:
+                st.update(day=_day, bars=0, mismatch=0, atr_n=0, atr_maxrel=0.0, ms_max=0.0)
+            _t0 = time.perf_counter()
+            _g = self._bar_price_guard(bar, ts, notify=False)
+            _issues = []
+            if (_g is not None) != bool(pipeline_completed):
+                _issues.append("가드=%s · 파이프라인완주=%s" % ("통과" if _g else "차단", pipeline_completed))
+            if _g is not None:
+                c, h, l, _v = _g
+                if not self._light_atr_dry_primed:
+                    self._light_atr_dry_primed = True
+                    self._light_atr_prime(self._light_atr_dry)
+                _ar = self._light_atr_dry.update(h, l, c)
+                _ctx = self._maint_ctx if pipeline_completed else None
+                _mf = (_ctx[0] if _ctx else None) or {}
+                for _k in ("atr", "atr_ratio"):
+                    _lv, _mv = _ar.get(_k), _mf.get(_k)
+                    if _lv is None or _mv is None:
+                        continue
+                    _rel = abs(float(_lv) - float(_mv)) / max(abs(float(_mv)), 1e-9)
+                    if _k == "atr":
+                        st["atr_n"] += 1
+                        st["atr_maxrel"] = max(st["atr_maxrel"], _rel)
+                    if _rel > 0.10:
+                        _issues.append("%s 경량=%.4f 미륵=%.4f(상대 %.0f%%)" % (_k, float(_lv), float(_mv), _rel * 100))
+            _ms = (time.perf_counter() - _t0) * 1000.0
+            st["bars"] += 1
+            st["ms_max"] = max(st["ms_max"], _ms)
+            if _issues:
+                st["mismatch"] += 1
+                log_manager.system("[LightPassDry] 불일치 ts=%s — %s" % (ts, " · ".join(_issues)), "WARNING")
+            if st["bars"] % 30 == 0:
+                log_manager.system(
+                    "[LightPassDry] 요약 %s — 봉 %d · 불일치 %d · ATR 대조 %d봉(최대 상대오차 %.1f%%) · 계산 최대 %.1fms"
+                    % (_day, st["bars"], st["mismatch"], st["atr_n"], st["atr_maxrel"] * 100, st["ms_max"]), "INFO")
+        except Exception as _dry_e:
+            logger.debug("[LightPassDry] 대조 실패(무해): %s", _dry_e)
+
+    def run_minute_pipeline(self, bar: dict):
+        """
+        매분 실행되는 9단계 파이프라인
+
+        Args:
+            bar: {ts, open, high, low, close, volume, buy_vol, sell_vol,
+                  bid_price, ask_price, bid_qty, ask_qty}
+        """
+        _pipe_t0 = time.perf_counter()
+        _st: list = [("start", _pipe_t0)]
+        ts_raw = bar.get("ts", datetime.datetime.now())
+        ts     = ts_raw.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts_raw, "strftime") else str(ts_raw)
+
+        # ── [MW0601 453차 D4] 동일 분봉 중복 주입 가드 ────────────────────────
+        # 같은 ts가 두 번 들어오면 누산기(CVD·VWAP·OFI·ATR)와 N분봉 격자가 이중
+        # 급식된다. 453차 D1로 복구 재실행이 사라졌으므로 남은 중복 경로는 전부
+        # 버그다(대표: stale oscillation 중복 BAR-CLOSE — 경고만 찍고 콜백은
+        # 그대로 나간다, collection/cybos/realtime_data.py). 여기서 차단한다.
+        if ts == getattr(self, "_last_pipeline_bar_ts", None):
+            log_manager.system(
+                f"[Pipeline] 중복 분봉 주입 차단 ts={ts} — 이미 처리된 봉 (453차 D4)",
+                "WARNING",
+            )
+            return
+        self._last_pipeline_bar_ts = ts
+
+        self._maybe_compute_levels_0930(ts_raw)
+
+        # ── [S0-A] 64비트 GBM subprocess 완료 체크 ────────────────────────
+        # [226차] poll()은 non-blocking — subprocess가 완료되면 returncode 반환.
+        # [381차 후속] 로직을 _poll_gbm_retrain_subprocess()로 추출 — daily_close()도
+        # 동일 로직을 재사용해 15:10~15:40 무분봉 구간의 완료 감지 공백을 메운다.
+        self._poll_gbm_retrain_subprocess()
+
+        # ── [S0-B] ConstOut 재적합 완료 콜백 큐 drain — P1 QTimer 불안정 대체 ──
+        # ConstOut refit worker → _deferred_callbacks.put("const_out_done") →
+        # 여기서 메인 스레드 소비. GBM done은 [226차] subprocess poll로 이동.
+
+        # ── [S0-C] tick-level 하드스톱 처리 (폴백 안전망) ────────────────────
+        # [348차] 실제 주문 전송 경로는 이제 _on_tick_price_update에서 직접
+        # QTimer.singleShot(0, ...)으로 예약 — 최악 60초(다음 분봉 롤오버)
+        # 지연되던 것을 다음 이벤트루프 패스(수십ms)로 단축. 이 블록은 그
+        # 싱글샷이 어떤 이유로든(이벤트루프 기아 등) 못 돈 경우를 대비한
+        # 폴백일 뿐이며, _process_tick_stop() 내부에서 flag를 즉시 클리어하는
+        # 멱등 설계라 두 경로가 겹쳐도 중복 주문은 발생하지 않는다.
+        self._process_tick_stop()
+
+        while True:
+            try:
+                _dcb = self._deferred_callbacks.get_nowait()
+            except _queue.Empty:
+                break
+            try:
+                _dcb_tag = _dcb[0]
+                if _dcb_tag == "const_out_done":
+                    self._on_const_out_refit_done(_dcb[1])
+                # gbm_done 태그: [226차] subprocess 이관 — 큐에서 수신 시 무시(잔여 배출)
+            except Exception as _dcb_e:
+                logger.warning("[DeferredCB] 콜백 처리 오류 (tag=%s): %s", _dcb[0] if _dcb else "?", _dcb_e)
+
+        # ── [P3] CB③ HALT 주기적 해제 재시도 ─────────────────────────────
+        # ConstOut 재적합 + GBM 재학습이 완료됐으나 콜백 누락으로 lift 안 된 경우 복구.
+        # 15분마다 조건 확인: HALTED + cb3 원인 + 재학습·스케일러 재적합 미실행.
+        if (not getattr(self, "_gbm_retrain_running", False)
+                and not getattr(self, "_scaler_refresh_running", False)):
+            _cb3_state = self.circuit_breaker
+            if (_cb3_state.state == "HALTED"
+                    and getattr(_cb3_state, "_halt_cause", "") == "cb3"):
+                _ts_min_for_cb3 = int(ts[14:16]) if len(ts) >= 16 else -1
+                if _ts_min_for_cb3 >= 0 and _ts_min_for_cb3 % 15 == 0:
+                    if _cb3_state.lift_cb3_halt():
+                        log_manager.system(
+                            "[CB③→RESUME] 주기적 재시도 → HALT 해제 "
+                            "(ConstOut 재적합·GBM 재학습 완료 누락 복구)",
+                            "INFO",
+                        )
+
+        # ── [S0] 재학습 완료 모델 교체 — predict_proba 전 안전 지점 ─────────
+        # _on_gbm_retrain_done 이 플래그를 세우면 여기서 소비.
+        # 파이프라인 실행 중 모델 객체 교체 race condition 방지 (193차).
+        # [MW0602 462차 P2] 이 사이클의 모델 교체 소요시간 — CB⑤/Health 지연 판정에서 차감.
+        # 매 사이클 0으로 리셋해야 직전 값이 새는 것을 막는다.
+        self._model_swap_ms = 0.0
+        if getattr(self, "_pending_model_reload", False):
+            _swap_t0 = time.perf_counter()
+            self._pending_model_reload = False
+            _bad = self.model._load_all()
+            if _bad:
+                logger.error(
+                    "[Model] 재학습 후 %d개 호라이즌 차원 불일치: %s → 재학습 재트리거",
+                    len(_bad), _bad,
+                )
+                self._start_manual_retrain(force=True, reason="resync_mismatch")
+            try:
+                self.rf_model.load_all()
+            except Exception:
+                pass
+            self._rebuild_sgd_feat_indices()   # [P2] feature_names 교체 반영
+            self._model_swap_ms = (time.perf_counter() - _swap_t0) * 1000.0
+            logger.info(
+                "[Model] 재학습 완료 모델 교체 적용 (S0) — %.0fms", self._model_swap_ms
+            )
+
+        # [S2-A] 지연 SGD 학습 변수 — S2에서 채워지고 "end" 이후에 소비
+        # 초기값 [] 로 설정해 early return 시에도 NameError 방지
+        _sgd_deferred_verified: list = []
+        _sgd_deferred_stuck: bool = False
+
+        # ── 분봉 데이터 유효성 가드 ───────────────────────────────
+        # 비정상 분봉이 피처/진입/청산 오발동을 일으키지 않도록 파이프라인 앞단 차단
+        _guard = self._bar_price_guard(bar, ts)
+        if _guard is None:
+            return
+        _c, _h, _l, _v = _guard
+
+        _bar_volume_zero = (_v == 0)
+        if _bar_volume_zero:
+            log_manager.system(
+                f"[Guard-C3] volume=0 분봉 — VWAP/CVD 신호 신뢰도 저하, 진입 보류 ({ts})",
+                "WARNING",
+            )
+
+        close  = _c
+        # [225차 P0] _last_pipeline_price 는 _on_tick_price_update(현재 봉 tick)에 의해
+        # 파이프라인 진입 전 이미 cur_p 로 덮어써져 ret=0 고착 → 전용 변수 사용
+        _prev_pipeline_price      = self._sigma_prev_price     # sigma 계산용 이전 종가
+        self._last_pipeline_price = close  # 잔고 UI 합성에 사용
+        self._last_close = close           # 옵션체인 QTimer 폴링용 최신 종가
+
+        # 대시보드 실시간 가격 동기화
+        self.dashboard.update_price(
+            price  = close,
+            change = close - bar.get("open", close),
+            code   = self.realtime_data.code if self.realtime_data else "",
+        )
+
+        self._check_pending_order_timeout()
 
         # P3-a: 매 분봉 시작 시 stuck 플래그 초기화
         self._stuck_this_minute = False
@@ -12403,76 +12790,8 @@ class TradingSystem:
         # [거래주체분리 2단계] 가상 포지션도 같은 봉으로 청산 사다리를 평가한다(주문 없음).
         _ts_vbook_on_bar(self, bar, features.get("atr", 0.5))
 
-        # ── 청산 패널 갱신 (매분 — 실제 PositionTracker 값 전달) ──
-        _pos = self.position
-        _pending = self._pending_order or {}
-        _pending_kind = str(_pending.get("kind") or "")
-        _pending_reason = str(_pending.get("reason") or "")
-        _now = datetime.datetime.now()
-        _force_dt = datetime.datetime.combine(_now.date(), self.time_exit.FORCE_EXIT)
-        _time_left_s = int((_force_dt - _now).total_seconds())
-        if _time_left_s < 0:
-            _time_left_s = 0
-        self.dashboard.update_position({
-            "status":     _pos.status,
-            "entry":      _pos.entry_price,
-            "current":    close,
-            "qty":        _pos.quantity,
-            "pt_value":   self._pt_value,
-            "atr":        atr,
-            "stop":       _pos.stop_price,
-            "trail_basis": _pos.get_trailing_reference_price(close, atr),
-            "tp1":        _pos.tp1_price,
-            "tp2":        _pos.tp2_price,
-            "tp3":        _pos.tp3_price,
-            "partial1":   _pos.partial_1_done,
-            "partial2":   _pos.partial_2_done,
-            "partial3":   _pos.partial_3_done,
-            "stage_plan": _pos.get_stage_plan(),
-            "entry_time": _pos.entry_time,
-            "pending_active": bool(_pending),
-            "pending_kind": _pending_kind,
-            "pending_reason": _pending_reason,
-            "pending_stage": int(_pending.get("stage") or 0),
-            "pending_filled": int(_pending.get("filled_qty") or 0),
-            "pending_qty": int(_pending.get("qty") or 0),
-            "time_exit_countdown_sec": _time_left_s,
-            "stop_move_reason": _pos.last_update_reason or "",
-            "bar_low":  bar.get("low",  0.0) if bar else 0.0,
-            "bar_high": bar.get("high", 0.0) if bar else 0.0,
-            "atr_ok":      _atr_ok,
-            "open_gap_ok": _open_gap_ok,
-        })
+        self._push_position_panels(close, atr, bar, _atr_ok, _open_gap_ok)
 
-        # ── 대시보드 PnL 패널 갱신 (매분) ──────────────────────────
-        _daily   = self.position.daily_stats()
-        _forward_daily = self.position.daily_forward_stats()
-        _unreal  = self.position.unrealized_pnl_pts(close) * self._pt_value
-        _forward_unreal = self.position.unrealized_forward_pnl_pts(close) * self._pt_value
-        _var_krw = -(atr * 1.65 * self.position.quantity * self._pt_value) if self.position.quantity else 0.0
-        self.dashboard.update_pnl_metrics(
-            _unreal,
-            _daily["pnl_krw"],
-            _var_krw,
-            forward_unrealized_krw=_forward_unreal,
-            forward_daily_pnl_krw=_forward_daily["pnl_krw"],
-            # [MW0601 493차 / F-5] 브로커 실측 net 병기 — None이면 패널은 종전대로.
-            broker_net_krw=self._broker_net_today,
-        )
-
-        # 당일 진입 통계 갱신 — STEP 9 예외와 무관하게 항상 실행
-        _ds = self.position.daily_stats()
-        self.dashboard.update_entry_stats(_ds["trades"], _ds["wins"], _ds["pnl_pts"])
-
-        # 주문/체결 탭 메트릭 갱신 (LatencySync — Cybos에서는 항상 0ms)
-        _ls = self.latency_sync.summary()
-        _latency_ms = float(_ls.get("offset_ms", 0.0) or 0.0)
-        self.dashboard.update_order_metrics(
-            trades      = _ds["trades"],
-            avg_lat_ms  = _latency_ms,
-            peak_lat_ms = _ls["peak_ms"],
-            samples     = _ls["sample_count"],
-        )
         # 파이프라인 처리시간 (CB⑤ 대체 지표) — 헬스 패널·SYSTEM 로그 공용
         _st.append(("end", time.perf_counter()))
         _pipe_ms_raw = (_st[-1][1] - _pipe_t0) * 1000
@@ -21775,6 +22094,15 @@ def _ts_execute_entry(
     quantile_uncertainty_pt: float = None,
     entry_source: str = "SYSTEM_AUTO",
 ):
+    # [MW0602 신동 주체 리뉴얼] 미륵 휴면(MIREUK_ENGINE="off")에서 미륵 자동진입은 **주문 전** 거부한다.
+    #   설정값이 아니라 주문 함수 입구에서 막는다(계획서 §2 원칙 4 — 주문 주체는 하나).
+    #   off 에서는 미륵 STEP 7 이 돌지 않으므로 여기 도달 자체가 결함 신호다 — ERROR 로 남긴다.
+    #   섀도·가상 장부에도 쓰지 않는다(휴면 중인 미륵의 판단은 기록 대상이 아니다).
+    if entry_source == "SYSTEM_AUTO" and not self._mireuk_on():
+        log_manager.system(
+            f"[MireukOff] 미륵 휴면 중 SYSTEM_AUTO 진입 요청 거부 — {direction} {quantity}계약 "
+            f"@{price} 등급={grade} (도달 경로 점검 필요)", "ERROR")
+        return
     cooldown_active, cooldown_remain = _ts_in_exit_cooldown(self)
     # [MW0601 668차] 피터2는 청산 후 쿨다운을 받지 않는다 — 그는 손절 직후 재진입한다
     #   (10-07 09:16 손절 → 09:35 재매도). 쿨다운은 미륵이 자체 판단의 과열 방지 장치다.
