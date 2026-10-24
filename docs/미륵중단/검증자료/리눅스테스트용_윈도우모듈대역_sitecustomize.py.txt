@@ -1,0 +1,25 @@
+# 리눅스 테스트 전용 — Windows 전용 모듈 대역(저장소에 커밋하지 않는다)
+import sys, types
+class _Any(object):
+    def __init__(self, *a, **k): pass
+    def __getattr__(self, n): return _Any()
+    def __call__(self, *a, **k): return _Any()
+def _mod(name, **attrs):
+    m = types.ModuleType(name)
+    m.__dict__.update(attrs)
+    m.__getattr__ = lambda n: _Any
+    sys.modules[name] = m
+    return m
+try:
+    import PyQt5
+    from PyQt5 import QtWidgets
+    qax = _mod("PyQt5.QAxContainer", QAxWidget=QtWidgets.QWidget)
+    PyQt5.QAxContainer = qax
+except Exception:
+    pass
+for n in ("win32com", "win32com.client", "pythoncom", "pywintypes", "win32api", "win32gui", "win32con", "win32process", "win32event", "winreg", "_winreg", "comtypes", "comtypes.client", "psutil_stub"):
+    if n not in sys.modules:
+        try:
+            __import__(n)
+        except Exception:
+            _mod(n)

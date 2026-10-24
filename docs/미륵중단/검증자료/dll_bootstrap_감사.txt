@@ -1,0 +1,3 @@
+  [OK       ] scripts/validate_feature_set_purged_cv.py      numeric@55    bootstrap@52   
+
+판정: 강제 대상 결손 없음

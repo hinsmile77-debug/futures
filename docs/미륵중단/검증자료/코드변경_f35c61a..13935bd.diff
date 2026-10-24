@@ -1,0 +1,3719 @@
+diff --git a/TASK_SHINDONG_EOD_INSTALL.bat b/TASK_SHINDONG_EOD_INSTALL.bat
+new file mode 100644
+index 0000000..c7dc629
+--- /dev/null
++++ b/TASK_SHINDONG_EOD_INSTALL.bat
+@@ -0,0 +1,42 @@
++@echo off
++REM ============================================================
++REM  Shindong EOD scheduled task - installer (MW0602 shindong-owner renewal)
++REM
++REM  Splits the premarket-levels history cache refresh (Shindong ATR14 / levels source)
++REM  out of the Mireuk EOD retrain, so Mireuk can go dormant (MIREUK_ENGINE="off").
++REM  See docs\shindong V4 renewal plan, Phase 3.
++REM
++REM  install    TASK_SHINDONG_EOD_INSTALL.bat
++REM  uninstall  TASK_SHINDONG_EOD_INSTALL.bat -Uninstall
++REM  time       TASK_SHINDONG_EOD_INSTALL.bat -Time "16:00"
++REM  switch-over day (after one OK run):
++REM             TASK_SHINDONG_EOD_INSTALL.bat -DisableMireukRetrain
++REM  undo       TASK_SHINDONG_EOD_INSTALL.bat -EnableMireukRetrain
++REM
++REM  No admin rights needed. Scheduled tasks are per-PC (not shared through git).
++REM  KEEP THIS FILE PURE ASCII, CRLF.
++REM ============================================================
++
++setlocal
++title Shindong EOD task
++
++set "PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
++if not exist "%PS%" (
++    echo [FAIL] Windows PowerShell not found: %PS%
++    goto :end
++)
++
++"%PS%" -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\shindong_eod_task.ps1" %*
++set "RC=%ERRORLEVEL%"
++
++echo.
++if "%RC%"=="0" (
++    echo [RESULT] ok
++) else (
++    echo [RESULT] failed  exit %RC%
++)
++
++:end
++echo.
++pause
++endlocal
+diff --git a/config/settings.py b/config/settings.py
+index 9aea6b4..80787ce 100644
+--- a/config/settings.py
++++ b/config/settings.py
+@@ -8053,6 +8053,29 @@ SHINDONG_REPORT_MAIL_ENABLED = True
+ SHINDONG_LIVE_QTY = 2              # 2계약(사용자 결정 2026-10-21, 10-13 실거래 전환 때 2→1 → 다시 2) — 청산은 전량 1회(live_exec.manage)
+ SHINDONG_LIVE_MAX_AGE_MIN = 2      # 진입봉이 끝난 뒤 이 분 수가 지나면 쫓지 않는다(재기동·지연)
+ 
++# ── [MW0602 신동 주체 리뉴얼] 미륵 휴면 스위치 ─────────────────────────────────
++# 계획: docs/신동거래_V4/신동주체_리뉴얼_구현계획_미륵휴면_MW0602-20261024.md
++# MIREUK_ENGINE
++#   "full" — 오늘과 같다(미륵 9단계 파이프라인 · 학습 · 재학습 · 미륵 장후 체인).
++#   "off"  — 미륵 휴면. 분봉마다 `_light_minute_pass` 가 신동이 쓰는 부품 12개
++#            (봉 저장 · 맥점 · 대기주문 타임아웃 · 틱 하드스톱 폴백 · STEP 8 · ATR · CB④⑤ 입력 · 대시보드)만 돌린다.
++#            예측·학습·미륵 진입·재학습 spawn·미륵 EOD 항목은 건너뛴다. 미륵 코드·모델·DB 는 지우지 않는다.
++#   🔴 **기동 시 한 번만 읽는다**(`TradingSystem.__init__`). 장중 핫리로드로 바뀌지 않는다 — 바꾸려면 FLAT 에서 재기동.
++#   🔴 "off" 로 바꾸기 전 확인: 병행 건식 실행(LIGHT_PASS_DRY_RUN) 불일치 0 · 장후 재생(scripts/light_pass_replay.py) ·
++#      `SHINDONG_EOD.bat` 병행 성공(맥점 이력 캐시 — 미륵 재학습 스크립트 안에 있던 결합, 계획서 §1 P4).
++MIREUK_ENGINE = "full"
++# PRINCIPAL_LOCK — None 이면 종전(대시보드에서 주체 전환). "SHINDONG" 이면 파일·전환 요청과 무관하게 신동 고정.
++PRINCIPAL_LOCK = None
++# LIGHT_PASS_DRY_RUN — MIREUK_ENGINE="full" 일 때만 의미. 매분 미륵 파이프라인 뒤에 경량 패스를
++#   **계산만** 병행해(DB 쓰기·주문·CB 기록·화면 갱신 없음) 미륵 경로 값과 대조하고 `[LightPassDry]` 로 남긴다.
++#   실거래를 멈추지 않는 전환 검증 수단이다(계획서 Phase 6-A).
++LIGHT_PASS_DRY_RUN = False
++# 흐름 신선도 가드(계획서 D3 — 사용자 미결): 7222 개인 콜·풋 흐름의 마지막 수집 성공이 이 분 수보다 오래되면
++#   "shadow" — 신동 신규 진입은 그대로 두고 `[FlowStale]` 로그만(실측 먼저) / "live" — 신규 진입 보류 / "off" — 검사 안 함.
++#   진입을 줄이는 방향이라 "live" 는 사용자 결정 뒤에만. 미륵 off 와 무관한 별건이다.
++SHINDONG_FLOW_STALE_GUARD = "shadow"
++SHINDONG_FLOW_STALE_MIN = 3
++
+ # ── [MW0601 668차 / MW0602 이식] 피터2 — 피터리 트윗 실시간 추종 매매 ──────────────
+ # 장중 피터리(@PeterLeejoa) 트윗을 Chrome 확장 → 로컬 수신기(127.0.0.1)로 받아
+ # `data/peter_feed/_raw/<날짜>.jsonl` 에 적고, main.py 가 2초마다 새 줄을 읽어
+diff --git a/dashboard/main_dashboard.py b/dashboard/main_dashboard.py
+index 9eb9a79..2edaa8f 100644
+--- a/dashboard/main_dashboard.py
++++ b/dashboard/main_dashboard.py
+@@ -17287,7 +17287,11 @@ class DashboardAdapter:
+         """시스템 상태 (Circuit Breaker, 지연, 정확도) 업데이트"""
+         # CB③ 발동 최솟 샘플(25건) 기준으로 표시 분기
+         # — 25건 미만은 통계적 의미 없음. "0.0%(1건)" 오표시로 오해 방지
+-        if cb3_samples >= 25:
++        # [MW0602 신동 주체 리뉴얼] accuracy=None = 미륵 휴면(30m 예측 없음) — 「집계중」으로 보이면
++        #   언젠가 채워질 값처럼 읽힌다. 0 이 아니라 휴면이라고 쓴다(계측 4원칙 ②).
++        if accuracy is None:
++            acc_str = "CB③=미륵 휴면"
++        elif cb3_samples >= 25:
+             acc_str = f"CB③30m={accuracy:.1%}({cb3_samples}건)"
+         elif cb3_samples > 0:
+             acc_str = f"CB③30m=집계중({cb3_samples}/25건)"
+diff --git a/main.py b/main.py
+index 0d7af00..a1ec025 100644
+--- a/main.py
++++ b/main.py
+@@ -707,6 +707,46 @@ class TradingSystem:
+         # [MW0602 거래주체분리] 현재 거래주체 — 파일(data/trade_principal.json)이 정본이고 이것은 캐시다.
+         #   전환은 `_on_principal_change_requested` 한 곳에서만 일어나며 그때 둘을 함께 바꾼다.
+         self._principal_state = principal_mod.load()
++        # [MW0602 신동 주체 리뉴얼] 미륵 휴면 스위치 — **기동 시 한 번만** 읽는다(장중 핫리로드 무시).
++        #   "full" 이 아닌 알 수 없는 값은 full 로 다룬다(오타로 미륵이 조용히 꺼지는 것보다 종전 동작이 안전) —
++        #   그 사실은 남긴다(계측 4원칙 ④). 판정은 `_mireuk_on()` 한 곳에서만.
++        _me_raw = str(getattr(runtime_settings, "MIREUK_ENGINE", "full") or "full").strip().lower()
++        if _me_raw not in ("full", "off"):
++            logger.error("[Engine] MIREUK_ENGINE=%r 알 수 없는 값 — full 로 동작", _me_raw)
++            _me_raw = "full"
++        self._mireuk_engine = _me_raw
++        # 경량 패스 상태 — off(실집행) 또는 full+LIGHT_PASS_DRY_RUN(대조)에서 쓴다.
++        #   ATR 은 미륵 피처와 같은 계산기(features/technical/atr.py) — dry 대조가 같은 정의를 비교하게 한다.
++        from features.technical.atr import ATRCalculator as _LightATR
++        self._light_atr = _LightATR()
++        self._light_atr_dry = _LightATR()          # dry-run 전용(실집행 상태와 섞지 않는다)
++        # 경량 ATR 의 「오늘」 — 미륵 피처 ATR 과 같은 정의(매일 리셋 · 08:45 프리장 봉부터 누적)를 지키려고
++        #   날짜가 바뀌면 리셋하고 당일 앞선 봉으로만 예열한다(장중 재기동 대비). None = 아직 오늘 봉 없음.
++        self._light_atr_day = None
++        self._light_atr_dry_day = None
++        self._light_pass_dry = bool(getattr(runtime_settings, "LIGHT_PASS_DRY_RUN", False)) \
++            and self._mireuk_engine == "full"
++        self._light_last_ts = None                 # 경량 패스 중복 분봉 가드
++        self._light_dry_stats = {"day": None, "bars": 0, "mismatch": 0, "atr_n": 0,
++                                 "atr_maxrel": 0.0, "ms_max": 0.0}
++        # [FlowStale] 신동 입력(1분봉·7222 흐름) 지연 — 재생 기준분(horizon)이 현재 직전 분보다 몇 분 늦은가.
++        #   None = 미측정(장외·재생 전). 판정·로그는 `_shindong_flow_stale_check` 한 곳.
++        self._sd_flow_lag = None
++        self._sd_flow_stale_since = None           # 지연 구간 시작 시각(같은 구간 반복 로그 억제)
++        self._sd_fetch_fail_exit_logged = None     # 7222 수집 실패 중 15:05 시간청산 — 날짜당 1회 로그
++        if self._principal_state.get("locked"):
++            logger.warning("[Principal] PRINCIPAL_LOCK — 거래주체 %s 고정(파일·대시보드 전환 무시)",
++                           principal_mod.label(self._principal_state["principal"]))
++        elif getattr(runtime_settings, "PRINCIPAL_LOCK", None):
++            logger.error("[Principal] PRINCIPAL_LOCK=%r 알 수 없는 값 — 고정하지 않음(파일 선택 사용)",
++                         getattr(runtime_settings, "PRINCIPAL_LOCK", None))
++        if self._mireuk_engine == "off":
++            logger.warning("[Engine] 미륵 엔진=off — 예측·학습·재학습·미륵 진입·미륵 장후 항목 생략, "
++                           "경량 분봉 패스 사용 (거래주체=%s)",
++                           principal_mod.label(self._principal_state["principal"]))
++            if self._principal_state["principal"] == principal_mod.MIREUK:
++                logger.error("[Engine] 미륵 off 인데 거래주체=미륵 — 자동진입이 나가지 않는다. "
++                             "PRINCIPAL_LOCK=\"SHINDONG\" 또는 대시보드에서 주체를 바꿀 것")
+         # [2026-10-20 MW0602] 저장된 주체가 피터인데 피터2 수집·추종이 꺼져 있으면 알린다.
+         #   주체를 몰래 바꾸지 않는다(파일이 정본) — 사람이 대시보드에서 고르게 둔다.
+         if self._principal_state["principal"] == principal_mod.PETER:
+@@ -1736,6 +1776,11 @@ class TradingSystem:
+         64비트 독립 프로세스로 대체. retrain_intraday.py 스크립트가 결과 JSON을 기록하고,
+         main.py S0 루프가 poll()로 완료를 감지 → _on_gbm_retrain_done() 정상 호출.
+         """
++        # [MW0602 신동 주체 리뉴얼] 미륵 휴면이면 재학습을 띄우지 않는다 — 모든 트리거(기동 PreRetrain ·
++        #   월요일 주간 · 장중 DriftRetrain · 피처 교체 · 수동)가 이 함수 한 곳을 지난다. 사유는 남긴다.
++        if not self._mireuk_on():
++            log_manager.system(f"[GBM-64] 미륵 휴면 — 재학습 생략 ({reason})", "INFO")
++            return False
+         if getattr(self, "_gbm_retrain_running", False):
+             log_manager.system(f"[GBM-64] 재학습 진행 중 — 스킵 ({reason})", "WARN")
+             return False
+@@ -2779,6 +2824,10 @@ class TradingSystem:
+                 if op == "candle_features":
+                     _, _bar, _ts, _feats = item
+                     save_candle_and_features(_bar, _ts, _feats)
++                elif op == "candle":
++                    # [MW0602 신동 주체 리뉴얼] 미륵 휴면의 경량 분봉 패스 — 피처 없이 봉만(raw_candles)
++                    _, _bar = item
++                    save_candle(_bar)
+                 elif op == "horizon_features":
+                     _, _ts, _h_name, _h_feats, _regime = item
+                     save_horizon_features(_ts, _h_name, _h_feats)
+@@ -3268,7 +3317,12 @@ class TradingSystem:
+     # 🔴 15:10 강제청산·15:18 안전망·CB⑤·킬스위치는 피터2 포지션에도 그대로다.
+     # ── [MW0602 거래주체분리] 거래주체 전환 ─────────────────────────────────────
+     def _principal_locked(self) -> bool:
+-        return self.position.status != "FLAT" or self._has_pending_order()
++        return (self.position.status != "FLAT" or self._has_pending_order()
++                or bool(self._principal_state.get("locked")))      # [신동 주체 리뉴얼] PRINCIPAL_LOCK
++
++    def _mireuk_on(self) -> bool:
++        """[MW0602 신동 주체 리뉴얼] 미륵 엔진이 돌고 있는가(MIREUK_ENGINE="full"). 기동 시 고정값."""
++        return self._mireuk_engine != "off"
+ 
+     def _push_principal_ui(self) -> None:
+         """대시보드 버튼·배지를 실제 상태에 맞춘다(2초 폴링 + 전환 직후)."""
+@@ -3284,6 +3338,12 @@ class TradingSystem:
+         if principal == cur or principal not in principal_mod.PRINCIPALS:
+             self._push_principal_ui()
+             return
++        if self._principal_state.get("locked"):
++            # [신동 주체 리뉴얼] PRINCIPAL_LOCK — 파일도 바꾸지 않는다(고정을 풀면 파일 선택으로 돌아간다).
++            log_manager.system("[Principal] 전환 거부 %s → %s — PRINCIPAL_LOCK 으로 고정됨(settings.py)"
++                               % (principal_mod.label(cur), principal_mod.label(principal)), "WARNING")
++            self._push_principal_ui()
++            return
+         ok, why = principal_mod.can_switch(self.position.status, self._has_pending_order())
+         # [2026-10-20 MW0602] 피터2 실시간 수집·추종이 꺼져 있으면 피터 주체는 진입을 낼 수 없다.
+         if ok and principal == principal_mod.PETER:
+@@ -5260,6 +5320,9 @@ class TradingSystem:
+             if not self._wof_warned:
+                 self._wof_warned = True
+                 logger.warning("[OptionFlow] 수집기 기동 실패(이후 로그 억제): %s", e)
++            # [MW0602 신동 주체 리뉴얼] 수집이 실패한 분에는 `_run_shindong`(재생·집행 관리)이 돌지 않는다 —
++            #   신동 포지션의 15:05 규격 시간청산도 함께 빠진다. 그 하나만은 재생 없이도 판정할 수 있으므로 지킨다.
++            self._shindong_fetch_fail_guard(now)
+ 
+     def _fetch_strike_investor_flow(self, now: datetime.datetime) -> None:
+         """[MW0601 704차] 먼스리 옵션 행사가 × 투자자 12주체 수집 (CpSvr9842 = HTS [9842]).
+@@ -5331,6 +5394,8 @@ class TradingSystem:
+                 levels_db=runtime_settings.PREMARKET_LEVELS_DB,
+                 sd_db=runtime_settings.SHINDONG_DB,
+                 now=now, live=True)
++            # [신동 주체 리뉴얼] 입력 지연 계측(D3 — 기본 shadow: 로그만). 집행 단계보다 먼저 — live 면 관문이 읽는다.
++            self._shindong_flow_stale_check(payload, now)
+             # [V4] 집행 단계(아래 `_shindong_exec_step`)보다 먼저 갱신한다 — 진입 수량이 이 ATR 을 쓴다.
+             _atr_new = (payload.get("atr14_v4"), payload.get("atr14_v4_src"))
+             if _atr_new != self._sd_atr_v4:
+@@ -5815,6 +5880,9 @@ class TradingSystem:
+         _ecb = _ts_exchange_cb_entry_block(self)     # [MW0602 2026-10-17] CB 조사 C1
+         if _ecb:
+             return _ecb
++        _fs = self._shindong_flow_stale_block()      # [신동 주체 리뉴얼] D3 — live 일 때만 차단
++        if _fs:
++            return _fs
+         if not self.circuit_breaker.is_entry_allowed():
+             return "CB %s" % self.circuit_breaker.state
+         if self.kill_switch.is_active:          # property — 668차 후속6
+@@ -5828,6 +5896,73 @@ class TradingSystem:
+             return "force_exit_time"
+         return None
+ 
++    def _shindong_flow_stale_check(self, payload: dict, now: datetime.datetime):
++        """[MW0602 신동 주체 리뉴얼 · D3] 신동 입력 지연(분) — 재생 기준분(horizon) vs 현재 직전 분.
++
++        horizon = min(현재 직전 분, 마지막 1분봉, 마지막 7222 흐름)이라 봉·흐름 중 **늦은 쪽**의 지연이다
++        (`strategy/shindong/runner.compute`). 이것만으로도 낡은 신호 진입은 이미 막혀 있다 — 진입봉이 끝난 뒤
++        `SHINDONG_LIVE_MAX_AGE_MIN` 분이 지나면 쫓지 않는다(`live_exec.pick_new_entry`). 그래서 기본은
++        "shadow"(계측만)이고 "live" 는 사용자 결정 뒤에만 켠다 — 진입을 줄이는 방향이다.
++        → 지연 분(int) 또는 None(미측정: 장외 · horizon 없음 · 모드 off).
++        """
++        mode = str(getattr(runtime_settings, "SHINDONG_FLOW_STALE_GUARD", "shadow") or "shadow").lower()
++        lag = None
++        if mode != "off" and datetime.time(9, 2) <= now.time() <= datetime.time(15, 5):
++            hz = str(payload.get("horizon") or "")
++            if len(hz) == 5 and hz[2] == ":":
++                cur = now - datetime.timedelta(minutes=1)
++                lag = (cur.hour * 60 + cur.minute) - (int(hz[:2]) * 60 + int(hz[3:]))
++                lag = max(0, lag)
++        self._sd_flow_lag = lag
++        lim = int(getattr(runtime_settings, "SHINDONG_FLOW_STALE_MIN", 3) or 3)
++        if lag is not None and lag >= lim:
++            if self._sd_flow_stale_since is None:
++                self._sd_flow_stale_since = now
++                log_manager.system(
++                    "[FlowStale] 신동 입력 지연 %d분(기준분 %s · 임계 %d분 · 모드 %s) — %s"
++                    % (lag, payload.get("horizon"), lim, mode,
++                       "신규 진입 보류" if mode == "live" else "계측만(진입 무변경)"), "WARNING")
++        elif self._sd_flow_stale_since is not None:
++            log_manager.system(
++                "[FlowStale] 신동 입력 지연 해소 — %s 부터 %d분간 · 현재 지연 %s분"
++                % (self._sd_flow_stale_since.strftime("%H:%M"),
++                   int((now - self._sd_flow_stale_since).total_seconds() // 60),
++                   "미측정" if lag is None else lag), "INFO")
++            self._sd_flow_stale_since = None
++        return lag
++
++    def _shindong_flow_stale_block(self):
++        """D3 — 모드가 "live" 이고 지연이 임계 이상이면 기각 사유, 아니면 None."""
++        mode = str(getattr(runtime_settings, "SHINDONG_FLOW_STALE_GUARD", "shadow") or "shadow").lower()
++        lim = int(getattr(runtime_settings, "SHINDONG_FLOW_STALE_MIN", 3) or 3)
++        if mode == "live" and self._sd_flow_lag is not None and self._sd_flow_lag >= lim:
++            return "flow_stale(%d분 ≥ %d분)" % (self._sd_flow_lag, lim)
++        return None
++
++    def _shindong_fetch_fail_guard(self, now: datetime.datetime) -> None:
++        """[MW0602 신동 주체 리뉴얼] 7222 수집 실패 분의 신동 15:05 시간청산 — 재생이 돌지 않아도 규격을 지킨다.
++
++        종전에는 수집이 예외로 끝나면 `_run_shindong` → `_shindong_exec_step` → `live_exec.manage` 가 통째로
++        건너뛰어져, 그 상태가 15:05 를 넘기면 신동 포지션은 15:10 강제청산(절대원칙 §1)까지 들고 갔다.
++        여기서는 **시간 조건 하나만** 본다 — 재생 없이 판정할 수 있는 유일한 청산 규칙이다.
++        손절은 이미 포지션에 걸린 외부 손절(틱 하드스톱 경로)이 계속 지킨다.
++        """
++        try:
++            from strategy.shindong import spec as _sdspec
++            if not self.position.is_external_of(SHINDONG_ENTRY_SOURCE) or self.position.quantity <= 0:
++                return
++            if now.strftime("%H:%M") < _sdspec.TIME_EXIT:
++                return
++            _d = now.date().isoformat()
++            if self._sd_fetch_fail_exit_logged != _d:
++                self._sd_fetch_fail_exit_logged = _d
++                log_manager.system(
++                    "[ShindongLive] 7222 수집 실패 중 %s 경과 — 재생 없이 규격 시간청산을 낸다" % _sdspec.TIME_EXIT,
++                    "WARNING")
++            self._shindong_exit("신동시간청산", why="7222 수집 실패 — 재생 없는 시간청산")
++        except Exception as _ffe:
++            logger.warning("[ShindongLive] 수집 실패 시간청산 안전망 예외: %s", _ffe)
++
+     def _shindong_exit(self, reason: str, why: str = "") -> None:
+         """신동 포지션 전량 청산(시장가). 피터2 청산과 같은 pending→주문 순서."""
+         pos = self.position
+@@ -6542,6 +6677,26 @@ class TradingSystem:
+         self._pre_market_bars.append(candle)
+         n_bars = len(self._pre_market_bars)
+ 
++        # [MW0602 신동 주체 리뉴얼] 미륵 휴면 — 봉 저장(P1)과 08:50 맥점(P2)만. GapOffset·피처·스케일러
++        #   재적합·프리장 예측은 미륵 모델 전용이라 건너뛴다. 종전에는 봉 저장이 「모델 준비 + 피처 계산 성공」에
++        #   묶여 있었다(`save_candle_and_features`) — off 에서는 조건 없이 저장한다.
++        if not self._mireuk_on():
++            try:
++                self._db_write_queue.put_nowait(("candle", candle))
++            except _queue.Full:
++                save_candle(candle)
++            # 미륵 피처 ATR 이 프리장 봉부터 쌓이듯 경량 ATR 도 같은 봉을 먹는다(CB④·실주문 atr 의 정의 일치)
++            try:
++                _pm_g = self._bar_price_guard(candle, str(candle.get("ts")), notify=False)
++                if _pm_g is not None:
++                    _pts = candle.get("ts")
++                    _pts = _pts.strftime("%Y-%m-%d %H:%M:%S") if hasattr(_pts, "strftime") else str(_pts)
++                    self._light_atr_update(False, _pm_g[1], _pm_g[2], _pm_g[0], _pts)
++            except Exception as _pa_e:
++                logger.debug("[LightPass] 프리장 ATR 갱신 실패(무해): %s", _pa_e)
++            self._maybe_compute_levels_0850(now_dt)
++            return
++
+         # ① GapOffset 사전 설정 — 첫 프리장 분봉의 close를 기준으로 갭 오프셋 산정
+         # 본장 첫 분봉(09:00)보다 최대 15분 선행 → z경고 원천 억제
+         if not self._pre_market_gap_offset_set:
+@@ -6666,6 +6821,15 @@ class TradingSystem:
+             except Exception as _pme2:
+                 logger.debug("[PreMarket] 예측 스킵: %s", _pme2)
+ 
++        self._maybe_compute_levels_0850(now_dt)
++
++        # [MW0601 589차] 차트 갱신 호출은 `_on_candle_closed` 선두로 **일원화**됐다.
++        #   여기서 또 부르면 같은 봉이 두 번 들어간다(무해하지만 중복).
++
++    def _maybe_compute_levels_0850(self, now_dt) -> None:
++        """[MW0602 신동 주체 리뉴얼] 08:50 맥점·ATR14 산출 — `_on_pre_market_bar` 끝 블록을 그대로 옮겼다
++        (동작 무변경). 미륵 휴면 프리장 경로도 부른다 — 신동 V4 재난손절·역행컷·수량의 ATR14 원천이다(계획서 §1 P2).
++        """
+         # ── [MW0601 534차] 08:50 맥점 산출 (거리 모델 M1 + 구조 후보) ──────
+         # 08:45 시가 하나만 쓰므로 언제 계산해도 같지만, **처음 계산한 값을 굳혀**
+         # 화면·로그·장후 채점이 같은 수를 보게 한다(가이드 §4 굳히기).
+@@ -6675,9 +6839,6 @@ class TradingSystem:
+             if self._compute_premarket_levels("0850"):
+                 self._premarket_levels_0850_done = True
+ 
+-        # [MW0601 589차] 차트 갱신 호출은 `_on_candle_closed` 선두로 **일원화**됐다.
+-        #   여기서 또 부르면 같은 봉이 두 번 들어간다(무해하지만 중복).
+-
+     def _levels_have_0845(self) -> bool:
+         """[597차] 메모리 버퍼에 08:45 시가 봉(08:50 이하 첫 봉)이 있는가."""
+         for _c in self._levels_day_bars:
+@@ -6997,6 +7158,22 @@ class TradingSystem:
+ 
+         # [MW0601 589차] 차트 갱신은 이 함수 **선두**에서 이미 끝났다 —
+         #   여기 있던 호출이 force-exit 가드 뒤라 15:10~15:34 가 화면에 안 붙었다.
++        # [MW0602 신동 주체 리뉴얼] 미륵 휴면이면 9단계 파이프라인 대신 경량 분봉 패스(신동 부품 12개).
++        #   위의 세션 봉 적재·맥점 버퍼·차트·프리장·15:10 청산 전용 패스·거래소 CB 해제 감지는 그대로 지난다.
++        if not self._mireuk_on():
++            try:
++                self._light_minute_pass(candle)
++            except Exception as exc:
++                apply_error_policy(
++                    system=self,
++                    level=classify_exception(exc, default=ErrorLevel.FATAL),
++                    context="light_minute_pass",
++                    exc=exc,
++                    logger=logger,
++                    dashboard_logger=log_manager.system,
++                )
++            return
++        _dry_mark = self._last_real_pipeline_dt      # 병행 건식 실행: 이번 봉 파이프라인 완주 판정용
+         try:
+             self.run_minute_pipeline(candle)
+             self._pipeline_fatal_streak = 0
+@@ -7030,6 +7207,9 @@ class TradingSystem:
+                 logger=logger,
+                 dashboard_logger=log_manager.system,
+             )
++        # [MW0602 신동 주체 리뉴얼] 병행 건식 실행(LIGHT_PASS_DRY_RUN) — 파이프라인 뒤 계산만(부작용 없음).
++        if self._light_pass_dry:
++            self._light_minute_pass_dry(candle, self._last_real_pipeline_dt is not _dry_mark)
+ 
+     def _persist_session_bar(self, candle: dict) -> None:
+         """[533차] `session_bars` 적재 — 세션 태그는 봉 ts 기준으로 여기서 박는다.
+@@ -7311,11 +7491,13 @@ class TradingSystem:
+         log_manager.system("장 전 매크로 수집 시작")
+ 
+         # [MetaConf] 전일 학습 상태 복원 — cold-start 없이 장 시작부터 SGD 예측 경로 사용
++        # [MW0602 신동 주체 리뉴얼] 미륵 휴면이면 학습 상태를 읽지 않는다(쓰는 곳이 없다).
+         try:
+-            from config.settings import META_CONF_STATE_PATH
+-            _mc_loaded = self.meta_gate.learner.load(META_CONF_STATE_PATH)
+-            if not _mc_loaded:
+-                log_manager.system("[MetaConf] warm-start 파일 없음 — cold-start로 진행", "INFO")
++            if self._mireuk_on():
++                from config.settings import META_CONF_STATE_PATH
++                _mc_loaded = self.meta_gate.learner.load(META_CONF_STATE_PATH)
++                if not _mc_loaded:
++                    log_manager.system("[MetaConf] warm-start 파일 없음 — cold-start로 진행", "INFO")
+         except Exception as _mc_l_e:
+             logger.warning("[MetaConf] warm-start 로드 실패 (cold-start 진행): %s", _mc_l_e)
+ 
+@@ -7337,6 +7519,12 @@ class TradingSystem:
+             except Exception as _snap_e:
+                 logger.warning("[PreOpen] 스냅샷 워밍업 실패 (장 시작 시 재시도): %s", _snap_e)
+ 
++        # [MW0602 신동 주체 리뉴얼] 미륵 휴면 — 아래(스케일러 Canary · ScalerWarmup · PreRetrain)는
++        #   전부 미륵 모델 전용이다. 매크로 seed·현재가 스냅샷(위)까지만 하고 끝낸다.
++        if not self._mireuk_on():
++            log_manager.system("[PreOpen] 미륵 휴면 — 스케일러 Canary·워밍업·사전 재학습 생략", "INFO")
++            return
++
+         # ── Warm Scaler Canary ──────────────────────────────────────
+         # scaler pkl mtime 기준 노후 점검 → 24h+ 경과 시 경고 + SHS z_warn 업데이트
+         _canary_stale = False   # [P2] warmup 대기 조건 참조를 위해 try 블록 밖에서 초기화
+@@ -7703,32 +7891,11 @@ class TradingSystem:
+     # 입력: bar(분봉), 실시간 누적 피처 상태, 현재 포지션/리스크 상태
+     # 출력: decision, 주문 요청, DB/대시보드 업데이트
+     # ── 매분 파이프라인 ────────────────────────────────────────
+-    def run_minute_pipeline(self, bar: dict):
+-        """
+-        매분 실행되는 9단계 파이프라인
+-
+-        Args:
+-            bar: {ts, open, high, low, close, volume, buy_vol, sell_vol,
+-                  bid_price, ask_price, bid_qty, ask_qty}
++    def _maybe_compute_levels_0930(self, ts_raw) -> None:
++        """[MW0602 신동 주체 리뉴얼] 09:30 맥점 재산출(08:50 미발화 소급 포함) — `run_minute_pipeline`
++        첫머리 블록을 그대로 옮겼다(동작 무변경). 미륵 휴면의 `_light_minute_pass` 도 부른다 — 맥점은
++        신동(사다리·BRKC 섀도)이 쓰는 부품이다(계획서 §1 P2·P3).
+         """
+-        _pipe_t0 = time.perf_counter()
+-        _st: list = [("start", _pipe_t0)]
+-        ts_raw = bar.get("ts", datetime.datetime.now())
+-        ts     = ts_raw.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts_raw, "strftime") else str(ts_raw)
+-
+-        # ── [MW0601 453차 D4] 동일 분봉 중복 주입 가드 ────────────────────────
+-        # 같은 ts가 두 번 들어오면 누산기(CVD·VWAP·OFI·ATR)와 N분봉 격자가 이중
+-        # 급식된다. 453차 D1로 복구 재실행이 사라졌으므로 남은 중복 경로는 전부
+-        # 버그다(대표: stale oscillation 중복 BAR-CLOSE — 경고만 찍고 콜백은
+-        # 그대로 나간다, collection/cybos/realtime_data.py). 여기서 차단한다.
+-        if ts == getattr(self, "_last_pipeline_bar_ts", None):
+-            log_manager.system(
+-                f"[Pipeline] 중복 분봉 주입 차단 ts={ts} — 이미 처리된 봉 (453차 D4)",
+-                "WARNING",
+-            )
+-            return
+-        self._last_pipeline_bar_ts = ts
+-
+         # ── [MW0601 534차] 09:30 맥점 재산출 (거리 모델 P1 + 오프닝 레인지) ──
+         # HHMM 정수 비교 관용구. 09:30을 지난 첫 봉에서 1회만 — 09:40에 실행해도
+         # 컷(09:30)은 같지만 **처음 계산한 값**을 굳힌다(가이드 §4).
+@@ -7754,138 +7921,53 @@ class TradingSystem:
+             except Exception as _lv930_e:
+                 logger.warning("[LEVELS] 09:30 훅 실패 (무해): %s", _lv930_e)
+ 
+-        # ── [S0-A] 64비트 GBM subprocess 완료 체크 ────────────────────────
+-        # [226차] poll()은 non-blocking — subprocess가 완료되면 returncode 반환.
+-        # [381차 후속] 로직을 _poll_gbm_retrain_subprocess()로 추출 — daily_close()도
+-        # 동일 로직을 재사용해 15:10~15:40 무분봉 구간의 완료 감지 공백을 메운다.
+-        self._poll_gbm_retrain_subprocess()
+-
+-        # ── [S0-B] ConstOut 재적합 완료 콜백 큐 drain — P1 QTimer 불안정 대체 ──
+-        # ConstOut refit worker → _deferred_callbacks.put("const_out_done") →
+-        # 여기서 메인 스레드 소비. GBM done은 [226차] subprocess poll로 이동.
+-
+-        # ── [S0-C] tick-level 하드스톱 처리 (폴백 안전망) ────────────────────
+-        # [348차] 실제 주문 전송 경로는 이제 _on_tick_price_update에서 직접
+-        # QTimer.singleShot(0, ...)으로 예약 — 최악 60초(다음 분봉 롤오버)
+-        # 지연되던 것을 다음 이벤트루프 패스(수십ms)로 단축. 이 블록은 그
+-        # 싱글샷이 어떤 이유로든(이벤트루프 기아 등) 못 돈 경우를 대비한
+-        # 폴백일 뿐이며, _process_tick_stop() 내부에서 flag를 즉시 클리어하는
+-        # 멱등 설계라 두 경로가 겹쳐도 중복 주문은 발생하지 않는다.
+-        self._process_tick_stop()
+-
+-        while True:
+-            try:
+-                _dcb = self._deferred_callbacks.get_nowait()
+-            except _queue.Empty:
+-                break
+-            try:
+-                _dcb_tag = _dcb[0]
+-                if _dcb_tag == "const_out_done":
+-                    self._on_const_out_refit_done(_dcb[1])
+-                # gbm_done 태그: [226차] subprocess 이관 — 큐에서 수신 시 무시(잔여 배출)
+-            except Exception as _dcb_e:
+-                logger.warning("[DeferredCB] 콜백 처리 오류 (tag=%s): %s", _dcb[0] if _dcb else "?", _dcb_e)
+-
+-        # ── [P3] CB③ HALT 주기적 해제 재시도 ─────────────────────────────
+-        # ConstOut 재적합 + GBM 재학습이 완료됐으나 콜백 누락으로 lift 안 된 경우 복구.
+-        # 15분마다 조건 확인: HALTED + cb3 원인 + 재학습·스케일러 재적합 미실행.
+-        if (not getattr(self, "_gbm_retrain_running", False)
+-                and not getattr(self, "_scaler_refresh_running", False)):
+-            _cb3_state = self.circuit_breaker
+-            if (_cb3_state.state == "HALTED"
+-                    and getattr(_cb3_state, "_halt_cause", "") == "cb3"):
+-                _ts_min_for_cb3 = int(ts[14:16]) if len(ts) >= 16 else -1
+-                if _ts_min_for_cb3 >= 0 and _ts_min_for_cb3 % 15 == 0:
+-                    if _cb3_state.lift_cb3_halt():
+-                        log_manager.system(
+-                            "[CB③→RESUME] 주기적 재시도 → HALT 해제 "
+-                            "(ConstOut 재적합·GBM 재학습 완료 누락 복구)",
+-                            "INFO",
+-                        )
+-
+-        # ── [S0] 재학습 완료 모델 교체 — predict_proba 전 안전 지점 ─────────
+-        # _on_gbm_retrain_done 이 플래그를 세우면 여기서 소비.
+-        # 파이프라인 실행 중 모델 객체 교체 race condition 방지 (193차).
+-        # [MW0602 462차 P2] 이 사이클의 모델 교체 소요시간 — CB⑤/Health 지연 판정에서 차감.
+-        # 매 사이클 0으로 리셋해야 직전 값이 새는 것을 막는다.
+-        self._model_swap_ms = 0.0
+-        if getattr(self, "_pending_model_reload", False):
+-            _swap_t0 = time.perf_counter()
+-            self._pending_model_reload = False
+-            _bad = self.model._load_all()
+-            if _bad:
+-                logger.error(
+-                    "[Model] 재학습 후 %d개 호라이즌 차원 불일치: %s → 재학습 재트리거",
+-                    len(_bad), _bad,
+-                )
+-                self._start_manual_retrain(force=True, reason="resync_mismatch")
+-            try:
+-                self.rf_model.load_all()
+-            except Exception:
+-                pass
+-            self._rebuild_sgd_feat_indices()   # [P2] feature_names 교체 반영
+-            self._model_swap_ms = (time.perf_counter() - _swap_t0) * 1000.0
+-            logger.info(
+-                "[Model] 재학습 완료 모델 교체 적용 (S0) — %.0fms", self._model_swap_ms
+-            )
+-
+-        # [S2-A] 지연 SGD 학습 변수 — S2에서 채워지고 "end" 이후에 소비
+-        # 초기값 [] 로 설정해 early return 시에도 NameError 방지
+-        _sgd_deferred_verified: list = []
+-        _sgd_deferred_stuck: bool = False
++    def _bar_price_guard(self, bar: dict, ts: str, notify: bool = True):
++        """[MW0602 신동 주체 리뉴얼] 분봉 유효성 가드 C0~C2 — 통과면 (close, high, low, volume), 차단이면 None.
+ 
+-        # ── 분봉 데이터 유효성 가드 ───────────────────────────────
+-        # 비정상 분봉이 피처/진입/청산 오발동을 일으키지 않도록 파이프라인 앞단 차단
++        `run_minute_pipeline` 앞단 블록을 그대로 옮겼다(동작 무변경). 차단 시 워치독 카운터를 리셋한다
++        (`notify_pipeline_ran`) — 비정상 봉도 「파이프라인이 살아 있다」는 신호이기 때문이다(종전과 같다).
++        notify=False 는 병행 건식 실행(dry-run) 전용: 로그·워치독을 건드리지 않고 판정만 한다.
++        """
+         try:
+             _c = float(bar.get("close", 0))
+             _h = float(bar.get("high",  0))
+             _l = float(bar.get("low",   0))
+             _v = int(float(bar.get("volume", 0)))
+         except (ValueError, TypeError) as _e:
+-            log_manager.system(
+-                f"[Guard-C0] bar 타입 변환 오류 차단 — 브로커 데이터 이상: {_e} ({ts})",
+-                "WARNING",
+-            )
+-            self.dashboard.notify_pipeline_ran()
+-            return
++            if notify:
++                log_manager.system(
++                    f"[Guard-C0] bar 타입 변환 오류 차단 — 브로커 데이터 이상: {_e} ({ts})",
++                    "WARNING",
++                )
++                self.dashboard.notify_pipeline_ran()
++            return None
+ 
+         if _c <= 0 or _h <= 0 or _l <= 0:
+-            log_manager.system(
+-                f"[Guard-C1] 비정상 가격 분봉 차단 — close={_c} high={_h} low={_l} ({ts})",
+-                "WARNING",
+-            )
+-            self.dashboard.notify_pipeline_ran()   # 워치독 카운터 리셋
+-            return
++            if notify:
++                log_manager.system(
++                    f"[Guard-C1] 비정상 가격 분봉 차단 — close={_c} high={_h} low={_l} ({ts})",
++                    "WARNING",
++                )
++                self.dashboard.notify_pipeline_ran()   # 워치독 카운터 리셋
++            return None
+ 
+         if _h < _l:
+-            log_manager.system(
+-                f"[Guard-C2] 고가<저가 역전 분봉 차단 — high={_h} low={_l} ({ts})",
+-                "WARNING",
+-            )
+-            self.dashboard.notify_pipeline_ran()   # 워치독 카운터 리셋
+-            return
+-
+-        _bar_volume_zero = (_v == 0)
+-        if _bar_volume_zero:
+-            log_manager.system(
+-                f"[Guard-C3] volume=0 분봉 — VWAP/CVD 신호 신뢰도 저하, 진입 보류 ({ts})",
+-                "WARNING",
+-            )
+-
+-        close  = _c
+-        # [225차 P0] _last_pipeline_price 는 _on_tick_price_update(현재 봉 tick)에 의해
+-        # 파이프라인 진입 전 이미 cur_p 로 덮어써져 ret=0 고착 → 전용 변수 사용
+-        _prev_pipeline_price      = self._sigma_prev_price     # sigma 계산용 이전 종가
+-        self._last_pipeline_price = close  # 잔고 UI 합성에 사용
+-        self._last_close = close           # 옵션체인 QTimer 폴링용 최신 종가
++            if notify:
++                log_manager.system(
++                    f"[Guard-C2] 고가<저가 역전 분봉 차단 — high={_h} low={_l} ({ts})",
++                    "WARNING",
++                )
++                self.dashboard.notify_pipeline_ran()   # 워치독 카운터 리셋
++            return None
++        return _c, _h, _l, _v
+ 
+-        # 대시보드 실시간 가격 동기화
+-        self.dashboard.update_price(
+-            price  = close,
+-            change = close - bar.get("open", close),
+-            code   = self.realtime_data.code if self.realtime_data else "",
+-        )
++    def _check_pending_order_timeout(self) -> None:
++        """[MW0602 신동 주체 리뉴얼] 대기주문 타임아웃 · 부분체결 고착 해소 — 분봉마다 1회.
+ 
++        `run_minute_pipeline` 앞단에 있던 블록을 **그대로** 옮긴 것이다(동작 무변경). 미륵 휴면(off)의
++        `_light_minute_pass` 도 같은 함수를 부른다 — 신동 진입·청산 주문이 응답 없이 걸렸을 때 푸는
++        유일한 매분 경로라 두 벌로 두지 않는다(한쪽만 고쳐지는 419차 「죽은 상수」 유형 방지).
++        """
+         # ── PendingOrder 타임아웃 체크 ────────────────────────────
+         # [B55] 접수 상태(order_no 확인) vs 미접수(order_no="")를 분리:
+         #   미접수: 60s → Kiwoom 서버에 주문 자체가 없는 것으로 간주 (빠른 폐기)
+@@ -7993,6 +8075,428 @@ class TradingSystem:
+                     if not _ts_resolve_stuck_exit_pending(self):
+                         self._clear_pending_order()
+ 
++    def _push_position_panels(self, close, atr, bar, atr_ok=None, open_gap_ok=None) -> None:
++        """[MW0602 신동 주체 리뉴얼] 청산·손익·진입통계·주문 메트릭 패널 갱신 — STEP 8 직후 블록을 그대로
++        옮겼다(동작 무변경). 미륵 휴면의 `_light_minute_pass` 도 부른다(atr_ok·open_gap_ok 는 미륵 게이트
++        산출물이라 그때는 None = 미측정).
++        """
++        # ── 청산 패널 갱신 (매분 — 실제 PositionTracker 값 전달) ──
++        _pos = self.position
++        _pending = self._pending_order or {}
++        _pending_kind = str(_pending.get("kind") or "")
++        _pending_reason = str(_pending.get("reason") or "")
++        _now = datetime.datetime.now()
++        _force_dt = datetime.datetime.combine(_now.date(), self.time_exit.FORCE_EXIT)
++        _time_left_s = int((_force_dt - _now).total_seconds())
++        if _time_left_s < 0:
++            _time_left_s = 0
++        self.dashboard.update_position({
++            "status":     _pos.status,
++            "entry":      _pos.entry_price,
++            "current":    close,
++            "qty":        _pos.quantity,
++            "pt_value":   self._pt_value,
++            "atr":        atr,
++            "stop":       _pos.stop_price,
++            "trail_basis": _pos.get_trailing_reference_price(close, atr),
++            "tp1":        _pos.tp1_price,
++            "tp2":        _pos.tp2_price,
++            "tp3":        _pos.tp3_price,
++            "partial1":   _pos.partial_1_done,
++            "partial2":   _pos.partial_2_done,
++            "partial3":   _pos.partial_3_done,
++            "stage_plan": _pos.get_stage_plan(),
++            "entry_time": _pos.entry_time,
++            "pending_active": bool(_pending),
++            "pending_kind": _pending_kind,
++            "pending_reason": _pending_reason,
++            "pending_stage": int(_pending.get("stage") or 0),
++            "pending_filled": int(_pending.get("filled_qty") or 0),
++            "pending_qty": int(_pending.get("qty") or 0),
++            "time_exit_countdown_sec": _time_left_s,
++            "stop_move_reason": _pos.last_update_reason or "",
++            "bar_low":  bar.get("low",  0.0) if bar else 0.0,
++            "bar_high": bar.get("high", 0.0) if bar else 0.0,
++            "atr_ok":      atr_ok,
++            "open_gap_ok": open_gap_ok,
++        })
++
++        # ── 대시보드 PnL 패널 갱신 (매분) ──────────────────────────
++        _daily   = self.position.daily_stats()
++        _forward_daily = self.position.daily_forward_stats()
++        _unreal  = self.position.unrealized_pnl_pts(close) * self._pt_value
++        _forward_unreal = self.position.unrealized_forward_pnl_pts(close) * self._pt_value
++        _var_krw = -(atr * 1.65 * self.position.quantity * self._pt_value) if self.position.quantity else 0.0
++        self.dashboard.update_pnl_metrics(
++            _unreal,
++            _daily["pnl_krw"],
++            _var_krw,
++            forward_unrealized_krw=_forward_unreal,
++            forward_daily_pnl_krw=_forward_daily["pnl_krw"],
++            # [MW0601 493차 / F-5] 브로커 실측 net 병기 — None이면 패널은 종전대로.
++            broker_net_krw=self._broker_net_today,
++        )
++
++        # 당일 진입 통계 갱신 — STEP 9 예외와 무관하게 항상 실행
++        _ds = self.position.daily_stats()
++        self.dashboard.update_entry_stats(_ds["trades"], _ds["wins"], _ds["pnl_pts"])
++
++        # 주문/체결 탭 메트릭 갱신 (LatencySync — Cybos에서는 항상 0ms)
++        _ls = self.latency_sync.summary()
++        _latency_ms = float(_ls.get("offset_ms", 0.0) or 0.0)
++        self.dashboard.update_order_metrics(
++            trades      = _ds["trades"],
++            avg_lat_ms  = _latency_ms,
++            peak_lat_ms = _ls["peak_ms"],
++            samples     = _ls["sample_count"],
++        )
++
++    # ── [MW0602 신동 주체 리뉴얼] 미륵 휴면(MIREUK_ENGINE="off") 경량 분봉 패스 ─────────────────
++    #   계획서: docs/신동거래_V4/신동주체_리뉴얼_구현계획_미륵휴면_MW0602-20261024.md §1·Phase 2
++    #   미륵 9단계 파이프라인 안에 섞여 있던 「신동이 쓰는 부품」만 돈다. 부품 이름(P1~P12)은 계획서 §1 표와 같다.
++    #   🔴 순서를 바꾸지 말 것 — `run_minute_pipeline` 의 해당 블록 순서(맥점 → 틱스톱 → 가드 → 대기주문)를 따른다.
++    #   🔴 새 블록을 복사해 넣지 말 것 — 파이프라인과 **같은 메서드**를 부른다(_maybe_compute_levels_0930 ·
++    #      _bar_price_guard · _check_pending_order_timeout · _check_exit_triggers · _push_position_panels).
++    #   회귀: tests/test_renewal_light_pass.py (부품 12개 호출 단언).
++    LIGHT_PASS_PARTS = (
++        "P5_dup_guard", "P3_levels_0930", "P7_tick_stop", "P5_bar_guard", "P6_pending_timeout",
++        "P1_save_candle", "P10_atr", "P10_cb4_record_atr", "P8_exit_triggers", "P10_vbook_on_bar",
++        "P12_panels", "P11_cb5_record_latency",
++    )
++
++    def _light_atr_prime(self, calc, before_ts=None) -> int:
++        """경량 ATR 계산기를 DB 의 **당일 앞선 봉**으로 예열한다(장중 재기동 대비). → 넣은 봉 수.
++
++        미륵 피처의 ATR 은 같은 계산기(features/technical/atr.py, 14봉)이고 **매일 리셋**된다(daily_close →
++        feature_builder.reset_daily). 그래서 전날 봉은 쓰지 않는다 — 넣으면 첫 봉 TR 이 밤사이 갭을 먹어
++        ATR 비율이 튀고 CB④(3배 → 5분 정지)를 개장 직후 잘못 발동시킬 수 있다.
++        before_ts: 이 ts **이전**(같은 날짜) 봉만 쓴다 — 방금 큐에 넣은 현재 봉이 워커에 먼저 저장됐을 때
++        예열과 이번 갱신에 이중으로 들어가지 않게 한다. 실패는 진행을 막지 않는다(계측 4원칙 ④).
++        """
++        try:
++            rows = fetch_recent_raw_candles(limit=calc.period * 3 + 1)
++        except Exception as _e:
++            logger.warning("[LightPass] ATR 예열 실패 — 냉시작(첫 %d봉 동안 미륵 피처 ATR 과 다를 수 있음): %s",
++                           calc.period, _e)
++            return 0
++        if before_ts:
++            _b = str(before_ts)[:19]
++            rows = [r for r in rows if str(r["ts"])[:10] == _b[:10] and str(r["ts"])[:19] < _b]
++        n = 0
++        for r in rows:
++            try:
++                calc.update(float(r["high"]), float(r["low"]), float(r["close"]))
++                n += 1
++            except Exception:
++                continue
++        return n
++
++    def _light_atr_update(self, dry: bool, high, low, close, ts: str) -> dict:
++        """경량 ATR 1봉 갱신 — 날짜가 바뀌면 리셋 + 당일 앞선 봉 예열(장중 재기동이 아니면 0봉). dry 는 대조 전용 계산기."""
++        calc = self._light_atr_dry if dry else self._light_atr
++        day = str(ts)[:10]
++        if (self._light_atr_dry_day if dry else self._light_atr_day) != day:
++            calc.reset_daily()
++            _np = self._light_atr_prime(calc, before_ts=ts)
++            if dry:
++                self._light_atr_dry_day = day
++            else:
++                self._light_atr_day = day
++                log_manager.system(f"[LightPass] 경량 ATR {day} 시작 — 당일 앞선 봉 {_np}봉 예열"
++                                   f"{'(장중 재기동)' if _np else ''}", "INFO")
++        return calc.update(high, low, close)
++
++    def _light_minute_pass(self, bar: dict) -> None:
++        """[MW0602 신동 주체 리뉴얼] 미륵 휴면의 분봉 처리 — 신동이 쓰는 부품 12개만 실행한다.
++
++        미륵 파이프라인과 달리 하지 않는 것: 예측 채점 · SGD/MetaGate 학습 · GBM 재학습 트리거 ·
++        피처 생성/저장 · 6호라이즌 예측 · 앙상블·게이트 · 미륵 진입 · 예측 DB 저장 · 챔피언 섀도.
++        신동 재생·집행은 여기가 아니라 수급 타이머(`_fetch_weekly_option_flow` → `_shindong_exec_step`)에서 돈다.
++        """
++        _t0 = time.perf_counter()
++        ts_raw = bar.get("ts", datetime.datetime.now())
++        ts = ts_raw.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts_raw, "strftime") else str(ts_raw)
++
++        # P5 중복 분봉 가드 — 같은 ts 이중 처리 방지(파이프라인 453차 D4 와 같은 취지)
++        if ts == self._light_last_ts:
++            log_manager.system(f"[LightPass] 중복 분봉 주입 차단 ts={ts} — 이미 처리된 봉", "WARNING")
++            return
++        self._light_last_ts = ts
++
++        # P3 09:30 맥점(08:50 미발화 소급 포함)
++        self._maybe_compute_levels_0930(ts_raw)
++        # P7 틱 하드스톱 폴백 — 신동 손절 터치 청산도 이 경로다(멱등)
++        self._process_tick_stop()
++        # P5 분봉 유효성 가드(C0~C2) — 차단이면 워치독만 리셋하고 끝(파이프라인과 같다)
++        _guard = self._bar_price_guard(bar, ts)
++        if _guard is None:
++            return
++        close, high, low, _vol = _guard
++        self._last_pipeline_price = close
++        self._last_close = close
++        self.dashboard.update_price(
++            price=close,
++            change=close - bar.get("open", close),
++            code=self.realtime_data.code if self.realtime_data else "",
++        )
++        # P6 대기주문 타임아웃 · 부분체결 고착 해소
++        self._check_pending_order_timeout()
++
++        # P1 1분봉 저장(raw_candles) — 신동 재생의 가격 원천. 피처 없이 봉만.
++        try:
++            self._db_write_queue.put_nowait(("candle", bar))
++        except _queue.Full:
++            logger.warning("[DBQueue] 큐 포화 — candle 동기 write fallback")
++            save_candle(bar)
++
++        # P10 분봉 ATR · ATR 비율 — 미륵 피처와 같은 계산기·같은 일 리셋
++        _ar = self._light_atr_update(False, high, low, close, ts)
++        atr = float(_ar.get("atr") or 0.0) or 0.5          # 0 이면 STEP 8 기본값(0.5)과 같게
++        atr_ratio = float(_ar.get("atr_ratio") or 1.0)
++        # P10 CB④ 입력 — 미륵 피처 대신 같은 정의의 경량 ATR 비율
++        self.circuit_breaker.record_atr(atr_ratio)
++        feats = {"atr": atr, "atr_ratio": atr_ratio}
++        # 신동·피터 실주문의 atr 인자(`_execute_entry(..., atr)`)가 읽는다. qty=0 이라 수동 진입 버튼은
++        #   「산출 수량 0」으로 막힌다(미륵 등급·수량이 없다 — 의도됨).
++        self._manual_entry_ctx = {"price": close, "qty": 0, "atr": atr, "grade": "X", "confidence": 0.0}
++
++        # P8 청산 감시(STEP 8) — decision={} (미륵 판단 없음). 유지보수·15:10 패스와 같은 규약이다.
++        if self.position.status != "FLAT":
++            self._check_exit_triggers(close, feats, {}, bar)
++        # P10 가상 장부도 같은 봉으로 청산 사다리 평가(주문 없음)
++        _ts_vbook_on_bar(self, bar, atr)
++        # P12 화면(청산·손익·진입통계·주문 메트릭)
++        self._push_position_panels(close, atr, bar, None, None)
++
++        # P11 CB⑤ 입력 — 이 패스의 경과 시간(미륵 연산이 빠져 데이터 콜백 지연만 남는다)
++        _ms = (time.perf_counter() - _t0) * 1000.0
++        self._last_pipe_ms = _ms
++        self.circuit_breaker.record_pipe_latency(_ms)
++        try:
++            self.dashboard.update_system_status(
++                cb_state=self.circuit_breaker.state, latency_ms=_ms, accuracy=None, cb3_samples=0)
++        except Exception as _ds_e:
++            logger.debug("[Dashboard] update_system_status 실패: %s", _ds_e)
++        self._light_push_profit_guard_badge(ts)
++        if _ms >= 1000.0:
++            log_manager.system(f"[LightPass] total={_ms:.0f}ms ts={ts} — 1초 초과", "WARNING")
++
++        # 시계·컨텍스트 — 파이프라인 완주와 같은 의미(워치독·ExchangeCB 감지·유지보수 패스가 읽는다)
++        self._sigma_prev_price = close
++        self._last_real_pipeline_dt = datetime.datetime.now()
++        self._maint_ctx = (feats, {}, ts)
++        self.dashboard.notify_pipeline_ran()
++
++    def _light_push_profit_guard_badge(self, ts: str) -> None:
++        """경량 패스용 ProfitGuard 배지 — 신동 진입 관문(`_pg_principal_entry_block`)과 **같은 축**으로 그린다."""
++        try:
++            _dt = datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
++            _st = self.profit_guard.guard_status(float(self._sys_daily_net_krw), None, _dt)
++            _st["pnl_source"] = ("account_principals" if PROFIT_GUARD_ACCOUNT_AXIS
++                                 else "engine_system_only")
++            _st["system_only"] = bool(PROFIT_GUARD_SYSTEM_ONLY_PNL)
++            _st["system_legs"] = self._sys_daily_legs
++            _st["other_net_krw"] = self._sys_daily_other_krw
++            _st["other_legs"] = self._sys_daily_other_legs
++            self.dashboard.update_profit_guard_badge(_st)
++        except Exception as _pg_e:
++            if not self._pg_badge_err_logged:
++                self._pg_badge_err_logged = True
++                log_manager.system("[ProfitGuard] 배지 갱신 실패(경량 패스) — %r" % (_pg_e,), "WARNING")
++            try:
++                self.dashboard.update_profit_guard_badge(None)
++            except Exception:
++                pass
++
++    def _light_minute_pass_dry(self, bar: dict, pipeline_completed: bool) -> None:
++        """[MW0602 신동 주체 리뉴얼] 병행 건식 실행 — full 모드에서 미륵 파이프라인 **뒤에** 경량 패스를 계산만 한다.
++
++        🔴 부작용 없음: DB 쓰기 · 주문 · CB 기록 · 화면 · 워치독 · 시계를 건드리지 않는다. 예외는 삼킨다
++           (대조 도구가 실거래 경로를 죽이면 안 된다).
++        대조 항목(같은 봉, 같은 시점):
++          · 가드 통과 여부 vs 파이프라인 완주 여부(`_last_real_pipeline_dt` 이번 봉 갱신)
++          · ATR · ATR 비율 vs 미륵 피처(`_maint_ctx[0]`) — 상대오차 10% 초과면 불일치
++          · 청산 감시 호출 여부(포지션 보유) — 경량·미륵 모두 같은 조건이라 구조적으로 같아야 한다
++        불일치만 즉시 로그, 30봉마다 요약 1줄. 장후 `daily_close` 가 하루 요약을 남긴다.
++        """
++        try:
++            ts_raw = bar.get("ts", datetime.datetime.now())
++            ts = ts_raw.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts_raw, "strftime") else str(ts_raw)
++            _day = ts[:10]
++            st = self._light_dry_stats
++            if st["day"] != _day:
++                st.update(day=_day, bars=0, mismatch=0, atr_n=0, atr_maxrel=0.0, ms_max=0.0)
++            _t0 = time.perf_counter()
++            _g = self._bar_price_guard(bar, ts, notify=False)
++            _issues = []
++            if (_g is not None) != bool(pipeline_completed):
++                _issues.append("가드=%s · 파이프라인완주=%s" % ("통과" if _g else "차단", pipeline_completed))
++            if _g is not None:
++                c, h, l, _v = _g
++                _ar = self._light_atr_update(True, h, l, c, ts)
++                _ctx = self._maint_ctx if pipeline_completed else None
++                _mf = (_ctx[0] if _ctx else None) or {}
++                for _k in ("atr", "atr_ratio"):
++                    _lv, _mv = _ar.get(_k), _mf.get(_k)
++                    if _lv is None or _mv is None:
++                        continue
++                    _rel = abs(float(_lv) - float(_mv)) / max(abs(float(_mv)), 1e-9)
++                    if _k == "atr":
++                        st["atr_n"] += 1
++                        st["atr_maxrel"] = max(st["atr_maxrel"], _rel)
++                    if _rel > 0.10:
++                        _issues.append("%s 경량=%.4f 미륵=%.4f(상대 %.0f%%)" % (_k, float(_lv), float(_mv), _rel * 100))
++            _ms = (time.perf_counter() - _t0) * 1000.0
++            st["bars"] += 1
++            st["ms_max"] = max(st["ms_max"], _ms)
++            if _issues:
++                st["mismatch"] += 1
++                log_manager.system("[LightPassDry] 불일치 ts=%s — %s" % (ts, " · ".join(_issues)), "WARNING")
++            if st["bars"] % 30 == 0:
++                log_manager.system(
++                    "[LightPassDry] 요약 %s — 봉 %d · 불일치 %d · ATR 대조 %d봉(최대 상대오차 %.1f%%) · 계산 최대 %.1fms"
++                    % (_day, st["bars"], st["mismatch"], st["atr_n"], st["atr_maxrel"] * 100, st["ms_max"]), "INFO")
++        except Exception as _dry_e:
++            logger.debug("[LightPassDry] 대조 실패(무해): %s", _dry_e)
++
++    def run_minute_pipeline(self, bar: dict):
++        """
++        매분 실행되는 9단계 파이프라인
++
++        Args:
++            bar: {ts, open, high, low, close, volume, buy_vol, sell_vol,
++                  bid_price, ask_price, bid_qty, ask_qty}
++        """
++        _pipe_t0 = time.perf_counter()
++        _st: list = [("start", _pipe_t0)]
++        ts_raw = bar.get("ts", datetime.datetime.now())
++        ts     = ts_raw.strftime("%Y-%m-%d %H:%M:%S") if hasattr(ts_raw, "strftime") else str(ts_raw)
++
++        # ── [MW0601 453차 D4] 동일 분봉 중복 주입 가드 ────────────────────────
++        # 같은 ts가 두 번 들어오면 누산기(CVD·VWAP·OFI·ATR)와 N분봉 격자가 이중
++        # 급식된다. 453차 D1로 복구 재실행이 사라졌으므로 남은 중복 경로는 전부
++        # 버그다(대표: stale oscillation 중복 BAR-CLOSE — 경고만 찍고 콜백은
++        # 그대로 나간다, collection/cybos/realtime_data.py). 여기서 차단한다.
++        if ts == getattr(self, "_last_pipeline_bar_ts", None):
++            log_manager.system(
++                f"[Pipeline] 중복 분봉 주입 차단 ts={ts} — 이미 처리된 봉 (453차 D4)",
++                "WARNING",
++            )
++            return
++        self._last_pipeline_bar_ts = ts
++
++        self._maybe_compute_levels_0930(ts_raw)
++
++        # ── [S0-A] 64비트 GBM subprocess 완료 체크 ────────────────────────
++        # [226차] poll()은 non-blocking — subprocess가 완료되면 returncode 반환.
++        # [381차 후속] 로직을 _poll_gbm_retrain_subprocess()로 추출 — daily_close()도
++        # 동일 로직을 재사용해 15:10~15:40 무분봉 구간의 완료 감지 공백을 메운다.
++        self._poll_gbm_retrain_subprocess()
++
++        # ── [S0-B] ConstOut 재적합 완료 콜백 큐 drain — P1 QTimer 불안정 대체 ──
++        # ConstOut refit worker → _deferred_callbacks.put("const_out_done") →
++        # 여기서 메인 스레드 소비. GBM done은 [226차] subprocess poll로 이동.
++
++        # ── [S0-C] tick-level 하드스톱 처리 (폴백 안전망) ────────────────────
++        # [348차] 실제 주문 전송 경로는 이제 _on_tick_price_update에서 직접
++        # QTimer.singleShot(0, ...)으로 예약 — 최악 60초(다음 분봉 롤오버)
++        # 지연되던 것을 다음 이벤트루프 패스(수십ms)로 단축. 이 블록은 그
++        # 싱글샷이 어떤 이유로든(이벤트루프 기아 등) 못 돈 경우를 대비한
++        # 폴백일 뿐이며, _process_tick_stop() 내부에서 flag를 즉시 클리어하는
++        # 멱등 설계라 두 경로가 겹쳐도 중복 주문은 발생하지 않는다.
++        self._process_tick_stop()
++
++        while True:
++            try:
++                _dcb = self._deferred_callbacks.get_nowait()
++            except _queue.Empty:
++                break
++            try:
++                _dcb_tag = _dcb[0]
++                if _dcb_tag == "const_out_done":
++                    self._on_const_out_refit_done(_dcb[1])
++                # gbm_done 태그: [226차] subprocess 이관 — 큐에서 수신 시 무시(잔여 배출)
++            except Exception as _dcb_e:
++                logger.warning("[DeferredCB] 콜백 처리 오류 (tag=%s): %s", _dcb[0] if _dcb else "?", _dcb_e)
++
++        # ── [P3] CB③ HALT 주기적 해제 재시도 ─────────────────────────────
++        # ConstOut 재적합 + GBM 재학습이 완료됐으나 콜백 누락으로 lift 안 된 경우 복구.
++        # 15분마다 조건 확인: HALTED + cb3 원인 + 재학습·스케일러 재적합 미실행.
++        if (not getattr(self, "_gbm_retrain_running", False)
++                and not getattr(self, "_scaler_refresh_running", False)):
++            _cb3_state = self.circuit_breaker
++            if (_cb3_state.state == "HALTED"
++                    and getattr(_cb3_state, "_halt_cause", "") == "cb3"):
++                _ts_min_for_cb3 = int(ts[14:16]) if len(ts) >= 16 else -1
++                if _ts_min_for_cb3 >= 0 and _ts_min_for_cb3 % 15 == 0:
++                    if _cb3_state.lift_cb3_halt():
++                        log_manager.system(
++                            "[CB③→RESUME] 주기적 재시도 → HALT 해제 "
++                            "(ConstOut 재적합·GBM 재학습 완료 누락 복구)",
++                            "INFO",
++                        )
++
++        # ── [S0] 재학습 완료 모델 교체 — predict_proba 전 안전 지점 ─────────
++        # _on_gbm_retrain_done 이 플래그를 세우면 여기서 소비.
++        # 파이프라인 실행 중 모델 객체 교체 race condition 방지 (193차).
++        # [MW0602 462차 P2] 이 사이클의 모델 교체 소요시간 — CB⑤/Health 지연 판정에서 차감.
++        # 매 사이클 0으로 리셋해야 직전 값이 새는 것을 막는다.
++        self._model_swap_ms = 0.0
++        if getattr(self, "_pending_model_reload", False):
++            _swap_t0 = time.perf_counter()
++            self._pending_model_reload = False
++            _bad = self.model._load_all()
++            if _bad:
++                logger.error(
++                    "[Model] 재학습 후 %d개 호라이즌 차원 불일치: %s → 재학습 재트리거",
++                    len(_bad), _bad,
++                )
++                self._start_manual_retrain(force=True, reason="resync_mismatch")
++            try:
++                self.rf_model.load_all()
++            except Exception:
++                pass
++            self._rebuild_sgd_feat_indices()   # [P2] feature_names 교체 반영
++            self._model_swap_ms = (time.perf_counter() - _swap_t0) * 1000.0
++            logger.info(
++                "[Model] 재학습 완료 모델 교체 적용 (S0) — %.0fms", self._model_swap_ms
++            )
++
++        # [S2-A] 지연 SGD 학습 변수 — S2에서 채워지고 "end" 이후에 소비
++        # 초기값 [] 로 설정해 early return 시에도 NameError 방지
++        _sgd_deferred_verified: list = []
++        _sgd_deferred_stuck: bool = False
++
++        # ── 분봉 데이터 유효성 가드 ───────────────────────────────
++        # 비정상 분봉이 피처/진입/청산 오발동을 일으키지 않도록 파이프라인 앞단 차단
++        _guard = self._bar_price_guard(bar, ts)
++        if _guard is None:
++            return
++        _c, _h, _l, _v = _guard
++
++        _bar_volume_zero = (_v == 0)
++        if _bar_volume_zero:
++            log_manager.system(
++                f"[Guard-C3] volume=0 분봉 — VWAP/CVD 신호 신뢰도 저하, 진입 보류 ({ts})",
++                "WARNING",
++            )
++
++        close  = _c
++        # [225차 P0] _last_pipeline_price 는 _on_tick_price_update(현재 봉 tick)에 의해
++        # 파이프라인 진입 전 이미 cur_p 로 덮어써져 ret=0 고착 → 전용 변수 사용
++        _prev_pipeline_price      = self._sigma_prev_price     # sigma 계산용 이전 종가
++        self._last_pipeline_price = close  # 잔고 UI 합성에 사용
++        self._last_close = close           # 옵션체인 QTimer 폴링용 최신 종가
++
++        # 대시보드 실시간 가격 동기화
++        self.dashboard.update_price(
++            price  = close,
++            change = close - bar.get("open", close),
++            code   = self.realtime_data.code if self.realtime_data else "",
++        )
++
++        self._check_pending_order_timeout()
++
+         # P3-a: 매 분봉 시작 시 stuck 플래그 초기화
+         self._stuck_this_minute = False
+         log_manager.signal(f"--- {ts} 분봉 파이프라인 시작 ---")
+@@ -12403,76 +12907,8 @@ class TradingSystem:
+         # [거래주체분리 2단계] 가상 포지션도 같은 봉으로 청산 사다리를 평가한다(주문 없음).
+         _ts_vbook_on_bar(self, bar, features.get("atr", 0.5))
+ 
+-        # ── 청산 패널 갱신 (매분 — 실제 PositionTracker 값 전달) ──
+-        _pos = self.position
+-        _pending = self._pending_order or {}
+-        _pending_kind = str(_pending.get("kind") or "")
+-        _pending_reason = str(_pending.get("reason") or "")
+-        _now = datetime.datetime.now()
+-        _force_dt = datetime.datetime.combine(_now.date(), self.time_exit.FORCE_EXIT)
+-        _time_left_s = int((_force_dt - _now).total_seconds())
+-        if _time_left_s < 0:
+-            _time_left_s = 0
+-        self.dashboard.update_position({
+-            "status":     _pos.status,
+-            "entry":      _pos.entry_price,
+-            "current":    close,
+-            "qty":        _pos.quantity,
+-            "pt_value":   self._pt_value,
+-            "atr":        atr,
+-            "stop":       _pos.stop_price,
+-            "trail_basis": _pos.get_trailing_reference_price(close, atr),
+-            "tp1":        _pos.tp1_price,
+-            "tp2":        _pos.tp2_price,
+-            "tp3":        _pos.tp3_price,
+-            "partial1":   _pos.partial_1_done,
+-            "partial2":   _pos.partial_2_done,
+-            "partial3":   _pos.partial_3_done,
+-            "stage_plan": _pos.get_stage_plan(),
+-            "entry_time": _pos.entry_time,
+-            "pending_active": bool(_pending),
+-            "pending_kind": _pending_kind,
+-            "pending_reason": _pending_reason,
+-            "pending_stage": int(_pending.get("stage") or 0),
+-            "pending_filled": int(_pending.get("filled_qty") or 0),
+-            "pending_qty": int(_pending.get("qty") or 0),
+-            "time_exit_countdown_sec": _time_left_s,
+-            "stop_move_reason": _pos.last_update_reason or "",
+-            "bar_low":  bar.get("low",  0.0) if bar else 0.0,
+-            "bar_high": bar.get("high", 0.0) if bar else 0.0,
+-            "atr_ok":      _atr_ok,
+-            "open_gap_ok": _open_gap_ok,
+-        })
+-
+-        # ── 대시보드 PnL 패널 갱신 (매분) ──────────────────────────
+-        _daily   = self.position.daily_stats()
+-        _forward_daily = self.position.daily_forward_stats()
+-        _unreal  = self.position.unrealized_pnl_pts(close) * self._pt_value
+-        _forward_unreal = self.position.unrealized_forward_pnl_pts(close) * self._pt_value
+-        _var_krw = -(atr * 1.65 * self.position.quantity * self._pt_value) if self.position.quantity else 0.0
+-        self.dashboard.update_pnl_metrics(
+-            _unreal,
+-            _daily["pnl_krw"],
+-            _var_krw,
+-            forward_unrealized_krw=_forward_unreal,
+-            forward_daily_pnl_krw=_forward_daily["pnl_krw"],
+-            # [MW0601 493차 / F-5] 브로커 실측 net 병기 — None이면 패널은 종전대로.
+-            broker_net_krw=self._broker_net_today,
+-        )
+-
+-        # 당일 진입 통계 갱신 — STEP 9 예외와 무관하게 항상 실행
+-        _ds = self.position.daily_stats()
+-        self.dashboard.update_entry_stats(_ds["trades"], _ds["wins"], _ds["pnl_pts"])
++        self._push_position_panels(close, atr, bar, _atr_ok, _open_gap_ok)
+ 
+-        # 주문/체결 탭 메트릭 갱신 (LatencySync — Cybos에서는 항상 0ms)
+-        _ls = self.latency_sync.summary()
+-        _latency_ms = float(_ls.get("offset_ms", 0.0) or 0.0)
+-        self.dashboard.update_order_metrics(
+-            trades      = _ds["trades"],
+-            avg_lat_ms  = _latency_ms,
+-            peak_lat_ms = _ls["peak_ms"],
+-            samples     = _ls["sample_count"],
+-        )
+         # 파이프라인 처리시간 (CB⑤ 대체 지표) — 헬스 패널·SYSTEM 로그 공용
+         _st.append(("end", time.perf_counter()))
+         _pipe_ms_raw = (_st[-1][1] - _pipe_t0) * 1000
+@@ -14329,7 +14765,7 @@ class TradingSystem:
+         self._chejan_exit_miss_count = 0
+ 
+         # ── 챔피언-도전자 일별 집계 ─────────────────────────────
+-        if self.challenger_engine is not None:
++        if self._mireuk_on() and self.challenger_engine is not None:   # [신동 주체 리뉴얼] 휴면 시 생략
+             try:
+                 self.challenger_engine.update_daily_metrics(now.date().isoformat())
+             except Exception as _ce2:
+@@ -14475,7 +14911,7 @@ class TradingSystem:
+         # 승격 후에는 새 챔피언이 도전자였을 때의 이력이 그대로 재활용된다.
+         # 사이즈 자동축소는 아직 실거래 배선에 연결하지 않았다 — 실측 데이터가
+         # 쌓여 정상 동작이 확인된 뒤 연결 여부를 별도로 결정할 것.
+-        if self.promotion_manager is not None:
++        if self._mireuk_on() and self.promotion_manager is not None:   # [신동 주체 리뉴얼] 휴면 시 생략
+             try:
+                 _hb = self.promotion_manager.check_champion_heartbeat()
+                 log_manager.system(
+@@ -14484,265 +14920,272 @@ class TradingSystem:
+             except Exception as _hb_e:
+                 logger.warning("[ChampionHeartbeat] 체크 실패 (스킵): %s", _hb_e)
+ 
+-        # 개선 3: 당일 종가 버퍼를 feature_builder에 전달 → 내일 prev_day_same_hour_ret 계산
+-        try:
+-            from utils.db_utils import fetchall
+-            from config.settings import RAW_DATA_DB as _RDB
+-            import sqlite3 as _sqlite3
+-            today_str = now.date().isoformat()
+-            with _sqlite3.connect(_RDB, timeout=10) as _conn:
+-                _conn.row_factory = _sqlite3.Row
+-                _rows = _conn.execute(
+-                    "SELECT ts, close FROM raw_candles WHERE ts >= ? AND ts < ? ORDER BY ts",
+-                    (today_str, today_str + "Z"),
+-                ).fetchall()
+-            _today_closes = {r["ts"]: float(r["close"]) for r in _rows}
+-            self.feature_builder.set_prev_day_closes(_today_closes)
+-            logger.info("[FeatureBuilder] 전일 종가 버퍼 갱신: %d봉", len(_today_closes))
+-        except Exception as _fbe:
+-            logger.warning("[FeatureBuilder] 전일 종가 버퍼 갱신 실패: %s", _fbe)
+-
+-        # ── STEP 3 재학습 완료 대기 ──────────────────────────────
+-        # 장중 마지막 30분 배치 재학습이 아직 실행 중이면 완료될 때까지 기다린다.
+-        # 대기 없이 retrain_now()를 동시 호출하면 pkl 경합 + 미완료 상태로 종료됨.
+-        # 15:40 이후 분봉 파이프라인은 없으므로 메인 스레드 블로킹 허용.
+-        # [381차 후속] 15:10 강제청산 이후로는 run_minute_pipeline()이 더 이상 호출되지
+-        # 않아 _gbm_retrain_running이 "이미 끝난 재학습"인 채로 굳어있을 수 있다(07-24
+-        # 실측: 15:09:59 시작 재학습이 15:10:29에 끝났는데도 감지 기회가 없어 daily_close가
+-        # 15:40:13에 이를 "진행 중"으로 오판, 20분을 헛되이 대기했다). 대기 여부를 판단하기
+-        # 전에 한 번 더 폴링해 굳은 플래그를 먼저 해소한다.
+-        self._poll_gbm_retrain_subprocess()
+-        # [I] 진입 시 retrain 상태 항상 기록 — _gbm_retrain_running=False 경로도 추적 가능
+-        _retrain_at_dc = "진행중" if getattr(self, "_gbm_retrain_running", False) else "완료/미시작"
+-        log_manager.system(
+-            f"[DailyClose] 진입 | retrain={_retrain_at_dc} | {datetime.datetime.now().strftime('%H:%M:%S')}",
+-            "INFO",
+-        )
+-        if getattr(self, "_gbm_retrain_running", False):
++        # [MW0602 신동 주체 리뉴얼] 아래 블록(전일 종가 버퍼 · STEP 3 재학습 대기 · EOD 재학습 마커 ·
++        #   DB pruning · Platt/MetaConf 저장 · 자가학습 집계 · DriftAdjuster · 재보정 모니터 4종)은 전부 미륵 전용이다.
++        #   휴면이면 건너뛴다 — 특히 학습 상태 파일을 덮어쓰지 않고(되살림 시 마지막 실가동 상태로 복귀),
++        #   DriftAdjuster 에 「표본 없는 정확도」를 기록하지 않는다(계측 4원칙 ②).
++        if self._mireuk_on():
++            # 개선 3: 당일 종가 버퍼를 feature_builder에 전달 → 내일 prev_day_same_hour_ret 계산
++            try:
++                from utils.db_utils import fetchall
++                from config.settings import RAW_DATA_DB as _RDB
++                import sqlite3 as _sqlite3
++                today_str = now.date().isoformat()
++                with _sqlite3.connect(_RDB, timeout=10) as _conn:
++                    _conn.row_factory = _sqlite3.Row
++                    _rows = _conn.execute(
++                        "SELECT ts, close FROM raw_candles WHERE ts >= ? AND ts < ? ORDER BY ts",
++                        (today_str, today_str + "Z"),
++                    ).fetchall()
++                _today_closes = {r["ts"]: float(r["close"]) for r in _rows}
++                self.feature_builder.set_prev_day_closes(_today_closes)
++                logger.info("[FeatureBuilder] 전일 종가 버퍼 갱신: %d봉", len(_today_closes))
++            except Exception as _fbe:
++                logger.warning("[FeatureBuilder] 전일 종가 버퍼 갱신 실패: %s", _fbe)
++
++            # ── STEP 3 재학습 완료 대기 ──────────────────────────────
++            # 장중 마지막 30분 배치 재학습이 아직 실행 중이면 완료될 때까지 기다린다.
++            # 대기 없이 retrain_now()를 동시 호출하면 pkl 경합 + 미완료 상태로 종료됨.
++            # 15:40 이후 분봉 파이프라인은 없으므로 메인 스레드 블로킹 허용.
++            # [381차 후속] 15:10 강제청산 이후로는 run_minute_pipeline()이 더 이상 호출되지
++            # 않아 _gbm_retrain_running이 "이미 끝난 재학습"인 채로 굳어있을 수 있다(07-24
++            # 실측: 15:09:59 시작 재학습이 15:10:29에 끝났는데도 감지 기회가 없어 daily_close가
++            # 15:40:13에 이를 "진행 중"으로 오판, 20분을 헛되이 대기했다). 대기 여부를 판단하기
++            # 전에 한 번 더 폴링해 굳은 플래그를 먼저 해소한다.
++            self._poll_gbm_retrain_subprocess()
++            # [I] 진입 시 retrain 상태 항상 기록 — _gbm_retrain_running=False 경로도 추적 가능
++            _retrain_at_dc = "진행중" if getattr(self, "_gbm_retrain_running", False) else "완료/미시작"
+             log_manager.system(
+-                "[DailyClose] STEP 3 재학습 진행 중 — EOD 재학습 전 완료 대기 (최대 20분)",
++                f"[DailyClose] 진입 | retrain={_retrain_at_dc} | {datetime.datetime.now().strftime('%H:%M:%S')}",
+                 "INFO",
+             )
+-            completed = self._gbm_retrain_done_event.wait(timeout=20 * 60)
+-            if completed:
+-                log_manager.system("[DailyClose] STEP 3 재학습 완료 확인 — EOD 재학습 시작", "INFO")
+-            else:
++            if getattr(self, "_gbm_retrain_running", False):
+                 log_manager.system(
+-                    "[DailyClose] STEP 3 재학습 20분 초과 — 강제 진행 (타임아웃)", "WARNING"
++                    "[DailyClose] STEP 3 재학습 진행 중 — EOD 재학습 전 완료 대기 (최대 20분)",
++                    "INFO",
+                 )
+-                # [J] 타임아웃 발생 시 슬랙 알림 — P8 지연 가능성 사전 고지
+-                try:
+-                    from utils.notify import notify as _nfy_step3
+-                    _nfy_step3(
+-                        "⚠️ DailyClose STEP3 타임아웃 — GBM 재학습 20분 초과\n"
+-                        "P8 지연 발생 가능 | 내일 EarlyWarmup 보완 예정",
+-                        "WARNING",
++                completed = self._gbm_retrain_done_event.wait(timeout=20 * 60)
++                if completed:
++                    log_manager.system("[DailyClose] STEP 3 재학습 완료 확인 — EOD 재학습 시작", "INFO")
++                else:
++                    log_manager.system(
++                        "[DailyClose] STEP 3 재학습 20분 초과 — 강제 진행 (타임아웃)", "WARNING"
+                     )
+-                except Exception:
+-                    pass
++                    # [J] 타임아웃 발생 시 슬랙 알림 — P8 지연 가능성 사전 고지
++                    try:
++                        from utils.notify import notify as _nfy_step3
++                        _nfy_step3(
++                            "⚠️ DailyClose STEP3 타임아웃 — GBM 재학습 20분 초과\n"
++                            "P8 지연 발생 가능 | 내일 EarlyWarmup 보완 예정",
++                            "WARNING",
++                        )
++                    except Exception:
++                        pass
+ 
+-        # GBM 재학습 + P8 스케일러 재적합은 py310_64 장외 스케줄러(MireukiEODRetrain, 15:45)가
+-        # retrain_eod.py를 통해 수행한다 (191차~, OOM 방지).
+-        # daily_close()에서 retrain_now()를 직접 호출하지 않는다:
+-        #   - py37_32 메인 스레드 동기 실행 → 12분+ Qt 블로킹 → UI 행 상태 (오늘 실증)
+-        #   - py310_64 스케줄러 완료 후 마커 파일로 성공 여부 확인
++            # GBM 재학습 + P8 스케일러 재적합은 py310_64 장외 스케줄러(MireukiEODRetrain, 15:45)가
++            # retrain_eod.py를 통해 수행한다 (191차~, OOM 방지).
++            # daily_close()에서 retrain_now()를 직접 호출하지 않는다:
++            #   - py37_32 메인 스레드 동기 실행 → 12분+ Qt 블로킹 → UI 행 상태 (오늘 실증)
++            #   - py310_64 스케줄러 완료 후 마커 파일로 성공 여부 확인
+ 
+-        # 마커 파일 기반으로 내일 08:55 PreRetrain 스킵 신호 기록
+-        _eod_marker_path = os.path.join(
+-            os.path.dirname(os.path.abspath(__file__)),
+-            "data",
+-            f"eod_retrain_done_{datetime.date.today().strftime('%Y%m%d')}.txt",
+-        )
+-        if os.path.exists(_eod_marker_path):
+-            self._eod_retrain_ok = True
+-            try:
+-                _eod_ss = self._read_session_state()
+-                _eod_ss["eod_retrain_ok_date"] = datetime.date.today().isoformat()
+-                self._write_session_state(_eod_ss)
+-            except Exception as _eod_ss_e:
+-                logger.warning("[EOD] eod_retrain_ok_date 저장 실패 (무해): %s", _eod_ss_e)
+-            log_manager.system(
+-                "[DailyClose] EOD 재학습 마커 확인 — 스케줄러 완료, 내일 PreRetrain 스킵 예약",
+-                "INFO",
++            # 마커 파일 기반으로 내일 08:55 PreRetrain 스킵 신호 기록
++            _eod_marker_path = os.path.join(
++                os.path.dirname(os.path.abspath(__file__)),
++                "data",
++                f"eod_retrain_done_{datetime.date.today().strftime('%Y%m%d')}.txt",
+             )
+-        else:
+-            # [468차 F-5] daily_close(15:40)는 EOD 스케줄러(MireukiEODRetrain, 15:45 시작 /
+-            # 16:05 종료 예산)보다 **먼저** 돈다 — 이 시점에 마커가 없는 것이 정상이고,
+-            # 08-10~08-13 4거래일 연속으로 WARNING이 오탐으로 찍혔다. 진짜 실패는 다음날
+-            # 08:55 PreRetrain이 마커 파일을 직접 확인해 잡는다(보완 재학습 경로 그대로).
+-            # 다만 STEP 3 재학습 대기(최대 20분)로 daily_close가 늦어져 EOD 예산 종료까지
+-            # 넘겼다면 그때는 정말로 미실행이거나 실패한 것이므로 WARNING을 유지한다 —
+-            # 무조건 INFO로 내리면 진짜 실패 신호까지 같이 잃는다.
+-            _now_dc = datetime.datetime.now()
+-            _eod_budget_end = _now_dc.replace(hour=16, minute=5, second=0, microsecond=0)
+-            if _now_dc < _eod_budget_end:
++            if os.path.exists(_eod_marker_path):
++                self._eod_retrain_ok = True
++                try:
++                    _eod_ss = self._read_session_state()
++                    _eod_ss["eod_retrain_ok_date"] = datetime.date.today().isoformat()
++                    self._write_session_state(_eod_ss)
++                except Exception as _eod_ss_e:
++                    logger.warning("[EOD] eod_retrain_ok_date 저장 실패 (무해): %s", _eod_ss_e)
+                 log_manager.system(
+-                    "[DailyClose] EOD 재학습 미완료 (정상 — 15:45 스케줄 대기 중, "
+-                    "내일 08:55 PreRetrain이 마커 재확인)",
++                    "[DailyClose] EOD 재학습 마커 확인 — 스케줄러 완료, 내일 PreRetrain 스킵 예약",
+                     "INFO",
+                 )
+             else:
+-                log_manager.system(
+-                    "[DailyClose] EOD 재학습 마커 없음 — retrain_eod.py 미실행 또는 실패 "
+-                    "(EOD 예산 16:05 경과 · 내일 PreRetrain에서 보완 재학습 예약됨)",
+-                    "WARNING",
+-                )
+-
+-        # DB pruning — 매주 월요일 EOD 1회 실행 (RAW_DATA_PRUNE_WEEKS=52주 이전 삭제)
+-        # 슬라이딩 창(26주) 정상 운영 시 학습 행 수는 ~40,000 안정적
+-        # 하지만 raw_data.db 자체는 누적 → 52주 초과분 정리로 DB 비대화 방지
+-        if datetime.datetime.now().weekday() == 0:  # 월요일
+-            try:
+-                _pruned = self.batch_retrainer.prune_raw_data_db()
+-                if _pruned > 0:
+-                    log_manager.learning(
+-                        f"[GBM] DB pruning: {_pruned:,}행 삭제 (52주 초과분)"
++                # [468차 F-5] daily_close(15:40)는 EOD 스케줄러(MireukiEODRetrain, 15:45 시작 /
++                # 16:05 종료 예산)보다 **먼저** 돈다 — 이 시점에 마커가 없는 것이 정상이고,
++                # 08-10~08-13 4거래일 연속으로 WARNING이 오탐으로 찍혔다. 진짜 실패는 다음날
++                # 08:55 PreRetrain이 마커 파일을 직접 확인해 잡는다(보완 재학습 경로 그대로).
++                # 다만 STEP 3 재학습 대기(최대 20분)로 daily_close가 늦어져 EOD 예산 종료까지
++                # 넘겼다면 그때는 정말로 미실행이거나 실패한 것이므로 WARNING을 유지한다 —
++                # 무조건 INFO로 내리면 진짜 실패 신호까지 같이 잃는다.
++                _now_dc = datetime.datetime.now()
++                _eod_budget_end = _now_dc.replace(hour=16, minute=5, second=0, microsecond=0)
++                if _now_dc < _eod_budget_end:
++                    log_manager.system(
++                        "[DailyClose] EOD 재학습 미완료 (정상 — 15:45 스케줄 대기 중, "
++                        "내일 08:55 PreRetrain이 마커 재확인)",
++                        "INFO",
+                     )
+                 else:
+-                    # [MW0602 492차 F-8] 0행을 **말하게** 한다. 종전에는 이 줄이
+-                    # 조용히 없어서 "정리 대상이 없었다"와 "실패해서 0을 받았다"가
+-                    # 구분되지 않았다. 두 경로 모두 바로 위 `[Retrain]` 줄이 사유를
+-                    # 말한다 — 같은 호출의 안/밖이다(1-14 진단 정정).
+-                    log_manager.learning(
+-                        "[GBM] DB pruning: 0행 (대상 없음 또는 실패 — "
+-                        "직전 [Retrain] DB pruning 줄이 사유)"
++                    log_manager.system(
++                        "[DailyClose] EOD 재학습 마커 없음 — retrain_eod.py 미실행 또는 실패 "
++                        "(EOD 예산 16:05 경과 · 내일 PreRetrain에서 보완 재학습 예약됨)",
++                        "WARNING",
+                     )
+-            except Exception as _pe:
+-                logger.warning("[GBM] DB pruning 실패: %s", _pe)
+ 
+-        # [Platt] 앙상블 보정기 저장 — 다음 기동 시 즉시 복원 가능
+-        try:
+-            from config.settings import ENSEMBLE_CALIBRATOR_PATH
+-            _cal = self.ensemble.ensemble_calibrator
+-            if _cal.save(ENSEMBLE_CALIBRATOR_PATH):
+-                log_manager.system(
+-                    f"[Calibration] 앙상블 보정기 저장 완료 n={_cal.n_samples}",
+-                    "INFO",
+-                )
+-            else:
+-                # [MW0602 485차 F-1] 부정 분기 무로그 금지 — save()가 False를
+-                # 돌려주면 판정 기준선이 며칠씩 과거 저장본에 묶여도 아무 로그가
+-                # 없었다(0821 리포트 1-1: 7거래일 무저장·무로그). 감싸는 except는
+-                # False 반환에 발동하지 않으므로 여기서 직접 남긴다.
+-                log_manager.system(
+-                    f"[Calibration] 앙상블 보정기 저장 건너뜀 — "
+-                    f"fitted={_cal.is_fitted} degenerate={_cal.is_degenerate} "
+-                    f"unreachable={_cal.is_unreachable} n={_cal.n_samples}",
+-                    "WARNING",
+-                )
+-        except Exception as _cal_s_e:
+-            logger.warning("[Calibration] 보정기 저장 실패 (무해): %s", _cal_s_e)
++            # DB pruning — 매주 월요일 EOD 1회 실행 (RAW_DATA_PRUNE_WEEKS=52주 이전 삭제)
++            # 슬라이딩 창(26주) 정상 운영 시 학습 행 수는 ~40,000 안정적
++            # 하지만 raw_data.db 자체는 누적 → 52주 초과분 정리로 DB 비대화 방지
++            if datetime.datetime.now().weekday() == 0:  # 월요일
++                try:
++                    _pruned = self.batch_retrainer.prune_raw_data_db()
++                    if _pruned > 0:
++                        log_manager.learning(
++                            f"[GBM] DB pruning: {_pruned:,}행 삭제 (52주 초과분)"
++                        )
++                    else:
++                        # [MW0602 492차 F-8] 0행을 **말하게** 한다. 종전에는 이 줄이
++                        # 조용히 없어서 "정리 대상이 없었다"와 "실패해서 0을 받았다"가
++                        # 구분되지 않았다. 두 경로 모두 바로 위 `[Retrain]` 줄이 사유를
++                        # 말한다 — 같은 호출의 안/밖이다(1-14 진단 정정).
++                        log_manager.learning(
++                            "[GBM] DB pruning: 0행 (대상 없음 또는 실패 — "
++                            "직전 [Retrain] DB pruning 줄이 사유)"
++                        )
++                except Exception as _pe:
++                    logger.warning("[GBM] DB pruning 실패: %s", _pe)
+ 
+-        # [MetaConf] 학습 상태 저장 — 다음 날 warm-start (cold-start 제거)
+-        try:
+-            from config.settings import META_CONF_STATE_PATH
+-            self.meta_gate.learner.save(META_CONF_STATE_PATH)
+-        except Exception as _mc_s_e:
+-            logger.warning("[MetaConf] EOD 상태 저장 실패 (무해): %s", _mc_s_e)
+-
+-        # ── 자가학습 일일 마감 집계 ──────────────────────────────
+-        _today_accuracy = self.online_learner.recent_accuracy()
+-        _today_n_samples = self.online_learner.sample_count
+-        try:
+-            self.daily_consolidator.consolidate()
+-        except Exception as _dce:
+-            logger.warning("[DailyConsolidator] 집계 실패 (스킵): %s", _dce)
+-        try:
+-            _drift_result = self.drift_adjuster.record_accuracy(
+-                _today_accuracy, n_samples=_today_n_samples
+-            )
+-            _new_alpha = _drift_result.get("alpha", 0.001)
+-            if hasattr(self.online_learner, "set_alpha"):
+-                self.online_learner.set_alpha(_new_alpha)
+-                logger.info("[DriftAdjuster] SGD alpha 갱신: %.5f (%s)", _new_alpha, _drift_result.get("action"))
+-        except Exception as _dae:
+-            logger.warning("[DriftAdjuster] 갱신 실패 (스킵): %s", _dae)
+-
+-        # ── Phase A 임계값 재보정 모니터 (376차, 금요일 + 최근 실행 후 7일
+-        #    이상 경과 시에만 — atr_ceiling/entry_horizon_recalibrator와 동일
+-        #    패턴으로 교체. 종전엔 "정확히 금요일"에만 run()해 휴장 등으로 그
+-        #    금요일 세션이 없으면 해당 주가 통째로 누락됐다(07-17 공백 확인).
+-        if now.weekday() == 4:   # 금요일
++            # [Platt] 앙상블 보정기 저장 — 다음 기동 시 즉시 복원 가능
+             try:
+-                recal_results = self.threshold_recalibrator.run_if_due(
+-                    today=now.date().isoformat()
+-                )
+-                alerts = {h: r["alert"] for h, r in recal_results.items() if r["alert"] != "CLEAR"}
+-                if alerts:
++                from config.settings import ENSEMBLE_CALIBRATOR_PATH
++                _cal = self.ensemble.ensemble_calibrator
++                if _cal.save(ENSEMBLE_CALIBRATOR_PATH):
+                     log_manager.system(
+-                        f"[ThresholdRecal] 경보 발생: {alerts}  "
+-                        f"docs/정기점검/LABEL_THRESHOLD_RECALIBRATION_GUIDE.md 참조",
+-                        "WARNING",
++                        f"[Calibration] 앙상블 보정기 저장 완료 n={_cal.n_samples}",
++                        "INFO",
+                     )
+-            except Exception as _tre:
+-                logger.warning("[ThresholdRecal] 실행 실패 (스킵): %s", _tre)
+-
+-        # ── ATR 게이트 상/하한 재보정 제안 모니터 (303차, 금요일 + 최근 실행 후
+-        #    10일 이상 경과 시에만 — 사실상 1~2주 주기). 자동 반영 없음, 제안만
+-        #    기록 + WATCHLIST 이상이면 Slack 알림(utils.notify) — 알파봇과 동일하게
+-        #    사람이 config/settings.py를 검토 후 수동 반영한다.
+-        if now.weekday() == 4:   # 금요일
+-            try:
+-                _atr_recal = self.atr_ceiling_recalibrator.run_if_due(
+-                    today=now.date().isoformat()
+-                )
+-                if _atr_recal and _atr_recal["alert"] != "CLEAR":
++                else:
++                    # [MW0602 485차 F-1] 부정 분기 무로그 금지 — save()가 False를
++                    # 돌려주면 판정 기준선이 며칠씩 과거 저장본에 묶여도 아무 로그가
++                    # 없었다(0821 리포트 1-1: 7거래일 무저장·무로그). 감싸는 except는
++                    # False 반환에 발동하지 않으므로 여기서 직접 남긴다.
+                     log_manager.system(
+-                        f"[ATRCeilingRecal] {_atr_recal['alert']} — "
+-                        f"floor {_atr_recal['current_floor']}→{_atr_recal['suggested_floor']}pt "
+-                        f"({_atr_recal['floor_delta_pct']:+.0f}%), "
+-                        f"ceiling {_atr_recal['current_ceiling']}→{_atr_recal['suggested_ceiling']}pt "
+-                        f"({_atr_recal['ceiling_delta_pct']:+.0f}%) — Slack 알림 발송, 수동 검토 필요",
++                        f"[Calibration] 앙상블 보정기 저장 건너뜀 — "
++                        f"fitted={_cal.is_fitted} degenerate={_cal.is_degenerate} "
++                        f"unreachable={_cal.is_unreachable} n={_cal.n_samples}",
+                         "WARNING",
+                     )
+-            except Exception as _atre:
+-                logger.warning("[ATRCeilingRecal] 실행 실패 (스킵): %s", _atre)
+-
+-        # ── entry_horizon(select_entry_horizon) 경계값 재보정 모니터 (375차,
+-        #    금요일 + 최근 실행 후 7일 이상 경과 시에만). 374차가 발견한
+-        #    "경계값 고착"(61건 실거래 전부 5m 분류) 재발 여부를 매주 확인.
+-        #    자동 반영 없음 — ThresholdRecal/ATRCeilingRecal과 동일하게 제안만
+-        #    기록, config/settings.py의 ENTRY_HORIZON_B1/B2는 사람이
+-        #    검토 후 수동 반영한다.
+-        if now.weekday() == 4:   # 금요일
++            except Exception as _cal_s_e:
++                logger.warning("[Calibration] 보정기 저장 실패 (무해): %s", _cal_s_e)
++
++            # [MetaConf] 학습 상태 저장 — 다음 날 warm-start (cold-start 제거)
+             try:
+-                _eh_recal = self.entry_horizon_recalibrator.run_if_due(
+-                    today=now.date().isoformat()
+-                )
+-                if _eh_recal and _eh_recal["alert"] != "CLEAR":
+-                    log_manager.system(
+-                        f"[EntryHorizonRecal] {_eh_recal['alert']} — "
+-                        f"경계 {_eh_recal['current_b1']}/{_eh_recal['current_b2']} → "
+-                        f"재계산 {_eh_recal['recalc_b1']}/{_eh_recal['recalc_b2']} "
+-                        f"(δ{_eh_recal['b1_delta_pct']:+.0f}%/{_eh_recal['b2_delta_pct']:+.0f}%), "
+-                        f"버킷비중(1m/3m/5m)="
+-                        f"{_eh_recal['bucket_1m_pct']:.0f}%/{_eh_recal['bucket_3m_pct']:.0f}%/"
+-                        f"{_eh_recal['bucket_5m_pct']:.0f}% — 수동 검토 필요",
+-                        "WARNING",
+-                    )
+-            except Exception as _ehe:
+-                logger.warning("[EntryHorizonRecal] 실행 실패 (스킵): %s", _ehe)
+-
+-        # ── ATR배수 임계값 3종(CHASE_FILTER×2/COUNTERTREND/REGIME_EXHAUSTION)
+-        #    발동률 드리프트 모니터 (신설, 금요일 + 최근 실행 후 7일 이상
+-        #    경과 시에만 — 나머지 3개 재보정기와 동일 패턴). 재계산 "권장값"이
+-        #    아니라 "지금 임계값이면 얼마나 자주 발동하는가"만 추적, 자동 반영
+-        #    없음 — 대상 임계값은 사람이 config/settings.py에서 직접 검토.
+-        if now.weekday() == 4:   # 금요일
++                from config.settings import META_CONF_STATE_PATH
++                self.meta_gate.learner.save(META_CONF_STATE_PATH)
++            except Exception as _mc_s_e:
++                logger.warning("[MetaConf] EOD 상태 저장 실패 (무해): %s", _mc_s_e)
++
++            # ── 자가학습 일일 마감 집계 ──────────────────────────────
++            _today_accuracy = self.online_learner.recent_accuracy()
++            _today_n_samples = self.online_learner.sample_count
++            try:
++                self.daily_consolidator.consolidate()
++            except Exception as _dce:
++                logger.warning("[DailyConsolidator] 집계 실패 (스킵): %s", _dce)
+             try:
+-                _am_recal = self.atr_multiple_recalibrator.run_if_due(
+-                    today=now.date().isoformat()
++                _drift_result = self.drift_adjuster.record_accuracy(
++                    _today_accuracy, n_samples=_today_n_samples
+                 )
+-                if _am_recal:
+-                    _am_alerts = {k: v["alert"] for k, v in _am_recal.items() if v["alert"] != "CLEAR"}
+-                    if _am_alerts:
++                _new_alpha = _drift_result.get("alpha", 0.001)
++                if hasattr(self.online_learner, "set_alpha"):
++                    self.online_learner.set_alpha(_new_alpha)
++                    logger.info("[DriftAdjuster] SGD alpha 갱신: %.5f (%s)", _new_alpha, _drift_result.get("action"))
++            except Exception as _dae:
++                logger.warning("[DriftAdjuster] 갱신 실패 (스킵): %s", _dae)
++
++            # ── Phase A 임계값 재보정 모니터 (376차, 금요일 + 최근 실행 후 7일
++            #    이상 경과 시에만 — atr_ceiling/entry_horizon_recalibrator와 동일
++            #    패턴으로 교체. 종전엔 "정확히 금요일"에만 run()해 휴장 등으로 그
++            #    금요일 세션이 없으면 해당 주가 통째로 누락됐다(07-17 공백 확인).
++            if now.weekday() == 4:   # 금요일
++                try:
++                    recal_results = self.threshold_recalibrator.run_if_due(
++                        today=now.date().isoformat()
++                    )
++                    alerts = {h: r["alert"] for h, r in recal_results.items() if r["alert"] != "CLEAR"}
++                    if alerts:
++                        log_manager.system(
++                            f"[ThresholdRecal] 경보 발생: {alerts}  "
++                            f"docs/정기점검/LABEL_THRESHOLD_RECALIBRATION_GUIDE.md 참조",
++                            "WARNING",
++                        )
++                except Exception as _tre:
++                    logger.warning("[ThresholdRecal] 실행 실패 (스킵): %s", _tre)
++
++            # ── ATR 게이트 상/하한 재보정 제안 모니터 (303차, 금요일 + 최근 실행 후
++            #    10일 이상 경과 시에만 — 사실상 1~2주 주기). 자동 반영 없음, 제안만
++            #    기록 + WATCHLIST 이상이면 Slack 알림(utils.notify) — 알파봇과 동일하게
++            #    사람이 config/settings.py를 검토 후 수동 반영한다.
++            if now.weekday() == 4:   # 금요일
++                try:
++                    _atr_recal = self.atr_ceiling_recalibrator.run_if_due(
++                        today=now.date().isoformat()
++                    )
++                    if _atr_recal and _atr_recal["alert"] != "CLEAR":
++                        log_manager.system(
++                            f"[ATRCeilingRecal] {_atr_recal['alert']} — "
++                            f"floor {_atr_recal['current_floor']}→{_atr_recal['suggested_floor']}pt "
++                            f"({_atr_recal['floor_delta_pct']:+.0f}%), "
++                            f"ceiling {_atr_recal['current_ceiling']}→{_atr_recal['suggested_ceiling']}pt "
++                            f"({_atr_recal['ceiling_delta_pct']:+.0f}%) — Slack 알림 발송, 수동 검토 필요",
++                            "WARNING",
++                        )
++                except Exception as _atre:
++                    logger.warning("[ATRCeilingRecal] 실행 실패 (스킵): %s", _atre)
++
++            # ── entry_horizon(select_entry_horizon) 경계값 재보정 모니터 (375차,
++            #    금요일 + 최근 실행 후 7일 이상 경과 시에만). 374차가 발견한
++            #    "경계값 고착"(61건 실거래 전부 5m 분류) 재발 여부를 매주 확인.
++            #    자동 반영 없음 — ThresholdRecal/ATRCeilingRecal과 동일하게 제안만
++            #    기록, config/settings.py의 ENTRY_HORIZON_B1/B2는 사람이
++            #    검토 후 수동 반영한다.
++            if now.weekday() == 4:   # 금요일
++                try:
++                    _eh_recal = self.entry_horizon_recalibrator.run_if_due(
++                        today=now.date().isoformat()
++                    )
++                    if _eh_recal and _eh_recal["alert"] != "CLEAR":
+                         log_manager.system(
+-                            f"[ATRMultipleRecal] 경보 발생: {_am_alerts} — "
+-                            f"발동률 급변, config/settings.py:ATR_MULTIPLE_RECAL_TARGETS 수동 검토",
++                            f"[EntryHorizonRecal] {_eh_recal['alert']} — "
++                            f"경계 {_eh_recal['current_b1']}/{_eh_recal['current_b2']} → "
++                            f"재계산 {_eh_recal['recalc_b1']}/{_eh_recal['recalc_b2']} "
++                            f"(δ{_eh_recal['b1_delta_pct']:+.0f}%/{_eh_recal['b2_delta_pct']:+.0f}%), "
++                            f"버킷비중(1m/3m/5m)="
++                            f"{_eh_recal['bucket_1m_pct']:.0f}%/{_eh_recal['bucket_3m_pct']:.0f}%/"
++                            f"{_eh_recal['bucket_5m_pct']:.0f}% — 수동 검토 필요",
+                             "WARNING",
+                         )
+-            except Exception as _ame:
+-                logger.warning("[ATRMultipleRecal] 실행 실패 (스킵): %s", _ame)
++                except Exception as _ehe:
++                    logger.warning("[EntryHorizonRecal] 실행 실패 (스킵): %s", _ehe)
++
++            # ── ATR배수 임계값 3종(CHASE_FILTER×2/COUNTERTREND/REGIME_EXHAUSTION)
++            #    발동률 드리프트 모니터 (신설, 금요일 + 최근 실행 후 7일 이상
++            #    경과 시에만 — 나머지 3개 재보정기와 동일 패턴). 재계산 "권장값"이
++            #    아니라 "지금 임계값이면 얼마나 자주 발동하는가"만 추적, 자동 반영
++            #    없음 — 대상 임계값은 사람이 config/settings.py에서 직접 검토.
++            if now.weekday() == 4:   # 금요일
++                try:
++                    _am_recal = self.atr_multiple_recalibrator.run_if_due(
++                        today=now.date().isoformat()
++                    )
++                    if _am_recal:
++                        _am_alerts = {k: v["alert"] for k, v in _am_recal.items() if v["alert"] != "CLEAR"}
++                        if _am_alerts:
++                            log_manager.system(
++                                f"[ATRMultipleRecal] 경보 발생: {_am_alerts} — "
++                                f"발동률 급변, config/settings.py:ATR_MULTIPLE_RECAL_TARGETS 수동 검토",
++                                "WARNING",
++                            )
++                except Exception as _ame:
++                    logger.warning("[ATRMultipleRecal] 실행 실패 (스킵): %s", _ame)
++        else:
++            log_manager.system("[DailyClose] 미륵 휴면 — 학습 상태 저장·재학습 대기·재보정 모니터 생략", "INFO")
+ 
+         # 일일 리셋
+         if hasattr(self, "_investor_timer"):
+@@ -15024,104 +15467,108 @@ class TradingSystem:
+         except Exception as _nr_e:
+             logger.warning("[NetRecon] net 대사 실패 (무해): %s", _nr_e)
+ 
+-        # 섹션 8: scaler_daily EOD 집계 저장
+-        try:
+-            from model.scaler_monitor_db import aggregate_daily, insert_daily
+-            _sm_stats = aggregate_daily(today_str)
+-            _cb3_fired = int(bool(getattr(self.circuit_breaker, "_daily_halt", False)))
+-            insert_daily(
+-                today_str, _sm_stats,
+-                grade_x_minutes=self._grade_x_count,
+-                cb3_triggered=_cb3_fired,
+-            )
+-        except Exception as _sm_e:
+-            logger.warning("[ScalerMonitor] EOD 집계 저장 실패 (스킵): %s", _sm_e)
+-        self._grade_x_count = 0   # 내일을 위해 리셋
+-        _ccf_today = self._checklist_conf_fail_count   # [P3] 리포트 전달용 — 리셋 전에 캡처
+-        log_manager.system(
+-            f"[P3] 금일 Checklist 신뢰도 차단: {_ccf_today}회"
+-            f" (앙상블 통과 후 conf 미달 강제 X)",
+-            "INFO",
+-        )
+-        self._checklist_conf_fail_count = 0
+-
+-        # [Phase2] 드리프트 감지 — CUSUM 일별 업데이트
+-        try:
+-            from strategy.param_drift_detector import get_drift_detector as _get_dd
+-            _drift_level, _drift_msg = _get_dd().update(
+-                daily_pnl = forward_stats["pnl_krw"],
+-                daily_wr  = forward_stats["wins"] / max(forward_stats["trades"], 1),
+-                daily_pf  = self._daily_profit_factor(),
+-            )
+-            logger.info("[DriftDetector] %s", _drift_msg)
+-            from strategy.param_drift_detector import DriftLevel as _DL
+-            if _drift_level >= _DL.WATCHLIST:
+-                log_manager.system("[경보] DriftDetector: " + _drift_msg)
+-            # 전략 운용현황 탭에 CUSUM 드리프트 수준 반영
+-            # [304차 후속] daily_close()는 백그라운드 스레드 실행 — 직접 호출 금지, 메인 스레드로 위임
+-            # (0708 15:40~15:43 access violation 크래시 루프 실측: main.py daily_close →
+-            # update_strategy_ops → set_fingerprint_level → refresh 스택)
+-            _daily_close_ui_sig.request.emit(
+-                lambda _dl=_drift_level: self.dashboard.update_strategy_ops({"drift_level": _dl})
++        # [MW0602 신동 주체 리뉴얼] scaler_daily · Checklist P3 · CUSUM · mc-conf 괴리 · StrategyRegistry 스냅샷은
++        #   미륵 전략 버전의 일별 기록이다 — 휴면 중 신동 손익이 미륵 버전 실적으로 쌓이면 안 된다.
++        _ccf_today, _mc_gap_today, _mc_gap_avg = 0, 0, 0.0
++        if self._mireuk_on():
++            # 섹션 8: scaler_daily EOD 집계 저장
++            try:
++                from model.scaler_monitor_db import aggregate_daily, insert_daily
++                _sm_stats = aggregate_daily(today_str)
++                _cb3_fired = int(bool(getattr(self.circuit_breaker, "_daily_halt", False)))
++                insert_daily(
++                    today_str, _sm_stats,
++                    grade_x_minutes=self._grade_x_count,
++                    cb3_triggered=_cb3_fired,
++                )
++            except Exception as _sm_e:
++                logger.warning("[ScalerMonitor] EOD 집계 저장 실패 (스킵): %s", _sm_e)
++            self._grade_x_count = 0   # 내일을 위해 리셋
++            _ccf_today = self._checklist_conf_fail_count   # [P3] 리포트 전달용 — 리셋 전에 캡처
++            log_manager.system(
++                f"[P3] 금일 Checklist 신뢰도 차단: {_ccf_today}회"
++                f" (앙상블 통과 후 conf 미달 강제 X)",
++                "INFO",
+             )
+-        except Exception as _de:
+-            logger.warning("[DriftDetector] 업데이트 실패 (스킵): %s", _de)
++            self._checklist_conf_fail_count = 0
+ 
+-        # [297차, P1-5] mc–conf 괴리 조기경보 — 경보만 출력, mc·임계값 자동 조정 없음
+-        # (§3-7). 진입후보(confidence>=min_conf) 분 수가 붕괴하면 4주 검증 캠페인
+-        # 표본 자체가 희소해지므로 사용자가 조기에 알아채야 한다.
+-        _mc_gap_today = 0
+-        _mc_gap_avg = 0.0
+-        try:
+-            if getattr(runtime_settings, "MC_CONF_GAP_ALERT_ENABLED", True):
+-                from utils.db_utils import fetch_entry_candidate_gap
+-                _gap = fetch_entry_candidate_gap(
+-                    lookback_days=runtime_settings.MC_CONF_GAP_ALERT_LOOKBACK_DAYS
++            # [Phase2] 드리프트 감지 — CUSUM 일별 업데이트
++            try:
++                from strategy.param_drift_detector import get_drift_detector as _get_dd
++                _drift_level, _drift_msg = _get_dd().update(
++                    daily_pnl = forward_stats["pnl_krw"],
++                    daily_wr  = forward_stats["wins"] / max(forward_stats["trades"], 1),
++                    daily_pf  = self._daily_profit_factor(),
+                 )
+-                _mc_gap_today = _gap.get("today", 0)
+-                _mc_gap_avg = _gap.get("avg", 0.0)
+-                _min_today = runtime_settings.MC_CONF_GAP_ALERT_MIN_TODAY
+-                _min_avg   = runtime_settings.MC_CONF_GAP_ALERT_MIN_AVG
+-                if _gap["days"] and _mc_gap_today < _min_today:
+-                    log_manager.system(
+-                        f"[경보] mc-conf 괴리: 금일 진입후보(conf≥mc) {_mc_gap_today}분"
+-                        f" < 하한 {_min_today}분 — 최근 {_gap['lookback_days']}거래일 평균"
+-                        f" {_gap['avg']:.0f}분/일. mc는 자동 조정하지 않음(사용자 판단 필요).",
+-                        "WARNING",
+-                    )
+-                elif _gap["days"] and _gap["avg"] < _min_avg:
+-                    log_manager.system(
+-                        f"[경보] mc-conf 괴리: 최근 {_gap['lookback_days']}거래일 평균"
+-                        f" 진입후보 {_gap['avg']:.0f}분/일 < 하한 {_min_avg}분 — 금일 {_mc_gap_today}분.",
+-                        "WARNING",
+-                    )
+-                else:
+-                    logger.info(
+-                        "[mc-conf gap] 정상: 금일 %d분, %d일 평균 %.0f분",
+-                        _mc_gap_today, _gap["lookback_days"], _gap.get("avg", 0.0),
++                logger.info("[DriftDetector] %s", _drift_msg)
++                from strategy.param_drift_detector import DriftLevel as _DL
++                if _drift_level >= _DL.WATCHLIST:
++                    log_manager.system("[경보] DriftDetector: " + _drift_msg)
++                # 전략 운용현황 탭에 CUSUM 드리프트 수준 반영
++                # [304차 후속] daily_close()는 백그라운드 스레드 실행 — 직접 호출 금지, 메인 스레드로 위임
++                # (0708 15:40~15:43 access violation 크래시 루프 실측: main.py daily_close →
++                # update_strategy_ops → set_fingerprint_level → refresh 스택)
++                _daily_close_ui_sig.request.emit(
++                    lambda _dl=_drift_level: self.dashboard.update_strategy_ops({"drift_level": _dl})
++                )
++            except Exception as _de:
++                logger.warning("[DriftDetector] 업데이트 실패 (스킵): %s", _de)
++
++            # [297차, P1-5] mc–conf 괴리 조기경보 — 경보만 출력, mc·임계값 자동 조정 없음
++            # (§3-7). 진입후보(confidence>=min_conf) 분 수가 붕괴하면 4주 검증 캠페인
++            # 표본 자체가 희소해지므로 사용자가 조기에 알아채야 한다.
++            _mc_gap_today = 0
++            _mc_gap_avg = 0.0
++            try:
++                if getattr(runtime_settings, "MC_CONF_GAP_ALERT_ENABLED", True):
++                    from utils.db_utils import fetch_entry_candidate_gap
++                    _gap = fetch_entry_candidate_gap(
++                        lookback_days=runtime_settings.MC_CONF_GAP_ALERT_LOOKBACK_DAYS
+                     )
+-        except Exception as _mcg_e:
+-            logger.warning("[mc-conf gap] 계산 실패 (스킵): %s", _mcg_e)
++                    _mc_gap_today = _gap.get("today", 0)
++                    _mc_gap_avg = _gap.get("avg", 0.0)
++                    _min_today = runtime_settings.MC_CONF_GAP_ALERT_MIN_TODAY
++                    _min_avg   = runtime_settings.MC_CONF_GAP_ALERT_MIN_AVG
++                    if _gap["days"] and _mc_gap_today < _min_today:
++                        log_manager.system(
++                            f"[경보] mc-conf 괴리: 금일 진입후보(conf≥mc) {_mc_gap_today}분"
++                            f" < 하한 {_min_today}분 — 최근 {_gap['lookback_days']}거래일 평균"
++                            f" {_gap['avg']:.0f}분/일. mc는 자동 조정하지 않음(사용자 판단 필요).",
++                            "WARNING",
++                        )
++                    elif _gap["days"] and _gap["avg"] < _min_avg:
++                        log_manager.system(
++                            f"[경보] mc-conf 괴리: 최근 {_gap['lookback_days']}거래일 평균"
++                            f" 진입후보 {_gap['avg']:.0f}분/일 < 하한 {_min_avg}분 — 금일 {_mc_gap_today}분.",
++                            "WARNING",
++                        )
++                    else:
++                        logger.info(
++                            "[mc-conf gap] 정상: 금일 %d분, %d일 평균 %.0f분",
++                            _mc_gap_today, _gap["lookback_days"], _gap.get("avg", 0.0),
++                        )
++            except Exception as _mcg_e:
++                logger.warning("[mc-conf gap] 계산 실패 (스킵): %s", _mcg_e)
+ 
+-        # [Phase2] StrategyRegistry — 라이브 일별 스냅샷 기록
+-        # registry.is_current를 유일한 활성 버전 소스로 사용 (PARAM_HISTORY[-1]과
+-        # 별도로 갈라지면 스냅샷이 엉뚱한 버전에 쌓여 daily_exporter가 실거래
+-        # 실적을 못 찾는 "1일차 고정" 버그가 재발함 — docs/MW0601 참고)
+-        try:
+-            from config.strategy_registry import get_registry as _get_reg
+-            _cur_ver_info = _get_reg().get_current_version()
+-            _active_ver = _cur_ver_info["version"] if _cur_ver_info else "v1.0"
+-            _get_reg().record_live_snapshot(
+-                version = _active_ver,
+-                metrics = {
+-                    "win_rate":      forward_stats["wins"] / max(forward_stats["trades"], 1),
+-                    "total_trades":  forward_stats["trades"],
+-                    "daily_pnl":     forward_stats["pnl_krw"],
+-                    "profit_factor": self._daily_profit_factor(),
+-                },
+-            )
+-        except Exception as _re:
+-            logger.warning("[Registry] live_snapshot 기록 실패 (스킵): %s", _re)
++            # [Phase2] StrategyRegistry — 라이브 일별 스냅샷 기록
++            # registry.is_current를 유일한 활성 버전 소스로 사용 (PARAM_HISTORY[-1]과
++            # 별도로 갈라지면 스냅샷이 엉뚱한 버전에 쌓여 daily_exporter가 실거래
++            # 실적을 못 찾는 "1일차 고정" 버그가 재발함 — docs/MW0601 참고)
++            try:
++                from config.strategy_registry import get_registry as _get_reg
++                _cur_ver_info = _get_reg().get_current_version()
++                _active_ver = _cur_ver_info["version"] if _cur_ver_info else "v1.0"
++                _get_reg().record_live_snapshot(
++                    version = _active_ver,
++                    metrics = {
++                        "win_rate":      forward_stats["wins"] / max(forward_stats["trades"], 1),
++                        "total_trades":  forward_stats["trades"],
++                        "daily_pnl":     forward_stats["pnl_krw"],
++                        "profit_factor": self._daily_profit_factor(),
++                    },
++                )
++            except Exception as _re:
++                logger.warning("[Registry] live_snapshot 기록 실패 (스킵): %s", _re)
+ 
+         # [304차 후속] daily_close()는 백그라운드 스레드 실행 — 아래 두 메서드는 내부에서
+         # 대시보드 위젯을 직접 건드리므로 메인 스레드로 위임한다.
+@@ -15131,63 +15578,65 @@ class TradingSystem:
+             lambda _ts=_trend_stats: self.dashboard.update_trend(_ts)
+         )
+ 
+-        # [Phase5] 일일 전략 상태 요약 export + 경보 판정
+-        try:
+-            from strategy.ops.daily_exporter import get_exporter as _get_exp
+-            from strategy.ops.verdict_engine import (
+-                compute_action, rollback_alert_message,
+-                ACTION_ROLLBACK_REVIEW, ACTION_REPLACE_CANDIDATE,
+-            )
+-            from config.strategy_registry import get_registry as _get_reg
+-            from strategy.param_drift_detector import get_drift_detector as _get_dd2
+-            from strategy.regime_fingerprint import get_fingerprint as _get_fp3
+-
+-            _curr_v   = _get_reg().get_current_version()
+-            _verd     = _curr_v.get("verdict", "INSUFFICIENT") if _curr_v else "INSUFFICIENT"
+-            _ldays    = _curr_v.get("live_days", 0) if _curr_v else 0
+-            _dd2_lvs  = _get_dd2().get_levels() if hasattr(_get_dd2(), "get_levels") else {}
+-            _dlv2     = max(_dd2_lvs.values()) if _dd2_lvs else 0
+-            _plv2     = _get_fp3().get_level()
+-            _action, _reason = compute_action(
+-                _verd, _dlv2, _ldays, _plv2,
+-                insufficient_reason=(_curr_v or {}).get("verdict_reason"),
+-            )
+-
+-            # 경보 수준 로그 + registry 이벤트 기록
+-            _ver_str = _curr_v.get("version", "—") if _curr_v else "—"
+-            if _action in (ACTION_ROLLBACK_REVIEW, ACTION_REPLACE_CANDIDATE):
+-                _alert = rollback_alert_message(
+-                    _ver_str, _verd, _dlv2, _action, _reason,
+-                    pnl_today=stats.get("pnl_krw", 0),
+-                )
+-                log_manager.system(_alert, "WARNING")
++        # [MW0602 신동 주체 리뉴얼] 미륵 전략 verdict·롤백 경보·섀도 후보 — 휴면 시 생략.
++        if self._mireuk_on():
++            # [Phase5] 일일 전략 상태 요약 export + 경보 판정
+             try:
+-                _get_reg().log_event(
+-                    event_type = _action,
+-                    message    = _reason[:120],
+-                    note       = "PnL %+.0f원  verdict=%s  drift=%d" % (
+-                        stats.get("pnl_krw", 0), _verd, _dlv2),
+-                    version    = _ver_str if _ver_str != "—" else None,
++                from strategy.ops.daily_exporter import get_exporter as _get_exp
++                from strategy.ops.verdict_engine import (
++                    compute_action, rollback_alert_message,
++                    ACTION_ROLLBACK_REVIEW, ACTION_REPLACE_CANDIDATE,
++                )
++                from config.strategy_registry import get_registry as _get_reg
++                from strategy.param_drift_detector import get_drift_detector as _get_dd2
++                from strategy.regime_fingerprint import get_fingerprint as _get_fp3
++
++                _curr_v   = _get_reg().get_current_version()
++                _verd     = _curr_v.get("verdict", "INSUFFICIENT") if _curr_v else "INSUFFICIENT"
++                _ldays    = _curr_v.get("live_days", 0) if _curr_v else 0
++                _dd2_lvs  = _get_dd2().get_levels() if hasattr(_get_dd2(), "get_levels") else {}
++                _dlv2     = max(_dd2_lvs.values()) if _dd2_lvs else 0
++                _plv2     = _get_fp3().get_level()
++                _action, _reason = compute_action(
++                    _verd, _dlv2, _ldays, _plv2,
++                    insufficient_reason=(_curr_v or {}).get("verdict_reason"),
+                 )
+-            except Exception as _ev_e:
+-                logger.warning("[Phase5] log_event 실패: %s", _ev_e)
+-
+-            # 일일 리포트 파일 저장
+-            _exp    = _get_exp()
+-            _report = _exp.build_report(
+-                extra_stats={
+-                    "checklist_conf_fail": _ccf_today,
+-                    "mc_gap_today": _mc_gap_today,
+-                    "mc_gap_avg": _mc_gap_avg,
+-                }
+-            )
+-            _exp.save(_report)
+-            logger.info("[Phase5] 일일 전략 리포트 저장 완료")
+-        except Exception as _ph5_e:
+-            logger.warning("[Phase5] 일일 export 실패 (스킵): %s", _ph5_e)
+ 
+-        # [Shadow] shadow_candidate.json 체크 → 섀도우 자동 시작
+-        self._load_shadow_candidate()
++                # 경보 수준 로그 + registry 이벤트 기록
++                _ver_str = _curr_v.get("version", "—") if _curr_v else "—"
++                if _action in (ACTION_ROLLBACK_REVIEW, ACTION_REPLACE_CANDIDATE):
++                    _alert = rollback_alert_message(
++                        _ver_str, _verd, _dlv2, _action, _reason,
++                        pnl_today=stats.get("pnl_krw", 0),
++                    )
++                    log_manager.system(_alert, "WARNING")
++                try:
++                    _get_reg().log_event(
++                        event_type = _action,
++                        message    = _reason[:120],
++                        note       = "PnL %+.0f원  verdict=%s  drift=%d" % (
++                            stats.get("pnl_krw", 0), _verd, _dlv2),
++                        version    = _ver_str if _ver_str != "—" else None,
++                    )
++                except Exception as _ev_e:
++                    logger.warning("[Phase5] log_event 실패: %s", _ev_e)
++
++                # 일일 리포트 파일 저장
++                _exp    = _get_exp()
++                _report = _exp.build_report(
++                    extra_stats={
++                        "checklist_conf_fail": _ccf_today,
++                        "mc_gap_today": _mc_gap_today,
++                        "mc_gap_avg": _mc_gap_avg,
++                    }
++                )
++                _exp.save(_report)
++                logger.info("[Phase5] 일일 전략 리포트 저장 완료")
++            except Exception as _ph5_e:
++                logger.warning("[Phase5] 일일 export 실패 (스킵): %s", _ph5_e)
++
++            # [Shadow] shadow_candidate.json 체크 → 섀도우 자동 시작
++            self._load_shadow_candidate()
+ 
+         # ── DBWriter 큐 플러시 — 마지막 분봉 쓰기 완료 후 WAL 체크포인트 ────
+         # 15:10 강제청산 ~ 15:40 사이 큐에 남은 candle/feature/scaler_monitor 기록을
+@@ -21775,6 +22224,15 @@ def _ts_execute_entry(
+     quantile_uncertainty_pt: float = None,
+     entry_source: str = "SYSTEM_AUTO",
+ ):
++    # [MW0602 신동 주체 리뉴얼] 미륵 휴면(MIREUK_ENGINE="off")에서 미륵 자동진입은 **주문 전** 거부한다.
++    #   설정값이 아니라 주문 함수 입구에서 막는다(계획서 §2 원칙 4 — 주문 주체는 하나).
++    #   off 에서는 미륵 STEP 7 이 돌지 않으므로 여기 도달 자체가 결함 신호다 — ERROR 로 남긴다.
++    #   섀도·가상 장부에도 쓰지 않는다(휴면 중인 미륵의 판단은 기록 대상이 아니다).
++    if entry_source == "SYSTEM_AUTO" and not self._mireuk_on():
++        log_manager.system(
++            f"[MireukOff] 미륵 휴면 중 SYSTEM_AUTO 진입 요청 거부 — {direction} {quantity}계약 "
++            f"@{price} 등급={grade} (도달 경로 점검 필요)", "ERROR")
++        return
+     cooldown_active, cooldown_remain = _ts_in_exit_cooldown(self)
+     # [MW0601 668차] 피터2는 청산 후 쿨다운을 받지 않는다 — 그는 손절 직후 재진입한다
+     #   (10-07 09:16 손절 → 09:35 재매도). 쿨다운은 미륵이 자체 판단의 과열 방지 장치다.
+diff --git a/scripts/light_pass_replay.py b/scripts/light_pass_replay.py
+new file mode 100644
+index 0000000..2c0e2a6
+--- /dev/null
++++ b/scripts/light_pass_replay.py
+@@ -0,0 +1,354 @@
++# -*- coding: utf-8 -*-
++"""[MW0602 신동 주체 리뉴얼] 장후 재생 리허설 — 그날 실제 1분봉을 미륵 휴면 경량 분봉 패스에 흘린다.
++
++실거래를 멈추지 않는 전환 검증의 두 번째 겹이다(계획서 Phase 6-B). 첫 겹은 장중 병행 건식 실행
++(`LIGHT_PASS_DRY_RUN`)이고, 이 스크립트는 장후에 하루치를 한 번에 본다.
++
++무엇을 하나
++-----------
++`main.TradingSystem._light_minute_pass` **실제 코드**를 대역 객체(브로커·Qt·DB 쓰기 없음)에 붙여
++그날 `raw_candles` 를 분 순서대로 넣는다. 신동 MAIN 거래(`shindong.db`)의 진입~청산 구간에는 포지션을
++보유 중으로 두어 청산 감시(P8)가 실제로 불리는지도 본다. 08:45~08:59 봉은 프리장 경로처럼 ATR 만 먹인다.
++
++판정 (결과를 보기 전에 고정 — 바꾸려면 이 주석·상수·회귀 테스트를 함께 고칠 것)
++-----------------------------------------------------------------------------
++  ① 부품   : 12부품이 전부 불렸다(P8 은 그날 신동 보유 구간이 있을 때만 요구 — 없으면 「미발동」)
++  ② ATR    : 09:15 이후 비교 가능한 봉의 95% 이상에서 경량 ATR 과 미륵 피처 ATR 의 상대오차 ≤ 10%
++             (`raw_features` 가 없으면 미측정 — PASS 도 FAIL 도 아니다. 계측 4원칙 ②)
++  ③ CB④    : 경량 ATR 비율 ≥ CB_ATR_MULT_LIMIT 인 봉 수 == 미륵 피처 기준 봉 수(미측정이면 생략)
++  ④ 시간   : 봉당 경량 패스 최대 < 1,000ms
++  종료코드  0 = PASS · 1 = FAIL · 2 = 데이터 없음(그날 봉 0)
++
++읽기 전용이다 — DB 에 쓰지 않는다(`save_candle` 은 대역이 센다). 장중에는 돌리지 않는다(456차).
++
++실행:
++    python scripts/light_pass_replay.py --date 2026-10-26
++    python scripts/light_pass_replay.py --date 2026-10-26 --out docs/.../replay_20261026.md
++"""
++import argparse
++import datetime
++import io
++import json
++import os
++import queue
++import sqlite3
++import sys
++import time
++
++_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++if _ROOT not in sys.path:
++    sys.path.insert(0, _ROOT)
++
++from utils.dll_bootstrap import ensure_conda_dll_path  # noqa: E402
++
++ensure_conda_dll_path()
++
++ATR_REL_TOL = 0.10
++ATR_PASS_SHARE = 0.95
++ATR_COMPARE_FROM = "09:15"
++MAX_MS = 1000.0
++
++
++def _ro(path):
++    if not path or not os.path.exists(path):
++        return None
++    con = sqlite3.connect("file:%s?mode=ro" % path.replace("\\", "/"), uri=True, timeout=5.0)
++    con.row_factory = sqlite3.Row
++    return con
++
++
++def load_day(date_str, raw_db, sd_db):
++    """→ (bars[dict], feats{ts: {atr, atr_ratio}} 또는 None, holds[(entry_ts, exit_ts)] 또는 None)."""
++    nxt = (datetime.date.fromisoformat(date_str) + datetime.timedelta(days=1)).isoformat()
++    bars, feats, holds = [], None, None
++    con = _ro(raw_db)
++    if con is not None:
++        try:
++            for r in con.execute("SELECT ts, open, high, low, close, volume FROM raw_candles "
++                                 "WHERE ts>=? AND ts<? ORDER BY ts", (date_str, nxt)):
++                bars.append({"ts": datetime.datetime.strptime(str(r["ts"])[:19], "%Y-%m-%d %H:%M:%S"),
++                             "open": r["open"], "high": r["high"], "low": r["low"],
++                             "close": r["close"], "volume": r["volume"]})
++            try:
++                rows = con.execute("SELECT ts, features FROM raw_features WHERE ts>=? AND ts<?",
++                                   (date_str, nxt)).fetchall()
++                feats = {}
++                for r in rows:
++                    try:
++                        f = json.loads(r["features"])
++                        feats[str(r["ts"])[:19]] = {"atr": f.get("atr"), "atr_ratio": f.get("atr_ratio")}
++                    except (TypeError, ValueError):
++                        continue
++                if not feats:
++                    feats = None
++            except sqlite3.OperationalError:
++                feats = None
++        finally:
++            con.close()
++    sc = _ro(sd_db)
++    if sc is not None:
++        try:
++            holds = []
++            for r in sc.execute("SELECT entry_ts, leg1_exit_ts, leg2_exit_ts, status FROM shindong_trades "
++                                "WHERE trade_date=? AND variant='MAIN' AND status!='RETRACTED' ORDER BY entry_ts",
++                                (date_str,)):
++                ex = max([x for x in (r["leg1_exit_ts"], r["leg2_exit_ts"]) if x] or ["%s 15:05:00" % date_str])
++                holds.append((str(r["entry_ts"])[:16], str(ex)[:16]))
++        except sqlite3.OperationalError:
++            holds = None
++        finally:
++            sc.close()
++    return bars, feats, holds
++
++
++def _harness(main):
++    TS = main.TradingSystem
++    from features.technical.atr import ATRCalculator
++
++    class _Pos(object):
++        status = "FLAT"
++
++    class _Dash(object):
++        def __init__(self, calls):
++            self.calls = calls
++
++        def notify_pipeline_ran(self):
++            self.calls.append("notify")
++
++        def update_price(self, **k):
++            pass
++
++        def update_system_status(self, **k):
++            pass
++
++        def update_profit_guard_badge(self, st):
++            pass
++
++    class _CB(object):
++        state = "NORMAL"
++
++        def __init__(self, h):
++            self.h = h
++
++        def record_atr(self, r):
++            self.h.calls.append("P10_cb4_record_atr")
++            self.h.last_ratio = r
++
++        def record_pipe_latency(self, ms):
++            self.h.calls.append("P11_cb5_record_latency")
++
++    class _PG(object):
++        def guard_status(self, pnl, size_mult, dt):
++            return {}
++
++    class H(object):
++        LIGHT_PASS_PARTS = TS.LIGHT_PASS_PARTS
++        _light_minute_pass = TS._light_minute_pass
++        _bar_price_guard = TS._bar_price_guard
++        _light_atr_prime = TS._light_atr_prime
++        _light_atr_update = TS._light_atr_update
++        _light_push_profit_guard_badge = TS._light_push_profit_guard_badge
++
++        def __init__(self):
++            self.calls = []
++            self.last_ratio = None
++            self.position = _Pos()
++            self.dashboard = _Dash(self.calls)
++            self.circuit_breaker = _CB(self)
++            self.profit_guard = _PG()
++            self.realtime_data = None
++            self._db_write_queue = queue.Queue()
++            self._light_atr = ATRCalculator()
++            self._light_atr_dry = ATRCalculator()
++            self._light_atr_day = None
++            self._light_atr_dry_day = None
++            self._light_last_ts = None
++            self._sys_daily_net_krw = 0.0
++            self._sys_daily_legs = 0
++            self._sys_daily_other_krw = 0.0
++            self._sys_daily_other_legs = 0
++            self._pg_badge_err_logged = False
++            self._manual_entry_ctx = {}
++            self._maint_ctx = None
++            self._last_real_pipeline_dt = None
++            self._sigma_prev_price = 0.0
++            self._last_pipe_ms = 0.0
++
++        def _maybe_compute_levels_0930(self, ts_raw):
++            self.calls.append("P3_levels_0930")
++
++        def _process_tick_stop(self):
++            self.calls.append("P7_tick_stop")
++
++        def _check_pending_order_timeout(self):
++            self.calls.append("P6_pending_timeout")
++
++        def _check_exit_triggers(self, price, features, decision, bar=None):
++            self.calls.append("P8_exit_triggers")
++
++        def _push_position_panels(self, close, atr, bar, atr_ok=None, open_gap_ok=None):
++            self.calls.append("P12_panels")
++
++    return H
++
++
++def replay(date_str, raw_db, sd_db, atr_limit=3.0, main_mod=None):
++    """→ dict(verdict, exit_code, lines[...], stats{...})."""
++    if main_mod is None:
++        import main as main_mod
++    bars, feats, holds = load_day(date_str, raw_db, sd_db)
++    out = {"date": date_str, "lines": [], "stats": {}}
++    say = out["lines"].append
++    if not bars:
++        out.update(verdict="NO_DATA", exit_code=2)
++        say("[LightReplay] %s raw_candles 0봉 — 판정 불가(데이터 없음)" % date_str)
++        return out
++
++    H = _harness(main_mod)
++    h = H()
++    rec = {"vbook": 0}
++    saved = []
++
++    class _LM(object):
++        def system(self, msg, level="INFO"):
++            pass
++
++        def trade(self, *a, **k):
++            pass
++
++        def signal(self, *a, **k):
++            pass
++
++    def _vb(self, bar, atr):
++        self.calls.append("P10_vbook_on_bar")
++        rec["vbook"] += 1
++
++    prior = []
++
++    def _recent(limit=60):
++        return prior[-limit:]
++
++    patches = {"_ts_vbook_on_bar": _vb, "log_manager": _LM(), "fetch_recent_raw_candles": _recent,
++               "save_candle": lambda b: saved.append(b)}
++    orig = {k: getattr(main_mod, k) for k in patches}
++    for k, v in patches.items():
++        setattr(main_mod, k, v)
++    seen = set()
++    ms = []
++    cmp_n = cmp_ok = 0
++    max_rel = 0.0
++    cb4_light = cb4_mireuk = 0
++    hold_bars = 0
++    try:
++        for b in bars:
++            hm = b["ts"].strftime("%H:%M")
++            ts = b["ts"].strftime("%Y-%m-%d %H:%M:%S")
++            if hm < "09:00":
++                h._light_atr_update(False, b["high"], b["low"], b["close"], ts)   # 프리장 경로와 같다
++                prior.append(dict(b, ts=ts))
++                continue
++            if hm >= "15:10":
++                break                                   # 15:10 이후는 청산 전용 패스(경량 패스 밖)
++            ym = b["ts"].strftime("%Y-%m-%d %H:%M")
++            holding = bool(holds) and any(e <= ym < x for e, x in holds)
++            h.position.status = "LONG" if holding else "FLAT"
++            hold_bars += int(holding)
++            n0 = len(h.calls)
++            t0 = time.perf_counter()
++            h._light_minute_pass(b)
++            ms.append((time.perf_counter() - t0) * 1000.0)
++            for c in h.calls[n0:]:
++                if isinstance(c, str) and c.startswith("P"):
++                    seen.add(c)
++            while not h._db_write_queue.empty():
++                it = h._db_write_queue.get_nowait()
++                if it and it[0] == "candle":
++                    seen.add("P1_save_candle")
++            if h._light_last_ts == ts:
++                seen.update(("P5_dup_guard", "P5_bar_guard"))
++            if h._manual_entry_ctx.get("atr"):
++                seen.add("P10_atr")
++            r_light = h.last_ratio
++            if r_light is not None and r_light >= atr_limit:
++                cb4_light += 1
++            mf = (feats or {}).get(ts)
++            if mf:
++                if mf.get("atr_ratio") is not None and float(mf["atr_ratio"]) >= atr_limit:
++                    cb4_mireuk += 1
++                if hm >= ATR_COMPARE_FROM and mf.get("atr") not in (None, 0):
++                    rel = abs(float(h._manual_entry_ctx["atr"]) - float(mf["atr"])) / abs(float(mf["atr"]))
++                    cmp_n += 1
++                    cmp_ok += int(rel <= ATR_REL_TOL)
++                    max_rel = max(max_rel, rel)
++            prior.append(dict(b, ts=ts))
++    finally:
++        for k, v in orig.items():
++            setattr(main_mod, k, v)
++
++    need = set(H.LIGHT_PASS_PARTS)
++    if not hold_bars:
++        need.discard("P8_exit_triggers")
++    missing = sorted(need - seen)
++    ok_parts = not missing
++    if feats is None:
++        ok_atr = None
++    else:
++        ok_atr = (cmp_n > 0 and cmp_ok / float(cmp_n) >= ATR_PASS_SHARE)
++    ok_cb4 = None if feats is None else (cb4_light == cb4_mireuk)
++    ms_max = max(ms) if ms else 0.0
++    ok_ms = ms_max < MAX_MS
++    checks = [ok_parts, ok_ms] + [x for x in (ok_atr, ok_cb4) if x is not None]
++    verdict = "PASS" if all(checks) else "FAIL"
++    ms_sorted = sorted(ms)
++    p95 = ms_sorted[int(0.95 * (len(ms_sorted) - 1))] if ms_sorted else 0.0
++    out["stats"] = {"bars": len(ms), "hold_bars": hold_bars, "missing_parts": missing,
++                    "atr_cmp": cmp_n, "atr_ok": cmp_ok, "atr_max_rel": max_rel,
++                    "cb4_light": cb4_light, "cb4_mireuk": cb4_mireuk, "ms_p95": p95, "ms_max": ms_max,
++                    "saved_sync": len(saved)}
++    say("[LightReplay] %s 경량 패스 %d봉(09:00~15:09) · 신동 보유 %s분" % (
++        date_str, len(ms), hold_bars if holds is not None else "미측정(shindong.db 없음)"))
++    say("  ① 부품   : %s" % ("12/12 호출" if ok_parts and hold_bars else
++                              ("11/12 호출 · P8 미발동(보유 구간 없음)" if ok_parts else
++                               "누락 %s" % ", ".join(missing))))
++    if ok_atr is None:
++        say("  ② ATR    : 미측정(raw_features 없음 — 미륵 휴면일이면 정상)")
++    else:
++        say("  ② ATR    : %d/%d봉 상대오차 ≤ %.0f%% (%.1f%% · 기준 %.0f%%) · 최대 %.1f%% — %s" % (
++            cmp_ok, cmp_n, ATR_REL_TOL * 100, (100.0 * cmp_ok / cmp_n) if cmp_n else 0.0,
++            ATR_PASS_SHARE * 100, max_rel * 100, "OK" if ok_atr else "FAIL"))
++    if ok_cb4 is None:
++        say("  ③ CB④    : 미측정(raw_features 없음)")
++    else:
++        say("  ③ CB④    : 경량 %d봉 vs 미륵 %d봉 (비율 ≥ %.1f) — %s" % (
++            cb4_light, cb4_mireuk, atr_limit, "OK" if ok_cb4 else "FAIL"))
++    say("  ④ 시간   : 봉당 p95 %.1fms · 최대 %.1fms (기준 < %.0fms) — %s" % (
++        p95, ms_max, MAX_MS, "OK" if ok_ms else "FAIL"))
++    say("  판정     : %s" % verdict)
++    out.update(verdict=verdict, exit_code=0 if verdict == "PASS" else 1)
++    return out
++
++
++def main(argv=None):
++    ap = argparse.ArgumentParser(description="미륵 휴면 경량 분봉 패스 장후 재생 리허설")
++    ap.add_argument("--date", default=datetime.date.today().isoformat())
++    ap.add_argument("--raw-db", default=None)
++    ap.add_argument("--sd-db", default=None)
++    ap.add_argument("--out", default=None, help="결과를 md 로도 저장")
++    a = ap.parse_args(argv)
++    now = datetime.datetime.now()
++    if a.date == now.date().isoformat() and datetime.time(8, 40) <= now.time() < datetime.time(15, 40):
++        print("[LightReplay] 장중 실행 금지(15:40 이후) — 대형 DB 장중 스캔 규약(456차)")
++        return 2
++    from config import settings as S
++    r = replay(a.date, a.raw_db or S.RAW_DATA_DB, a.sd_db or S.SHINDONG_DB,
++               atr_limit=float(getattr(S, "CB_ATR_MULT_LIMIT", 3.0)))
++    txt = "\n".join(r["lines"])
++    print(txt)
++    if a.out:
++        with io.open(a.out, "w", encoding="utf-8") as f:
++            f.write("```\n" + txt + "\n```\n")
++    return r["exit_code"]
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/scripts/shindong_eod.py b/scripts/shindong_eod.py
+new file mode 100644
+index 0000000..0d493e7
+--- /dev/null
++++ b/scripts/shindong_eod.py
+@@ -0,0 +1,159 @@
++# -*- coding: utf-8 -*-
++"""[MW0602 신동 주체 리뉴얼] 신동 전용 EOD — 미륵 재학습과 분리한 장후 작업.
++
++왜 있는가
++---------
++신동 V4 의 ATR14·맥점은 08:50 `premarket_levels` 산출이 만들고, 그 산출은 EOD 에 굳힌
++**이력 캐시**(`data/premarket_levels_history.json`)만 읽는다. 그런데 그 캐시를 매일 갱신하는
++`scripts/premarket_levels_eod.run_eod()` 는 **미륵 EOD 재학습 스크립트 안**(`retrain_eod.py` ·
++`scripts/eod_retrain.py`)에서만 불려 왔다. 미륵을 휴면시키며 재학습 예약작업을 끄면 캐시가
++조용히 낡는다 — 08:50 산출이 낡은 이력으로 계산되고, 08:50 이 실패한 날 V4 ATR 폴백 ②(재계산,
++이력 마지막 10일 이내)가 막혀 신규 진입이 없어질 수 있다(계획서 §1 P4).
++
++그래서 재학습과 **같은 일 중 신동이 쓰는 것만** 여기로 옮긴다:
++  ① 맥점 이력 캐시 갱신 + 당일 채점          (`premarket_levels_eod.run_eod`)
++  ② 연결선물(10100) 적재 신선도               (`regular_freshness.check`)
++  ③ 옵션 투자자 흐름(7222) 마감 구간 신선도   (`option_flow_freshness.check`) — 신동 신호 원천
++
++하지 않는 것: GBM 재학습 · 스케일러 재적합 · 검증 캠페인 리포트 · SHAP 심사(전부 미륵 전용).
++
++규약
++----
++· 미륵 `daily_close` 완료 마커(`data/daily_close_done_YYYYMMDD.txt`)를 기다린 뒤 돈다(최대 20분) —
++  마지막 분봉 쓰기가 DB 에 반영된 뒤 캐시를 갱신해야 한다(retrain_eod.py 와 같은 이유).
++· 예외를 밖으로 던지지 않는다 — 각 단계는 독립이다. 실패는 「미측정」으로 남긴다(계측 4원칙 ②).
++· 완료 마커 `data/shindong_eod_done_YYYYMMDD.txt` — 내일 장전 점검이 캐시 신선도와 함께 본다.
++· 종료코드: 0 = 세 단계 모두 정상 · 1 = 하나 이상 결손/미측정 · 2 = 캐시 갱신 자체 실패.
++· 장중 실행 금지 — `premarket_levels_eod` 와 같은 guard_intraday 원칙(456차, 대형 DB 장중 스캔 금지).
++
++실행:
++    python scripts/shindong_eod.py                 # 오늘(마감 마커 대기)
++    python scripts/shindong_eod.py --no-wait       # 마커 대기 생략(수동 재실행)
++    python scripts/shindong_eod.py --date 2026-10-26
++예약작업: TASK_SHINDONG_EOD_INSTALL.bat (평일 15:55)
++"""
++import argparse
++import datetime
++import io
++import logging
++import os
++import sys
++import time
++
++_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++if _ROOT not in sys.path:
++    sys.path.insert(0, _ROOT)
++
++# [537차] conda 활성화 없이 예약작업이 python.exe 를 직접 부른다 — numpy 계열 import 보다 먼저.
++from utils.dll_bootstrap import ensure_conda_dll_path  # noqa: E402
++
++ensure_conda_dll_path()
++
++_TODAY = datetime.date.today().strftime("%Y%m%d")
++LOG_PATH = os.path.join(_ROOT, "logs", "shindong_eod_%s.log" % _TODAY)
++
++
++def _setup_log():
++    os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
++    log = logging.getLogger("SHINDONG_EOD")
++    if not log.handlers:
++        fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
++        fh = logging.FileHandler(LOG_PATH, encoding="utf-8")
++        fh.setFormatter(fmt)
++        sh = logging.StreamHandler(sys.stdout)
++        sh.setFormatter(fmt)
++        log.addHandler(fh)
++        log.addHandler(sh)
++        log.setLevel(logging.INFO)
++    return log
++
++
++def wait_for_daily_close(log, ymd, max_wait_min=20, poll_sec=30, sleep=time.sleep, now=None):
++    """미륵 프로그램의 daily_close 완료 마커를 기다린다. → True=확인 / False=타임아웃(그래도 진행)."""
++    marker = os.path.join(_ROOT, "data", "daily_close_done_%s.txt" % ymd)
++    now = now or datetime.datetime.now
++    deadline = now() + datetime.timedelta(minutes=max_wait_min)
++    while now() < deadline:
++        if os.path.exists(marker):
++            log.info("[WaitDC] daily_close 완료 확인 — %s", marker)
++            return True
++        log.info("[WaitDC] daily_close 대기 중 (%s까지)", deadline.strftime("%H:%M:%S"))
++        sleep(poll_sec)
++    log.warning("[WaitDC] daily_close %d분 대기 타임아웃 — 마지막 분봉 미반영 가능성 있으나 진행", max_wait_min)
++    return False
++
++
++def run(date_str=None, wait=True, log=None, steps=None):
++    """세 단계 실행 → dict(levels, regular, option_flow, exit_code). steps 는 테스트 주입용."""
++    log = log or _setup_log()
++    date_str = date_str or datetime.date.today().isoformat()
++    ymd = date_str.replace("-", "")
++    out = {"date": date_str, "levels": None, "regular": None, "option_flow": None}
++    if steps is None:
++        from scripts.premarket_levels_eod import run_eod as _levels
++        from scripts.regular_freshness import check as _reg
++        from scripts.option_flow_freshness import check as _of
++        steps = {"levels": lambda: _levels(date_str=date_str, log=log), "regular": _reg, "option_flow": _of}
++    if wait:
++        wait_for_daily_close(log, ymd)
++    log.info("[ShindongEOD] 시작 %s — 맥점 이력 캐시 · 연결선물 신선도 · 7222 흐름 신선도 (미륵 재학습과 분리)",
++             date_str)
++
++    code = 0
++    # ① 맥점 이력 캐시 — 신동 ATR14·맥점의 원천. 실패하면 종료코드 2.
++    try:
++        r = steps["levels"]()
++        out["levels"] = r
++        ref = (r or {}).get("refreshed")
++        if not ref:
++            log.error("[ShindongEOD] 맥점 이력 캐시 갱신 결과 없음 — 내일 08:50 ATR14 가 낡은 이력으로 산출된다")
++            code = 2
++        else:
++            log.info("[ShindongEOD] 맥점 이력 캐시 last_date=%s · 세션 %s",
++                     ref.get("last_date"), ref.get("sessions"))
++            if str(ref.get("last_date") or "") != date_str:
++                log.warning("[ShindongEOD] 캐시 last_date(%s) ≠ 오늘(%s) — 오늘 봉이 품질 제외됐거나 raw_candles 결손",
++                            ref.get("last_date"), date_str)
++                code = max(code, 1)
++    except Exception as e:
++        log.error("[ShindongEOD] 맥점 EOD 단계 실패 — 미측정: %r", e)
++        code = 2
++    # ②·③ 신선도 — 결과만 본다(수집은 각자의 예약작업). 미측정 ≠ 결손 없음.
++    for key, tag in (("regular", "[RegularFresh]"), ("option_flow", "[OptionFlowFresh]")):
++        try:
++            r = steps[key]()
++            out[key] = r
++            if r.get("status") == "ok":
++                log.info("%s", r.get("line"))
++            else:
++                log.warning("%s", r.get("line"))
++                code = max(code, 1)
++        except Exception as e:
++            log.warning("%s 검사 실패 — 미측정이다(「결손 없음」이 아니다): %r", tag, e)
++            code = max(code, 1)
++
++    out["exit_code"] = code
++    try:
++        mk = os.path.join(_ROOT, "data", "shindong_eod_done_%s.txt" % ymd)
++        with io.open(mk, "w", encoding="utf-8") as f:
++            f.write("completed: %s exit=%d\n" % (datetime.datetime.now().isoformat(timespec="seconds"), code))
++    except Exception as e:
++        log.warning("[ShindongEOD] 완료 마커 기록 실패: %r", e)
++    log.info("[ShindongEOD] 종료 exit=%d", code)
++    return out
++
++
++def main(argv=None):
++    ap = argparse.ArgumentParser(description="신동 전용 EOD(맥점 이력 캐시 · 신선도)")
++    ap.add_argument("--date", default=None)
++    ap.add_argument("--no-wait", action="store_true")
++    a = ap.parse_args(argv)
++    now = datetime.datetime.now()
++    if a.date is None and datetime.time(8, 40) <= now.time() < datetime.time(15, 40):
++        print("[ShindongEOD] 장중 실행 금지(15:40 이후) — 대형 DB 장중 스캔 규약(456차)")
++        return 2
++    return run(a.date, wait=not a.no_wait)["exit_code"]
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/scripts/shindong_eod_task.ps1 b/scripts/shindong_eod_task.ps1
+new file mode 100644
+index 0000000..0cf9050
+--- /dev/null
++++ b/scripts/shindong_eod_task.ps1
+@@ -0,0 +1,163 @@
++<#
++  shindong_eod_task.ps1 - Shindong EOD scheduled task installer (MW0602 shindong-owner renewal)
++
++  Why
++    The premarket-levels history cache (data\premarket_levels_history.json) feeds the
++    08:50 Shindong ATR14 and levels. It was refreshed ONLY inside the Mireuk EOD retrain
++    (retrain_eod.py / scripts\eod_retrain.py). When Mireuk goes dormant
++    (MIREUK_ENGINE="off") and its retrain task is disabled, that cache silently goes stale.
++    This task runs scripts\shindong_eod.py: levels cache + regular(10100) freshness +
++    option-flow(7222) freshness. No GBM, no scaler, no campaign report.
++
++  Not a COM task
++    shindong_eod.py reads SQLite only (no Cybos COM), so the RunLevel resolver used by
++    COM installers (scripts\lib\ComTaskRunLevel.ps1) is not needed: Limited is enough.
++
++  Task
++    name     \Mireuk\Shindong_EOD_1555
++    trigger  Mon-Fri 15:55 (after daily_close 15:40; the script also waits for the
++             daily_close_done_YYYYMMDD.txt marker, max 20 min)
++    python   py37_32 (pure-Python path; dll_bootstrap is called first anyway)
++    settings StartWhenAvailable, IgnoreNew, 30 min limit
++
++  Usage
++    install                 TASK_SHINDONG_EOD_INSTALL.bat
++    uninstall               TASK_SHINDONG_EOD_INSTALL.bat -Uninstall
++    time                    TASK_SHINDONG_EOD_INSTALL.bat -Time "16:00"
++    python                  TASK_SHINDONG_EOD_INSTALL.bat -PythonPath "C:\...\python.exe"
++    disable Mireuk retrain  TASK_SHINDONG_EOD_INSTALL.bat -DisableMireukRetrain
++                            (switch-over day only, AFTER this task ran OK at least once.
++                             Disables - does not delete - every task named MireukiEODRetrain.)
++    re-enable it            TASK_SHINDONG_EOD_INSTALL.bat -EnableMireukRetrain
++
++  Scheduled tasks are per-PC and are not shared through git.
++#>
++param(
++    [switch]$Uninstall,
++    [switch]$DisableMireukRetrain,
++    [switch]$EnableMireukRetrain,
++    [string]$Time       = '15:55',
++    [string]$PythonPath = ''
++)
++
++$ErrorActionPreference = 'Stop'
++$TaskName = 'Shindong_EOD_1555'
++$TaskPath = '\Mireuk\'
++$FullName = ($TaskPath.TrimEnd('\')) + '\' + $TaskName
++$Root     = Split-Path -Parent $PSScriptRoot
++$Script   = Join-Path $Root 'scripts\shindong_eod.py'
++$MireukRetrainName = 'MireukiEODRetrain'
++
++function Write-Head($t) {
++    Write-Host ''
++    Write-Host ('=' * 70)
++    Write-Host "  $t"
++    Write-Host ('=' * 70)
++}
++
++function Set-MireukRetrain([bool]$enable) {
++    $ts = @(Get-ScheduledTask -TaskName $MireukRetrainName -ErrorAction SilentlyContinue)
++    if ($ts.Count -eq 0) {
++        Write-Host "[SKIP] no task named $MireukRetrainName on this PC"
++        return
++    }
++    foreach ($t in $ts) {
++        if ($enable) {
++            Enable-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath | Out-Null
++            Write-Host ("[OK] enabled : {0}{1}" -f $t.TaskPath, $t.TaskName)
++        } else {
++            Disable-ScheduledTask -TaskName $t.TaskName -TaskPath $t.TaskPath | Out-Null
++            Write-Host ("[OK] disabled: {0}{1}  (not deleted - re-enable with -EnableMireukRetrain)" -f $t.TaskPath, $t.TaskName)
++        }
++    }
++}
++
++if ($DisableMireukRetrain -or $EnableMireukRetrain) {
++    Write-Head 'Mireuk EOD retrain task - toggle'
++    if ($DisableMireukRetrain) {
++        $mine = Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -ErrorAction SilentlyContinue
++        if ($null -eq $mine) {
++            Write-Host "[FAIL] $FullName is not installed. Install it and let it run once first." -ForegroundColor Red
++            exit 1
++        }
++        $info = Get-ScheduledTaskInfo -TaskName $TaskName -TaskPath $TaskPath
++        if ($info.LastTaskResult -ne 0) {
++            Write-Host ("[FAIL] {0} LastTaskResult={1} - it has not succeeded yet. Refusing to disable the Mireuk retrain (levels cache would go stale)." -f $FullName, $info.LastTaskResult) -ForegroundColor Red
++            exit 1
++        }
++    }
++    Set-MireukRetrain ([bool]$EnableMireukRetrain)
++    exit 0
++}
++
++if ($Uninstall) {
++    Write-Head 'Shindong EOD task - UNINSTALL'
++    $t = Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -ErrorAction SilentlyContinue
++    if ($null -eq $t) {
++        Write-Host "[SKIP] not found: $FullName"
++    } else {
++        Unregister-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -Confirm:$false
++        Write-Host "[OK] removed: $FullName"
++    }
++    exit 0
++}
++
++Write-Head 'Shindong EOD task - INSTALL'
++
++$cands = New-Object System.Collections.Generic.List[string]
++if ($PythonPath) { $cands.Add($PythonPath) }
++$cands.Add((Join-Path $env:USERPROFILE 'anaconda3\envs\py37_32\python.exe'))
++$cands.Add((Join-Path $env:USERPROFILE 'Anaconda3\envs\py37_32\python.exe'))
++$cands.Add('C:\ProgramData\anaconda3\envs\py37_32\python.exe')
++$cands.Add('C:\Anaconda3\envs\py37_32\python.exe')
++$py = $null
++foreach ($c in $cands) { if ($c -and (Test-Path -LiteralPath $c)) { $py = (Resolve-Path $c).Path; break } }
++if ($null -eq $py) {
++    Write-Host '[FAIL] py37_32 python.exe not found. Pass -PythonPath explicitly.' -ForegroundColor Red
++    exit 1
++}
++if (-not (Test-Path -LiteralPath $Script)) {
++    Write-Host "[FAIL] script not found: $Script" -ForegroundColor Red
++    exit 1
++}
++Write-Host "[1/4] python : $py"
++Write-Host "             script = $Script"
++
++if ($Time -notmatch '^\d{1,2}:\d{2}$') {
++    Write-Host "[FAIL] -Time must be HH:mm (got '$Time')" -ForegroundColor Red; exit 1
++}
++$hh, $mm = $Time.Split(':')
++$at = [datetime]::Today.AddHours([int]$hh).AddMinutes([int]$mm)
++if ($at.TimeOfDay -lt ([timespan]'15:41:00')) {
++    Write-Host ("[WARN] {0} is before daily_close (15:40). The script waits for the marker, but the last bars may not be written yet." -f $Time) -ForegroundColor Yellow
++}
++Write-Host ("[2/4] when   : Mon-Fri {0}" -f $at.ToString('HH:mm:ss'))
++
++$arg = ('"{0}"' -f $Script)
++$action = New-ScheduledTaskAction -Execute $py -Argument $arg -WorkingDirectory $Root
++$trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday -At $at
++$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
++    -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 30)
++$principal = New-ScheduledTaskPrincipal -UserId ("{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME) `
++    -LogonType Interactive -RunLevel Limited
++$desc = 'Shindong EOD: premarket-levels history cache + regular(10100) and option-flow(7222) freshness. ' +
++        'Split out of the Mireuk EOD retrain for the Mireuk-dormant renewal (MW0602). SQLite only, no COM.'
++Register-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -Action $action -Trigger $trigger `
++    -Settings $settings -Principal $principal -Description $desc -Force | Out-Null
++Write-Host "[3/4] task   : $FullName  (registered)"
++
++$t = Get-ScheduledTask     -TaskName $TaskName -TaskPath $TaskPath
++$i = Get-ScheduledTaskInfo -TaskName $TaskName -TaskPath $TaskPath
++Write-Host '[4/4] verify :'
++Write-Host ("        state      : {0}" -f $t.State)
++Write-Host ("        next run   : {0}" -f $i.NextRunTime)
++Write-Host ("        execute    : {0}" -f $t.Actions[0].Execute)
++Write-Host ("        arguments  : {0}" -f $t.Actions[0].Arguments)
++
++Write-Head 'DONE'
++Write-Host '  rehearsal : schtasks /run /tn "\Mireuk\Shindong_EOD_1555"'
++Write-Host '  log       : logs\shindong_eod_<YYYYMMDD>.log   marker: data\shindong_eod_done_<YYYYMMDD>.txt'
++Write-Host '  exit code : 0 ok / 1 freshness gap or unmeasured / 2 levels cache refresh failed'
++Write-Host '  switch-over day (after one OK run): TASK_SHINDONG_EOD_INSTALL.bat -DisableMireukRetrain'
++Write-Host ''
++exit 0
+diff --git a/strategy/runtime/trade_principal.py b/strategy/runtime/trade_principal.py
+index 2f06e2f..5bcb760 100644
+--- a/strategy/runtime/trade_principal.py
++++ b/strategy/runtime/trade_principal.py
+@@ -37,19 +37,49 @@ SOURCE_PRINCIPAL = {'SYSTEM_AUTO': MIREUK, SHINDONG_ENTRY_SOURCE: SHINDONG,
+ PRINCIPAL_SOURCE = {v: k for k, v in SOURCE_PRINCIPAL.items()}
+ 
+ 
+-def load():
+-    """→ dict(principal, set_at, reason, measured). 파일이 없거나 깨졌으면 기본값(미륵)이고
+-    `measured=False` 로 그 사실을 남긴다(계측 4원칙 ②·④ — 기본값을 선택값처럼 보이지 않게)."""
++def locked_principal(lock=None):
++    """[MW0602 신동 주체 리뉴얼] `config.settings.PRINCIPAL_LOCK` → 고정 주체 또는 None.
++
++    lock 을 주면 설정 대신 그 값을 쓴다(테스트). 알 수 없는 값은 **고정하지 않는다**(None) —
++    오타 하나로 엉뚱한 주체가 고정되는 것보다 종전 동작(파일)이 안전하다. 그 사실은 호출부가 로그로 남긴다.
++    """
++    if lock is None:
++        try:
++            from config import settings as _s
++            lock = getattr(_s, 'PRINCIPAL_LOCK', None)
++        except Exception:
++            lock = None
++    p = str(lock or '').upper()
++    return p if p in PRINCIPALS else None
++
++
++def load(lock=None):
++    """→ dict(principal, set_at, reason, measured, locked). 파일이 없거나 깨졌으면 기본값(미륵)이고
++    `measured=False` 로 그 사실을 남긴다(계측 4원칙 ②·④ — 기본값을 선택값처럼 보이지 않게).
++
++    [신동 주체 리뉴얼] `PRINCIPAL_LOCK` 이 유효하면 파일과 무관하게 그 주체이고 `locked=True` 다.
++    파일은 건드리지 않는다(고정을 풀면 파일의 마지막 선택으로 돌아간다)."""
++    lp = locked_principal(lock)
++    if lp is not None:
++        return {'principal': lp, 'set_at': None, 'reason': 'PRINCIPAL_LOCK', 'measured': True,
++                'locked': True}
++    return load_file()
++
++
++def load_file():
++    """파일(data/trade_principal.json)의 선택만 — 고정(PRINCIPAL_LOCK)을 보지 않는다.
++    `save()` 의 이력 `prev` 와 고정 해제 뒤 복귀값이 이것이다."""
+     try:
+         with io.open(STATE_PATH, encoding='utf-8') as f:
+             d = json.load(f)
+         p = str(d.get('principal') or '').upper()
+         if p in PRINCIPALS:
+             return {'principal': p, 'set_at': d.get('set_at'), 'reason': d.get('reason'),
+-                    'measured': True}
++                    'measured': True, 'locked': False}
+     except (OSError, IOError, ValueError, TypeError, AttributeError):
+         pass
+-    return {'principal': DEFAULT, 'set_at': None, 'reason': 'default(파일 없음)', 'measured': False}
++    return {'principal': DEFAULT, 'set_at': None, 'reason': 'default(파일 없음)', 'measured': False,
++            'locked': False}
+ 
+ 
+ def current():
+@@ -71,7 +101,7 @@ def save(principal, reason='', now=None):
+     if p not in PRINCIPALS:
+         raise ValueError('unknown principal: %r' % (principal,))
+     now = now or datetime.datetime.now()
+-    prev = load()
++    prev = load_file()
+     rec = {'principal': p, 'set_at': now.isoformat(timespec='seconds'), 'reason': reason}
+     d = os.path.dirname(STATE_PATH)
+     if not os.path.isdir(d):
+diff --git a/tests/test_renewal_eod_and_guards.py b/tests/test_renewal_eod_and_guards.py
+new file mode 100644
+index 0000000..8ca9a3f
+--- /dev/null
++++ b/tests/test_renewal_eod_and_guards.py
+@@ -0,0 +1,326 @@
++"""[MW0602 신동 주체 리뉴얼] 3·4단계 회귀 — 기동·장후 휴면 · 신동 전용 EOD · 흐름 신선도 · 수집 실패 시간청산.
++
++  E1  재학습 서브프로세스 진입점이 휴면이면 띄우지 않는다(모든 트리거가 이 한 곳을 지난다)
++  E2  장전 준비: 휴면이면 현재가 스냅샷까지만 — Canary·워밍업·사전 재학습 앞에서 끝난다
++  E3  daily_close: 미륵 전용 항목은 `if self._mireuk_on():` 아래 · 신동·계좌 항목은 그 밖
++  E4  scripts/shindong_eod.py — 세 단계 독립 · 종료코드 · 완료 마커 · 장중 실행 거부 · 대기 타임아웃
++  E5  설치기 — 순수 ASCII·CRLF · 미륵 재학습은 **비활성**(삭제 아님) · 신동 EOD 성공 전에는 거부
++  F1  흐름 신선도: 지연 분 계산 · shadow 는 진입 무변경 · live 는 기각 사유 · off 는 미측정
++  F2  같은 지연 구간은 한 번만 경고하고 해소 시 한 줄
++  F3  7222 수집 실패 분에도 신동 포지션의 15:05 시간청산이 나간다(그 전·FLAT·타 주체는 무동작)
++"""
++import datetime
++import inspect
++import io
++import os
++import sys
++
++sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
++
++from utils.runtime_mode import enable_test_mode  # noqa: E402
++
++enable_test_mode()
++
++import main  # noqa: E402
++from scripts import shindong_eod as SE  # noqa: E402
++
++TS = main.TradingSystem
++ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++
++
++class _LM(object):
++    def __init__(self):
++        self.lines = []
++
++    def system(self, msg, level="INFO"):
++        self.lines.append((level, msg))
++
++    def trade(self, *a, **k):
++        pass
++
++    def signal(self, *a, **k):
++        pass
++
++
++def _with_log(fn):
++    orig = main.log_manager
++    rec = _LM()
++    main.log_manager = rec
++    try:
++        fn(rec)
++    finally:
++        main.log_manager = orig
++    return rec
++
++
++# ── E1 · E2 · E3 ─────────────────────────────────────────────────────────────
++
++def test_E1_retrain_subprocess_refuses_when_dormant():
++    class _S(object):
++        def _mireuk_on(self):
++            return False
++
++    def run(rec):
++        assert TS._start_gbm_retrain_subprocess(_S(), force=True, reason="t", is_warmup=False) is False
++        assert any("미륵 휴면 — 재학습 생략" in m for _, m in rec.lines)
++
++    _with_log(run)
++    src = inspect.getsource(TS._start_gbm_retrain_subprocess)
++    assert src.index("if not self._mireuk_on():") < src.index("_gbm_retrain_running")
++
++
++def test_E2_pre_market_setup_stops_before_canary():
++    src = inspect.getsource(TS.pre_market_setup)
++    i_snap = src.index("_rd._prime_from_snapshot()")
++    i_off = src.index("if not self._mireuk_on():\n            log_manager.system(\"[PreOpen] 미륵 휴면")
++    i_can = src.index("canary_stale_age_hours()")
++    i_pre = src.index('reason="08:55 PreRetrain"')
++    assert i_snap < i_off < i_can < i_pre
++    assert "if self._mireuk_on():\n                from config.settings import META_CONF_STATE_PATH" in src
++
++
++def _enclosing_top(src_lines, idx, indent=8):
++    """idx 줄을 감싸는 들여쓰기 `indent` 의 문장(위로 첫 줄)."""
++    for j in range(idx, -1, -1):
++        ln = src_lines[j]
++        if ln.strip() and (len(ln) - len(ln.lstrip(" "))) == indent and not ln.strip().startswith("#"):
++            return ln.strip()
++    return ""
++
++
++def test_E3_daily_close_guards_mireuk_only_items():
++    src = inspect.getsource(TS.daily_close)
++    lines = src.splitlines()
++
++    def top_of(needle):
++        i = next(k for k, ln in enumerate(lines) if needle in ln)
++        return _enclosing_top(lines, i)
++
++    guarded = ["ENSEMBLE_CALIBRATOR_PATH", "self.meta_gate.learner.save(META_CONF_STATE_PATH)",
++               "self.drift_adjuster.record_accuracy(", "self.threshold_recalibrator.run_if_due(",
++               "self.atr_ceiling_recalibrator.run_if_due(", "self.entry_horizon_recalibrator.run_if_due(",
++               "self.atr_multiple_recalibrator.run_if_due(", "self._gbm_retrain_done_event.wait(",
++               "record_live_snapshot(", "from model.scaler_monitor_db import aggregate_daily",
++               "get_drift_detector as _get_dd()", "_exp.save(_report)", "self._load_shadow_candidate()",
++               "self.challenger_engine.update_daily_metrics(", "check_champion_heartbeat()"]
++    for g in guarded:
++        if g == "get_drift_detector as _get_dd()":
++            g = "from strategy.param_drift_detector import get_drift_detector as _get_dd\n"
++            g = g.strip()
++        t = top_of(g)
++        assert "_mireuk_on()" in t, (g, t)
++    kept = ["update_daily_broker_pnl_net(", "reconcile_daily_net(", "daily_report as _sddr",
++            "self.circuit_breaker.reset_daily()", "self.profit_guard.reset_daily()",
++            "self._premarket_levels_0850_done    = False", "save_daily_stats(today_str,"]
++    for k in kept:
++        t = top_of(k)
++        assert "_mireuk_on()" not in t, (k, t)
++    # 휴면이면 Phase5 extra_stats 가 참조하는 변수가 정의돼 있다(NameError 방지)
++    assert "_ccf_today, _mc_gap_today, _mc_gap_avg = 0, 0, 0.0" in src
++
++
++# ── E4 신동 전용 EOD ─────────────────────────────────────────────────────────
++
++class _Log(object):
++    def __init__(self):
++        self.lines = []
++
++    def info(self, fmt, *a):
++        self.lines.append(("INFO", fmt % a if a else fmt))
++
++    def warning(self, fmt, *a):
++        self.lines.append(("WARNING", fmt % a if a else fmt))
++
++    def error(self, fmt, *a):
++        self.lines.append(("ERROR", fmt % a if a else fmt))
++
++
++def _steps(levels=None, reg=None, of=None):
++    return {"levels": levels or (lambda: {"refreshed": {"last_date": "2026-10-26", "sessions": 256}}),
++            "regular": reg or (lambda: {"status": "ok", "line": "[RegularFresh] ok"}),
++            "option_flow": of or (lambda: {"status": "ok", "line": "[OptionFlowFresh] ok"})}
++
++
++def test_E4_all_ok_exit0_and_marker(tmp_path, monkeypatch):
++    monkeypatch.setattr(SE, "_ROOT", str(tmp_path))
++    os.makedirs(str(tmp_path / "data"))
++    out = SE.run("2026-10-26", wait=False, log=_Log(), steps=_steps())
++    assert out["exit_code"] == 0
++    mk = tmp_path / "data" / "shindong_eod_done_20261026.txt"
++    assert mk.exists() and "exit=0" in mk.read_text(encoding="utf-8")
++
++
++def test_E4_cache_failure_is_exit2_and_others_still_run(tmp_path, monkeypatch):
++    monkeypatch.setattr(SE, "_ROOT", str(tmp_path))
++    os.makedirs(str(tmp_path / "data"))
++    called = []
++
++    def boom():
++        raise RuntimeError("x")
++
++    def reg():
++        called.append("reg")
++        return {"status": "ok", "line": "ok"}
++
++    out = SE.run("2026-10-26", wait=False, log=_Log(), steps=_steps(levels=boom, reg=reg))
++    assert out["exit_code"] == 2 and called == ["reg"]
++
++
++def test_E4_stale_cache_date_and_freshness_gap_are_exit1(tmp_path, monkeypatch):
++    monkeypatch.setattr(SE, "_ROOT", str(tmp_path))
++    os.makedirs(str(tmp_path / "data"))
++    lg = _Log()
++    out = SE.run("2026-10-26", wait=False, log=lg, steps=_steps(
++        levels=lambda: {"refreshed": {"last_date": "2026-10-23", "sessions": 255}},
++        of=lambda: {"status": "missing", "line": "[OptionFlowFresh] 결손"}))
++    assert out["exit_code"] == 1
++    assert any("≠ 오늘" in m for _, m in lg.lines)
++
++
++def test_E4_unmeasured_freshness_is_not_ok(tmp_path, monkeypatch):
++    monkeypatch.setattr(SE, "_ROOT", str(tmp_path))
++    os.makedirs(str(tmp_path / "data"))
++
++    def boom():
++        raise OSError("db")
++
++    out = SE.run("2026-10-26", wait=False, log=_Log(), steps=_steps(reg=boom))
++    assert out["exit_code"] == 1
++
++
++def test_E4_wait_times_out_without_marker(tmp_path, monkeypatch):
++    monkeypatch.setattr(SE, "_ROOT", str(tmp_path))
++    t = [datetime.datetime(2026, 10, 26, 15, 55)]
++
++    def now():
++        return t[0]
++
++    def sleep(sec):
++        t[0] = t[0] + datetime.timedelta(seconds=sec)
++
++    assert SE.wait_for_daily_close(_Log(), "20261026", max_wait_min=2, poll_sec=30, sleep=sleep, now=now) is False
++    os.makedirs(str(tmp_path / "data"))
++    (tmp_path / "data" / "daily_close_done_20261026.txt").write_text("x", encoding="utf-8")
++    assert SE.wait_for_daily_close(_Log(), "20261026", max_wait_min=2, sleep=sleep, now=now) is True
++
++
++def test_E4_script_calls_dll_bootstrap_first():
++    src = io.open(os.path.join(ROOT, "scripts", "shindong_eod.py"), encoding="utf-8").read()
++    assert src.index("ensure_conda_dll_path()") < src.index("def run(")
++    assert "guard" in src.lower() or "장중 실행 금지" in src
++
++
++# ── E5 설치기 ────────────────────────────────────────────────────────────────
++
++def test_E5_installers_ascii_crlf_and_safe_toggle():
++    for rel in ("TASK_SHINDONG_EOD_INSTALL.bat", "scripts/shindong_eod_task.ps1"):
++        b = open(os.path.join(ROOT, rel), "rb").read()
++        b.decode("ascii")                                 # PS 5.1 이 BOM 없는 파일을 ANSI 로 읽는다
++        assert b"\r\n" in b and b.count(b"\n") == b.count(b"\r\n"), rel
++    ps = open(os.path.join(ROOT, "scripts/shindong_eod_task.ps1"), encoding="ascii").read()
++    assert "Disable-ScheduledTask" in ps and "Unregister-ScheduledTask -TaskName $t.TaskName" not in ps
++    assert "LastTaskResult -ne 0" in ps                   # 신동 EOD 성공 전에는 미륵 재학습을 끄지 않는다
++    assert "MireukiEODRetrain" in ps and "shindong_eod.py" in ps
++
++
++# ── F1 · F2 흐름 신선도 ──────────────────────────────────────────────────────
++
++class _FS(object):
++    _shindong_flow_stale_check = TS._shindong_flow_stale_check
++    _shindong_flow_stale_block = TS._shindong_flow_stale_block
++
++    def __init__(self):
++        self._sd_flow_lag = None
++        self._sd_flow_stale_since = None
++
++
++def _set_mode(monkeypatch, mode, lim=3):
++    monkeypatch.setattr(main.runtime_settings, "SHINDONG_FLOW_STALE_GUARD", mode, raising=False)
++    monkeypatch.setattr(main.runtime_settings, "SHINDONG_FLOW_STALE_MIN", lim, raising=False)
++
++
++def test_F1_lag_and_modes(monkeypatch):
++    now = datetime.datetime(2026, 10, 26, 10, 30, 2)
++    for mode, blocked in (("shadow", None), ("live", "flow_stale")):
++        _set_mode(monkeypatch, mode)
++        s = _FS()
++        _with_log(lambda rec: s._shindong_flow_stale_check({"horizon": "10:25"}, now))
++        assert s._sd_flow_lag == 4                         # 직전 분 10:29 − 10:25
++        b = s._shindong_flow_stale_block()
++        assert (b is None) if blocked is None else b.startswith(blocked)
++    _set_mode(monkeypatch, "off")
++    s = _FS()
++    _with_log(lambda rec: s._shindong_flow_stale_check({"horizon": "10:00"}, now))
++    assert s._sd_flow_lag is None and s._shindong_flow_stale_block() is None
++    _set_mode(monkeypatch, "live")
++    s = _FS()
++    _with_log(lambda rec: s._shindong_flow_stale_check({"horizon": None}, now))
++    assert s._sd_flow_lag is None                          # 미측정 — 0 이 아니다
++
++
++def test_F2_one_warning_per_episode(monkeypatch):
++    _set_mode(monkeypatch, "shadow")
++    s = _FS()
++    t0 = datetime.datetime(2026, 10, 26, 10, 30, 2)
++
++    def run(rec):
++        s._shindong_flow_stale_check({"horizon": "10:20"}, t0)
++        s._shindong_flow_stale_check({"horizon": "10:20"}, t0 + datetime.timedelta(minutes=1))
++        s._shindong_flow_stale_check({"horizon": "10:31"}, t0 + datetime.timedelta(minutes=3))
++        w = [m for lv, m in rec.lines if lv == "WARNING"]
++        i = [m for lv, m in rec.lines if "해소" in m]
++        assert len(w) == 1 and "계측만" in w[0] and len(i) == 1
++
++    _with_log(run)
++
++
++# ── F3 수집 실패 시 시간청산 ─────────────────────────────────────────────────
++
++class _Pos(object):
++    def __init__(self, ext, qty=2):
++        self._ext = ext
++        self.quantity = qty
++
++    def is_external_of(self, src):
++        return self._ext == src
++
++
++class _FF(object):
++    _shindong_fetch_fail_guard = TS._shindong_fetch_fail_guard
++
++    def __init__(self, ext):
++        self.position = _Pos(ext)
++        self._sd_fetch_fail_exit_logged = None
++        self.exits = []
++
++    def _shindong_exit(self, reason, why=""):
++        self.exits.append((reason, why))
++
++
++def test_F3_time_exit_when_fetch_fails():
++    s = _FF(main.SHINDONG_ENTRY_SOURCE)
++    rec = _with_log(lambda r: s._shindong_fetch_fail_guard(datetime.datetime(2026, 10, 26, 15, 5, 3)))
++    assert s.exits and s.exits[0][0] == "신동시간청산"
++    assert any("7222 수집 실패 중" in m for _, m in rec.lines)
++    # 같은 날 반복 호출은 로그 1회(청산 시도는 계속 — pending 가드는 _shindong_exit 가 갖는다)
++    rec2 = _with_log(lambda r: s._shindong_fetch_fail_guard(datetime.datetime(2026, 10, 26, 15, 6, 3)))
++    assert len(s.exits) == 2 and not rec2.lines
++
++
++def test_F3_no_action_before_time_or_other_owner():
++    s = _FF(main.SHINDONG_ENTRY_SOURCE)
++    _with_log(lambda r: s._shindong_fetch_fail_guard(datetime.datetime(2026, 10, 26, 15, 4, 59)))
++    assert not s.exits
++    s2 = _FF("PETER2")
++    _with_log(lambda r: s2._shindong_fetch_fail_guard(datetime.datetime(2026, 10, 26, 15, 6)))
++    assert not s2.exits
++
++
++def test_F3_wired_into_fetch_failure_branch():
++    src = inspect.getsource(TS._fetch_weekly_option_flow)
++    i_exc = src.rindex("except Exception as e:")
++    assert "self._shindong_fetch_fail_guard(now)" in src[i_exc:]
++    gsrc = inspect.getsource(TS._shindong_entry_block_reason)
++    assert "self._shindong_flow_stale_block()" in gsrc
++    rsrc = inspect.getsource(TS._run_shindong)
++    assert rsrc.index("self._shindong_flow_stale_check(payload, now)") < rsrc.index("self._shindong_exec_step(payload, now)")
+diff --git a/tests/test_renewal_light_pass.py b/tests/test_renewal_light_pass.py
+new file mode 100644
+index 0000000..9a53ab4
+--- /dev/null
++++ b/tests/test_renewal_light_pass.py
+@@ -0,0 +1,429 @@
++"""[MW0602 신동 주체 리뉴얼] 미륵 휴면(MIREUK_ENGINE="off") 경량 분봉 패스 회귀 테스트.
++
++계획서: docs/신동거래_V4/신동주체_리뉴얼_구현계획_미륵휴면_MW0602-20261024.md §1 · Phase 2.
++
++지키는 불변식
++  L1  off 분봉 1개 → 신동이 쓰는 부품 12개(P1~P12)가 **전부, 순서대로** 호출된다.
++      부품이 하나라도 빠지면 이 테스트가 깨진다 — 미륵 파이프라인에 섞여 있던 일을 조용히 잃지 않게.
++  L2  FLAT 이면 청산 감시(P8)만 빠지고 나머지는 그대로다.
++  L3  비정상 봉(C1)은 가드에서 끝난다 — 봉 저장·ATR·화면 없음, 워치독은 리셋(파이프라인과 같다).
++  L4  같은 ts 재주입은 첫 줄에서 막힌다.
++  L5  청산 감시는 decision={} 로 불린다 — `_ts_check_exit_triggers` 는 decision 을 `.get` 으로만 읽는다.
++  L6  `_on_candle_closed` 분기: 15:10 청산 전용 패스·거래소 CB 감지가 경량 패스보다 **앞**이고,
++      off 면 `run_minute_pipeline` 을 부르지 않는다(소스 수준).
++  L7  full 모드 파이프라인은 추출한 공유 메서드를 그대로 부른다(동작 무변경 — 두 벌 금지).
++  L8  병행 건식 실행은 부작용이 없다(DB 큐·CB 기록·화면·워치독·시계 무변경).
++  L9  미륵 off 에서 SYSTEM_AUTO 진입은 주문 함수 입구에서 거부된다.
++  L10 DB 쓰기 워커가 "candle" op 를 save_candle 로 처리한다.
++
++실행: python -m pytest tests/test_renewal_light_pass.py -q   (COM/브로커 불필요)
++"""
++import datetime
++import inspect
++import os
++import queue
++import sys
++
++sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
++
++from utils.runtime_mode import enable_test_mode  # noqa: E402
++
++enable_test_mode()
++
++import main  # noqa: E402
++from features.technical.atr import ATRCalculator  # noqa: E402
++
++TS = main.TradingSystem
++
++
++# ── 스텁 ──────────────────────────────────────────────────────────────────────
++
++class _Pos(object):
++    def __init__(self, status):
++        self.status = status
++
++
++class _Dash(object):
++    def __init__(self, calls):
++        self.calls = calls
++
++    def notify_pipeline_ran(self):
++        self.calls.append("notify_pipeline_ran")
++
++    def update_price(self, **k):
++        self.calls.append("update_price")
++
++    def update_system_status(self, **k):
++        self.calls.append(("update_system_status", k.get("accuracy", "missing")))
++
++    def update_profit_guard_badge(self, st):
++        self.calls.append("update_profit_guard_badge")
++
++
++class _CB(object):
++    state = "NORMAL"
++
++    def __init__(self, calls):
++        self.calls = calls
++
++    def record_atr(self, r):
++        self.calls.append("P10_cb4_record_atr")
++
++    def record_pipe_latency(self, ms):
++        self.calls.append("P11_cb5_record_latency")
++
++
++class _PG(object):
++    def guard_status(self, pnl, size_mult, dt):
++        assert size_mult is None          # 신동 관문과 같은 축 — 등급 개념 없음
++        return {}
++
++
++class _Stub(object):
++    """TradingSystem 대역 — 경량 패스가 만지는 속성만. 부품 메서드는 호출 이름만 기록한다."""
++
++    LIGHT_PASS_PARTS = TS.LIGHT_PASS_PARTS
++    _light_minute_pass = TS._light_minute_pass
++    _light_minute_pass_dry = TS._light_minute_pass_dry
++    _bar_price_guard = TS._bar_price_guard
++    _light_atr_prime = TS._light_atr_prime
++    _light_atr_update = TS._light_atr_update
++    _light_push_profit_guard_badge = TS._light_push_profit_guard_badge
++
++    def __init__(self, status="LONG", qmax=10):
++        self.calls = []
++        self.position = _Pos(status)
++        self.dashboard = _Dash(self.calls)
++        self.circuit_breaker = _CB(self.calls)
++        self.profit_guard = _PG()
++        self.realtime_data = None
++        self._db_write_queue = queue.Queue(maxsize=qmax)
++        self._light_atr = ATRCalculator()
++        self._light_atr_dry = ATRCalculator()
++        self._light_atr_day = "2026-10-26"     # 오늘 이미 시작(예열은 별도 테스트 — DB 없음)
++        self._light_atr_dry_day = "2026-10-26"
++        self._light_last_ts = None
++        self._light_dry_stats = {"day": None, "bars": 0, "mismatch": 0, "atr_n": 0,
++                                 "atr_maxrel": 0.0, "ms_max": 0.0}
++        self._sys_daily_net_krw = 0.0
++        self._sys_daily_legs = 0
++        self._sys_daily_other_krw = 0.0
++        self._sys_daily_other_legs = 0
++        self._pg_badge_err_logged = False
++        self._manual_entry_ctx = {}
++        self._maint_ctx = None
++        self._last_real_pipeline_dt = "SENTINEL"
++        self._sigma_prev_price = 0.0
++        self._last_pipe_ms = 0.0
++        self.exit_args = None
++
++    # 부품(추출 메서드) — 이름만 기록
++    def _maybe_compute_levels_0930(self, ts_raw):
++        self.calls.append("P3_levels_0930")
++
++    def _process_tick_stop(self):
++        self.calls.append("P7_tick_stop")
++
++    def _check_pending_order_timeout(self):
++        self.calls.append("P6_pending_timeout")
++
++    def _check_exit_triggers(self, price, features, decision, bar=None):
++        self.calls.append("P8_exit_triggers")
++        self.exit_args = (price, features, decision, bar)
++
++    def _push_position_panels(self, close, atr, bar, atr_ok=None, open_gap_ok=None):
++        self.calls.append("P12_panels")
++
++
++def _bar(minute=1, close=1050.0):
++    return {"ts": datetime.datetime(2026, 10, 26, 10, minute), "open": close - 0.5,
++            "high": close + 1.0, "low": close - 1.0, "close": close, "volume": 120}
++
++
++def _with_patches(fn):
++    """main 모듈 함수(가상 장부·로그)를 기록기로 바꿔 실행한다."""
++    rec = {"vbook": 0, "logs": []}
++    orig_vb, orig_lm = main._ts_vbook_on_bar, main.log_manager
++
++    class _LM(object):
++        def system(self, msg, level="INFO"):
++            rec["logs"].append((level, msg))
++
++        def signal(self, *a, **k):
++            pass
++
++        def trade(self, *a, **k):
++            pass
++
++    def _vb(self, bar, atr):
++        self.calls.append("P10_vbook_on_bar")
++        rec["vbook"] += 1
++
++    main._ts_vbook_on_bar = _vb
++    main.log_manager = _LM()
++    try:
++        fn(rec)
++    finally:
++        main._ts_vbook_on_bar, main.log_manager = orig_vb, orig_lm
++    return rec
++
++
++def _parts_seen(calls, s):
++    """호출 기록 → 부품 이름 순서. 큐 적재(P1)·ATR(P10)·가드(P5)는 기록 대신 결과로 확인해 끼워 넣는다."""
++    out = []
++    for c in calls:
++        if isinstance(c, str) and c[:1] == "P":
++            out.append(c)
++    return out
++
++
++# ── L1 · L2 ──────────────────────────────────────────────────────────────────
++
++def test_L1_all_twelve_parts_run_in_order_when_holding():
++    s = _Stub(status="LONG")
++
++    def run(rec):
++        s._light_minute_pass(_bar())
++
++    _with_patches(run)
++    seen = _parts_seen(s.calls, s)
++    # 기록되는 부품(메서드 호출)의 순서
++    assert seen == ["P3_levels_0930", "P7_tick_stop", "P6_pending_timeout",
++                    "P10_cb4_record_atr", "P8_exit_triggers", "P10_vbook_on_bar",
++                    "P12_panels", "P11_cb5_record_latency"], seen
++    # 결과로 확인하는 부품: P1 봉 저장(큐) · P10 ATR · P5 가드 통과 · P5 중복가드 기록
++    item = s._db_write_queue.get_nowait()
++    assert item[0] == "candle" and item[1]["close"] == 1050.0          # P1
++    assert s._manual_entry_ctx["atr"] > 0                              # P10 ATR → 실주문 atr 인자
++    assert s._light_last_ts == "2026-10-26 10:01:00"                   # P5 중복가드
++    assert "notify_pipeline_ran" in s.calls                            # 워치독 리셋
++    assert s._last_real_pipeline_dt != "SENTINEL"                      # ExchangeCB 감지 시계
++    assert s._maint_ctx[1] == {} and "atr" in s._maint_ctx[0]          # 유지보수 패스 컨텍스트
++    # 12부품 이름표가 계획서 표와 같은 개수
++    assert len(TS.LIGHT_PASS_PARTS) == 12
++
++
++def test_L2_flat_skips_only_exit_triggers():
++    s = _Stub(status="FLAT")
++    _with_patches(lambda rec: s._light_minute_pass(_bar()))
++    seen = _parts_seen(s.calls, s)
++    assert "P8_exit_triggers" not in seen
++    for p in ("P3_levels_0930", "P7_tick_stop", "P6_pending_timeout", "P10_cb4_record_atr",
++              "P10_vbook_on_bar", "P12_panels", "P11_cb5_record_latency"):
++        assert p in seen, p
++    assert s._db_write_queue.qsize() == 1
++
++
++def test_L2b_cb3_shows_dormant_not_counting():
++    s = _Stub(status="FLAT")
++    _with_patches(lambda rec: s._light_minute_pass(_bar()))
++    st = [c for c in s.calls if isinstance(c, tuple) and c[0] == "update_system_status"]
++    assert st and st[0][1] is None       # accuracy=None → 대시보드가 「미륵 휴면」으로 쓴다
++
++
++# ── L3 · L4 ──────────────────────────────────────────────────────────────────
++
++def test_L3_bad_bar_stops_at_guard():
++    s = _Stub(status="LONG")
++    rec = _with_patches(lambda rec: s._light_minute_pass(_bar(close=0.0)))
++    seen = _parts_seen(s.calls, s)
++    assert seen == ["P3_levels_0930", "P7_tick_stop"], seen
++    assert s._db_write_queue.qsize() == 0
++    assert "notify_pipeline_ran" in s.calls
++    assert any("[Guard-C1]" in m for _, m in rec["logs"])
++
++
++def test_L4_duplicate_ts_blocked():
++    s = _Stub(status="FLAT")
++
++    def run(rec):
++        s._light_minute_pass(_bar(minute=5))
++        n = len(s.calls)
++        s._light_minute_pass(_bar(minute=5))
++        assert len(s.calls) == n
++        assert any("중복 분봉" in m for _, m in rec["logs"])
++
++    _with_patches(run)
++
++
++def test_queue_full_falls_back_to_sync_save():
++    s = _Stub(status="FLAT", qmax=1)
++    s._db_write_queue.put_nowait(("x",))
++    saved = []
++    orig = main.save_candle
++    main.save_candle = lambda b: saved.append(b)
++    try:
++        _with_patches(lambda rec: s._light_minute_pass(_bar()))
++    finally:
++        main.save_candle = orig
++    assert len(saved) == 1 and saved[0]["close"] == 1050.0
++
++
++def test_atr_prime_reads_recent_bars():
++    s = _Stub()
++    orig = main.fetch_recent_raw_candles
++    rows = [{"ts": "2026-10-26 09:%02d:00" % i, "high": 10 + i, "low": 9 + i, "close": 9.5 + i}
++            for i in range(20)]
++    main.fetch_recent_raw_candles = lambda limit=60: rows
++    try:
++        calc = ATRCalculator()
++        assert s._light_atr_prime(calc) == 20
++        assert calc._prev_close == 9.5 + 19
++        # 현재 봉(09:19)이 이미 저장돼 있어도 예열에 넣지 않는다 — 이중 반영 방지
++        calc2 = ATRCalculator()
++        assert s._light_atr_prime(calc2, before_ts="2026-10-26 09:19:00") == 19
++        assert calc2._prev_close == 9.5 + 18
++        # 전날 봉은 예열에 쓰지 않는다 — 밤사이 갭이 첫 TR 을 부풀려 CB④ 를 잘못 켜지 않게
++        calc3 = ATRCalculator()
++        assert s._light_atr_prime(calc3, before_ts="2026-10-27 08:45:00") == 0
++    finally:
++        main.fetch_recent_raw_candles = orig
++
++
++def test_atr_resets_on_new_day():
++    s = _Stub()
++    orig = main.fetch_recent_raw_candles
++    main.fetch_recent_raw_candles = lambda limit=60: []
++    try:
++        _with_patches(lambda rec: s._light_minute_pass(_bar(minute=1, close=1050.0)))
++        s._light_last_ts = None
++        nxt = {"ts": datetime.datetime(2026, 10, 27, 8, 45), "open": 1100.0, "high": 1101.0,
++               "low": 1099.0, "close": 1100.0, "volume": 10}
++        _with_patches(lambda rec: s._light_minute_pass(nxt))
++        assert s._light_atr_day == "2026-10-27"
++        # 리셋됐으므로 첫 TR 은 그 봉의 고저(2.0)뿐 — 전날 종가 1050 과의 갭 50pt 가 들어가지 않는다
++        assert abs(s._manual_entry_ctx["atr"] - 2.0) < 1e-6
++    finally:
++        main.fetch_recent_raw_candles = orig
++
++
++# ── L5 · L6 · L7 (소스 수준) ─────────────────────────────────────────────────
++
++def test_L5_exit_triggers_reads_decision_only_via_get():
++    src = inspect.getsource(main._ts_check_exit_triggers)
++    assert "decision[" not in src
++    assert "decision.get(" in src
++
++
++def test_L5b_light_pass_passes_empty_decision():
++    s = _Stub(status="SHORT")
++    _with_patches(lambda rec: s._light_minute_pass(_bar()))
++    price, feats, decision, bar = s.exit_args
++    assert decision == {} and set(feats) == {"atr", "atr_ratio"} and price == 1050.0
++
++
++def test_L6_on_candle_closed_dispatch_order():
++    src = inspect.getsource(TS._on_candle_closed)
++    i_fx = src.index("_ts_run_force_exit_pass(self, candle)")
++    i_ecb = src.index("if self._exchange_cb_mode:")
++    i_off = src.index("if not self._mireuk_on():")
++    i_light = src.index("self._light_minute_pass(candle)")
++    i_pipe = src.index("self.run_minute_pipeline(candle)")
++    assert i_fx < i_ecb < i_off < i_light < i_pipe
++    # off 분기는 경량 패스 뒤 return — 파이프라인으로 떨어지지 않는다
++    branch = src[i_off:i_pipe]
++    assert "return" in branch
++
++
++def test_L6b_pre_market_off_saves_candle_and_levels():
++    src = inspect.getsource(TS._on_pre_market_bar)
++    i_off = src.index("if not self._mireuk_on():")
++    i_ret = src.index("return", i_off)
++    branch = src[i_off:i_ret]
++    assert '("candle", candle)' in branch and "save_candle(candle)" in branch
++    assert "self._maybe_compute_levels_0850(now_dt)" in branch
++    # 스케일러 재적합·피처 계산보다 앞
++    assert i_off < src.index("self.feature_builder.build(")
++
++
++def test_L7_pipeline_uses_shared_methods():
++    src = inspect.getsource(TS.run_minute_pipeline)
++    for call in ("self._maybe_compute_levels_0930(ts_raw)", "self._bar_price_guard(bar, ts)",
++                 "self._check_pending_order_timeout()",
++                 "self._push_position_panels(close, atr, bar, _atr_ok, _open_gap_ok)",
++                 "self._process_tick_stop()"):
++        assert call in src, call
++    # 옮긴 블록이 파이프라인 안에 두 벌로 남아 있지 않다
++    assert "[Guard-C1]" not in src
++    assert "PendingOrder 타임아웃 체크" not in src
++    lsrc = inspect.getsource(TS._light_minute_pass)
++    for call in ("self._maybe_compute_levels_0930(ts_raw)", "self._bar_price_guard(bar, ts)",
++                 "self._check_pending_order_timeout()", "self._push_position_panels(",
++                 "self._process_tick_stop()", "self._check_exit_triggers(close, feats, {}, bar)"):
++        assert call in lsrc, call
++
++
++# ── L8 건식 실행 ─────────────────────────────────────────────────────────────
++
++def test_L8_dry_run_has_no_side_effects():
++    s = _Stub(status="LONG")
++    s._maint_ctx = ({"atr": 2.0, "atr_ratio": 1.0}, {}, "2026-10-26 10:01:00")
++
++    def run(rec):
++        s._light_minute_pass_dry(_bar(), pipeline_completed=True)
++
++    rec = _with_patches(run)
++    assert s.calls == []                              # CB·화면·부품 무호출
++    assert s._db_write_queue.qsize() == 0
++    assert s._last_real_pipeline_dt == "SENTINEL"
++    assert s._light_last_ts is None                   # 실집행 중복가드 상태 무변경
++    assert s._light_dry_stats["bars"] == 1
++
++
++def test_L8b_dry_run_reports_guard_mismatch():
++    s = _Stub(status="FLAT")
++    rec = _with_patches(lambda rec: s._light_minute_pass_dry(_bar(close=0.0), pipeline_completed=True))
++    assert s._light_dry_stats["mismatch"] == 1
++    assert any("[LightPassDry] 불일치" in m for _, m in rec["logs"])
++
++
++def test_L8c_dry_run_reports_atr_drift():
++    s = _Stub(status="FLAT")
++    s._maint_ctx = ({"atr": 50.0, "atr_ratio": 1.0}, {}, "x")      # 경량 ATR(≈2)과 크게 다르다
++    rec = _with_patches(lambda rec: s._light_minute_pass_dry(_bar(), pipeline_completed=True))
++    assert any("atr 경량=" in m for _, m in rec["logs"])
++
++
++def test_L8d_dry_flag_only_in_full_mode():
++    src = inspect.getsource(TS.__init__)
++    assert 'and self._mireuk_engine == "full"' in src
++
++
++# ── L9 · L10 ─────────────────────────────────────────────────────────────────
++
++def test_L9_system_auto_rejected_when_off():
++    class _S(object):
++        def _mireuk_on(self):
++            return False
++
++    logs = []
++    orig = main.log_manager
++
++    class _LM(object):
++        def system(self, msg, level="INFO"):
++            logs.append((level, msg))
++
++    main.log_manager = _LM()
++    try:
++        r = main._ts_execute_entry(_S(), "LONG", 1050.0, 1, 2.0, "A", entry_source="SYSTEM_AUTO")
++    finally:
++        main.log_manager = orig
++    assert r is None
++    assert logs and logs[0][0] == "ERROR" and "[MireukOff]" in logs[0][1]
++
++
++def test_L9b_rejection_precedes_everything():
++    src = inspect.getsource(main._ts_execute_entry)
++    assert src.index("[MireukOff]") < src.index("_ts_in_exit_cooldown(self)")
++
++
++def test_L10_db_worker_handles_candle_op():
++    src = inspect.getsource(TS._db_write_worker)
++    i = src.index('op == "candle":')
++    assert "save_candle(_bar)" in src[i:i + 300]
++
++
++def test_engine_value_validation_in_init():
++    src = inspect.getsource(TS.__init__)
++    assert 'if _me_raw not in ("full", "off"):' in src
++    assert 'self._mireuk_engine = _me_raw' in src
+diff --git a/tests/test_renewal_light_replay.py b/tests/test_renewal_light_replay.py
+new file mode 100644
+index 0000000..3279696
+--- /dev/null
++++ b/tests/test_renewal_light_replay.py
+@@ -0,0 +1,105 @@
++"""[MW0602 신동 주체 리뉴얼] scripts/light_pass_replay.py — 장후 재생 리허설 회귀.
++
++  R1 미륵 피처 ATR 이 경량 ATR 과 같은 정의면 PASS(12부품 · ATR · CB④ · 시간)
++  R2 미륵 피처 ATR 이 다르면 FAIL(② ATR) — 판정 기준이 실제로 작동한다
++  R3 raw_features 가 없으면 ATR·CB④ 는 「미측정」이고 판정은 나머지로만(PASS 도 FAIL 도 아님 ≠ 0)
++  R4 신동 보유 구간이 없으면 P8 은 「미발동」(누락으로 세지 않는다)
++  R5 그날 봉이 없으면 NO_DATA · 종료코드 2
++"""
++import datetime
++import json
++import os
++import sqlite3
++import sys
++
++sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
++
++from utils.runtime_mode import enable_test_mode  # noqa: E402
++
++enable_test_mode()
++
++import main  # noqa: E402
++from features.technical.atr import ATRCalculator  # noqa: E402
++from scripts import light_pass_replay as LR  # noqa: E402
++
++D = "2026-10-26"
++
++
++def _mk(tmp, feats="same", trade=True):
++    raw = os.path.join(str(tmp), "raw.db")
++    sd = os.path.join(str(tmp), "sd.db")
++    con = sqlite3.connect(raw)
++    con.execute("CREATE TABLE raw_candles (ts TEXT, open REAL, high REAL, low REAL, close REAL, volume INT)")
++    con.execute("CREATE TABLE raw_features (ts TEXT, features TEXT)")
++    calc = ATRCalculator()
++    t = datetime.datetime(2026, 10, 26, 8, 45)
++    px = 1000.0
++    i = 0
++    while t.strftime("%H:%M") <= "15:12":
++        px += (1 if i % 3 else -1) * 0.7
++        h, l = px + 0.8 + (i % 5) * 0.1, px - 0.6
++        ts = t.strftime("%Y-%m-%d %H:%M:%S")
++        con.execute("INSERT INTO raw_candles VALUES (?,?,?,?,?,?)", (ts, px, h, l, px, 100))
++        r = calc.update(h, l, px)
++        if feats != "none" and t.strftime("%H:%M") >= "09:00":
++            atr = r["atr"] * (1.5 if feats == "diff" else 1.0)
++            con.execute("INSERT INTO raw_features VALUES (?,?)",
++                        (ts, json.dumps({"atr": atr, "atr_ratio": r["atr_ratio"]})))
++        t += datetime.timedelta(minutes=1)
++        i += 1
++    con.commit()
++    con.close()
++    s = sqlite3.connect(sd)
++    s.execute("CREATE TABLE shindong_trades (trade_date TEXT, variant TEXT, entry_ts TEXT, leg1_exit_ts TEXT,"
++              " leg2_exit_ts TEXT, status TEXT)")
++    if trade:
++        s.execute("INSERT INTO shindong_trades VALUES (?,?,?,?,?,?)",
++                  (D, "MAIN", D + " 10:00:00", D + " 10:40:00", D + " 10:40:00", "CLOSED"))
++    s.commit()
++    s.close()
++    return raw, sd
++
++
++def test_R1_same_definition_passes(tmp_path):
++    raw, sd = _mk(tmp_path)
++    r = LR.replay(D, raw, sd, main_mod=main)
++    assert r["verdict"] == "PASS", r["lines"]
++    st = r["stats"]
++    assert st["missing_parts"] == [] and st["hold_bars"] == 40
++    assert st["atr_cmp"] > 300 and st["atr_max_rel"] < 1e-6
++    assert st["bars"] == 370                       # 09:00 ~ 15:09
++    assert r["exit_code"] == 0
++
++
++def test_R2_atr_mismatch_fails(tmp_path):
++    raw, sd = _mk(tmp_path, feats="diff")
++    r = LR.replay(D, raw, sd, main_mod=main)
++    assert r["verdict"] == "FAIL" and r["exit_code"] == 1
++    assert any("② ATR" in ln and "FAIL" in ln for ln in r["lines"])
++
++
++def test_R3_no_features_is_unmeasured_not_fail(tmp_path):
++    raw, sd = _mk(tmp_path, feats="none")
++    r = LR.replay(D, raw, sd, main_mod=main)
++    assert r["verdict"] == "PASS"
++    assert any("② ATR    : 미측정" in ln for ln in r["lines"])
++    assert any("③ CB④    : 미측정" in ln for ln in r["lines"])
++
++
++def test_R4_no_holding_means_p8_not_required(tmp_path):
++    raw, sd = _mk(tmp_path, trade=False)
++    r = LR.replay(D, raw, sd, main_mod=main)
++    assert r["verdict"] == "PASS" and r["stats"]["hold_bars"] == 0
++    assert any("P8 미발동" in ln for ln in r["lines"])
++
++
++def test_R5_no_bars(tmp_path):
++    r = LR.replay("2026-10-27", os.path.join(str(tmp_path), "none.db"), None, main_mod=main)
++    assert r["verdict"] == "NO_DATA" and r["exit_code"] == 2
++
++
++def test_R6_patches_are_restored(tmp_path):
++    raw, sd = _mk(tmp_path)
++    keep = (main._ts_vbook_on_bar, main.log_manager, main.fetch_recent_raw_candles, main.save_candle)
++    LR.replay(D, raw, sd, main_mod=main)
++    assert keep == (main._ts_vbook_on_bar, main.log_manager, main.fetch_recent_raw_candles, main.save_candle)
+diff --git a/tests/test_renewal_principal_lock.py b/tests/test_renewal_principal_lock.py
+new file mode 100644
+index 0000000..a1d9ea1
+--- /dev/null
++++ b/tests/test_renewal_principal_lock.py
+@@ -0,0 +1,78 @@
++"""[MW0602 신동 주체 리뉴얼] PRINCIPAL_LOCK — 거래주체 고정 회귀 테스트.
++
++  K1 유효한 고정값이면 파일과 무관하게 그 주체 · locked=True
++  K2 알 수 없는 고정값은 고정하지 않는다(파일 선택) — 오타로 엉뚱한 주체가 고정되지 않게
++  K3 save() 의 이력 prev 는 파일 기준(load_file) — 고정 중 기록이 고정값으로 오염되지 않는다
++  K4 main 전환 처리기가 고정 중 전환을 거부하고 파일을 바꾸지 않는다(소스 수준)
++  K5 고정이 없을 때 load() 는 종전과 같은 키 + locked=False
++"""
++import inspect
++import io
++import json
++import os
++import sys
++
++sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
++
++from utils.runtime_mode import enable_test_mode  # noqa: E402
++
++enable_test_mode()
++
++from strategy.runtime import trade_principal as TP  # noqa: E402
++
++
++def _isolate(tmp_path, monkeypatch):
++    monkeypatch.setattr(TP, "STATE_PATH", str(tmp_path / "trade_principal.json"))
++    monkeypatch.setattr(TP, "LOG_PATH", str(tmp_path / "trade_principal_log.jsonl"))
++
++
++def test_K1_lock_overrides_file(tmp_path, monkeypatch):
++    _isolate(tmp_path, monkeypatch)
++    TP.save(TP.MIREUK, reason="t")
++    d = TP.load(lock="shindong")
++    assert d["principal"] == TP.SHINDONG and d["locked"] is True and d["measured"] is True
++    assert TP.load_file()["principal"] == TP.MIREUK            # 파일은 그대로
++
++
++def test_K2_unknown_lock_is_ignored(tmp_path, monkeypatch):
++    _isolate(tmp_path, monkeypatch)
++    TP.save(TP.PETER, reason="t")
++    assert TP.locked_principal("SHINDONGG") is None
++    d = TP.load(lock="SHINDONGG")
++    assert d["principal"] == TP.PETER and d["locked"] is False
++
++
++def test_K3_save_prev_uses_file(tmp_path, monkeypatch):
++    _isolate(tmp_path, monkeypatch)
++    monkeypatch.setattr(TP, "locked_principal", lambda lock=None: TP.SHINDONG)
++    TP.save(TP.MIREUK, reason="a")
++    TP.save(TP.PETER, reason="b")
++    lines = [json.loads(x) for x in io.open(TP.LOG_PATH, encoding="utf-8")]
++    assert lines[-1]["prev"] == TP.MIREUK                      # 고정값(SHINDONG)이 아니다
++
++
++def test_K4_main_rejects_switch_when_locked():
++    import main
++    src = inspect.getsource(main.TradingSystem._on_principal_change_requested)
++    i_lock = src.index('if self._principal_state.get("locked"):')
++    i_save = src.index("principal_mod.save(")
++    assert i_lock < i_save
++    assert "PRINCIPAL_LOCK" in src[i_lock:i_save]
++    lsrc = inspect.getsource(main.TradingSystem._principal_locked)
++    assert 'self._principal_state.get("locked")' in lsrc
++
++
++def test_K5_no_lock_keeps_legacy_shape(tmp_path, monkeypatch):
++    _isolate(tmp_path, monkeypatch)
++    monkeypatch.setattr(TP, "locked_principal", lambda lock=None: None)
++    d = TP.load()
++    assert d == {"principal": TP.DEFAULT, "set_at": None, "reason": "default(파일 없음)",
++                 "measured": False, "locked": False}
++
++
++def test_settings_defaults_are_conservative():
++    from config import settings as S
++    assert S.MIREUK_ENGINE == "full"          # 머지 시점 기본값 — off 는 전환일에 사람이 바꾼다
++    assert S.PRINCIPAL_LOCK is None
++    assert S.LIGHT_PASS_DRY_RUN is False
++    assert S.SHINDONG_FLOW_STALE_GUARD in ("off", "shadow", "live")

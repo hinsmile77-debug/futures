@@ -1,0 +1,45 @@
+import os,sys,datetime,traceback
+sys.path.insert(0,'.')
+from utils.runtime_mode import enable_test_mode; enable_test_mode()
+import main
+from PyQt5.QtWidgets import QApplication
+from collection.kiwoom.latency_sync import LatencySync
+class FakeBroker(object):
+    name="cybos"
+    def create_latency_sync(self): return LatencySync()
+    def __getattr__(self, n):
+        def f(*a, **k): return None
+        return f
+main.create_broker = lambda: FakeBroker()
+mode = sys.argv[1]
+main.runtime_settings.MIREUK_ENGINE = mode
+main.runtime_settings.LIGHT_PASS_DRY_RUN = (mode == "full")
+import config.settings as S; S.PRINCIPAL_LOCK="SHINDONG"
+logs=[]
+main.log_manager.system = lambda msg, level="INFO": logs.append((level,msg))
+ts=main.TradingSystem()
+print("engine", ts._mireuk_engine, "dry", ts._light_pass_dry, "principal", ts._principal_state["principal"], ts._principal_state.get("locked"))
+main.is_pre_market = lambda now=None: False
+main.is_market_open = lambda now=None: True
+main.is_force_exit_time = lambda now=None: False
+calls={"pipe":0}
+if mode == "off":
+    main.TradingSystem.run_minute_pipeline = lambda self, bar: calls.__setitem__("pipe", calls["pipe"]+1)
+app = QApplication.instance()
+for m in range(5):
+    c={"ts": datetime.datetime(2026,10,26,10,m), "open":1050.0+m, "high":1051.5+m, "low":1049.0+m, "close":1050.5+m, "volume":120,"buy_vol":60,"sell_vol":60}
+    ts._on_candle_closed(c)
+    app.processEvents()
+print("pipeline calls:", calls["pipe"])
+print("atr ctx:", ts._manual_entry_ctx.get("atr"), "light last ts:", ts._light_last_ts, "maint ts:", getattr(ts, "_maint_ctx", None) and ts._maint_ctx[2])
+print("queue size:", ts._db_write_queue.qsize(), "dry stats:", ts._light_dry_stats)
+ts.dashboard._win.grab(); app.processEvents(); print("grab+paint ok")
+errs=[x for x in logs if x[0] in ("ERROR","CRITICAL")]
+print("ERROR logs:", [m[:160] for _,m in errs][:6])
+print("light/dry logs:", [m[:140] for _,m in logs if "LightPass" in m or "Engine" in m][:6])
+if mode == "off":
+    main._ts_execute_entry(ts, "LONG", 1050.0, 1, 2.0, "A", entry_source="SYSTEM_AUTO")
+    print("reject:", [m[:80] for l,m in logs if "MireukOff" in m][:1])
+    ts._on_principal_change_requested("MIREUK")
+    print("switch:", [m[:80] for l,m in logs if "PRINCIPAL_LOCK 으로 고정" in m][:1], ts._principal_state["principal"])
+    print("retrain started?", ts._start_gbm_retrain_subprocess(force=True, reason="smoke", is_warmup=False))

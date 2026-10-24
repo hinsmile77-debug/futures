@@ -1,0 +1,21 @@
+### MIREUK_ENGINE=off
+engine off dry False principal SHINDONG True
+pipeline calls: 0
+atr ctx: 2.5 light last ts: 2026-10-26 10:04:00 maint ts: 2026-10-26 10:04:00
+queue size: 7 dry stats: {'day': None, 'bars': 0, 'mismatch': 0, 'atr_n': 0, 'atr_maxrel': 0.0, 'ms_max': 0.0}
+grab+paint ok
+ERROR logs: []
+light/dry logs: ['[LightPass] 경량 ATR 2026-10-26 시작 — 당일 앞선 봉 0봉 예열']
+reject: ['[MireukOff] 미륵 휴면 중 SYSTEM_AUTO 진입 요청 거부 — LONG 1계약 @1050.0 등급=A (도달 경로 점검 필요)']
+switch: ['[Principal] 전환 거부 신동 → 미륵 — PRINCIPAL_LOCK 으로 고정됨(settings.py)'] SHINDONG
+retrain started? False
+
+### MIREUK_ENGINE=full
+engine full dry True principal SHINDONG True
+pipeline calls: 0
+atr ctx: None light last ts: None maint ts: None
+queue size: 0 dry stats: {'day': '2026-10-26', 'bars': 5, 'mismatch': 5, 'atr_n': 0, 'atr_maxrel': 0.0, 'ms_max': 0.714021000021603}
+grab+paint ok
+ERROR logs: ['[ERR-FATAL] minute_pipeline: no such table: raw_candles | 자동진입 OFF + 15분 쿨다운', '[ERR-FATAL] minute_pipeline: no such table: raw_candles | 자동진입 OFF + 15분 쿨다운', '[ERR-FATAL] minute_pipeline: no such table: raw_candles | 자동진입 OFF + 15분 쿨다운', '[ERR-FATAL] minute_pipeline: no such table: raw_candles | 자동진입 OFF + 15분 쿨다운', '[ERR-FATAL] minute_pipeline: no such table: raw_candles | 자동진입 OFF + 15분 쿨다운']
+light/dry logs: ['[LightPassDry] 불일치 ts=2026-10-26 10:00:00 — 가드=통과 · 파이프라인완주=False', '[LightPassDry] 불일치 ts=2026-10-26 10:01:00 — 가드=통과 · 파이프라인완주=False', '[LightPassDry] 불일치 ts=2026-10-26 10:02:00 — 가드=통과 · 파이프라인완주=False', '[LightPassDry] 불일치 ts=2026-10-26 10:03:00 — 가드=통과 · 파이프라인완주=False', '[LightPassDry] 불일치 ts=2026-10-26 10:04:00 — 가드=통과 · 파이프라인완주=False']
+
