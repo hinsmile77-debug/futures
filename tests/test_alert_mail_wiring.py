@@ -3,10 +3,11 @@
 
 고정하는 불변식
   · 카탈로그의 모든 코드가 **어딘가에서 발송**된다(죽은 코드 금지) — 보내는 주체가 맞다
-      main: S-01 S-02 S-03 S-06 A-01 A-02 A-03 A-04 B-02 B-03 B-04
+      main: S-01 S-02 S-03 S-06 S-07 A-01 A-02 A-03 A-04 B-02 B-03 B-04
       동결 센티넬: S-04 S-05 (main 이 죽었거나 안 떴으면 main 은 보낼 수 없다)
       EOD 재학습: B-01
-  · 상태형(S-02 · A-01 · A-03)은 한 함수에서 발생과 해소를 같이 판정한다 — 해소 누락 방지
+  · 상태형(S-02 · S-07 · A-01 · A-03)은 한 함수에서 발생과 해소를 같이 판정한다 — 해소 누락 방지
+  · [2026-10-24] S-07 손절선 통과 뒤 미청산 — 거부(S-01) 없이 청산이 안 나간 경우까지 잡는다
   · A-04 기준: 거래 1건 순손실 75만원 · 당일 실현 순손실 자본의 5%
   · 본문 문맥(포지션 평가손익)이 포맷 예외로 사라지지 않는다 — `%+,.0f` 는 printf 포맷이
     아니라 ValueError 다(초안이 그렇게 써서 A-04 가 조용히 안 나갈 뻔했다)
@@ -55,6 +56,12 @@ class _Pos(object):
     def __init__(self, status="SHORT", qty=1, entry=869.70):
         self.status, self.quantity, self.entry_price = status, qty, entry
         self.entry_source = "SHINDONG"
+        self.stop_price = 0.0               # [S-07] 0 = 손절선 미설정(판정 대상 아님)
+
+    def is_stop_hit(self, price):
+        if self.status == "FLAT":
+            return False
+        return price <= self.stop_price if self.status == "LONG" else price >= self.stop_price
 
     def unrealized_pnl_pts(self, px):
         return (self.entry_price - px) if self.status == "SHORT" else (px - self.entry_price)
@@ -78,9 +85,12 @@ class _Self(object):
         self._exit_reject_episode_at = None
         self._exit_limit_mode_reason = None
         self._pt_value = 50000
+        self._pending_order = None
+        self._alert_stop_breach_since = None
+        self._px = 863.00
 
     def _peter2_last_price(self):
-        return 863.00
+        return self._px
 
 
 def _subjects(mails):
@@ -97,7 +107,7 @@ def test_1_every_catalog_code_has_a_sender():
     main_src = _src("main.py")
     sent_by_main = set(re.findall(r'_ts_alert\(self, "([SAB]-\d\d)"', main_src))
     # S-05 는 센티넬(오늘 SYSTEM.log 없음)과 main(브로커 로그인 실패로 기동 중단) 둘이 나눠 맡는다
-    assert sent_by_main == {"S-01", "S-02", "S-03", "S-05", "S-06", "A-01", "A-02", "A-03", "A-04",
+    assert sent_by_main == {"S-01", "S-02", "S-03", "S-05", "S-06", "S-07", "A-01", "A-02", "A-03", "A-04",
                             "B-02", "B-03", "B-04"}, sent_by_main
     fs = _src(os.path.join("scripts", "freeze_sentinel.py"))
     assert 'ALERT_CODE_FREEZE = "S-04"' in fs and 'ALERT_CODE_NOT_STARTED = "S-05"' in fs
@@ -107,7 +117,7 @@ def test_1_every_catalog_code_has_a_sender():
 
 def test_2_resolvers_exist_for_episodes():
     s = _src("main.py")
-    for code in ("S-01", "S-02", "S-03", "S-06", "A-01", "A-03"):
+    for code in ("S-01", "S-02", "S-03", "S-06", "S-07", "A-01", "A-03"):
         assert '_ts_alert_resolve(self, "%s"' % code in s, code
 
 
@@ -224,3 +234,63 @@ def test_11_no_printf_comma_format_in_alert_code():
         code = [ln for ln in _src(rel).splitlines() if not ln.strip().startswith("#")]
         bad = [ln for ln in code if re.search(r'"[^"]*%[+\-0 #]*,\.?\d*f', ln)]
         assert not bad, (rel, bad[:3])
+
+
+# ── [MW0602 2026-10-24] S-07 손절선 통과 뒤 미청산 ───────────────────────────
+
+def test_12_s07_stop_breach_needs_persistence_then_resolves_on_flat(mail, monkeypatch):
+    mails, clk = mail
+    monkeypatch.setattr(main, "is_market_open", lambda now: True)
+    me = _Self()                                   # SHORT 1계약 @869.70
+    me.position.stop_price = 857.30                # 신동 트레일 손절선(매도 → 위로 넘으면 히트)
+    me._px = 857.80                                # 손절선 통과
+    t0 = datetime.datetime(2026, 10, 23, 14, 53, 0)
+    main._ts_alert_stop_breach_tick(me, t0)
+    main._ts_alert_stop_breach_tick(me, t0 + datetime.timedelta(seconds=10))
+    assert mails == [], "20초 전에는 보내지 않는다(정상이면 틱 하드스톱이 이미 청산했다)"
+    main._ts_alert_stop_breach_tick(me, t0 + datetime.timedelta(seconds=22))
+    main._ts_alert_stop_breach_tick(me, t0 + datetime.timedelta(seconds=40))
+    assert len(mails) == 1 and mails[0][0].startswith("[긴급이상][MW0602][S-07] "), _subjects(mails)
+    body = mails[0][1]
+    assert "손절선 857.30" in body and "미결 주문 없음 — 청산 주문이 나가지 않았다" in body, body
+    me.position.status = "FLAT"
+    clk.t = datetime.datetime(2026, 10, 15, 15, 20)   # 메일러 상태 파일은 메일러 시계의 날짜 단위다
+    main._ts_alert_stop_breach_tick(me, clk.t)
+    assert len(mails) == 2 and mails[1][0].startswith("[이상해소][MW0602][S-07] "), _subjects(mails)
+
+
+def test_13_s07_inside_stop_or_no_stop_or_closed_market_is_quiet(mail, monkeypatch):
+    mails, _clk = mail
+    me = _Self()
+    t0 = datetime.datetime(2026, 10, 23, 10, 0, 0)
+    monkeypatch.setattr(main, "is_market_open", lambda now: True)
+    me.position.stop_price = 0.0                   # 손절선 미설정
+    for s in (0, 30, 60):
+        main._ts_alert_stop_breach_tick(me, t0 + datetime.timedelta(seconds=s))
+    me.position.stop_price = 880.0                 # 손절선 안(매도 · 현재가 863 < 880)
+    for s in (90, 120, 150):
+        main._ts_alert_stop_breach_tick(me, t0 + datetime.timedelta(seconds=s))
+    # 손절선 밖이지만 중간에 안으로 돌아오면 연속 시간이 리셋된다
+    me.position.stop_price = 862.0
+    main._ts_alert_stop_breach_tick(me, t0 + datetime.timedelta(seconds=200))
+    me._px = 861.0
+    main._ts_alert_stop_breach_tick(me, t0 + datetime.timedelta(seconds=215))
+    me._px = 863.0
+    main._ts_alert_stop_breach_tick(me, t0 + datetime.timedelta(seconds=225))
+    assert mails == [], _subjects(mails)
+    monkeypatch.setattr(main, "is_market_open", lambda now: False)   # 장 밖
+    for s in (300, 330, 360):
+        main._ts_alert_stop_breach_tick(me, t0 + datetime.timedelta(seconds=s))
+    assert mails == []
+
+
+def test_14_s07_exception_does_not_block_later_state_checks(mail, monkeypatch):
+    """S-07 판정이 예외를 내도 같은 2초 판정의 A-01 이 계속 돈다(독립 try)."""
+    mails, _clk = mail
+    monkeypatch.setattr(main, "is_trading_day", lambda now: True)
+    monkeypatch.setattr(main, "_ts_alert_stop_breach_tick", lambda self, now: 1 / 0)
+    me = _Self()
+    me._exchange_cb_mode = True
+    me._exchange_cb_start = datetime.datetime(2026, 10, 23, 10, 0)
+    main._ts_alert_state_tick(me, datetime.datetime(2026, 10, 23, 10, 5))
+    assert any("[A-01]" in s for s in _subjects(mails)), _subjects(mails)

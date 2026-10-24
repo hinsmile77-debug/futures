@@ -87,6 +87,7 @@ from config.settings import (
     EXIT_REJECT_DETAIL_QUERY, EXIT_REJECT_BLOCK_ENTRIES,
     ALERT_FORCE_EXIT_CHECK_HM, ALERT_LOSS_TRADE_KRW, ALERT_LOSS_DAY_PCT,   # [MW0602 2026-10-17] 긴급 알림
     ALERT_BROKER_LOST_SEC, ALERT_MARGINQTY_FAIL_MIN, ALERT_LOSS_CAPITAL_KRW,
+    ALERT_STOP_BREACH_SEC,                                               # [MW0602 2026-10-24] S-07
     TP1_TICK_ENABLED,                     # [403차 종합 P1-5] tick-level TP1 킬스위치
     TOXICITY_SEVERE_SPREAD_BLOCK_ENABLED, TOXICITY_SEVERE_SPREAD_BLOCK_TICKS,
     TOXICITY_REDUCE_MULT_SHADOW_HI, TOXICITY_REDUCE_MULT_SHADOW_LO,
@@ -1108,6 +1109,8 @@ class TradingSystem:
         self._alert_day:               object = None
         self._alert_day_net:           float  = 0.0
         self._alert_broker_lost_at:    object = None
+        # [MW0602 2026-10-24] S-07 — 실시간가가 손절선 밖에 처음 머문 시각(None = 손절선 안 · FLAT)
+        self._alert_stop_breach_since: object = None
 
         # ── P1-a: Restart Armistice ────────────────────────────────────────────
         # 재시작 직후 90초간 + broker sync 2회 clean 전까지 신규 진입 차단.
@@ -17897,6 +17900,7 @@ def _ts_alert_state_tick(self, now=None) -> None:
     """상태형 사건의 발생·해소를 한곳에서 판정한다(2초 타이머) — 해소를 빠뜨리지 않기 위해서다.
 
       S-02  15:12 이후 포지션 잔존(오버나이트 위험) ↔ FLAT
+      S-07  보유 중 실시간가가 손절선 밖에 ALERT_STOP_BREACH_SEC 이상 ↔ FLAT  [MW0602 2026-10-24]
       A-01  거래소 CB 중단(재개 대기) ↔ 재개
       A-03  미륵 서킷브레이커 PAUSED/HALTED ↔ NORMAL
     """
@@ -17916,6 +17920,10 @@ def _ts_alert_state_tick(self, now=None) -> None:
                  "청산 지정가 래치: %s" % (self._exit_limit_mode_reason or "없음")])
         elif self.position.status == "FLAT" and _ts_alert_is_open("S-02"):
             _ts_alert_resolve(self, "S-02", note="포지션 FLAT 확인")
+        try:                                          # S-07 — 독립 try: 예외가 뒤의 A-01·A-03 판정을 막지 않게
+            _ts_alert_stop_breach_tick(self, now)
+        except Exception as _sb_e:
+            logger.warning("[AlertMail] S-07 판정 예외 (무해): %s", _sb_e)
         # A-01
         if self._exchange_cb_mode:
             _st = self._exchange_cb_start
@@ -17936,6 +17944,41 @@ def _ts_alert_state_tick(self, now=None) -> None:
                     _ts_alert_resolve(self, "A-03", key=_k, note="CB NORMAL 복귀")
     except Exception as _st_e:
         logger.warning("[AlertMail] 상태 점검 예외 (무해): %s", _st_e)
+
+
+def _ts_alert_stop_breach_tick(self, now) -> None:
+    """[MW0602 2026-10-24] S-07 손절선 통과 뒤 미청산 — 2초 타이머(`_ts_alert_state_tick`)에서 부른다.
+
+    보유 중 실시간가(`_peter2_last_price` = 틱마다 갱신되는 `_last_pipeline_price`)가 `position.stop_price`
+    밖에 ALERT_STOP_BREACH_SEC 이상 연속으로 머물면 1통(에피소드). 해소 = FLAT.
+    가격이 손절선 안으로 돌아오면 연속 시간만 리셋한다(에피소드가 이미 열렸으면 FLAT 까지 유지 —
+    손절선을 넘었는데 청산되지 않은 포지션은 그 자체로 이상이다).
+    ⚠ 알림 전용 — 청산·주문 경로를 바꾸지 않는다. 예외는 밖으로 내보내지 않는다(호출부 try).
+    """
+    pos = self.position
+    if pos.status == "FLAT":
+        self._alert_stop_breach_since = None
+        if _ts_alert_is_open("S-07"):
+            _ts_alert_resolve(self, "S-07", note="포지션 FLAT 확인")
+        return
+    px = self._peter2_last_price()
+    stop = float(pos.stop_price or 0.0)
+    if not px or stop <= 0.0 or not is_market_open(now) or not pos.is_stop_hit(px):
+        self._alert_stop_breach_since = None
+        return
+    if self._alert_stop_breach_since is None:
+        self._alert_stop_breach_since = now
+        return
+    held = (now - self._alert_stop_breach_since).total_seconds()
+    if held < float(ALERT_STOP_BREACH_SEC):
+        return
+    po = self._pending_order
+    _ts_alert(self, "S-07", "%s %s계약 · 손절선 %.2f 통과 %.0f초째 미청산 (현재가 %.2f)" % (
+        pos.status, pos.quantity, stop, held, px),
+        ["진입 주체 %s · 진입가 %.2f" % (pos.entry_source or "?", float(pos.entry_price or 0.0)),
+         "미결 주문 %s" % (("%s %s계약" % (po.get("kind"), po.get("qty"))) if po else "없음 — 청산 주문이 나가지 않았다"),
+         "청산 거부 에피소드 %s · 청산 지정가 래치 %s" % (
+             "열림" if self._exit_reject_episode_at else "없음", self._exit_limit_mode_reason or "없음")])
 
 
 def _ts_alert_trade_loss(self, result: dict) -> None:

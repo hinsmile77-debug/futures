@@ -7135,6 +7135,10 @@ ALERT_LOSS_DAY_PCT = 0.05               # 당일 실현 순손실 ≥ ALERT_LOSS
 ALERT_FORCE_EXIT_CHECK_HM = "15:12"
 # S-06 브로커 연결 끊김이 이 초 넘게 이어지면 경보(순간 끊김·자동 재연결은 제외)
 ALERT_BROKER_LOST_SEC = 60.0
+# [MW0602 2026-10-24] S-07 보유 중 실시간가가 손절선(position.stop_price) 밖에 이 초 넘게 머물면 경보.
+#   정상이면 틱 하드스톱이 즉시 청산하고, 거부면 S-01 이 뜬다 — S-07 은 「거부 없이 청산이 안 나간」
+#   경우(주문 미송신 · 미결 고착 · 경로 누락)까지 잡는 최종 감시다. 지정가 래치 8초 + 재송신 여유.
+ALERT_STOP_BREACH_SEC = 20.0
 # B-02 주문가능수량 조회 실패가 하루 이 횟수 이상이면 장후 1통
 ALERT_MARGINQTY_FAIL_MIN = 5
 # S-05 장전 미기동 — 센티넬이 이 시각까지 그날 SYSTEM.log 가 신선하지 않으면 경보
