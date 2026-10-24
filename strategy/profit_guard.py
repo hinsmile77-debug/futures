@@ -12,6 +12,7 @@ Layer 4: ProfitProtectionCB     — 수익 상태에서 연속 손실 → 즉시
   - 각 Layer는 독립적으로 동작, 어느 하나라도 BLOCK → 진입 차단
   - 파라미터는 ProfitGuardConfig로 런타임 변경 가능 (대시보드 연동)
 """
+import copy
 import datetime
 import logging
 from typing import Optional, List, Tuple
@@ -369,11 +370,16 @@ class ProfitGuard:
         # [MW0601 707차] 원화 임계 배율 — 원본(배율 1) 값을 보존해 두고 배율이 바뀔 때만 다시 계산한다.
         #   횟수·비율(오후 3회 · 2연패 · 35%)과 size_mult 요건은 바꾸지 않는다.
         self.krw_scale: float = 1.0
-        self._krw_base = (
-            float(self.cfg.trail_activation_krw),
-            [tuple(t) for t in self.cfg.profit_tiers],
-            float(self.cfg.afternoon_min_pnl_krw),
-            float(self.cfg.profit_cb_min_pnl_krw),
+        self._krw_base = self._capture_krw_base(self.cfg)
+
+    @staticmethod
+    def _capture_krw_base(cfg) -> tuple:
+        """배율 1 기준 원화 임계 4종 스냅샷 — `set_krw_scale` 이 언제나 이 값에서 다시 계산한다."""
+        return (
+            float(cfg.trail_activation_krw),
+            [tuple(t) for t in cfg.profit_tiers],
+            float(cfg.afternoon_min_pnl_krw),
+            float(cfg.profit_cb_min_pnl_krw),
         )
 
     def set_krw_scale(self, scale: float, why: str = "") -> bool:
@@ -726,9 +732,22 @@ class ProfitGuard:
         )
 
     def update_config(self, new_cfg: ProfitGuardConfig):
-        """대시보드에서 파라미터 변경 시 호출."""
-        self.cfg = new_cfg
-        logger.info("[ProfitGuard] 설정 업데이트 완료")
+        """대시보드에서 파라미터 변경 시 호출. new_cfg 는 **배율 1 기준(사용자 값)** 이다.
+
+        🔴 [MW0602 659차] 종전에는 `self.cfg = new_cfg` 만 하고 배율 원본(`_krw_base`)을 갱신하지 않았다 →
+          원본이 생성자 시점의 **기본값**으로 남아, 그 뒤 배율이 한 번 바뀌는 순간 사용자 임계(prefs)가
+          「기본값 × 배율」로 덮어써졌다. 2026-10-23 08:45 실측: ×1.5 전환에서 L1 300만(사용자 150만 → 225만이어야) ·
+          L3 150만(→300만) · L4 225만(→150만) · 중간 등급 경계 기본값(100·200·300만 ×1.5) 부활.
+          V4 는 ATR 연동 수량(X%)으로 장전 ×1.5 → ATR 확정 뒤 ×1.0 전환이 매일 생겨 이 결함이 매일 발현한다.
+        수정: ① 원본을 새 설정으로 다시 잡고 ② 지금 배율을 다시 건다 ③ **복사본**에 건다 — 패널은 이 호출 직후
+          같은 객체를 prefs 파일에 저장하므로, 그 자리에서 배율을 걸면 배율 적용값이 저장돼 누적된다.
+        """
+        self.cfg = copy.deepcopy(new_cfg)
+        self._krw_base = self._capture_krw_base(self.cfg)
+        s, self.krw_scale = self.krw_scale, 1.0
+        if abs(s - 1.0) > 1e-9:
+            self.set_krw_scale(s, why="설정 변경 — 새 원본에 배율 재적용")
+        logger.info("[ProfitGuard] 설정 업데이트 완료 (원화 임계 배율 ×%.2f)", self.krw_scale)
 
     # ── 시뮬레이션 (백테스트용) ───────────────────────────────────
     @staticmethod
