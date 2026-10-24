@@ -85,6 +85,8 @@ from config.settings import (
     EXIT_CLOSABLE_QTY_FRESH_SEC,
     EXIT_ASYNC_REJECT_HANDLE, EXIT_LIMIT_FALLBACK_ENABLED,  # [MW0602 2026-10-17] 10/15 청산 거부
     EXIT_LIMIT_SLIP_TICKS, EXIT_LIMIT_UNFILLED_SEC,
+    EXIT_LIMIT_ESCALATION_ENABLED, EXIT_LIMIT_ESCALATION_TICKS,           # [MW0602 2026-10-24] A2·A3
+    EXIT_LIMIT_ESCALATE_TO_PRICE_LIMIT, EXIT_LIMIT_PRICE_LIMIT_AFTER_SEC,
     EXIT_REJECT_DETAIL_QUERY, EXIT_REJECT_BLOCK_ENTRIES,
     ALERT_FORCE_EXIT_CHECK_HM, ALERT_LOSS_TRADE_KRW, ALERT_LOSS_DAY_PCT,   # [MW0602 2026-10-17] 긴급 알림
     ALERT_BROKER_LOST_SEC, ALERT_MARGINQTY_FAIL_MIN, ALERT_LOSS_CAPITAL_KRW,
@@ -183,7 +185,7 @@ from strategy.entry.time_strategy_router import (
     is_entry_zone,
 )
 from utils.market_state import (   # [404차 후속5·6] 거래불능 구간 / 가격제한선
-    is_untradeable_now, is_at_daily_limit,
+    is_untradeable_now, is_at_daily_limit, effective_price_limits,
 )
 from strategy.entry.position_sizer import PositionSizer
 from strategy.entry.meta_gate import MetaGate
@@ -1122,6 +1124,10 @@ class TradingSystem:
         # [MW0602 2026-10-24 / A4] 지정가 청산이 미체결 취소된 시각 — 다음 청산 송신은 「재송신」이다.
         #   None = 재송신 아님. FLAT · 거부 에피소드 종료 때 지운다.
         self._exit_resend_since:       object = None
+        # [MW0602 2026-10-24 / A2·A3] 청산 지정가 단계(0 = 첫 단계) · 그 단계가 속한 포지션 키.
+        #   미체결 취소 확인마다 +1. 포지션 키가 바뀌면(새 포지션) 0 으로 돌아간다.
+        self._exit_limit_step:         int    = 0
+        self._exit_limit_step_key:     object = None
         # [MW0602 2026-10-17] 긴급 알림 메일 — 서버 라벨(기동 시 1회 캐시) · A-04 당일 누적 · S-06 끊김 시각
         self._alert_server_label:      object = None
         self._alert_day:               object = None
@@ -17765,8 +17771,9 @@ def _ts_latch_exit_limit_mode(self, why: str) -> None:
     self._exit_limit_mode_reason = str(why)
     log_manager.system(
         "[청산지정가] 래치 — 오늘 남은 청산은 체결 가능한 지정가로 보낸다 (사유: %s)" % why, "ERROR")
-    log_manager.trade("[청산지정가] 래치 — 이후 청산은 지정가(상대 최우선 ± %d틱) · 사유: %s"
-                      % (EXIT_LIMIT_SLIP_TICKS, why))
+    log_manager.trade("[청산지정가] 래치 — 이후 청산은 지정가(상대 최우선 ± %s틱 → 가격제한폭, 미체결마다 상향) · 사유: %s"
+                      % ("→".join(str(t) for t in EXIT_LIMIT_ESCALATION_TICKS) if EXIT_LIMIT_ESCALATION_ENABLED
+                         else EXIT_LIMIT_SLIP_TICKS, why))
     # [MW0602 2026-10-17] A-02 — 시장가가 거부되는 구간(가격제한폭 확대 등)에 들어왔다는 사실을 사람에게
     _ts_alert(self, "A-02", "청산을 지정가로 전환", ["사유 %s" % why,
               "가격제한폭 확대(하·상한가 도달 5분) 또는 CB 재개 뒤에는 시장가가 0707 로 거부된다"],
@@ -17796,11 +17803,97 @@ def _ts_exit_limit_price(self, side: str, code: str):
         src = "직전가 %.2f(호가 미확보)" % ref
     if ref <= 0:
         return None, "기준가 미확보"
-    raw = ref + EXIT_LIMIT_SLIP_TICKS * tick if side == "BUY" else ref - EXIT_LIMIT_SLIP_TICKS * tick
+    if not EXIT_LIMIT_ESCALATION_ENABLED:
+        raw = ref + EXIT_LIMIT_SLIP_TICKS * tick if side == "BUY" else ref - EXIT_LIMIT_SLIP_TICKS * tick
+        price = round(round(raw / tick) * tick, 2)
+        if price <= 0:
+            return None, "가격 비정상 %.2f" % price
+        return price, src + " · +%d틱" % EXIT_LIMIT_SLIP_TICKS
+    return _ts_exit_limit_escalated_price(self, side, ref, tick, src)
+
+
+def _ts_exit_limit_step_now(self) -> int:
+    """[A2·A3] 지금 청산 지정가 단계 — 0..len(TICKS)-1 = 틱 단계, len(TICKS) = 가격제한폭.
+
+    포지션 키(방향·진입가·진입시각)가 바뀌면 0 으로 되돌린다(새 포지션은 첫 단계부터).
+    거부 에피소드가 EXIT_LIMIT_PRICE_LIMIT_AFTER_SEC 를 넘겼으면 가격제한폭 단계(A3).
+    """
+    pos = self.position
+    key = (pos.status, float(pos.entry_price or 0.0), str(getattr(pos, "entry_time", "") or ""))
+    if self._exit_limit_step_key is None:
+        self._exit_limit_step_key = key              # 첫 지정가 — 이미 쌓인 단계를 지우지 않는다
+    elif self._exit_limit_step_key != key:
+        if self._exit_limit_step:
+            logger.info("[청산지정가] 새 포지션 — 단계 %d → 0 초기화", self._exit_limit_step)
+        self._exit_limit_step_key = key
+        self._exit_limit_step = 0
+    n = len(EXIT_LIMIT_ESCALATION_TICKS)
+    top = n if EXIT_LIMIT_ESCALATE_TO_PRICE_LIMIT else n - 1
+    step = min(max(0, int(self._exit_limit_step)), top)
+    ep = self._exit_reject_episode_at
+    if (EXIT_LIMIT_ESCALATE_TO_PRICE_LIMIT and ep is not None
+            and (datetime.datetime.now() - ep).total_seconds() >= float(EXIT_LIMIT_PRICE_LIMIT_AFTER_SEC)):
+        step = n
+    return step
+
+
+def _ts_exit_price_band(self, ref: float):
+    """[A2·A3] 지금 유효한 (하한가, 상한가) — 미확보면 (None, None). 장중 확대 단계는 세션 고·저가 래칫."""
+    rd = getattr(self, "realtime_data", None)
+    lim = dict(getattr(rd, "daily_limits", None) or {}) if rd is not None else {}
+    base = float(lim.get("base") or 0.0)
+    if base <= 0:
+        up, lo = float(lim.get("upper") or 0.0), float(lim.get("lower") or 0.0)
+        return (lo, up) if (up > 0 and lo > 0) else (None, None)
+    hi = lo_px = 0.0
+    try:
+        _today = datetime.datetime.now().strftime("%Y-%m-%d")
+        bars = list(getattr(rd, "candles", None) or [])
+        cur = getattr(rd, "current_bar", None)
+        if cur:
+            bars.append(cur)
+        # 오늘 09:00 이후 봉만 — 전날 봉이 섞이면 확대 단계를 과대 추정해 범위 밖 지정가가 된다
+        bars = [b for b in bars if b and str(b.get("ts", ""))[:10] == _today
+                and str(b.get("ts", ""))[11:16] >= "09:00"]
+        highs = [float(b.get("high") or 0.0) for b in bars if b]
+        lows = [float(b.get("low") or 0.0) for b in bars if b and float(b.get("low") or 0.0) > 0]
+        hi = max(highs) if highs else 0.0
+        lo_px = min(lows) if lows else 0.0
+    except Exception:
+        hi = lo_px = 0.0
+    eff = effective_price_limits(base, ref, max(hi, ref), min(lo_px, ref) if lo_px > 0 else ref)
+    up, lo = float(eff.get("upper") or 0.0), float(eff.get("lower") or 0.0)
+    return (lo, up) if (up > 0 and lo > 0) else (None, None)
+
+
+def _ts_exit_limit_escalated_price(self, side: str, ref: float, tick: float, src: str):
+    """[A2·A3] 단계별 청산 지정가 — (가격, 기준 문자열). 기준 문자열에 단계·틱·제한폭 클램프를 남긴다."""
+    step = _ts_exit_limit_step_now(self)
+    n = len(EXIT_LIMIT_ESCALATION_TICKS)
+    lo, up = _ts_exit_price_band(self, ref)
+    if step >= n:
+        lim_px = up if side == "BUY" else lo
+        if lim_px:
+            price = round(round(lim_px / tick) * tick, 2)
+            if side == "BUY" and price > up:
+                price = round(price - tick, 2)
+            if side == "SELL" and price < lo:
+                price = round(price + tick, 2)
+            return price, src + " · 단계 %d/%d 가격제한폭(%s %.2f)" % (
+                n + 1, n + 1, "상한" if side == "BUY" else "하한", lim_px)
+        step = n - 1
+        src += " · 가격제한폭 미확보 → 마지막 틱 단계"
+    ticks = int(EXIT_LIMIT_ESCALATION_TICKS[step])
+    raw = ref + ticks * tick if side == "BUY" else ref - ticks * tick
     price = round(round(raw / tick) * tick, 2)
+    tag = " · 단계 %d/%d +%d틱" % (step + 1, n + (1 if EXIT_LIMIT_ESCALATE_TO_PRICE_LIMIT else 0), ticks)
+    if up and side == "BUY" and price > up:
+        price, tag = round(int(up / tick) * tick, 2), tag + " → 상한 %.2f 로 자름" % up
+    if lo and side == "SELL" and price < lo:
+        price, tag = round(-int(-lo / tick) * tick, 2), tag + " → 하한 %.2f 로 자름" % lo
     if price <= 0:
         return None, "가격 비정상 %.2f" % price
-    return price, src
+    return price, src + tag
 
 
 _RESEND_BALANCE_JSONL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data",
@@ -17952,8 +18045,8 @@ def _ts_send_exit_order_core(self, *, account_no: str, code: str, side: str, qty
             ret = int(res.get("ret", -1))
             order_no = str(res.get("order_no", "") or "")
             log_manager.trade(
-                "[청산지정가] %s %d계약 @ %.2f (%s · +%d틱) ret=%s order_no=%s"
-                % (side, qty, price, src, EXIT_LIMIT_SLIP_TICKS, ret, order_no or "?"))
+                "[청산지정가] %s %d계약 @ %.2f (%s) ret=%s order_no=%s"
+                % (side, qty, price, src, ret, order_no or "?"))
             po = self._pending_order
             if ret == 0 and po is not None and str(po.get("kind", "")).startswith("EXIT"):
                 po["exit_limit"] = True
@@ -18075,6 +18168,11 @@ def _ts_alert_state_tick(self, now=None) -> None:
                  "청산 지정가 래치: %s" % (self._exit_limit_mode_reason or "없음")])
         elif self.position.status == "FLAT" and _ts_alert_is_open("S-02"):
             _ts_alert_resolve(self, "S-02", note="포지션 FLAT 확인")
+        try:                                          # [2026-10-24] 장기 미해소 재알림 — 독립 try
+            from utils import alert_mail as _am
+            _am.remind_due(lambda: _ts_alert_context(self))
+        except Exception as _rm_e:
+            logger.warning("[AlertMail] 재알림 판정 예외 (무해): %s", _rm_e)
         try:                                          # 재기동 직후 손절 재판정 · S-08 — 독립 try
             _ts_restart_stop_check_tick(self, now)
         except Exception as _rs_e:
@@ -22298,6 +22396,7 @@ def _ts_on_chejan_event_cybos_safe(self, payload: dict) -> None:
             self._clear_pending_order()
             if self._exit_resend_since is None:      # [A4] 다음 청산 송신 = 재송신(상태 저장만 — §4)
                 self._exit_resend_since = datetime.datetime.now()
+            self._exit_limit_step += 1               # [A2] 다음 재송신은 한 단계 넓게(상태 저장만 — §4)
             return
 
     if not is_final_fill:

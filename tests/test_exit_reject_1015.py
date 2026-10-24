@@ -96,6 +96,9 @@ class _Self(object):
         self._broker_closable_qty_at = None
         self._exit_limit_mode_reason = None
         self._exit_reject_episode_at = None
+        self._exit_resend_since = None           # [A4]
+        self._exit_limit_step = 0                # [A2·A3]
+        self._exit_limit_step_key = None
         self.cleared = 0
 
     def _get_active_account_no(self):

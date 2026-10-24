@@ -241,9 +241,79 @@ class AlertMailer(object):
         lines += ["  · " + str(d) for d in (details or [])]
         if todo:
             lines += ["", "할 일"] + ["  %d. %s" % (i + 1, t) for i, t in enumerate(todo)]
-        lines += ["", "— 미륵이 %s 자동 발송(%s). 같은 사건으로는 다시 보내지 않고, 해소되면 %s 메일을 보냅니다."
+        lines += ["", "— 미륵이 %s 자동 발송(%s). 해소되지 않으면 정해진 간격으로 재알림을 보내고, 해소되면 %s 메일을 보냅니다."
                   % (self.pc, code, TAG_RESOLVE)]
         return subject, "\n".join(lines)
+
+    def build_remind(self, code: str, ep: dict, n: int, maxn: int, minutes: float,
+                     context: Optional[Dict[str, str]] = None, now=None):
+        """재알림 (제목, 본문) — 발생 때 요약·세부 + **지금** 포지션 문맥."""
+        now = now or self._clock()
+        title, todo = CATALOG.get(code, (code, []))
+        subject = "%s[%s][%s] 재알림 %d — %s 미해소 %d분 — %s" % (
+            TAG_ALERT, self.pc, code, n, title, int(minutes), ep.get("summary", ""))
+        ctx = context or {}
+        lines = ["재알림 %d/%d · 발생 %s · 지속 %d분 · PC %s · %s" % (
+            n, maxn, str(ep.get("at", "?")).replace("T", " "), int(minutes), self.pc,
+            SEVERITY.get(code[:1], code))]
+        lines.append("지금 서버 %s" % ctx.get("server", "미측정"))
+        lines.append("지금 포지션 %s" % ctx.get("position", "미측정"))
+        lines += ["", "사건(발생 때)", "  " + str(ep.get("summary", ""))]
+        lines += ["  · " + str(d) for d in (ep.get("details") or [])]
+        if todo:
+            lines += ["", "할 일"] + ["  %d. %s" % (i + 1, t) for i, t in enumerate(todo)]
+        lines += ["", "— 미륵이 %s 자동 발송(%s). 아직 해소되지 않았습니다. 해소되면 %s 메일을 보냅니다."
+                  % (self.pc, code, TAG_RESOLVE)]
+        return subject, "\n".join(lines)
+
+    def remind_due(self, context_fn: Optional[Callable[[], Dict[str, str]]] = None, now=None) -> List[str]:
+        """[2026-10-24] 장기 미해소 재알림 — 때가 된 열린 에피소드에 1통씩. 반환: 보낸 코드 목록.
+
+        자주(2초) 불러도 된다 — 때가 된 것이 없으면 파일 IO·문맥 산출 없이 끝난다.
+        """
+        try:
+            if not _cfg("ALERT_MAIL_REMIND_ENABLED", True):
+                return []
+            sched = tuple(_cfg("ALERT_MAIL_REMIND_MIN", (5, 15, 30, 60)) or ())
+            if not sched:
+                return []
+            maxn = int(_cfg("ALERT_MAIL_REMIND_MAX", 6))
+            grades = tuple(_cfg("ALERT_MAIL_REMIND_GRADES", ("S",)) or ())
+            due = []
+            with self._lock:
+                st = self._load()
+                now = now or self._clock()
+                for k, ep in st["open"].items():
+                    code = k.split("|", 1)[0]
+                    if not code.startswith(grades):
+                        continue
+                    n = int(ep.get("reminded", 0) or 0)
+                    if n >= maxn:
+                        continue
+                    try:
+                        mins = (now - datetime.datetime.fromisoformat(str(ep.get("at")))).total_seconds() / 60.0
+                    except Exception:
+                        continue
+                    if mins >= remind_threshold_min(sched, n):
+                        ep["reminded"] = n + 1
+                        due.append((code, dict(ep), n + 1, mins))
+                if due:
+                    self._save()
+            if not due:
+                return []
+            ctx = None
+            if context_fn is not None:
+                try:
+                    ctx = context_fn()
+                except Exception:
+                    ctx = None
+            for code, ep, n, mins in due:
+                subject, body = self.build_remind(code, ep, n, maxn, mins, ctx, now)
+                self._dispatch(subject, body, level="CRITICAL")
+            return [c for c, _e, _n, _m in due]
+        except Exception as exc:
+            logger.warning("[AlertMail] 재알림 실패 (무해): %s", exc)
+            return []
 
     def build_resolve(self, code: str, opened_at: Optional[str], note: str = "", now=None):
         now = now or self._clock()
@@ -276,7 +346,9 @@ class AlertMailer(object):
                 if k in st["open"]:
                     return False
                 now = self._clock()
-                st["open"][k] = {"at": now.isoformat(timespec="seconds"), "summary": str(summary)[:200]}
+                st["open"][k] = {"at": now.isoformat(timespec="seconds"), "summary": str(summary)[:200],
+                                 # [2026-10-24] 재알림 본문용 — 발생 때의 세부 · 보낸 재알림 수
+                                 "details": [str(d)[:200] for d in (details or [])][:8], "reminded": 0}
                 st.setdefault("history", []).append(code)
                 self._save()
             subject, body = self.build_alert(code, summary, details, context, now)
@@ -395,6 +467,17 @@ _INSTANCE: Optional[AlertMailer] = None
 _INST_LOCK = threading.Lock()
 
 
+def remind_threshold_min(sched, n: int) -> float:
+    """n 번째(0부터) 재알림까지의 경과 분. 목록을 다 쓰면 마지막 간격의 배수로 이어간다.
+    (5,15,30,60) → 5·15·30·60·120·180…"""
+    sched = tuple(sched or ())
+    if not sched:
+        return float("inf")
+    if n < len(sched):
+        return float(sched[n])
+    return float(sched[-1]) * (n - len(sched) + 2)
+
+
 def get_mailer() -> AlertMailer:
     global _INSTANCE
     with _INST_LOCK:
@@ -455,3 +538,7 @@ def is_open(code, key="") -> bool:
 
 def happened_today(code) -> bool:
     return get_mailer().happened_today(code)
+
+
+def remind_due(context_fn=None) -> List[str]:
+    return get_mailer().remind_due(context_fn)

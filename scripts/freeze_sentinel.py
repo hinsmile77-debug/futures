@@ -579,9 +579,37 @@ def build_alert_mail(verdict, pc, now, stall_sec):
         "  " + str(verdict.get("headline", "")),
     ]
     lines += ["  · " + str(d) for d in verdict.get("details", [])]
-    lines += ["", "— 미륵이 %s 동결 센티넬(FZ-2) 자동 발송. 같은 동결로는 다시 보내지 않고, "
-                  "회복되면 %s 메일을 보냅니다." % (pc, MAIL_TAG_RECOVER)]
+    lines += ["", "— 미륵이 %s 동결 센티넬(FZ-2) 자동 발송. 회복되지 않으면 정해진 간격으로 재알림을 "
+                  "보내고, 회복되면 %s 메일을 보냅니다." % (pc, MAIL_TAG_RECOVER)]
     return subject, chr(10).join(lines)
+
+
+def remind_schedule():
+    """(분 목록, 최대 횟수) — utils/alert_mail 과 같은 설정. 비활성이면 ((), 0)."""
+    if not _cfg("ALERT_MAIL_REMIND_ENABLED", True):
+        return (), 0
+    return tuple(_cfg("ALERT_MAIL_REMIND_MIN", (5, 15, 30, 60)) or ()), int(_cfg("ALERT_MAIL_REMIND_MAX", 6))
+
+
+def remind_due_n(alerted_at, now, sent_n):
+    """[2026-10-24] 동결이 이어질 때 다음 재알림 번호(1부터) — 때가 아니면 None."""
+    sched, maxn = remind_schedule()
+    if alerted_at is None or not sched or sent_n >= maxn:
+        return None
+    from utils.alert_mail import remind_threshold_min
+    mins = (now - alerted_at).total_seconds() / 60.0
+    return sent_n + 1 if mins >= remind_threshold_min(sched, sent_n) else None
+
+
+def build_remind_mail(verdict, pc, now, alerted_at, n):
+    """동결 재알림 (제목, 본문) — 1단계 메일 본문에 재알림 머리를 얹는다."""
+    _s, _b = build_alert_mail(verdict, pc, now, 0)
+    mins = int((now - alerted_at).total_seconds() / 60.0)
+    subject = "%s[%s][%s] 재알림 %d — 미륵이 동결 미해소 %d분 %s" % (
+        MAIL_TAG_ALERT, pc, ALERT_CODE_FREEZE, n, mins, now.strftime("%H:%M"))
+    head = "재알림 %d — 동결 확정 %s 이후 %d분째 신호가 돌아오지 않았습니다." % (
+        n, alerted_at.strftime("%H:%M:%S"), mins)
+    return subject, head + chr(10) + chr(10) + _b
 
 
 def build_recovery_mail(pc, since, now):
@@ -1080,10 +1108,16 @@ def main(argv=None):
     last_rc = RC_NOT_APPLICABLE
     alerted = False
     alerted_at = None      # [F-1009] 회복 메일의 지속시간 계산용
+    reminded = 0           # [2026-10-24] 같은 동결로 보낸 재알림 수
     close_logged = False   # [498차 F-10] NORMAL_CLOSE 는 상태 전이 시 1회만 남긴다
     while True:
         now = datetime.datetime.now()
         _pm = premarket.tick(now)          # [S-05] 창 밖(08:52~09:00)에서도 돈다
+        if _pm == "OPEN":                  # [2026-10-24] S-05 장기 미해소 재알림(AlertMailer 일정)
+            try:
+                premarket.mailer().remind_due()
+            except Exception:
+                pass
         if _pm in ("RAISED", "RESOLVED"):
             log_line(root, now.date(), "[FreezeSentinel] %s 장전 기동 감시 %s"
                      % (now.strftime("%Y-%m-%d %H:%M:%S"), _pm))
@@ -1133,6 +1167,7 @@ def main(argv=None):
                     send_mail_async(root, now.date(), _s, _b, slack_too=slack_too)
                 if not alerted:
                     alerted_at = now
+                    reminded = 0
                 alerted = True
                 time.sleep(check)
                 continue
@@ -1163,8 +1198,16 @@ def main(argv=None):
             # 같은 동결로 매 주기 팝업을 띄우면 사람이 화면을 못 쓴다 — 첫 확정에만
             # 팝업·마커를 내고 이후는 로그만 남긴다(경보 피로 방지).
             emit(root, now.date(), verdict, popup=(popup and not alerted), manual=alerted)
+            if alerted and mail_on and _pm != "OPEN":
+                # [2026-10-24] 장기 미해소 재알림 — 같은 동결이 이어지면 정해진 간격으로 1통씩.
+                _rn = remind_due_n(alerted_at, now, reminded)
+                if _rn is not None:
+                    reminded = _rn
+                    _s, _b = build_remind_mail(verdict, pc, now, alerted_at, _rn)
+                    send_mail_async(root, now.date(), _s, _b, slack_too=slack_too)
             if not alerted:
                 alerted_at = now
+                reminded = 0
                 if mail_on and _pm == "OPEN":
                     # [S-05] 오늘 기동 자체가 없었다 — 이미 「장전 미기동」으로 알렸다.
                     #   어제 남은 하트비트 때문에 「동결」로 한 통 더 가지 않게 한다.
