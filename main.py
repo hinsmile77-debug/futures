@@ -720,8 +720,10 @@ class TradingSystem:
         from features.technical.atr import ATRCalculator as _LightATR
         self._light_atr = _LightATR()
         self._light_atr_dry = _LightATR()          # dry-run 전용(실집행 상태와 섞지 않는다)
-        self._light_atr_primed = False             # DB 최근 봉 예열 여부(첫 경량 패스에서 1회)
-        self._light_atr_dry_primed = False
+        # 경량 ATR 의 「오늘」 — 미륵 피처 ATR 과 같은 정의(매일 리셋 · 08:45 프리장 봉부터 누적)를 지키려고
+        #   날짜가 바뀌면 리셋하고 당일 앞선 봉으로만 예열한다(장중 재기동 대비). None = 아직 오늘 봉 없음.
+        self._light_atr_day = None
+        self._light_atr_dry_day = None
         self._light_pass_dry = bool(getattr(runtime_settings, "LIGHT_PASS_DRY_RUN", False)) \
             and self._mireuk_engine == "full"
         self._light_last_ts = None                 # 경량 패스 중복 분봉 가드
@@ -6683,6 +6685,15 @@ class TradingSystem:
                 self._db_write_queue.put_nowait(("candle", candle))
             except _queue.Full:
                 save_candle(candle)
+            # 미륵 피처 ATR 이 프리장 봉부터 쌓이듯 경량 ATR 도 같은 봉을 먹는다(CB④·실주문 atr 의 정의 일치)
+            try:
+                _pm_g = self._bar_price_guard(candle, str(candle.get("ts")), notify=False)
+                if _pm_g is not None:
+                    _pts = candle.get("ts")
+                    _pts = _pts.strftime("%Y-%m-%d %H:%M:%S") if hasattr(_pts, "strftime") else str(_pts)
+                    self._light_atr_update(False, _pm_g[1], _pm_g[2], _pm_g[0], _pts)
+            except Exception as _pa_e:
+                logger.debug("[LightPass] 프리장 ATR 갱신 실패(무해): %s", _pa_e)
             self._maybe_compute_levels_0850(now_dt)
             return
 
@@ -8153,18 +8164,24 @@ class TradingSystem:
         "P12_panels", "P11_cb5_record_latency",
     )
 
-    def _light_atr_prime(self, calc) -> int:
-        """경량 ATR 계산기를 DB 최근 봉으로 예열한다(기동 직후 첫 봉). → 넣은 봉 수.
+    def _light_atr_prime(self, calc, before_ts=None) -> int:
+        """경량 ATR 계산기를 DB 의 **당일 앞선 봉**으로 예열한다(장중 재기동 대비). → 넣은 봉 수.
 
-        미륵 피처의 ATR 은 같은 계산기(features/technical/atr.py, 14봉)라 예열 없이 시작하면 첫 14봉 동안
-        값이 다르다. 예열 실패는 진행을 막지 않는다 — 그 사실만 남긴다(계측 4원칙 ④).
+        미륵 피처의 ATR 은 같은 계산기(features/technical/atr.py, 14봉)이고 **매일 리셋**된다(daily_close →
+        feature_builder.reset_daily). 그래서 전날 봉은 쓰지 않는다 — 넣으면 첫 봉 TR 이 밤사이 갭을 먹어
+        ATR 비율이 튀고 CB④(3배 → 5분 정지)를 개장 직후 잘못 발동시킬 수 있다.
+        before_ts: 이 ts **이전**(같은 날짜) 봉만 쓴다 — 방금 큐에 넣은 현재 봉이 워커에 먼저 저장됐을 때
+        예열과 이번 갱신에 이중으로 들어가지 않게 한다. 실패는 진행을 막지 않는다(계측 4원칙 ④).
         """
         try:
-            rows = fetch_recent_raw_candles(limit=calc.period * 3)
+            rows = fetch_recent_raw_candles(limit=calc.period * 3 + 1)
         except Exception as _e:
             logger.warning("[LightPass] ATR 예열 실패 — 냉시작(첫 %d봉 동안 미륵 피처 ATR 과 다를 수 있음): %s",
                            calc.period, _e)
             return 0
+        if before_ts:
+            _b = str(before_ts)[:19]
+            rows = [r for r in rows if str(r["ts"])[:10] == _b[:10] and str(r["ts"])[:19] < _b]
         n = 0
         for r in rows:
             try:
@@ -8173,6 +8190,21 @@ class TradingSystem:
             except Exception:
                 continue
         return n
+
+    def _light_atr_update(self, dry: bool, high, low, close, ts: str) -> dict:
+        """경량 ATR 1봉 갱신 — 날짜가 바뀌면 리셋 + 당일 앞선 봉 예열(장중 재기동이 아니면 0봉). dry 는 대조 전용 계산기."""
+        calc = self._light_atr_dry if dry else self._light_atr
+        day = str(ts)[:10]
+        if (self._light_atr_dry_day if dry else self._light_atr_day) != day:
+            calc.reset_daily()
+            _np = self._light_atr_prime(calc, before_ts=ts)
+            if dry:
+                self._light_atr_dry_day = day
+            else:
+                self._light_atr_day = day
+                log_manager.system(f"[LightPass] 경량 ATR {day} 시작 — 당일 앞선 봉 {_np}봉 예열"
+                                   f"{'(장중 재기동)' if _np else ''}", "INFO")
+        return calc.update(high, low, close)
 
     def _light_minute_pass(self, bar: dict) -> None:
         """[MW0602 신동 주체 리뉴얼] 미륵 휴면의 분봉 처리 — 신동이 쓰는 부품 12개만 실행한다.
@@ -8217,12 +8249,8 @@ class TradingSystem:
             logger.warning("[DBQueue] 큐 포화 — candle 동기 write fallback")
             save_candle(bar)
 
-        # P10 분봉 ATR · ATR 비율 — 미륵 피처와 같은 계산기
-        if not self._light_atr_primed:
-            self._light_atr_primed = True
-            _np = self._light_atr_prime(self._light_atr)
-            log_manager.system(f"[LightPass] 경량 분봉 패스 시작 — 미륵 휴면 · ATR 예열 {_np}봉", "INFO")
-        _ar = self._light_atr.update(high, low, close)
+        # P10 분봉 ATR · ATR 비율 — 미륵 피처와 같은 계산기·같은 일 리셋
+        _ar = self._light_atr_update(False, high, low, close, ts)
         atr = float(_ar.get("atr") or 0.0) or 0.5          # 0 이면 STEP 8 기본값(0.5)과 같게
         atr_ratio = float(_ar.get("atr_ratio") or 1.0)
         # P10 CB④ 입력 — 미륵 피처 대신 같은 정의의 경량 ATR 비율
@@ -8305,10 +8333,7 @@ class TradingSystem:
                 _issues.append("가드=%s · 파이프라인완주=%s" % ("통과" if _g else "차단", pipeline_completed))
             if _g is not None:
                 c, h, l, _v = _g
-                if not self._light_atr_dry_primed:
-                    self._light_atr_dry_primed = True
-                    self._light_atr_prime(self._light_atr_dry)
-                _ar = self._light_atr_dry.update(h, l, c)
+                _ar = self._light_atr_update(True, h, l, c, ts)
                 _ctx = self._maint_ctx if pipeline_completed else None
                 _mf = (_ctx[0] if _ctx else None) or {}
                 for _k in ("atr", "atr_ratio"):

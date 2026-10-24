@@ -87,6 +87,7 @@ class _Stub(object):
     _light_minute_pass_dry = TS._light_minute_pass_dry
     _bar_price_guard = TS._bar_price_guard
     _light_atr_prime = TS._light_atr_prime
+    _light_atr_update = TS._light_atr_update
     _light_push_profit_guard_badge = TS._light_push_profit_guard_badge
 
     def __init__(self, status="LONG", qmax=10):
@@ -99,8 +100,8 @@ class _Stub(object):
         self._db_write_queue = queue.Queue(maxsize=qmax)
         self._light_atr = ATRCalculator()
         self._light_atr_dry = ATRCalculator()
-        self._light_atr_primed = True          # 예열은 별도 테스트(DB 없음)
-        self._light_atr_dry_primed = True
+        self._light_atr_day = "2026-10-26"     # 오늘 이미 시작(예열은 별도 테스트 — DB 없음)
+        self._light_atr_dry_day = "2026-10-26"
         self._light_last_ts = None
         self._light_dry_stats = {"day": None, "bars": 0, "mismatch": 0, "atr_n": 0,
                                  "atr_maxrel": 0.0, "ms_max": 0.0}
@@ -261,12 +262,37 @@ def test_queue_full_falls_back_to_sync_save():
 def test_atr_prime_reads_recent_bars():
     s = _Stub()
     orig = main.fetch_recent_raw_candles
-    rows = [{"high": 10 + i, "low": 9 + i, "close": 9.5 + i} for i in range(20)]
+    rows = [{"ts": "2026-10-26 09:%02d:00" % i, "high": 10 + i, "low": 9 + i, "close": 9.5 + i}
+            for i in range(20)]
     main.fetch_recent_raw_candles = lambda limit=60: rows
     try:
         calc = ATRCalculator()
         assert s._light_atr_prime(calc) == 20
         assert calc._prev_close == 9.5 + 19
+        # 현재 봉(09:19)이 이미 저장돼 있어도 예열에 넣지 않는다 — 이중 반영 방지
+        calc2 = ATRCalculator()
+        assert s._light_atr_prime(calc2, before_ts="2026-10-26 09:19:00") == 19
+        assert calc2._prev_close == 9.5 + 18
+        # 전날 봉은 예열에 쓰지 않는다 — 밤사이 갭이 첫 TR 을 부풀려 CB④ 를 잘못 켜지 않게
+        calc3 = ATRCalculator()
+        assert s._light_atr_prime(calc3, before_ts="2026-10-27 08:45:00") == 0
+    finally:
+        main.fetch_recent_raw_candles = orig
+
+
+def test_atr_resets_on_new_day():
+    s = _Stub()
+    orig = main.fetch_recent_raw_candles
+    main.fetch_recent_raw_candles = lambda limit=60: []
+    try:
+        _with_patches(lambda rec: s._light_minute_pass(_bar(minute=1, close=1050.0)))
+        s._light_last_ts = None
+        nxt = {"ts": datetime.datetime(2026, 10, 27, 8, 45), "open": 1100.0, "high": 1101.0,
+               "low": 1099.0, "close": 1100.0, "volume": 10}
+        _with_patches(lambda rec: s._light_minute_pass(nxt))
+        assert s._light_atr_day == "2026-10-27"
+        # 리셋됐으므로 첫 TR 은 그 봉의 고저(2.0)뿐 — 전날 종가 1050 과의 갭 50pt 가 들어가지 않는다
+        assert abs(s._manual_entry_ctx["atr"] - 2.0) < 1e-6
     finally:
         main.fetch_recent_raw_candles = orig
 
