@@ -12,7 +12,7 @@
 | 2. 신동 장후 작업 | ✅ `\Mireuk\Shindong_EOD_1555` 등록(평일 15:55) · 수동 실행 exit=0 · **예약작업 경로 실행 LastTaskResult=0**(인자에 `--date 2026-10-23 --no-wait` 를 잠시 붙였다가 원복) | `logs\shindong_eod_20261025.log` · `data\shindong_eod_done_20261023.txt` |
 | 3. 병행 건식 대조 | ⛔ **미실시** — 장이 열린 날에만 가능. 가짜 브로커로는 미륵 파이프라인이 로그인 후 객체(`investor_data`·`macro_fetcher`) 부재로 완주하지 못해, 건식 대조가 30/30 「파이프라인 미완주」 불일치로 정확히 잡아냈을 뿐 비교값이 없다 | `스모크_full_dry_py37_32.txt` |
 | 4. 장후 재생 | ✅ **8거래일 전부 PASS**(10/14~10/23) — 12/12 부품 · ATR 상대오차 ≤10% 98.8~100% · CB④ 일치(전부 0 vs 0) · 봉당 최대 0.3ms | `replay_YYYYMMDD.md` |
-| 전환 | ✅ 설정 3종 · `strategy_events` id=128 `METRIC_REDEFINITION` · 🔴 **미륵 재학습 예약작업 비활성은 미완** — 아래 |
+| 전환 | ✅ 설정 3종 · `strategy_events` id=128 `METRIC_REDEFINITION` · ✅ 미륵 재학습 예약작업 `\Maitreya_EODretrain` **Disabled**(사용자 관리자 실행) |
 
 ### 스모크(off) 요약 — 클라우드 결과와 동일
 
@@ -35,14 +35,14 @@ init 16.0s · 파이프라인 0회 · 봉당 최대 55ms · 경량 ATR 2.8486 ·
 | W2 | `shindong_eod.py` 콘솔 로그 핸들러가 같은 이유로 logging 오류 출력(실행은 계속) | stdout UTF-8 재설정 |
 | W3 | 🔴 `-DisableMireukRetrain` 이 `MireukiEODRetrain` 이름만 찾음 — **이 PC 작업명은 `\Maitreya_EODretrain`** 이라 전환일에 아무것도 끄지 못하고 지나갔을 것 | 두 이름 모두 매칭 · 권한 거부 시 관리자 재실행 안내 후 exit 1 |
 
-## 🔴 사용자 조치 필요 — 2026-10-26(월) 15:50 전
+## ✅ (완료 2026-10-25) 미륵 재학습 예약작업 비활성 — 관리자 권한이 필요했던 조치
 
 `\Maitreya_EODretrain` 은 `RunLevel=Highest` 로 등록돼 있어 일반 권한으로는 끌 수 없다(Access denied).
 **관리자 권한 명령 프롬프트**에서:
 
 ```
-cd C:\Users\pc1\PycharmProjects\futures
-TASK_SHINDONG_EOD_INSTALL.bat -DisableMireukRetrain
+# 관리자 PowerShell — 현재 폴더 실행은 & + 전체 경로
+& "C:\Users\pc1\PycharmProjects\futures\TASK_SHINDONG_EOD_INSTALL.bat" -DisableMireukRetrain
 ```
 
 `[OK] disabled: \Maitreya_EODretrain` 이 나와야 한다. 끄지 않으면 월요일 15:50 에 미륵 재학습이 돌아

@@ -14,7 +14,7 @@
   4. 장후 재생 — ✅ 8거래일(10/14~10/23) 전부 PASS. 단 CB④ 발동일 표본 0(전부 0 vs 0).
 - **이 PC에서 드러난 결함 3건 수정**: W1 `light_pass_replay.py` 콘솔 cp949 로 판정 직후 exit=1 · W2 `shindong_eod.py` 콘솔 로깅 오류 · W3 🔴 `-DisableMireukRetrain` 이 `MireukiEODRetrain` 만 찾아 이 PC 의 `\Maitreya_EODretrain` 을 못 끔(두 이름 매칭 + 권한 거부 안내).
 - **불연속 마커**: `strategy_registry.db` `strategy_events` **id=128** `METRIC_REDEFINITION` — 10/26 세션부터 미륵 예측·학습·장후 지표 중단, 전후 직접 비교 금지.
-- 🔴 **미완**: `\Maitreya_EODretrain`(RunLevel=Highest) 비활성은 관리자 권한 필요 — 사용자가 10/26 15:50 전에 관리자 프롬프트에서 `TASK_SHINDONG_EOD_INSTALL.bat -DisableMireukRetrain`.
+- ✅ `\Maitreya_EODretrain`(RunLevel=Highest) 비활성 — 사용자가 관리자 PowerShell 에서 `TASK_SHINDONG_EOD_INSTALL.bat -DisableMireukRetrain` 실행, State=Disabled 확인(2026-10-25). 되돌리기는 `-EnableMireukRetrain`(관리자).
 - 수량은 무변경(`SHINDONG_LIVE_QTY=2` · X% 규칙) — 660 「첫날 1계약 권장」은 사용자 결정 사항으로 남김.
 
 ## 2026-10-24 (MW0602 660차 — 신동 주체 리뉴얼 · 미륵 휴면 스위치 구현) — 🟢 **배포(기본값 full — 동작 무변경)**
