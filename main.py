@@ -5007,8 +5007,12 @@ class TradingSystem:
         except Exception as _tse:
             logger.warning("[ContractSpec] 계약스펙 주입 실패 (기본값 유지): %s", _tse)
         self._sync_position_from_broker()
-        self._warmup_retrain_pending = True
-        log_manager.system("[WarmupRetrain] 세션 재시작 감지 → GBM 즉시 재학습 예약", "INFO")
+        if self._mireuk_on():
+            self._warmup_retrain_pending = True
+            log_manager.system("[WarmupRetrain] 세션 재시작 감지 → GBM 즉시 재학습 예약", "INFO")
+        else:
+            # [661차] 휴면이면 예약 자체가 없다 — 「예약」 로그는 재학습이 도는 것처럼 읽혔다(spawn 은 원래 막혀 있었다)
+            log_manager.system("[WarmupRetrain] 세션 재시작 감지 — 미륵 휴면이라 재학습 예약 안 함", "INFO")
         self._session_no += 1
         self.system_health.update_restart(self._session_no)
         _cause = self._restart_cause
