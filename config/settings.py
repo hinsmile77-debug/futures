@@ -7890,6 +7890,32 @@ SHINDONG_LIVE_MAX_AGE_MIN = 2   # 진입봉이 끝난 뒤 이 분 안에 알아�
 #   0.0 = 본전. 10/22 실측 철회 2건은 미실현 −0.37·−0.43pt 라 BE 0건(무조건 청산 ALL 이면 Δ +109.4만).
 SHINDONG_RETRACT_SHADOW_BE_PTS = 0.0
 
+# ── [MW0601 713차 / 신동 주체 전환 P2] 미륵 휴면 스위치 ───────────────────────────────
+# 계획: docs/신동거래/신동주체전환_구현계획_미륵휴면_MW0601-20261025.md §2 (참조: MW0602 Sindong-V4 c3281a9)
+# 🔴 전환일 2026-11-02(월) 장전 — 그 전까지 아래 값은 **전부 종전 동작**이다(full · 3주체 · 기본 미륵).
+#   전환일 값: MIREUK_ENGINE="off" · PRINCIPAL_ALLOWED=("SHINDONG", "PETER") · PRINCIPAL_DEFAULT="SHINDONG" ·
+#   LIGHT_PASS_DRY_RUN=False. 바꾸기 전 확인: 건식 실행 불일치 0 · 장후 재생 PASS · 신동 EOD 1회 성공.
+# MIREUK_ENGINE
+#   "full" — 오늘과 같다(미륵 9단계 파이프라인 · 학습 · 재학습 · 미륵 장후 체인).
+#   "off"  — 미륵 휴면. 분봉마다 `_light_minute_pass` 가 신동·피터가 쓰는 부품만 돌린다
+#            (봉 저장 · 맥점 · 대기주문 타임아웃 · 틱 하드스톱 폴백 · STEP 8 · ATR · CB④⑤ 입력 · 화면).
+#            예측·학습·미륵 진입·재학습 spawn·미륵 EOD 항목은 건너뛴다. 미륵 코드·모델·DB 는 지우지 않는다.
+#   🔴 **기동 시 한 번만 읽는다**(`TradingSystem.__init__`). 장중 핫리로드로 바뀌지 않는다 — 바꾸려면 FLAT 에서 재기동.
+#   알 수 없는 값은 "full"(오타로 미륵이 조용히 꺼지는 것보다 종전 동작이 안전) + ERROR 로그.
+MIREUK_ENGINE = "full"
+# PRINCIPAL_ALLOWED — 대시보드에서 고를 수 있는 거래주체. None = 3주체 전부(종전).
+#   Sindong-V4 의 PRINCIPAL_LOCK(한 주체 고정)과 다르다 — 이 브랜치는 피터를 **선택 가능**으로 남긴다(사용자 결정 2026-10-25).
+#   파일(data/trade_principal.json)의 주체가 허용 밖이면 PRINCIPAL_DEFAULT 로 읽고 그 사실을 남긴다(파일은 고치지 않는다).
+#   알 수 없는 이름은 버린다. 남는 것이 없으면 3주체 전부(오타로 아무도 못 고르는 것보다 안전).
+PRINCIPAL_ALLOWED = None
+# PRINCIPAL_DEFAULT — 파일 없음·깨짐·허용 밖일 때의 주체. None = 미륵(종전).
+#   허용 집합 밖이면 허용 집합의 첫 주체(미륵 → 신동 → 피터 순).
+PRINCIPAL_DEFAULT = None
+# LIGHT_PASS_DRY_RUN — MIREUK_ENGINE="full" 일 때만 의미. 매분 미륵 파이프라인 **뒤에** 경량 패스를
+#   계산만 병행해(DB 쓰기·주문·CB 기록·화면 갱신 없음) 미륵 경로 값과 대조하고 `[LightPassDry]` 로 남긴다.
+#   실거래를 멈추지 않는 전환 검증 수단이다(계획서 P4). 기동 시 1회 읽는다.
+LIGHT_PASS_DRY_RUN = False
+
 # ── [MW0601 668차] 피터2 — 피터리 트윗 실시간 추종 매매 ─────────────────────────
 # 장중 피터리(@PeterLeejoa) 트윗을 Chrome 확장 → 로컬 수신기(127.0.0.1)로 받아
 # `data/peter_feed/_raw/<날짜>.jsonl` 에 적고, main.py 가 2초마다 새 줄을 읽어

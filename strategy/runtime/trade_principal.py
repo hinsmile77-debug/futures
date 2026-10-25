@@ -37,9 +37,47 @@ SOURCE_PRINCIPAL = {'SYSTEM_AUTO': MIREUK, SHINDONG_ENTRY_SOURCE: SHINDONG,
 PRINCIPAL_SOURCE = {v: k for k, v in SOURCE_PRINCIPAL.items()}
 
 
-def load():
-    """→ dict(principal, set_at, reason, measured). 파일이 없거나 깨졌으면 기본값(미륵)이고
-    `measured=False` 로 그 사실을 남긴다(계측 4원칙 ②·④ — 기본값을 선택값처럼 보이지 않게)."""
+def _cfg(name):
+    try:
+        from config import settings as _s
+        return getattr(_s, name, None)
+    except Exception:
+        return None
+
+
+def allowed(cfg=None):
+    """[MW0601 713차 / 신동 주체 전환 P2] 선택 가능한 거래주체 → tuple(PRINCIPALS 순서).
+
+    `config.settings.PRINCIPAL_ALLOWED`(None = 3주체 전부, 종전). cfg 를 주면 설정 대신 그 값(테스트).
+    알 수 없는 이름은 버리고, 남는 것이 없으면 3주체 전부다 — 오타로 아무도 못 고르는 것보다 안전.
+    """
+    if cfg is None:
+        cfg = _cfg('PRINCIPAL_ALLOWED')
+    if cfg is None:
+        return PRINCIPALS
+    if isinstance(cfg, str):
+        cfg = (cfg,)
+    try:
+        want = {str(x or '').upper() for x in cfg}
+    except TypeError:
+        return PRINCIPALS
+    out = tuple(p for p in PRINCIPALS if p in want)
+    return out or PRINCIPALS
+
+
+def default_principal(cfg=None, allowed_set=None):
+    """파일 없음·깨짐·허용 밖일 때의 주체. `PRINCIPAL_DEFAULT`(None = 미륵, 종전)가 허용 집합 밖이면
+    허용 집합의 첫 주체(미륵 → 신동 → 피터 순)."""
+    al = allowed_set if allowed_set is not None else allowed()
+    if cfg is None:
+        cfg = _cfg('PRINCIPAL_DEFAULT')
+    p = str(cfg or DEFAULT).upper()
+    return p if p in al else al[0]
+
+
+def load_file():
+    """파일(data/trade_principal.json)의 선택만 — 허용 집합을 보지 않는다. → dict 또는 None(없음·깨짐).
+    `save()` 의 이력 `prev` 가 이것이다."""
     try:
         with io.open(STATE_PATH, encoding='utf-8') as f:
             d = json.load(f)
@@ -49,7 +87,26 @@ def load():
                     'measured': True}
     except (OSError, IOError, ValueError, TypeError, AttributeError):
         pass
-    return {'principal': DEFAULT, 'set_at': None, 'reason': 'default(파일 없음)', 'measured': False}
+    return None
+
+
+def load():
+    """→ dict(principal, set_at, reason, measured, fallback). 파일이 없거나 깨졌으면 기본값이고
+    `measured=False` 로 그 사실을 남긴다(계측 4원칙 ②·④ — 기본값을 선택값처럼 보이지 않게).
+
+    [713차] 파일의 주체가 허용 집합(`PRINCIPAL_ALLOWED`) 밖이면 기본값으로 읽고 `fallback=True` ·
+    `file_principal` 로 남긴다. **파일은 고치지 않는다** — 허용 집합을 되돌리면 파일 선택으로 돌아간다.
+    """
+    al = allowed()
+    rec = load_file()
+    if rec is not None and rec['principal'] in al:
+        return dict(rec, fallback=False)
+    dp = default_principal(allowed_set=al)
+    if rec is not None:
+        return {'principal': dp, 'set_at': rec['set_at'], 'measured': True, 'fallback': True,
+                'reason': 'not_allowed:%s' % rec['principal'], 'file_principal': rec['principal']}
+    return {'principal': dp, 'set_at': None, 'reason': 'default(파일 없음)', 'measured': False,
+            'fallback': True}
 
 
 def current():
@@ -66,12 +123,14 @@ def can_switch(pos_status, has_pending):
 
 
 def save(principal, reason='', now=None):
-    """현재 주체를 쓰고 이력에 한 줄 남긴다. 알 수 없는 값은 ValueError."""
+    """현재 주체를 쓰고 이력에 한 줄 남긴다. 알 수 없는 값·허용 밖 값([713차])은 ValueError."""
     p = str(principal or '').upper()
     if p not in PRINCIPALS:
         raise ValueError('unknown principal: %r' % (principal,))
+    if p not in allowed():
+        raise ValueError('principal not allowed: %r (PRINCIPAL_ALLOWED=%r)' % (p, allowed()))
     now = now or datetime.datetime.now()
-    prev = load()
+    prev = load_file() or {'principal': DEFAULT, 'measured': False}
     rec = {'principal': p, 'set_at': now.isoformat(timespec='seconds'), 'reason': reason}
     d = os.path.dirname(STATE_PATH)
     if not os.path.isdir(d):

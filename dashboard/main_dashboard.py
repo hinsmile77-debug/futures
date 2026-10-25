@@ -16653,6 +16653,13 @@ class MireukDashboard(QMainWindow):
                                         else {"SHINDONG"})
         except Exception:
             self._principal_disabled = {"SHINDONG"}
+        # [MW0601 713차 / 신동 주체 전환 P2] PRINCIPAL_ALLOWED 밖 주체(미륵 휴면 중의 미륵 등)도 비활성.
+        #   허용 판정은 trade_principal.allowed() 한 곳 — main 의 전환 거부와 같은 출처다.
+        try:
+            self._principal_not_allowed = set(_tp.PRINCIPALS) - set(_tp.allowed())
+        except Exception:
+            self._principal_not_allowed = set()
+        self._principal_disabled = set(self._principal_disabled) | self._principal_not_allowed
         row.addWidget(mk_label("거래", C['text2'], 9, align=Qt.AlignRight))
         for key, txt, ck in self._PRINCIPAL_UI:
             b = QPushButton(txt)
@@ -16687,7 +16694,9 @@ class MireukDashboard(QMainWindow):
             b.blockSignals(False)
             if key in self._principal_disabled and not on:
                 b.setEnabled(False)
-                b.setToolTip("이 브랜치(v9-dev)의 신동 규격(R2/R3 레그 분할)은 실집행 미지원 — 가상거래만")
+                b.setToolTip("선택 불가 — PRINCIPAL_ALLOWED 밖(미륵 휴면 등, config/settings.py)"
+                             if key in self._principal_not_allowed else
+                             "이 브랜치(v9-dev)의 신동 규격(R2/R3 레그 분할)은 실집행 미지원 — 가상거래만")
                 continue
             b.setEnabled(on or not self._principal_locked)
             b.setToolTip(
@@ -18034,7 +18043,11 @@ class DashboardAdapter:
         """시스템 상태 (Circuit Breaker, 지연, 정확도) 업데이트"""
         # CB③ 발동 최솟 샘플(25건) 기준으로 표시 분기
         # — 25건 미만은 통계적 의미 없음. "0.0%(1건)" 오표시로 오해 방지
-        if cb3_samples >= 25:
+        # [MW0601 713차 / 신동 주체 전환 P2] accuracy=None = 미륵 휴면(30m 예측 없음) — 「집계중」으로 보이면
+        #   언젠가 채워질 값처럼 읽힌다. 0 이 아니라 휴면이라고 쓴다(계측 4원칙 ②).
+        if accuracy is None:
+            acc_str = "CB③=미륵 휴면"
+        elif cb3_samples >= 25:
             acc_str = f"CB③30m={accuracy:.1%}({cb3_samples}건)"
         elif cb3_samples > 0:
             acc_str = f"CB③30m=집계중({cb3_samples}/25건)"
