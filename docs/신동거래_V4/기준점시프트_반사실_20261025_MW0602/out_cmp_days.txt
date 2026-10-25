@@ -1,0 +1,22 @@
+mode A
+09:01 up  8 down 10 same  3  sum  -768.8  best  +40.0 worst -375.1  drop-best  -808.8
+09:02 up 10 down  7 same  4  sum  -685.4  best  +40.0 worst -317.0  drop-best  -725.4
+09:03 up  9 down 10 same  2  sum  -858.8  best  +40.8 worst -294.2  drop-best  -899.6
+09:04 up  3 down 15 same  3  sum -1113.6  best +115.2 worst -193.8  drop-best -1228.8
+09:05 up  7 down 12 same  2  sum  -863.6  best  +93.4 worst -199.3  drop-best  -957.0
+09:06 up  7 down 12 same  2  sum  -917.7  best +120.6 worst -266.7  drop-best -1038.3
+09:07 up  7 down 12 same  2  sum -1122.9  best +100.8 worst -396.5  drop-best -1223.7
+09:08 up  9 down 12 same  0  sum -1119.8  best +120.6 worst -396.5  drop-best -1240.3
+09:09 up  9 down 10 same  2  sum  -451.7  best +109.1 worst -185.3  drop-best  -560.8
+09:10 up  7 down 12 same  2  sum  -608.6  best  +93.3 worst -184.2  drop-best  -702.0
+mode B
+09:01 up  4 down  7 same 10  sum  -436.0  best  +40.0 worst -185.3  drop-best  -476.0
+09:02 up  6 down  6 same  9  sum  -704.8  best  +40.0 worst -317.0  drop-best  -744.8
+09:03 up  6 down  9 same  6  sum  -945.2  best  +33.7 worst -326.9  drop-best  -978.9
+09:04 up  3 down 13 same  5  sum -1073.5  best  +33.7 worst -200.8  drop-best -1107.1
+09:05 up  4 down 10 same  7  sum  -954.9  best  +91.2 worst -234.5  drop-best -1046.1
+09:06 up  4 down 12 same  5  sum -1144.6  best  +91.2 worst -266.7  drop-best -1235.8
+09:07 up  5 down 10 same  6  sum  -714.1  best  +93.3 worst -233.4  drop-best  -807.4
+09:08 up  7 down  9 same  5  sum  -673.9  best  +91.2 worst -269.3  drop-best  -765.1
+09:09 up  6 down  7 same  8  sum  -338.5  best +120.2 worst -200.8  drop-best  -458.7
+09:10 up  5 down  9 same  7  sum  -784.7  best  +93.3 worst -358.1  drop-best  -878.0
