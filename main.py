@@ -682,8 +682,21 @@ class TradingSystem:
             pass
 
     def __init__(self):
-        logger.info("[System] 미륵이 초기화")
-        log_manager.system("미륵이 초기화")
+        # [MW0601 713차 / 신동 주체 전환 P2·P3] 미륵 휴면 스위치 — **기동 시 한 번만** 읽는다(장중 핫리로드 무시).
+        #   알 수 없는 값은 full(오타로 미륵이 조용히 꺼지는 것보다 종전 동작이 안전) — 그 사실은 남긴다
+        #   (계측 4원칙 ④). 판정은 `_mireuk_on()` 한 곳에서만. __init__ 맨 앞에서 읽는다 — 아래 RF·보정기 로드가
+        #   이 값으로 갈린다(Sindong-V4 f5c2a21: 늦게 읽으면 휴면에서도 보정기 사전학습이 14초씩 돌았다).
+        _me_raw = str(getattr(runtime_settings, "MIREUK_ENGINE", "full") or "full").strip().lower()
+        if _me_raw not in ("full", "off"):
+            logger.error("[Engine] MIREUK_ENGINE=%r 알 수 없는 값 — full 로 동작", _me_raw)
+            _me_raw = "full"
+        self._mireuk_engine = _me_raw
+        if self._mireuk_on():
+            logger.info("[System] 미륵이 초기화")
+            log_manager.system("미륵이 초기화")
+        else:
+            logger.info("[System] 신동 주체 초기화 (미륵 엔진 off)")
+            log_manager.system("신동 주체 초기화 (미륵 엔진 off)")
 
         # ── 키움 API 컴포넌트 ──────────────────────────────────
         self.broker        = create_broker()
@@ -738,7 +751,10 @@ class TradingSystem:
         self._sgd_feat_indices: dict = {}
         self._rebuild_sgd_feat_indices()
         self.rf_model          = RFHorizonModel()
-        self.rf_model.load_all()   # pkl 없으면 is_ready()=False로 graceful 유지
+        # [713차 P3] 휴면이면 RF pkl 을 읽지 않는다 — is_ready()=False(pkl 없음과 같은 graceful 상태).
+        #   GBM(`self.model`)은 생성·로드를 유지한다: 대시보드·feature_names 참조처가 많고 비용은 ≈1초다.
+        if self._mireuk_on():
+            self.rf_model.load_all()   # pkl 없으면 is_ready()=False로 graceful 유지
         self.ensemble          = EnsembleDecision()
         self._pt_value         = MINI_FUTURES_PT_VALUE  # [235차] 미니선물 전용 초기값 — connect_broker에서 get_contract_spec으로 재확정
         # ── [MW0601 493차 후속5 / F-Q ①] 장전 스케일러 재적합 궤적 ─────────────
@@ -827,13 +843,19 @@ class TradingSystem:
         # 극단성 보정이 오히려 ECE를 악화시킴(6개 호라이즌 전부 ECE 상승, 30m만 일관 개선).
         # 검증된 30m만 적용 — 나머지 호라이즌 확대는 별도 재검증 후 결정.
         self.extremity_corrector = MultiHorizonExtremityCorrector(["30m"])
-        self._preload_horizon_calibration()          # DB에서 사전 fit → 첫 tick부터 보정 효과
+        # [713차 P3] 휴면이면 보정기 사전학습(predictions 조회·fit)과 앙상블 보정기 복원을 건너뛴다 — 둘 다
+        #   미륵 예측 전용이다. 저장(daily_close)도 휴면이면 돌지 않으므로 파일은 마지막 실가동 상태로 남는다.
+        if self._mireuk_on():
+            self._preload_horizon_calibration()          # DB에서 사전 fit → 첫 tick부터 보정 효과
         self.ensemble.calibrator = self.horizon_calibrator   # 앙상블 2차 압축 연결
         # [403차 종합 P0-1] 앙상블 Platt 보정기 복원 — 종전에는 _scaler_warmup_worker()
         # 안에 있어 프리장 refit이 끝나 있으면(=매일) 도달하지 못했다. 기동 경로 중
         # 유일하게 "항상 1회" 보장되는 __init__으로 옮긴다. 장중 재시작도 여기를 지난다
         # (pre_market_setup()은 08:55~09:00에만 호출되므로 그쪽에 두면 재시작에서 또 누락).
-        self._restore_ensemble_calibrator()
+        if self._mireuk_on():
+            self._restore_ensemble_calibrator()
+        else:
+            logger.info("[Engine] 미륵 휴면 — RF 로드·보정기 사전학습·앙상블 보정기 복원 생략(파일 보존)")
         self.pred_buffer       = PredictionBuffer()
         self.meta_gate         = MetaGate()
         # selection bias 해소: skip된 신호의 meta_features 임시 보관
@@ -900,14 +922,7 @@ class TradingSystem:
         # [MW0602 거래주체분리] 현재 거래주체 — 파일(data/trade_principal.json)이 정본이고 이것은 캐시다.
         #   전환은 `_on_principal_change_requested` 한 곳에서만 일어나며 그때 둘을 함께 바꾼다.
         self._principal_state = principal_mod.load()
-        # [MW0601 713차 / 신동 주체 전환 P2] 미륵 휴면 스위치 — **기동 시 한 번만** 읽는다(장중 핫리로드 무시).
-        #   알 수 없는 값은 full(오타로 미륵이 조용히 꺼지는 것보다 종전 동작이 안전) — 그 사실은 남긴다
-        #   (계측 4원칙 ④). 판정은 `_mireuk_on()` 한 곳에서만. 참조: MW0602 Sindong-V4 c3281a9.
-        _me_raw = str(getattr(runtime_settings, "MIREUK_ENGINE", "full") or "full").strip().lower()
-        if _me_raw not in ("full", "off"):
-            logger.error("[Engine] MIREUK_ENGINE=%r 알 수 없는 값 — full 로 동작", _me_raw)
-            _me_raw = "full"
-        self._mireuk_engine = _me_raw
+        # 미륵 휴면 스위치(`self._mireuk_engine`)는 __init__ 맨 앞에서 읽었다(713차 P3).
         # 경량 패스 상태 — off(실집행) 또는 full+LIGHT_PASS_DRY_RUN(대조)에서 쓴다.
         #   ATR 은 미륵 피처와 같은 계산기(features/technical/atr.py) — dry 대조가 같은 정의를 비교하게 한다.
         from features.technical.atr import ATRCalculator as _LightATR
@@ -1716,8 +1731,10 @@ class TradingSystem:
             lambda e: self.dashboard.append_health_log(e.message, e.level),
         )
         self._restore_analysis_buffers()
-        self._ensure_shap_tracker()
-        self._update_shap_dashboard()
+        # [713차 P3] 휴면이면 SHAP 트래커 생성(피처 레지스트리 동기화 포함)·SHAP 패널 갱신 생략
+        if self._mireuk_on():
+            self._ensure_shap_tracker()
+            self._update_shap_dashboard()
 
     @staticmethod
     def _build_health_policy(src=None) -> dict:
@@ -1984,6 +2001,12 @@ class TradingSystem:
         64비트 독립 프로세스로 대체. retrain_intraday.py 스크립트가 결과 JSON을 기록하고,
         main.py S0 루프가 poll()로 완료를 감지 → _on_gbm_retrain_done() 정상 호출.
         """
+        # [713차 / 신동 주체 전환 P3] 미륵 휴면이면 재학습을 띄우지 않는다 — 모든 트리거(기동 PreRetrain ·
+        #   월요일 주간 · 장중 DriftRetrain · ConstOut · WarmupRetrain · 수동)가 이 함수 한 곳을 지난다
+        #   (subprocess.Popen 은 여기뿐). 사유는 남긴다. 참조: Sindong-V4 7e7c865.
+        if not self._mireuk_on():
+            log_manager.system(f"[GBM-64] 미륵 휴면 — 재학습 생략 ({reason})", "INFO")
+            return False
         if getattr(self, "_gbm_retrain_running", False):
             log_manager.system(f"[GBM-64] 재학습 진행 중 — 스킵 ({reason})", "WARN")
             return False
@@ -2142,6 +2165,11 @@ class TradingSystem:
 
     def _restore_analysis_buffers(self) -> None:
         """Restore restart-sensitive analysis buffers from persisted state."""
+        # [713차 / 신동 주체 전환 P3] 휴면이면 미륵 분석 버퍼(파라미터 상관·SHAP·VP·RegimeFingerprint —
+        #   raw_features 최대 수천 행 JSON 파싱)를 복원하지 않는다. 경량 패스·신동·피터가 읽지 않는다.
+        if not self._mireuk_on():
+            logger.info("[AnalysisRestore] 미륵 휴면 — 상관·SHAP·VP·RegimeFingerprint 복원 생략")
+            return
         try:
             rows = fetch_recent_raw_features(limit=max(self._param_corr_history.maxlen, self._shap_feature_window.maxlen))
         except Exception as exc:
@@ -5615,8 +5643,12 @@ class TradingSystem:
         except Exception as _tse:
             logger.warning("[ContractSpec] 계약스펙 주입 실패 (기본값 유지): %s", _tse)
         self._sync_position_from_broker()
-        self._warmup_retrain_pending = True
-        log_manager.system("[WarmupRetrain] 세션 재시작 감지 → GBM 즉시 재학습 예약", "INFO")
+        if self._mireuk_on():
+            self._warmup_retrain_pending = True
+            log_manager.system("[WarmupRetrain] 세션 재시작 감지 → GBM 즉시 재학습 예약", "INFO")
+        else:
+            # [713차 P3] 휴면이면 예약 자체가 없다 — 「예약」 로그는 재학습이 도는 것처럼 읽힌다(Sindong-V4 65fe361)
+            log_manager.system("[WarmupRetrain] 세션 재시작 감지 — 미륵 휴면이라 재학습 예약 안 함", "INFO")
         self._session_no += 1
         self.system_health.update_restart(self._session_no)
         _cause = self._restart_cause
@@ -8193,11 +8225,13 @@ class TradingSystem:
         log_manager.system("장 전 매크로 수집 시작")
 
         # [MetaConf] 전일 학습 상태 복원 — cold-start 없이 장 시작부터 SGD 예측 경로 사용
+        # [713차 / 신동 주체 전환 P3] 미륵 휴면이면 학습 상태를 읽지 않는다(쓰는 곳이 없다).
         try:
-            from config.settings import META_CONF_STATE_PATH
-            _mc_loaded = self.meta_gate.learner.load(META_CONF_STATE_PATH)
-            if not _mc_loaded:
-                log_manager.system("[MetaConf] warm-start 파일 없음 — cold-start로 진행", "INFO")
+            if self._mireuk_on():
+                from config.settings import META_CONF_STATE_PATH
+                _mc_loaded = self.meta_gate.learner.load(META_CONF_STATE_PATH)
+                if not _mc_loaded:
+                    log_manager.system("[MetaConf] warm-start 파일 없음 — cold-start로 진행", "INFO")
         except Exception as _mc_l_e:
             logger.warning("[MetaConf] warm-start 로드 실패 (cold-start 진행): %s", _mc_l_e)
 
@@ -8218,6 +8252,12 @@ class TradingSystem:
                 )
             except Exception as _snap_e:
                 logger.warning("[PreOpen] 스냅샷 워밍업 실패 (장 시작 시 재시도): %s", _snap_e)
+
+        # [713차 / 신동 주체 전환 P3] 미륵 휴면 — 아래(스케일러 Canary · ScalerWarmup · PreRetrain)는
+        #   전부 미륵 모델 전용이다. 매크로 seed·현재가 스냅샷(위)까지만 하고 끝낸다.
+        if not self._mireuk_on():
+            log_manager.system("[PreOpen] 미륵 휴면 — 스케일러 Canary·워밍업·사전 재학습 생략", "INFO")
+            return
 
         # ── Warm Scaler Canary ──────────────────────────────────────
         # scaler pkl mtime 기준 노후 점검 → 24h+ 경과 시 경고 + SHS z_warn 업데이트
@@ -15571,7 +15611,7 @@ class TradingSystem:
         self._external_entry_qty_today = 0
 
         # ── 챔피언-도전자 일별 집계 ─────────────────────────────
-        if self.challenger_engine is not None:
+        if self._mireuk_on() and self.challenger_engine is not None:   # [713차 P3] 휴면 시 생략
             try:
                 self.challenger_engine.update_daily_metrics(now.date().isoformat())
             except Exception as _ce2:
@@ -15711,7 +15751,7 @@ class TradingSystem:
         # 승격 후에는 새 챔피언이 도전자였을 때의 이력이 그대로 재활용된다.
         # 사이즈 자동축소는 아직 실거래 배선에 연결하지 않았다 — 실측 데이터가
         # 쌓여 정상 동작이 확인된 뒤 연결 여부를 별도로 결정할 것.
-        if self.promotion_manager is not None:
+        if self._mireuk_on() and self.promotion_manager is not None:   # [713차 P3] 휴면 시 생략
             try:
                 _hb = self.promotion_manager.check_champion_heartbeat()
                 log_manager.system(
@@ -15791,260 +15831,265 @@ class TradingSystem:
         except Exception as _mc_e:
             logger.warning("[DynMCDaily] 일별 min_conf 요약 실패(무해): %s", _mc_e)
 
-        # ── STEP 3 재학습 완료 대기 ──────────────────────────────
-        # 장중 마지막 30분 배치 재학습이 아직 실행 중이면 완료될 때까지 기다린다.
-        # 대기 없이 retrain_now()를 동시 호출하면 pkl 경합 + 미완료 상태로 종료됨.
-        # 15:40 이후 분봉 파이프라인은 없으므로 메인 스레드 블로킹 허용.
-        # [381차 후속] 15:10 강제청산 이후로는 run_minute_pipeline()이 더 이상 호출되지
-        # 않아 _gbm_retrain_running이 "이미 끝난 재학습"인 채로 굳어있을 수 있다(07-24
-        # 실측: 15:09:59 시작 재학습이 15:10:29에 끝났는데도 감지 기회가 없어 daily_close가
-        # 15:40:13에 이를 "진행 중"으로 오판, 20분을 헛되이 대기했다). 대기 여부를 판단하기
-        # 전에 한 번 더 폴링해 굳은 플래그를 먼저 해소한다.
-        self._poll_gbm_retrain_subprocess()
-        # [I] 진입 시 retrain 상태 항상 기록 — _gbm_retrain_running=False 경로도 추적 가능
-        _retrain_at_dc = "진행중" if getattr(self, "_gbm_retrain_running", False) else "완료/미시작"
-        log_manager.system(
-            f"[DailyClose] 진입 | retrain={_retrain_at_dc} | {datetime.datetime.now().strftime('%H:%M:%S')}",
-            "INFO",
-        )
-        if getattr(self, "_gbm_retrain_running", False):
-            log_manager.system(
-                "[DailyClose] STEP 3 재학습 진행 중 — EOD 재학습 전 완료 대기 (최대 20분)",
-                "INFO",
-            )
-            completed = self._gbm_retrain_done_event.wait(timeout=20 * 60)
-            if completed:
-                log_manager.system("[DailyClose] STEP 3 재학습 완료 확인 — EOD 재학습 시작", "INFO")
-            else:
-                log_manager.system(
-                    "[DailyClose] STEP 3 재학습 20분 초과 — 강제 진행 (타임아웃)", "WARNING"
-                )
-                # [J] 타임아웃 발생 시 슬랙 알림 — P8 지연 가능성 사전 고지
-                try:
-                    from utils.notify import notify as _nfy_step3
-                    _nfy_step3(
-                        "⚠️ DailyClose STEP3 타임아웃 — GBM 재학습 20분 초과\n"
-                        "P8 지연 발생 가능 | 내일 EarlyWarmup 보완 예정",
-                        "WARNING",
-                    )
-                except Exception:
-                    pass
-
-        # GBM 재학습 + P8 스케일러 재적합은 py310_64 장외 스케줄러(MireukiEODRetrain, 15:45)가
-        # retrain_eod.py를 통해 수행한다 (191차~, OOM 방지).
-        # daily_close()에서 retrain_now()를 직접 호출하지 않는다:
-        #   - py37_32 메인 스레드 동기 실행 → 12분+ Qt 블로킹 → UI 행 상태 (오늘 실증)
-        #   - py310_64 스케줄러 완료 후 마커 파일로 성공 여부 확인
-
-        # 마커 파일 기반으로 내일 08:55 PreRetrain 스킵 신호 기록
-        _eod_marker_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "data",
-            f"eod_retrain_done_{datetime.date.today().strftime('%Y%m%d')}.txt",
-        )
-        if os.path.exists(_eod_marker_path):
-            self._eod_retrain_ok = True
-            try:
-                _eod_ss = self._read_session_state()
-                _eod_ss["eod_retrain_ok_date"] = datetime.date.today().isoformat()
-                self._write_session_state(_eod_ss)
-            except Exception as _eod_ss_e:
-                logger.warning("[EOD] eod_retrain_ok_date 저장 실패 (무해): %s", _eod_ss_e)
-            log_manager.system(
-                "[DailyClose] EOD 재학습 마커 확인 — 스케줄러 완료, 내일 PreRetrain 스킵 예약",
-                "INFO",
-            )
-        else:
-            # [MW0601 435차] 이 경보는 **매 거래일 반드시 뜨는 구조적 오탐**이었다.
-            # daily_close()는 15:40에 돌고 retrain_eod.py는 py310_64 장외 스케줄러가
-            # 15:45에 띄워 ~15:48에 마커를 쓴다 — 즉 이 시점에 오늘 마커가 없는 것이
-            # **정상**이며, 검사 자체가 원리상 항상 실패한다.
-            # 실측: 07-30·07-31·08-03·08-04·08-05 전부 이 WARNING이 찍혔고 그 다음날
-            # 아침 PreRetrain은 매번 "EOD 마커 파일 직접 확인 → 스킵"으로 정상 동작했다.
-            # 즉 기능은 멀쩡한데 경보만 늑대를 외치고 있었다(경보 불감증 유발).
-            #
-            # 그렇다고 검사를 지우지는 않는다 — 마커가 **있는** 경우의 session_state
-            # 기록은 여전히 유효하고(재기동 등으로 EOD가 먼저 끝난 경우), "진짜 실패"를
-            # 볼 창구도 남겨야 한다. 대신 **시각을 인지해** 등급을 나눈다:
-            #   지금이 스케줄러 예정시각 이전 → INFO (정상, 아직 안 돌았을 뿐)
-            #   그 이후인데도 마커가 없음     → WARNING (진짜 미실행/실패 의심)
-            # 판정의 실질은 다음날 아침 PreRetrain이 마커 파일을 직접 확인하는 쪽이
-            # 정본이다(이 경로는 관측용).
-            _eod_sched_hm = str(getattr(runtime_settings, "EOD_RETRAIN_SCHEDULE_HM", "1545"))
-            _now_hm = datetime.datetime.now().strftime("%H%M")
-            if _now_hm < _eod_sched_hm:
-                log_manager.system(
-                    "[DailyClose] EOD 재학습 마커 없음 — 정상 "
-                    f"(스케줄러 {_eod_sched_hm[:2]}:{_eod_sched_hm[2:]} 예정, "
-                    "현재 %s:%s). 마커는 재학습 완료 시 기록된다"
-                    % (_now_hm[:2], _now_hm[2:]),
-                    "INFO",
-                )
-            else:
-                log_manager.system(
-                    "[DailyClose] EOD 재학습 마커 없음 — 예정시각"
-                    f"({_eod_sched_hm[:2]}:{_eod_sched_hm[2:]}) 경과했는데 마커가 없다. "
-                    "retrain_eod.py 미실행 또는 실패 의심 "
-                    "(내일 PreRetrain에서 보완 재학습 예약됨)",
-                    "WARNING",
-                )
-
-        # DB pruning — 매주 월요일 EOD 1회 실행 (RAW_DATA_PRUNE_WEEKS=52주 이전 삭제)
-        # 슬라이딩 창(26주) 정상 운영 시 학습 행 수는 ~40,000 안정적
-        # 하지만 raw_data.db 자체는 누적 → 52주 초과분 정리로 DB 비대화 방지
-        if datetime.datetime.now().weekday() == 0:  # 월요일
-            try:
-                _pruned = self.batch_retrainer.prune_raw_data_db()
-                if _pruned > 0:
-                    log_manager.learning(
-                        f"[GBM] DB pruning: {_pruned:,}행 삭제 (52주 초과분)"
-                    )
-            except Exception as _pe:
-                logger.warning("[GBM] DB pruning 실패: %s", _pe)
-
-        # [Platt] 앙상블 보정기 저장 — 다음 기동 시 즉시 복원 가능
-        try:
-            from config.settings import ENSEMBLE_CALIBRATOR_PATH
-            _cal = self.ensemble.ensemble_calibrator
-            if _cal.save(ENSEMBLE_CALIBRATOR_PATH):
-                log_manager.system(
-                    f"[Calibration] 앙상블 보정기 저장 완료 n={_cal.n_samples}",
-                    "INFO",
-                )
-            else:
-                # [MW0602 485차 F-1] 부정 분기 무로그 금지 — save()가 False를
-                # 돌려주면 판정 기준선이 며칠씩 과거 저장본에 묶여도 아무 로그가
-                # 없었다(0821 리포트 1-1: 7거래일 무저장·무로그). 감싸는 except는
-                # False 반환에 발동하지 않으므로 여기서 직접 남긴다.
-                log_manager.system(
-                    f"[Calibration] 앙상블 보정기 저장 건너뜀 — "
-                    f"fitted={_cal.is_fitted} degenerate={_cal.is_degenerate} "
-                    f"unreachable={_cal.is_unreachable} n={_cal.n_samples}",
-                    "WARNING",
-                )
-        except Exception as _cal_s_e:
-            logger.warning("[Calibration] 보정기 저장 실패 (무해): %s", _cal_s_e)
-
-        # [MetaConf] 학습 상태 저장 — 다음 날 warm-start (cold-start 제거)
-        try:
-            from config.settings import META_CONF_STATE_PATH
-            self.meta_gate.learner.save(META_CONF_STATE_PATH)
-        except Exception as _mc_s_e:
-            logger.warning("[MetaConf] EOD 상태 저장 실패 (무해): %s", _mc_s_e)
-
-        # ── 자가학습 일일 마감 집계 ──────────────────────────────
+        # 자가학습 정확도는 읽기만 한다 — 아래 daily_stats 저장(sgd_accuracy)이 쓴다(휴면이면 갱신 없는 값).
         _today_accuracy = self.online_learner.recent_accuracy()
         _today_n_samples = self.online_learner.sample_count
-        try:
-            self.daily_consolidator.consolidate()
-        except Exception as _dce:
-            logger.warning("[DailyConsolidator] 집계 실패 (스킵): %s", _dce)
-        try:
-            _drift_result = self.drift_adjuster.record_accuracy(
-                _today_accuracy, n_samples=_today_n_samples
+        # [713차 / 신동 주체 전환 P3] STEP 3 재학습 대기 · EOD 재학습 마커 · DB pruning · 보정기/MetaConf 저장 · 자가학습 집계 · 재보정 모니터 4종 — 전부 미륵 전용. 휴면이면 학습 상태 파일을 덮어쓰지 않는다(되살림 = 마지막 실가동 상태).
+        if self._mireuk_on():
+            # ── STEP 3 재학습 완료 대기 ──────────────────────────────
+            # 장중 마지막 30분 배치 재학습이 아직 실행 중이면 완료될 때까지 기다린다.
+            # 대기 없이 retrain_now()를 동시 호출하면 pkl 경합 + 미완료 상태로 종료됨.
+            # 15:40 이후 분봉 파이프라인은 없으므로 메인 스레드 블로킹 허용.
+            # [381차 후속] 15:10 강제청산 이후로는 run_minute_pipeline()이 더 이상 호출되지
+            # 않아 _gbm_retrain_running이 "이미 끝난 재학습"인 채로 굳어있을 수 있다(07-24
+            # 실측: 15:09:59 시작 재학습이 15:10:29에 끝났는데도 감지 기회가 없어 daily_close가
+            # 15:40:13에 이를 "진행 중"으로 오판, 20분을 헛되이 대기했다). 대기 여부를 판단하기
+            # 전에 한 번 더 폴링해 굳은 플래그를 먼저 해소한다.
+            self._poll_gbm_retrain_subprocess()
+            # [I] 진입 시 retrain 상태 항상 기록 — _gbm_retrain_running=False 경로도 추적 가능
+            _retrain_at_dc = "진행중" if getattr(self, "_gbm_retrain_running", False) else "완료/미시작"
+            log_manager.system(
+                f"[DailyClose] 진입 | retrain={_retrain_at_dc} | {datetime.datetime.now().strftime('%H:%M:%S')}",
+                "INFO",
             )
-            _new_alpha = _drift_result.get("alpha", 0.001)
-            if hasattr(self.online_learner, "set_alpha"):
-                self.online_learner.set_alpha(_new_alpha)
-                logger.info("[DriftAdjuster] SGD alpha 갱신: %.5f (%s)", _new_alpha, _drift_result.get("action"))
-        except Exception as _dae:
-            logger.warning("[DriftAdjuster] 갱신 실패 (스킵): %s", _dae)
-
-        # ── Phase A 임계값 재보정 모니터 (376차, 금요일 + 최근 실행 후 7일
-        #    이상 경과 시에만 — atr_ceiling/entry_horizon_recalibrator와 동일
-        #    패턴으로 교체. 종전엔 "정확히 금요일"에만 run()해 휴장 등으로 그
-        #    금요일 세션이 없으면 해당 주가 통째로 누락됐다(07-17 공백 확인).
-        if now.weekday() == 4:   # 금요일
-            try:
-                recal_results = self.threshold_recalibrator.run_if_due(
-                    today=now.date().isoformat()
+            if getattr(self, "_gbm_retrain_running", False):
+                log_manager.system(
+                    "[DailyClose] STEP 3 재학습 진행 중 — EOD 재학습 전 완료 대기 (최대 20분)",
+                    "INFO",
                 )
-                alerts = {h: r["alert"] for h, r in recal_results.items() if r["alert"] != "CLEAR"}
-                if alerts:
+                completed = self._gbm_retrain_done_event.wait(timeout=20 * 60)
+                if completed:
+                    log_manager.system("[DailyClose] STEP 3 재학습 완료 확인 — EOD 재학습 시작", "INFO")
+                else:
                     log_manager.system(
-                        f"[ThresholdRecal] 경보 발생: {alerts}  "
-                        f"docs/정기점검/LABEL_THRESHOLD_RECALIBRATION_GUIDE.md 참조",
-                        "WARNING",
+                        "[DailyClose] STEP 3 재학습 20분 초과 — 강제 진행 (타임아웃)", "WARNING"
                     )
-            except Exception as _tre:
-                logger.warning("[ThresholdRecal] 실행 실패 (스킵): %s", _tre)
-
-        # ── ATR 게이트 상/하한 재보정 제안 모니터 (303차, 금요일 + 최근 실행 후
-        #    10일 이상 경과 시에만 — 사실상 1~2주 주기). 자동 반영 없음, 제안만
-        #    기록 + WATCHLIST 이상이면 Slack 알림(utils.notify) — 알파봇과 동일하게
-        #    사람이 config/settings.py를 검토 후 수동 반영한다.
-        if now.weekday() == 4:   # 금요일
-            try:
-                _atr_recal = self.atr_ceiling_recalibrator.run_if_due(
-                    today=now.date().isoformat()
-                )
-                if _atr_recal and _atr_recal["alert"] != "CLEAR":
-                    log_manager.system(
-                        f"[ATRCeilingRecal] {_atr_recal['alert']} — "
-                        f"floor {_atr_recal['current_floor']}→{_atr_recal['suggested_floor']}pt "
-                        f"({_atr_recal['floor_delta_pct']:+.0f}%), "
-                        f"ceiling {_atr_recal['current_ceiling']}→{_atr_recal['suggested_ceiling']}pt "
-                        f"({_atr_recal['ceiling_delta_pct']:+.0f}%) — Slack 알림 발송, 수동 검토 필요",
-                        "WARNING",
-                    )
-            except Exception as _atre:
-                logger.warning("[ATRCeilingRecal] 실행 실패 (스킵): %s", _atre)
-
-        # ── entry_horizon(select_entry_horizon) 경계값 재보정 모니터 (375차,
-        #    금요일 + 최근 실행 후 7일 이상 경과 시에만). 374차가 발견한
-        #    "경계값 고착"(61건 실거래 전부 5m 분류) 재발 여부를 매주 확인.
-        #    자동 반영 없음 — ThresholdRecal/ATRCeilingRecal과 동일하게 제안만
-        #    기록, config/settings.py의 ENTRY_HORIZON_B1/B2는 사람이
-        #    검토 후 수동 반영한다.
-        #
-        # 🔴 [2026-08-23 주간회의 확정] 이 경보는 **참고용이고 판정이 아니다.**
-        #    경계는 **동결**됐고(`config/settings.py:ENTRY_HORIZON_B1` 주석), 경계
-        #    적정성 판정은 사전등록 채널 `entry_band_watch`(474차 D9-B)가 한다.
-        #    이 재보정기는 손익을 보지 않고 33/67 분위수만 보므로 "1/3씩 안 나뉜다"만
-        #    말할 수 있다 — 그 전제는 손익으로 검증된 적이 없다.
-        #    ⚠ 그러므로 주간 `UPDATE`가 계속 뜨는 것은 **미조치가 아니라 결정된 상태**다.
-        #    문구를 "수동 검토 필요" → "참고용 경보(판정 아님)"로 바꾼 이유가 이것이다.
-        #    ⚠ 경보 자체는 끄지 않는다 — 374차형 고착(한 버킷 99%)의 재발 감시가
-        #    이 장치의 원래 목적이고, 그 역할은 유효하다.
-        if now.weekday() == 4:   # 금요일
-            try:
-                _eh_recal = self.entry_horizon_recalibrator.run_if_due(
-                    today=now.date().isoformat()
-                )
-                if _eh_recal and _eh_recal["alert"] != "CLEAR":
-                    log_manager.system(
-                        f"[EntryHorizonRecal] {_eh_recal['alert']} — "
-                        f"경계 {_eh_recal['current_b1']}/{_eh_recal['current_b2']} → "
-                        f"재계산 {_eh_recal['recalc_b1']}/{_eh_recal['recalc_b2']} "
-                        f"(δ{_eh_recal['b1_delta_pct']:+.0f}%/{_eh_recal['b2_delta_pct']:+.0f}%), "
-                        f"버킷비중(1m/3m/5m)="
-                        f"{_eh_recal['bucket_1m_pct']:.0f}%/{_eh_recal['bucket_3m_pct']:.0f}%/"
-                        f"{_eh_recal['bucket_5m_pct']:.0f}% — 참고용 경보(판정 아님)",
-                        "WARNING",
-                    )
-            except Exception as _ehe:
-                logger.warning("[EntryHorizonRecal] 실행 실패 (스킵): %s", _ehe)
-
-        # ── ATR배수 임계값 3종(CHASE_FILTER×2/COUNTERTREND/REGIME_EXHAUSTION)
-        #    발동률 드리프트 모니터 (신설, 금요일 + 최근 실행 후 7일 이상
-        #    경과 시에만 — 나머지 3개 재보정기와 동일 패턴). 재계산 "권장값"이
-        #    아니라 "지금 임계값이면 얼마나 자주 발동하는가"만 추적, 자동 반영
-        #    없음 — 대상 임계값은 사람이 config/settings.py에서 직접 검토.
-        if now.weekday() == 4:   # 금요일
-            try:
-                _am_recal = self.atr_multiple_recalibrator.run_if_due(
-                    today=now.date().isoformat()
-                )
-                if _am_recal:
-                    _am_alerts = {k: v["alert"] for k, v in _am_recal.items() if v["alert"] != "CLEAR"}
-                    if _am_alerts:
-                        log_manager.system(
-                            f"[ATRMultipleRecal] 경보 발생: {_am_alerts} — "
-                            f"발동률 급변, config/settings.py:ATR_MULTIPLE_RECAL_TARGETS 수동 검토",
+                    # [J] 타임아웃 발생 시 슬랙 알림 — P8 지연 가능성 사전 고지
+                    try:
+                        from utils.notify import notify as _nfy_step3
+                        _nfy_step3(
+                            "⚠️ DailyClose STEP3 타임아웃 — GBM 재학습 20분 초과\n"
+                            "P8 지연 발생 가능 | 내일 EarlyWarmup 보완 예정",
                             "WARNING",
                         )
-            except Exception as _ame:
-                logger.warning("[ATRMultipleRecal] 실행 실패 (스킵): %s", _ame)
+                    except Exception:
+                        pass
+
+            # GBM 재학습 + P8 스케일러 재적합은 py310_64 장외 스케줄러(MireukiEODRetrain, 15:45)가
+            # retrain_eod.py를 통해 수행한다 (191차~, OOM 방지).
+            # daily_close()에서 retrain_now()를 직접 호출하지 않는다:
+            #   - py37_32 메인 스레드 동기 실행 → 12분+ Qt 블로킹 → UI 행 상태 (오늘 실증)
+            #   - py310_64 스케줄러 완료 후 마커 파일로 성공 여부 확인
+
+            # 마커 파일 기반으로 내일 08:55 PreRetrain 스킵 신호 기록
+            _eod_marker_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "data",
+                f"eod_retrain_done_{datetime.date.today().strftime('%Y%m%d')}.txt",
+            )
+            if os.path.exists(_eod_marker_path):
+                self._eod_retrain_ok = True
+                try:
+                    _eod_ss = self._read_session_state()
+                    _eod_ss["eod_retrain_ok_date"] = datetime.date.today().isoformat()
+                    self._write_session_state(_eod_ss)
+                except Exception as _eod_ss_e:
+                    logger.warning("[EOD] eod_retrain_ok_date 저장 실패 (무해): %s", _eod_ss_e)
+                log_manager.system(
+                    "[DailyClose] EOD 재학습 마커 확인 — 스케줄러 완료, 내일 PreRetrain 스킵 예약",
+                    "INFO",
+                )
+            else:
+                # [MW0601 435차] 이 경보는 **매 거래일 반드시 뜨는 구조적 오탐**이었다.
+                # daily_close()는 15:40에 돌고 retrain_eod.py는 py310_64 장외 스케줄러가
+                # 15:45에 띄워 ~15:48에 마커를 쓴다 — 즉 이 시점에 오늘 마커가 없는 것이
+                # **정상**이며, 검사 자체가 원리상 항상 실패한다.
+                # 실측: 07-30·07-31·08-03·08-04·08-05 전부 이 WARNING이 찍혔고 그 다음날
+                # 아침 PreRetrain은 매번 "EOD 마커 파일 직접 확인 → 스킵"으로 정상 동작했다.
+                # 즉 기능은 멀쩡한데 경보만 늑대를 외치고 있었다(경보 불감증 유발).
+                #
+                # 그렇다고 검사를 지우지는 않는다 — 마커가 **있는** 경우의 session_state
+                # 기록은 여전히 유효하고(재기동 등으로 EOD가 먼저 끝난 경우), "진짜 실패"를
+                # 볼 창구도 남겨야 한다. 대신 **시각을 인지해** 등급을 나눈다:
+                #   지금이 스케줄러 예정시각 이전 → INFO (정상, 아직 안 돌았을 뿐)
+                #   그 이후인데도 마커가 없음     → WARNING (진짜 미실행/실패 의심)
+                # 판정의 실질은 다음날 아침 PreRetrain이 마커 파일을 직접 확인하는 쪽이
+                # 정본이다(이 경로는 관측용).
+                _eod_sched_hm = str(getattr(runtime_settings, "EOD_RETRAIN_SCHEDULE_HM", "1545"))
+                _now_hm = datetime.datetime.now().strftime("%H%M")
+                if _now_hm < _eod_sched_hm:
+                    log_manager.system(
+                        "[DailyClose] EOD 재학습 마커 없음 — 정상 "
+                        f"(스케줄러 {_eod_sched_hm[:2]}:{_eod_sched_hm[2:]} 예정, "
+                        "현재 %s:%s). 마커는 재학습 완료 시 기록된다"
+                        % (_now_hm[:2], _now_hm[2:]),
+                        "INFO",
+                    )
+                else:
+                    log_manager.system(
+                        "[DailyClose] EOD 재학습 마커 없음 — 예정시각"
+                        f"({_eod_sched_hm[:2]}:{_eod_sched_hm[2:]}) 경과했는데 마커가 없다. "
+                        "retrain_eod.py 미실행 또는 실패 의심 "
+                        "(내일 PreRetrain에서 보완 재학습 예약됨)",
+                        "WARNING",
+                    )
+
+            # DB pruning — 매주 월요일 EOD 1회 실행 (RAW_DATA_PRUNE_WEEKS=52주 이전 삭제)
+            # 슬라이딩 창(26주) 정상 운영 시 학습 행 수는 ~40,000 안정적
+            # 하지만 raw_data.db 자체는 누적 → 52주 초과분 정리로 DB 비대화 방지
+            if datetime.datetime.now().weekday() == 0:  # 월요일
+                try:
+                    _pruned = self.batch_retrainer.prune_raw_data_db()
+                    if _pruned > 0:
+                        log_manager.learning(
+                            f"[GBM] DB pruning: {_pruned:,}행 삭제 (52주 초과분)"
+                        )
+                except Exception as _pe:
+                    logger.warning("[GBM] DB pruning 실패: %s", _pe)
+
+            # [Platt] 앙상블 보정기 저장 — 다음 기동 시 즉시 복원 가능
+            try:
+                from config.settings import ENSEMBLE_CALIBRATOR_PATH
+                _cal = self.ensemble.ensemble_calibrator
+                if _cal.save(ENSEMBLE_CALIBRATOR_PATH):
+                    log_manager.system(
+                        f"[Calibration] 앙상블 보정기 저장 완료 n={_cal.n_samples}",
+                        "INFO",
+                    )
+                else:
+                    # [MW0602 485차 F-1] 부정 분기 무로그 금지 — save()가 False를
+                    # 돌려주면 판정 기준선이 며칠씩 과거 저장본에 묶여도 아무 로그가
+                    # 없었다(0821 리포트 1-1: 7거래일 무저장·무로그). 감싸는 except는
+                    # False 반환에 발동하지 않으므로 여기서 직접 남긴다.
+                    log_manager.system(
+                        f"[Calibration] 앙상블 보정기 저장 건너뜀 — "
+                        f"fitted={_cal.is_fitted} degenerate={_cal.is_degenerate} "
+                        f"unreachable={_cal.is_unreachable} n={_cal.n_samples}",
+                        "WARNING",
+                    )
+            except Exception as _cal_s_e:
+                logger.warning("[Calibration] 보정기 저장 실패 (무해): %s", _cal_s_e)
+
+            # [MetaConf] 학습 상태 저장 — 다음 날 warm-start (cold-start 제거)
+            try:
+                from config.settings import META_CONF_STATE_PATH
+                self.meta_gate.learner.save(META_CONF_STATE_PATH)
+            except Exception as _mc_s_e:
+                logger.warning("[MetaConf] EOD 상태 저장 실패 (무해): %s", _mc_s_e)
+
+            # ── 자가학습 일일 마감 집계 ──────────────────────────────
+            try:
+                self.daily_consolidator.consolidate()
+            except Exception as _dce:
+                logger.warning("[DailyConsolidator] 집계 실패 (스킵): %s", _dce)
+            try:
+                _drift_result = self.drift_adjuster.record_accuracy(
+                    _today_accuracy, n_samples=_today_n_samples
+                )
+                _new_alpha = _drift_result.get("alpha", 0.001)
+                if hasattr(self.online_learner, "set_alpha"):
+                    self.online_learner.set_alpha(_new_alpha)
+                    logger.info("[DriftAdjuster] SGD alpha 갱신: %.5f (%s)", _new_alpha, _drift_result.get("action"))
+            except Exception as _dae:
+                logger.warning("[DriftAdjuster] 갱신 실패 (스킵): %s", _dae)
+
+            # ── Phase A 임계값 재보정 모니터 (376차, 금요일 + 최근 실행 후 7일
+            #    이상 경과 시에만 — atr_ceiling/entry_horizon_recalibrator와 동일
+            #    패턴으로 교체. 종전엔 "정확히 금요일"에만 run()해 휴장 등으로 그
+            #    금요일 세션이 없으면 해당 주가 통째로 누락됐다(07-17 공백 확인).
+            if now.weekday() == 4:   # 금요일
+                try:
+                    recal_results = self.threshold_recalibrator.run_if_due(
+                        today=now.date().isoformat()
+                    )
+                    alerts = {h: r["alert"] for h, r in recal_results.items() if r["alert"] != "CLEAR"}
+                    if alerts:
+                        log_manager.system(
+                            f"[ThresholdRecal] 경보 발생: {alerts}  "
+                            f"docs/정기점검/LABEL_THRESHOLD_RECALIBRATION_GUIDE.md 참조",
+                            "WARNING",
+                        )
+                except Exception as _tre:
+                    logger.warning("[ThresholdRecal] 실행 실패 (스킵): %s", _tre)
+
+            # ── ATR 게이트 상/하한 재보정 제안 모니터 (303차, 금요일 + 최근 실행 후
+            #    10일 이상 경과 시에만 — 사실상 1~2주 주기). 자동 반영 없음, 제안만
+            #    기록 + WATCHLIST 이상이면 Slack 알림(utils.notify) — 알파봇과 동일하게
+            #    사람이 config/settings.py를 검토 후 수동 반영한다.
+            if now.weekday() == 4:   # 금요일
+                try:
+                    _atr_recal = self.atr_ceiling_recalibrator.run_if_due(
+                        today=now.date().isoformat()
+                    )
+                    if _atr_recal and _atr_recal["alert"] != "CLEAR":
+                        log_manager.system(
+                            f"[ATRCeilingRecal] {_atr_recal['alert']} — "
+                            f"floor {_atr_recal['current_floor']}→{_atr_recal['suggested_floor']}pt "
+                            f"({_atr_recal['floor_delta_pct']:+.0f}%), "
+                            f"ceiling {_atr_recal['current_ceiling']}→{_atr_recal['suggested_ceiling']}pt "
+                            f"({_atr_recal['ceiling_delta_pct']:+.0f}%) — Slack 알림 발송, 수동 검토 필요",
+                            "WARNING",
+                        )
+                except Exception as _atre:
+                    logger.warning("[ATRCeilingRecal] 실행 실패 (스킵): %s", _atre)
+
+            # ── entry_horizon(select_entry_horizon) 경계값 재보정 모니터 (375차,
+            #    금요일 + 최근 실행 후 7일 이상 경과 시에만). 374차가 발견한
+            #    "경계값 고착"(61건 실거래 전부 5m 분류) 재발 여부를 매주 확인.
+            #    자동 반영 없음 — ThresholdRecal/ATRCeilingRecal과 동일하게 제안만
+            #    기록, config/settings.py의 ENTRY_HORIZON_B1/B2는 사람이
+            #    검토 후 수동 반영한다.
+            #
+            # 🔴 [2026-08-23 주간회의 확정] 이 경보는 **참고용이고 판정이 아니다.**
+            #    경계는 **동결**됐고(`config/settings.py:ENTRY_HORIZON_B1` 주석), 경계
+            #    적정성 판정은 사전등록 채널 `entry_band_watch`(474차 D9-B)가 한다.
+            #    이 재보정기는 손익을 보지 않고 33/67 분위수만 보므로 "1/3씩 안 나뉜다"만
+            #    말할 수 있다 — 그 전제는 손익으로 검증된 적이 없다.
+            #    ⚠ 그러므로 주간 `UPDATE`가 계속 뜨는 것은 **미조치가 아니라 결정된 상태**다.
+            #    문구를 "수동 검토 필요" → "참고용 경보(판정 아님)"로 바꾼 이유가 이것이다.
+            #    ⚠ 경보 자체는 끄지 않는다 — 374차형 고착(한 버킷 99%)의 재발 감시가
+            #    이 장치의 원래 목적이고, 그 역할은 유효하다.
+            if now.weekday() == 4:   # 금요일
+                try:
+                    _eh_recal = self.entry_horizon_recalibrator.run_if_due(
+                        today=now.date().isoformat()
+                    )
+                    if _eh_recal and _eh_recal["alert"] != "CLEAR":
+                        log_manager.system(
+                            f"[EntryHorizonRecal] {_eh_recal['alert']} — "
+                            f"경계 {_eh_recal['current_b1']}/{_eh_recal['current_b2']} → "
+                            f"재계산 {_eh_recal['recalc_b1']}/{_eh_recal['recalc_b2']} "
+                            f"(δ{_eh_recal['b1_delta_pct']:+.0f}%/{_eh_recal['b2_delta_pct']:+.0f}%), "
+                            f"버킷비중(1m/3m/5m)="
+                            f"{_eh_recal['bucket_1m_pct']:.0f}%/{_eh_recal['bucket_3m_pct']:.0f}%/"
+                            f"{_eh_recal['bucket_5m_pct']:.0f}% — 참고용 경보(판정 아님)",
+                            "WARNING",
+                        )
+                except Exception as _ehe:
+                    logger.warning("[EntryHorizonRecal] 실행 실패 (스킵): %s", _ehe)
+
+            # ── ATR배수 임계값 3종(CHASE_FILTER×2/COUNTERTREND/REGIME_EXHAUSTION)
+            #    발동률 드리프트 모니터 (신설, 금요일 + 최근 실행 후 7일 이상
+            #    경과 시에만 — 나머지 3개 재보정기와 동일 패턴). 재계산 "권장값"이
+            #    아니라 "지금 임계값이면 얼마나 자주 발동하는가"만 추적, 자동 반영
+            #    없음 — 대상 임계값은 사람이 config/settings.py에서 직접 검토.
+            if now.weekday() == 4:   # 금요일
+                try:
+                    _am_recal = self.atr_multiple_recalibrator.run_if_due(
+                        today=now.date().isoformat()
+                    )
+                    if _am_recal:
+                        _am_alerts = {k: v["alert"] for k, v in _am_recal.items() if v["alert"] != "CLEAR"}
+                        if _am_alerts:
+                            log_manager.system(
+                                f"[ATRMultipleRecal] 경보 발생: {_am_alerts} — "
+                                f"발동률 급변, config/settings.py:ATR_MULTIPLE_RECAL_TARGETS 수동 검토",
+                                "WARNING",
+                            )
+                except Exception as _ame:
+                    logger.warning("[ATRMultipleRecal] 실행 실패 (스킵): %s", _ame)
+        else:
+            log_manager.system("[DailyClose] 미륵 휴면 — 학습 상태 저장·재학습 대기·재보정 모니터 생략", "INFO")
 
         # 일일 리셋
         if hasattr(self, "_investor_timer"):
@@ -16095,13 +16140,15 @@ class TradingSystem:
         self._sys_daily_legs_detail = []
         self._sys_daily_date = datetime.date.today().isoformat()
         self.online_learner.reset_daily()
-        # [311차 후속 B안] 극단성 보정기 — GBM 배치재학습과 같은 리듬(일 1회)으로 재적합.
-        # reset_daily 없음 — 버퍼(BATCH_SIZE=5000)는 날짜 경계와 무관하게 계속 누적.
-        try:
-            _ext_fit = self.extremity_corrector.fit_all()
-            log_manager.learning(f"[ExtremityCorrector] 일일 재적합: {_ext_fit}")
-        except Exception as _ext_e:
-            logger.warning("[ExtremityCorrector] daily fit_all 실패 (무해): %s", _ext_e)
+        # [713차 / 신동 주체 전환 P3] 극단성 보정기 재적합 — 미륵 예측 전용(휴면 시 생략)
+        if self._mireuk_on():
+            # [311차 후속 B안] 극단성 보정기 — GBM 배치재학습과 같은 리듬(일 1회)으로 재적합.
+            # reset_daily 없음 — 버퍼(BATCH_SIZE=5000)는 날짜 경계와 무관하게 계속 누적.
+            try:
+                _ext_fit = self.extremity_corrector.fit_all()
+                log_manager.learning(f"[ExtremityCorrector] 일일 재적합: {_ext_fit}")
+            except Exception as _ext_e:
+                logger.warning("[ExtremityCorrector] daily fit_all 실패 (무해): %s", _ext_e)
         self.market_dna.reset_daily()
         self.core_health.reset_daily()
         self.model.reset_daily_gap_offset()
@@ -16470,175 +16517,177 @@ class TradingSystem:
         except Exception as _g5_e:
             logger.warning("[ExitStageRecon] 라벨 대사 실패 (무해): %s", _g5_e)
 
-        # 섹션 8: scaler_daily EOD 집계 저장
-        # [MW0601 483차 / P1-A] ⚠ 스냅샷을 try **밖에서** 먼저 잡는다. 아래 try 가
-        # 실패해도(import 오류 등) 15:40 경보는 살아 있으므로, try 안에서 만들면
-        # 경보가 참조할 값이 없어진다. `_ccf_today` 와 같은 관례.
-        _mh_snap_eod = self._model_health_snapshot(cb3_avail=_cb3_avail_eod)
-        try:
-            from model.scaler_monitor_db import aggregate_daily, insert_daily
-            _sm_stats = aggregate_daily(today_str)
-            # [MW0601 482차] ⚠ 종전 `getattr(self.circuit_breaker, "_daily_halt", False)` —
-            # CircuitBreaker 에 그런 속성은 **없다**(실재 이름은 `_daily_halt_count`).
-            # 폴백 False 가 조용히 반환돼 `scaler_daily.cb3_triggered` 가 51행 전량
-            # 0으로 죽어 있었다. CB③ HALT 가 코드상 비활성이라 값이 우연히 맞아
-            # 보였을 뿐, CB①②④⑤ 로 HALT 가 나도 0이 기록되는 상태였다.
-            # 계측 4원칙 ④ — 런타임 상태를 getattr 폴백으로 읽지 마라.
-            _cb3_fired = int(self._cb3_daily_halt_eod)
-            insert_daily(
-                today_str, _sm_stats,
-                grade_x_minutes=self._grade_x_count,
-                cb3_triggered=_cb3_fired,
-                # [MW0601 457차 / G5] 모델 건강도 — 아래 리셋보다 **먼저** 읽는다
-                health=_mh_snap_eod,
-            )
-        except Exception as _sm_e:
-            logger.warning("[ScalerMonitor] EOD 집계 저장 실패 (스킵): %s", _sm_e)
-        self._grade_x_count = 0   # 내일을 위해 리셋
-        self._reset_model_health_counters()   # [457차 G5] — insert_daily 이후에만
-        # ── [MW0601 490차 / F-G] CB③ 조건 성립 축 — **무조건** 1줄 ──────────────
-        # 2026-08-24 에 이 값(조건성립 30분 · 그 창 2포지션 · -128,195원)이 운영 로그
-        # 어디에도 없어 `[DBG-CB]` DEBUG 라인을 손으로 재집계해야 했다(이상점 1-8).
-        # `[CB③ 비활성]` 은 `logger.debug` × `LOG_LEVEL=INFO` 라 종일 0건 출력이고,
-        # 482차 G-1 의 `cb3_ready_minutes` 는 「가용 분」만 세서 임계 미달 분을 못 본다.
-        #
-        # ⚠ mc-conf 경보(`_cfg_txt`)에 붙이지 않는다 — 그 문자열은 **경보가 발화할
-        #   때만** 출력되므로, 조건 성립 계측이 다른 경보의 발화 여부에 종속된다.
-        #   계측은 사건이 없을 때 「0분」이라고 말할 수 있어야 한다(계측 4원칙 ②).
-        # ⚠ `_mh_snap_eod` 를 읽는다 — 이 지점은 `_reset_model_health_counters()`
-        #   **뒤**라 `self._mh_*` 직접 읽기는 항상 0 이다(483차 P1-A).
-        # 🔴 판정에 관여하지 않는다 — CB③ 자동진입 차단은 한시예외로 비활성이며
-        #   (`CB3_P4_GRADE_BLOCK_ENABLED=False`, 절대원칙 §2) 여기서 되돌리지 않는다.
-        # 🔴 [MW0601 493차 후속5 / F-Y] `%` 서식 안에 **콤마 플래그를 두지 않는다.**
-        #
-        # 종전 `"손익 %+,.0f원"` 은 `ValueError: unsupported format character ','`
-        # 로 터졌고, 그 예외가 **`daily_close()` 전체를 끊었다** — 뒤에 있던 DB 플러시·
-        # WAL 체크포인트·일일 전략 리포트가 이틀 연속 실행되지 않았다(이상점 1-12).
-        # `,` 는 `str.format`/f-string 문법이지 `%` 연산자 문법이 아니다.
-        # → 값을 **먼저 문자열로 만들고** `%s` 로 넘긴다.
-        #
-        # ⚠ 이 블록은 **개별 try/except** 로 감싼다. 계측 한 줄이 마감 절차를
-        #   끊으면 안 된다. 다만 **예외를 삼키지 않는다** — 같은 함수의
-        #   `[BrokerPnl]`·`[ScalerMonitor]` 블록과 같은 관례로 남긴다(계측 4원칙 ④).
-        # 🚫 손익 확정(`[Daily] 마감 통계`·`[BrokerPnl]`)과 마커 기록에는 이 관례를
-        #   적용하지 않는다 — 그 둘은 조용히 실패하면 안 된다.
-        try:
-            _cb3_pnl_txt = format(
-                float(_mh_snap_eod.get("cb3_would_halt_pnl_krw") or 0.0), "+,.0f")
+        # [713차 / 신동 주체 전환 P3] scaler_daily · CB③ 계측 · Checklist · CUSUM · mc-conf · StrategyRegistry 는 미륵 전략 버전의 일별 기록이다 — 휴면 중 신동 손익이 미륵 버전 실적으로 쌓이면 안 된다.
+        if self._mireuk_on():
+            # 섹션 8: scaler_daily EOD 집계 저장
+            # [MW0601 483차 / P1-A] ⚠ 스냅샷을 try **밖에서** 먼저 잡는다. 아래 try 가
+            # 실패해도(import 오류 등) 15:40 경보는 살아 있으므로, try 안에서 만들면
+            # 경보가 참조할 값이 없어진다. `_ccf_today` 와 같은 관례.
+            _mh_snap_eod = self._model_health_snapshot(cb3_avail=_cb3_avail_eod)
+            try:
+                from model.scaler_monitor_db import aggregate_daily, insert_daily
+                _sm_stats = aggregate_daily(today_str)
+                # [MW0601 482차] ⚠ 종전 `getattr(self.circuit_breaker, "_daily_halt", False)` —
+                # CircuitBreaker 에 그런 속성은 **없다**(실재 이름은 `_daily_halt_count`).
+                # 폴백 False 가 조용히 반환돼 `scaler_daily.cb3_triggered` 가 51행 전량
+                # 0으로 죽어 있었다. CB③ HALT 가 코드상 비활성이라 값이 우연히 맞아
+                # 보였을 뿐, CB①②④⑤ 로 HALT 가 나도 0이 기록되는 상태였다.
+                # 계측 4원칙 ④ — 런타임 상태를 getattr 폴백으로 읽지 마라.
+                _cb3_fired = int(self._cb3_daily_halt_eod)
+                insert_daily(
+                    today_str, _sm_stats,
+                    grade_x_minutes=self._grade_x_count,
+                    cb3_triggered=_cb3_fired,
+                    # [MW0601 457차 / G5] 모델 건강도 — 아래 리셋보다 **먼저** 읽는다
+                    health=_mh_snap_eod,
+                )
+            except Exception as _sm_e:
+                logger.warning("[ScalerMonitor] EOD 집계 저장 실패 (스킵): %s", _sm_e)
+            self._grade_x_count = 0   # 내일을 위해 리셋
+            self._reset_model_health_counters()   # [457차 G5] — insert_daily 이후에만
+            # ── [MW0601 490차 / F-G] CB③ 조건 성립 축 — **무조건** 1줄 ──────────────
+            # 2026-08-24 에 이 값(조건성립 30분 · 그 창 2포지션 · -128,195원)이 운영 로그
+            # 어디에도 없어 `[DBG-CB]` DEBUG 라인을 손으로 재집계해야 했다(이상점 1-8).
+            # `[CB③ 비활성]` 은 `logger.debug` × `LOG_LEVEL=INFO` 라 종일 0건 출력이고,
+            # 482차 G-1 의 `cb3_ready_minutes` 는 「가용 분」만 세서 임계 미달 분을 못 본다.
+            #
+            # ⚠ mc-conf 경보(`_cfg_txt`)에 붙이지 않는다 — 그 문자열은 **경보가 발화할
+            #   때만** 출력되므로, 조건 성립 계측이 다른 경보의 발화 여부에 종속된다.
+            #   계측은 사건이 없을 때 「0분」이라고 말할 수 있어야 한다(계측 4원칙 ②).
+            # ⚠ `_mh_snap_eod` 를 읽는다 — 이 지점은 `_reset_model_health_counters()`
+            #   **뒤**라 `self._mh_*` 직접 읽기는 항상 0 이다(483차 P1-A).
+            # 🔴 판정에 관여하지 않는다 — CB③ 자동진입 차단은 한시예외로 비활성이며
+            #   (`CB3_P4_GRADE_BLOCK_ENABLED=False`, 절대원칙 §2) 여기서 되돌리지 않는다.
+            # 🔴 [MW0601 493차 후속5 / F-Y] `%` 서식 안에 **콤마 플래그를 두지 않는다.**
+            #
+            # 종전 `"손익 %+,.0f원"` 은 `ValueError: unsupported format character ','`
+            # 로 터졌고, 그 예외가 **`daily_close()` 전체를 끊었다** — 뒤에 있던 DB 플러시·
+            # WAL 체크포인트·일일 전략 리포트가 이틀 연속 실행되지 않았다(이상점 1-12).
+            # `,` 는 `str.format`/f-string 문법이지 `%` 연산자 문법이 아니다.
+            # → 값을 **먼저 문자열로 만들고** `%s` 로 넘긴다.
+            #
+            # ⚠ 이 블록은 **개별 try/except** 로 감싼다. 계측 한 줄이 마감 절차를
+            #   끊으면 안 된다. 다만 **예외를 삼키지 않는다** — 같은 함수의
+            #   `[BrokerPnl]`·`[ScalerMonitor]` 블록과 같은 관례로 남긴다(계측 4원칙 ④).
+            # 🚫 손익 확정(`[Daily] 마감 통계`·`[BrokerPnl]`)과 마커 기록에는 이 관례를
+            #   적용하지 않는다 — 그 둘은 조용히 실패하면 안 된다.
+            try:
+                _cb3_pnl_txt = format(
+                    float(_mh_snap_eod.get("cb3_would_halt_pnl_krw") or 0.0), "+,.0f")
+                log_manager.system(
+                    "[CB③계측] 조건성립 %d분 / 판정가능 %d분 / 파이프라인 %d분"
+                    " · 그 창 진입 %d포지션 · 손익 %s원"
+                    " (임계 acc30m<%.2f · HALT 차단은 한시예외로 비활성)"
+                    % (int(_mh_snap_eod.get("cb3_would_halt_minutes") or 0),
+                       int(_mh_snap_eod.get("cb3_ready_minutes") or 0),
+                       int(_mh_snap_eod.get("pipeline_minutes") or 0),
+                       int(_mh_snap_eod.get("cb3_would_halt_entries") or 0),
+                       _cb3_pnl_txt,
+                       float(_cb3_avail_eod.get("threshold") or 0.0)),
+                    "INFO",
+                )
+            except Exception as _cb3m_e:
+                logger.warning("[CB③계측] 출력 실패 (무해): %s", _cb3m_e)
+            _ccf_today = self._checklist_conf_fail_count   # [P3] 리포트 전달용 — 리셋 전에 캡처
             log_manager.system(
-                "[CB③계측] 조건성립 %d분 / 판정가능 %d분 / 파이프라인 %d분"
-                " · 그 창 진입 %d포지션 · 손익 %s원"
-                " (임계 acc30m<%.2f · HALT 차단은 한시예외로 비활성)"
-                % (int(_mh_snap_eod.get("cb3_would_halt_minutes") or 0),
-                   int(_mh_snap_eod.get("cb3_ready_minutes") or 0),
-                   int(_mh_snap_eod.get("pipeline_minutes") or 0),
-                   int(_mh_snap_eod.get("cb3_would_halt_entries") or 0),
-                   _cb3_pnl_txt,
-                   float(_cb3_avail_eod.get("threshold") or 0.0)),
+                f"[P3] 금일 Checklist 신뢰도 차단: {_ccf_today}회"
+                f" (앙상블 통과 후 conf 미달 강제 X)",
                 "INFO",
             )
-        except Exception as _cb3m_e:
-            logger.warning("[CB③계측] 출력 실패 (무해): %s", _cb3m_e)
-        _ccf_today = self._checklist_conf_fail_count   # [P3] 리포트 전달용 — 리셋 전에 캡처
-        log_manager.system(
-            f"[P3] 금일 Checklist 신뢰도 차단: {_ccf_today}회"
-            f" (앙상블 통과 후 conf 미달 강제 X)",
-            "INFO",
-        )
-        self._checklist_conf_fail_count = 0
+            self._checklist_conf_fail_count = 0
 
-        # [Phase2] 드리프트 감지 — CUSUM 일별 업데이트
-        try:
-            from strategy.param_drift_detector import get_drift_detector as _get_dd
-            _drift_level, _drift_msg = _get_dd().update(
-                daily_pnl = forward_stats["pnl_krw"],
-                daily_wr  = forward_stats["wins"] / max(forward_stats["trades"], 1),
-                daily_pf  = self._daily_profit_factor(),
-            )
-            logger.info("[DriftDetector] %s", _drift_msg)
-            from strategy.param_drift_detector import DriftLevel as _DL
-            if _drift_level >= _DL.WATCHLIST:
-                log_manager.system("[경보] DriftDetector: " + _drift_msg)
-            # 전략 운용현황 탭에 CUSUM 드리프트 수준 반영
-            # [304차 후속] daily_close()는 백그라운드 스레드 실행 — 직접 호출 금지, 메인 스레드로 위임
-            # (0708 15:40~15:43 access violation 크래시 루프 실측: main.py daily_close →
-            # update_strategy_ops → set_fingerprint_level → refresh 스택)
-            _daily_close_ui_sig.request.emit(
-                lambda _dl=_drift_level: self.dashboard.update_strategy_ops({"drift_level": _dl})
-            )
-        except Exception as _de:
-            logger.warning("[DriftDetector] 업데이트 실패 (스킵): %s", _de)
-
-        # [297차, P1-5] mc–conf 괴리 조기경보 — 경보만 출력, mc·임계값 자동 조정 없음
-        # (§3-7). 진입후보(confidence>=min_conf) 분 수가 붕괴하면 4주 검증 캠페인
-        # 표본 자체가 희소해지므로 사용자가 조기에 알아채야 한다.
-        _mc_gap_today = 0
-        _mc_gap_avg = 0.0
-        try:
-            if getattr(runtime_settings, "MC_CONF_GAP_ALERT_ENABLED", True):
-                from utils.db_utils import fetch_entry_candidate_gap
-                _gap = fetch_entry_candidate_gap(
-                    lookback_days=runtime_settings.MC_CONF_GAP_ALERT_LOOKBACK_DAYS
+            # [Phase2] 드리프트 감지 — CUSUM 일별 업데이트
+            try:
+                from strategy.param_drift_detector import get_drift_detector as _get_dd
+                _drift_level, _drift_msg = _get_dd().update(
+                    daily_pnl = forward_stats["pnl_krw"],
+                    daily_wr  = forward_stats["wins"] / max(forward_stats["trades"], 1),
+                    daily_pf  = self._daily_profit_factor(),
                 )
-                _mc_gap_today = _gap.get("today", 0)
-                _mc_gap_avg = _gap.get("avg", 0.0)
-                _min_today = runtime_settings.MC_CONF_GAP_ALERT_MIN_TODAY
-                _min_avg   = runtime_settings.MC_CONF_GAP_ALERT_MIN_AVG
-                # [MW0601 482차 / G-3] "기회가 없었다"와 "구조적으로 불가능했다"를
-                # 분리한다. 도달불가 구간에서는 **어떤 신호도** 자동진입 하한을 넘을
-                # 수 없으므로, 그 분들이 섞인 후보 수로 경보의 오탐/정탐을 판단할 수
-                # 없다. ⚠ 셋째 칸(재지 않음)을 반드시 함께 찍는다 — 계측 4원칙 ②.
-                # [MW0601 483차 / P1-A] ⚠ `self._mh_cfg_*` 를 직접 읽지 마라 —
-                # 이 지점은 `_reset_model_health_counters()` **뒤**라 항상 0/0/0 이다.
-                # 리셋 전에 잡아둔 `_mh_snap_eod` 를 읽는다(계측 4원칙 ④).
-                _cfg_txt = (" | ConfFloorGuard 도달가능 %d분 · 도달불가 %d분 · 재지않음 %d분"
-                            % (int(_mh_snap_eod.get("cfg_reachable_min") or 0),
-                               int(_mh_snap_eod.get("cfg_unreachable_min") or 0),
-                               int(_mh_snap_eod.get("cfg_unmeasured_min") or 0)))
-                if _gap["days"] and _mc_gap_today < _min_today:
-                    log_manager.system(
-                        f"[경보] mc-conf 괴리: 금일 진입후보(conf≥mc) {_mc_gap_today}분"
-                        f" < 하한 {_min_today}분 — 최근 {_gap['lookback_days']}거래일 평균"
-                        f" {_gap['avg']:.0f}분/일. mc는 자동 조정하지 않음(사용자 판단 필요).{_cfg_txt}",
-                        "WARNING",
-                    )
-                elif _gap["days"] and _gap["avg"] < _min_avg:
-                    log_manager.system(
-                        f"[경보] mc-conf 괴리: 최근 {_gap['lookback_days']}거래일 평균"
-                        f" 진입후보 {_gap['avg']:.0f}분/일 < 하한 {_min_avg}분 — 금일 {_mc_gap_today}분.{_cfg_txt}",
-                        "WARNING",
-                    )
-                else:
-                    logger.info(
-                        "[mc-conf gap] 정상: 금일 %d분, %d일 평균 %.0f분%s",
-                        _mc_gap_today, _gap["lookback_days"], _gap.get("avg", 0.0),
-                        _cfg_txt,
-                    )
-        except Exception as _mcg_e:
-            logger.warning("[mc-conf gap] 계산 실패 (스킵): %s", _mcg_e)
+                logger.info("[DriftDetector] %s", _drift_msg)
+                from strategy.param_drift_detector import DriftLevel as _DL
+                if _drift_level >= _DL.WATCHLIST:
+                    log_manager.system("[경보] DriftDetector: " + _drift_msg)
+                # 전략 운용현황 탭에 CUSUM 드리프트 수준 반영
+                # [304차 후속] daily_close()는 백그라운드 스레드 실행 — 직접 호출 금지, 메인 스레드로 위임
+                # (0708 15:40~15:43 access violation 크래시 루프 실측: main.py daily_close →
+                # update_strategy_ops → set_fingerprint_level → refresh 스택)
+                _daily_close_ui_sig.request.emit(
+                    lambda _dl=_drift_level: self.dashboard.update_strategy_ops({"drift_level": _dl})
+                )
+            except Exception as _de:
+                logger.warning("[DriftDetector] 업데이트 실패 (스킵): %s", _de)
 
-        # [Phase2] StrategyRegistry — 라이브 일별 스냅샷 기록
-        # [297차 후속] 활성 버전은 registry(strategy_versions.is_current) 단일 기준으로 통일.
-        # 이전엔 PARAM_HISTORY[-1]("v1.0" 고정, 갱신 안 됨)을 읽어 실거래 스냅샷이
-        # registry의 is_current(QA 시더가 남긴 "v1.2")와 다른 버전 태그에 계속 쌓였고,
-        # 그 결과 daily_exporter가 참조하는 is_current 버전엔 스냅샷이 안 보여 "1일차"가
-        # 두 달째 고정되는 문제가 있었다. 두 지점 모두 registry를 유일한 소스로 둔다.
-        try:
-            from config.strategy_registry import get_registry as _get_reg
-            _reg_now = _get_reg()
-            _curr_ver_info = _reg_now.get_current_version()
-            _active_ver = _curr_ver_info["version"] if _curr_ver_info else "v1.0"
-            _reg_now.record_live_snapshot(
-                version = _active_ver,
-                metrics = {
-                    "win_rate":      forward_stats["wins"] / max(forward_stats["trades"], 1),
-                    "total_trades":  forward_stats["trades"],
-                    "daily_pnl":     forward_stats["pnl_krw"],
-                    "profit_factor": self._daily_profit_factor(),
-                },
-            )
-        except Exception as _re:
-            logger.warning("[Registry] live_snapshot 기록 실패 (스킵): %s", _re)
+            # [297차, P1-5] mc–conf 괴리 조기경보 — 경보만 출력, mc·임계값 자동 조정 없음
+            # (§3-7). 진입후보(confidence>=min_conf) 분 수가 붕괴하면 4주 검증 캠페인
+            # 표본 자체가 희소해지므로 사용자가 조기에 알아채야 한다.
+            _mc_gap_today = 0
+            _mc_gap_avg = 0.0
+            try:
+                if getattr(runtime_settings, "MC_CONF_GAP_ALERT_ENABLED", True):
+                    from utils.db_utils import fetch_entry_candidate_gap
+                    _gap = fetch_entry_candidate_gap(
+                        lookback_days=runtime_settings.MC_CONF_GAP_ALERT_LOOKBACK_DAYS
+                    )
+                    _mc_gap_today = _gap.get("today", 0)
+                    _mc_gap_avg = _gap.get("avg", 0.0)
+                    _min_today = runtime_settings.MC_CONF_GAP_ALERT_MIN_TODAY
+                    _min_avg   = runtime_settings.MC_CONF_GAP_ALERT_MIN_AVG
+                    # [MW0601 482차 / G-3] "기회가 없었다"와 "구조적으로 불가능했다"를
+                    # 분리한다. 도달불가 구간에서는 **어떤 신호도** 자동진입 하한을 넘을
+                    # 수 없으므로, 그 분들이 섞인 후보 수로 경보의 오탐/정탐을 판단할 수
+                    # 없다. ⚠ 셋째 칸(재지 않음)을 반드시 함께 찍는다 — 계측 4원칙 ②.
+                    # [MW0601 483차 / P1-A] ⚠ `self._mh_cfg_*` 를 직접 읽지 마라 —
+                    # 이 지점은 `_reset_model_health_counters()` **뒤**라 항상 0/0/0 이다.
+                    # 리셋 전에 잡아둔 `_mh_snap_eod` 를 읽는다(계측 4원칙 ④).
+                    _cfg_txt = (" | ConfFloorGuard 도달가능 %d분 · 도달불가 %d분 · 재지않음 %d분"
+                                % (int(_mh_snap_eod.get("cfg_reachable_min") or 0),
+                                   int(_mh_snap_eod.get("cfg_unreachable_min") or 0),
+                                   int(_mh_snap_eod.get("cfg_unmeasured_min") or 0)))
+                    if _gap["days"] and _mc_gap_today < _min_today:
+                        log_manager.system(
+                            f"[경보] mc-conf 괴리: 금일 진입후보(conf≥mc) {_mc_gap_today}분"
+                            f" < 하한 {_min_today}분 — 최근 {_gap['lookback_days']}거래일 평균"
+                            f" {_gap['avg']:.0f}분/일. mc는 자동 조정하지 않음(사용자 판단 필요).{_cfg_txt}",
+                            "WARNING",
+                        )
+                    elif _gap["days"] and _gap["avg"] < _min_avg:
+                        log_manager.system(
+                            f"[경보] mc-conf 괴리: 최근 {_gap['lookback_days']}거래일 평균"
+                            f" 진입후보 {_gap['avg']:.0f}분/일 < 하한 {_min_avg}분 — 금일 {_mc_gap_today}분.{_cfg_txt}",
+                            "WARNING",
+                        )
+                    else:
+                        logger.info(
+                            "[mc-conf gap] 정상: 금일 %d분, %d일 평균 %.0f분%s",
+                            _mc_gap_today, _gap["lookback_days"], _gap.get("avg", 0.0),
+                            _cfg_txt,
+                        )
+            except Exception as _mcg_e:
+                logger.warning("[mc-conf gap] 계산 실패 (스킵): %s", _mcg_e)
+
+            # [Phase2] StrategyRegistry — 라이브 일별 스냅샷 기록
+            # [297차 후속] 활성 버전은 registry(strategy_versions.is_current) 단일 기준으로 통일.
+            # 이전엔 PARAM_HISTORY[-1]("v1.0" 고정, 갱신 안 됨)을 읽어 실거래 스냅샷이
+            # registry의 is_current(QA 시더가 남긴 "v1.2")와 다른 버전 태그에 계속 쌓였고,
+            # 그 결과 daily_exporter가 참조하는 is_current 버전엔 스냅샷이 안 보여 "1일차"가
+            # 두 달째 고정되는 문제가 있었다. 두 지점 모두 registry를 유일한 소스로 둔다.
+            try:
+                from config.strategy_registry import get_registry as _get_reg
+                _reg_now = _get_reg()
+                _curr_ver_info = _reg_now.get_current_version()
+                _active_ver = _curr_ver_info["version"] if _curr_ver_info else "v1.0"
+                _reg_now.record_live_snapshot(
+                    version = _active_ver,
+                    metrics = {
+                        "win_rate":      forward_stats["wins"] / max(forward_stats["trades"], 1),
+                        "total_trades":  forward_stats["trades"],
+                        "daily_pnl":     forward_stats["pnl_krw"],
+                        "profit_factor": self._daily_profit_factor(),
+                    },
+                )
+            except Exception as _re:
+                logger.warning("[Registry] live_snapshot 기록 실패 (스킵): %s", _re)
 
         # [304차 후속] daily_close()는 백그라운드 스레드 실행 — 아래 두 메서드는 내부에서
         # 대시보드 위젯을 직접 건드리므로 메인 스레드로 위임한다.
@@ -16648,60 +16697,62 @@ class TradingSystem:
             lambda _ts=_trend_stats: self.dashboard.update_trend(_ts)
         )
 
-        # [Phase5] 일일 전략 상태 요약 export + 경보 판정
-        try:
-            from strategy.ops.daily_exporter import get_exporter as _get_exp
-            from strategy.ops.verdict_engine import (
-                compute_action, rollback_alert_message,
-                ACTION_ROLLBACK_REVIEW, ACTION_REPLACE_CANDIDATE,
-            )
-            from config.strategy_registry import get_registry as _get_reg
-            from strategy.param_drift_detector import get_drift_detector as _get_dd2
-            from strategy.regime_fingerprint import get_fingerprint as _get_fp3
-
-            _curr_v   = _get_reg().get_current_version()
-            _verd     = _curr_v.get("verdict", "INSUFFICIENT") if _curr_v else "INSUFFICIENT"
-            _ldays    = _curr_v.get("live_days", 0) if _curr_v else 0
-            _dd2_lvs  = _get_dd2().get_levels() if hasattr(_get_dd2(), "get_levels") else {}
-            _dlv2     = max(_dd2_lvs.values()) if _dd2_lvs else 0
-            _plv2     = _get_fp3().get_level()
-            _action, _reason = compute_action(_verd, _dlv2, _ldays, _plv2)
-
-            # 경보 수준 로그 + registry 이벤트 기록
-            _ver_str = _curr_v.get("version", "—") if _curr_v else "—"
-            if _action in (ACTION_ROLLBACK_REVIEW, ACTION_REPLACE_CANDIDATE):
-                _alert = rollback_alert_message(
-                    _ver_str, _verd, _dlv2, _action, _reason,
-                    pnl_today=stats.get("pnl_krw", 0),
-                )
-                log_manager.system(_alert, "WARNING")
+        # [713차 / 신동 주체 전환 P3] 미륵 전략 verdict·롤백 경보·섀도 후보 — 휴면 시 생략.
+        if self._mireuk_on():
+            # [Phase5] 일일 전략 상태 요약 export + 경보 판정
             try:
-                _get_reg().log_event(
-                    event_type = _action,
-                    message    = _reason[:120],
-                    note       = "PnL %+.0f원  verdict=%s  drift=%d" % (
-                        stats.get("pnl_krw", 0), _verd, _dlv2),
-                    version    = _ver_str if _ver_str != "—" else None,
+                from strategy.ops.daily_exporter import get_exporter as _get_exp
+                from strategy.ops.verdict_engine import (
+                    compute_action, rollback_alert_message,
+                    ACTION_ROLLBACK_REVIEW, ACTION_REPLACE_CANDIDATE,
                 )
-            except Exception as _ev_e:
-                logger.warning("[Phase5] log_event 실패: %s", _ev_e)
+                from config.strategy_registry import get_registry as _get_reg
+                from strategy.param_drift_detector import get_drift_detector as _get_dd2
+                from strategy.regime_fingerprint import get_fingerprint as _get_fp3
 
-            # 일일 리포트 파일 저장
-            _exp    = _get_exp()
-            _report = _exp.build_report(
-                extra_stats={
-                    "checklist_conf_fail": _ccf_today,
-                    "mc_gap_today": _mc_gap_today,
-                    "mc_gap_avg": _mc_gap_avg,
-                }
-            )
-            _exp.save(_report)
-            logger.info("[Phase5] 일일 전략 리포트 저장 완료")
-        except Exception as _ph5_e:
-            logger.warning("[Phase5] 일일 export 실패 (스킵): %s", _ph5_e)
+                _curr_v   = _get_reg().get_current_version()
+                _verd     = _curr_v.get("verdict", "INSUFFICIENT") if _curr_v else "INSUFFICIENT"
+                _ldays    = _curr_v.get("live_days", 0) if _curr_v else 0
+                _dd2_lvs  = _get_dd2().get_levels() if hasattr(_get_dd2(), "get_levels") else {}
+                _dlv2     = max(_dd2_lvs.values()) if _dd2_lvs else 0
+                _plv2     = _get_fp3().get_level()
+                _action, _reason = compute_action(_verd, _dlv2, _ldays, _plv2)
 
-        # [Shadow] shadow_candidate.json 체크 → 섀도우 자동 시작
-        self._load_shadow_candidate()
+                # 경보 수준 로그 + registry 이벤트 기록
+                _ver_str = _curr_v.get("version", "—") if _curr_v else "—"
+                if _action in (ACTION_ROLLBACK_REVIEW, ACTION_REPLACE_CANDIDATE):
+                    _alert = rollback_alert_message(
+                        _ver_str, _verd, _dlv2, _action, _reason,
+                        pnl_today=stats.get("pnl_krw", 0),
+                    )
+                    log_manager.system(_alert, "WARNING")
+                try:
+                    _get_reg().log_event(
+                        event_type = _action,
+                        message    = _reason[:120],
+                        note       = "PnL %+.0f원  verdict=%s  drift=%d" % (
+                            stats.get("pnl_krw", 0), _verd, _dlv2),
+                        version    = _ver_str if _ver_str != "—" else None,
+                    )
+                except Exception as _ev_e:
+                    logger.warning("[Phase5] log_event 실패: %s", _ev_e)
+
+                # 일일 리포트 파일 저장
+                _exp    = _get_exp()
+                _report = _exp.build_report(
+                    extra_stats={
+                        "checklist_conf_fail": _ccf_today,
+                        "mc_gap_today": _mc_gap_today,
+                        "mc_gap_avg": _mc_gap_avg,
+                    }
+                )
+                _exp.save(_report)
+                logger.info("[Phase5] 일일 전략 리포트 저장 완료")
+            except Exception as _ph5_e:
+                logger.warning("[Phase5] 일일 export 실패 (스킵): %s", _ph5_e)
+
+            # [Shadow] shadow_candidate.json 체크 → 섀도우 자동 시작
+            self._load_shadow_candidate()
 
         # ── DBWriter 큐 플러시 — 마지막 분봉 쓰기 완료 후 WAL 체크포인트 ────
         # 15:10 강제청산 ~ 15:40 사이 큐에 남은 candle/feature/scaler_monitor 기록을
@@ -17301,7 +17352,10 @@ class TradingSystem:
 
         # ④ 스케일러 즉시 재적합 (백그라운드 daemon thread)
         # CB 후 가격 레벨이 크게 변해 microprice/vwap 등 절대값 피처가 극단값을 가짐
-        if not self._scaler_refresh_running:
+        # [713차 P3] 미륵 휴면이면 생략 — scaler_*.pkl 은 미륵 상태 파일이다(덮어쓰지 않는다).
+        if not self._mireuk_on():
+            log_manager.system("[ExchangeCB] 미륵 휴면 — 스케일러 재적합 생략", "INFO")
+        elif not self._scaler_refresh_running:
             def _ecb_scaler_worker(_gap=gap_min):
                 self._scaler_refresh_running = True
                 try:
@@ -17846,7 +17900,11 @@ class TradingSystem:
     def run(self):
         """메인 실행 — Qt 이벤트 루프 기반."""
         logger.info("=" * 60)
-        logger.info("미륵이 — KOSPI 200 선물 방향 예측 시스템 시작")
+        if self._mireuk_on():
+            logger.info("미륵이 — KOSPI 200 선물 방향 예측 시스템 시작")
+        else:
+            logger.info("신동 — KOSPI 200 미니선물 자동매매 시작 (미륵 엔진 off · 거래주체=%s)",
+                        principal_mod.label(self._principal_state["principal"]))
         logger.info("=" * 60)
 
         # 키움 로그인 (블로킹)
@@ -17869,7 +17927,8 @@ class TradingSystem:
             _startup_srv = "Cybos 모의투자" if _is_simul else "Cybos 실서버"
         else:
             _startup_srv = "모의투자" if _is_simul else "실서버"
-        notify_startup(_startup_code, _startup_srv)
+        notify_startup(_startup_code, _startup_srv,
+                       engine_label="미륵이" if self._mireuk_on() else "신동(미륵 엔진 off)")
         # 대시보드에 실제 접속 서버 표시 (읽기전용 라벨 — 2026-10-14부터 라디오는 진입정지 용도)
         self.dashboard.set_server_mode("simul" if _is_simul else "real")
         # 정지 상태는 재기동해도 유지된다 — 모르고 멈춰 있지 않도록 기동 시 알린다.
@@ -18274,6 +18333,34 @@ class TradingSystem:
         # 기존 24h 조건은 장 마감(15:30)→다음날 08:45 = ~17h 케이스를 커버 못 함
         # 4h로 완화 → 매 영업일 항상 발동하여 scaler 노후화 원천 차단
         # 상한 08:57: 08:40 이전 시작 + Cybos 로그인 지연 시에도 EarlyWarmup 창 확보
+        # [713차 / 신동 주체 전환 P3] 미륵 휴면이면 스케일러 재적합은 하지 않고(scaler_*.pkl = 미륵 상태 파일 —
+        #   덮어쓰지 않는다) 08:45 실시간 선행 구독만 한다. 신동·사다리가 쓰는 08:45~ 프리장 1분봉(raw_candles)·
+        #   08:50 맥점이 이 구독에서 온다. 🔴 종전 선행 구독은 「scaler 노후 > EARLY_WARMUP_MIN_AGE_HOURS」 조건
+        #   안에 묶여 있다 — 재적합만 끄면 구독도 같이 사라진다(Sindong-V4 f5c2a21 교훈).
+        if (
+            not getattr(self, "_early_warmup_started", False)
+            and is_trading_day(now)
+            and datetime.time(8, 45) <= now.time() < datetime.time(8, 57)
+            and not self._mireuk_on()
+        ):
+            self._early_warmup_started = True
+            log_manager.system("[EarlyWarmup] 미륵 휴면 — 스케일러 재적합 생략(미륵 상태 파일 보존)", "INFO")
+            try:
+                _rd_ew = getattr(self, "realtime_data", None)
+                if _rd_ew is not None and not getattr(_rd_ew, "_running", False):
+                    _rd_ew.start(load_history=True)
+                    self._rt_subscribe_at = datetime.datetime.now()
+                    log_manager.system(
+                        "[EarlyWarmup] Cybos RT 08:45 선행 구독 시작 (프리장 봉 15봉 확보)"
+                        " — 개장 대비 +%.1fs"
+                        % max(0.0, (self._rt_subscribe_at
+                                    - self._rt_subscribe_at.replace(
+                                        hour=8, minute=45, second=0,
+                                        microsecond=0)).total_seconds()),
+                        "INFO",
+                    )
+            except Exception as _ea_e:
+                logger.warning("[EarlyWarmup] 선행 구독 시작 실패 (08:55 사전 구독이 재시도): %s", _ea_e)
         if (
             not getattr(self, "_early_warmup_started", False)
             and is_trading_day(now)
@@ -18343,6 +18430,13 @@ class TradingSystem:
         # [Bug-3] 하한 09:00 (기존 09:05에서 변경):
         #   GAP_OPEN(09:00~09:05) 재시작 시 ScalerWarmup·EarlyWarmup 모두 miss →
         #   09:05 까지 scaler 보호 공백 발생. _scaler_refresh_running 가드가 충돌 방지 역할.
+        # [713차 P3] 미륵 휴면이면 장중 재기동 스케일러 재적합도 하지 않는다(scaler_*.pkl 보존) — 1회만 남긴다.
+        if (
+            not getattr(self, "_intraday_startup_warmup_done", False)
+            and not self._mireuk_on()
+        ):
+            self._intraday_startup_warmup_done = True
+            logger.info("[StartupWarmup] 미륵 휴면 — 장중 재기동 스케일러 재적합 생략(미륵 상태 파일 보존)")
         if (
             not getattr(self, "_intraday_startup_warmup_done", False)
             and is_trading_day(now)

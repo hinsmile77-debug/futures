@@ -49457,3 +49457,11 @@ EKS는 366차 이전부터 존재하는 기존 설계이고, 이번 사이클은
 - **같이 바꾼 것**: CLAUDE.md 「브랜치 역할 (MW0601)」 절 · `mireuk-daily-check` SKILL의 MW0601 운영 브랜치·자동조치 커밋 허용 브랜치 → `Sindong2-V4` · 장후 자동조치 예약(`~/.claude/scheduled-tasks/mireuk-postmarket-autofix`, 저장소 밖)의 브랜치 가드·push 대상 → `Sindong2-V4`.
 - ⚠ **차수 겹침 기록**: 「711차」가 두 번 쓰였다 — 10-23 장중 점검(미커밋이던 기록, 713차 정리 커밋 `c2e48ac`로 반입)과 10-25 신동 진입 수량(`598fdae`). NEXT_TODO의 711-1–711-4도 장중 점검 쪽이다. 원문은 보존한다.
 - 근거: `docs/미륵휴면/00_세션정리_신동주체전환_미륵휴면_검토_MW0601-20261025.md`.
+
+## 2026-10-25 (MW0601 713차 후속 — 신동 주체 전환 P1–P3 구현: 미륵 휴면 스위치 · 허용 주체 집합 · 경량 분봉 패스 · 휴면 장전/장후) — 🟢 **구현 · 기본값 = 종전 동작(전환은 11-02)**
+
+- **무엇**: `7d305a4`(P1·P2) + 이 커밋(P3). 설정 기본값이 전부 종전이라(`MIREUK_ENGINE="full"` · `PRINCIPAL_ALLOWED=None` · `PRINCIPAL_DEFAULT=None` · `LIGHT_PASS_DRY_RUN=False`) **배포·재기동만으로는 동작이 바뀌지 않는다.**
+- **Sindong-V4 와 다르게 한 것**: ① 주체 고정(`PRINCIPAL_LOCK`) 대신 **허용 집합** — 피터 선택권 유지 ② 경량 패스에 **거래소 CB 관망 배지**(V-a) 추가 — 파이프라인 안에서만 만료 처리돼 휴면 시 배지가 굳는다(진입 차단은 시각 비교라 무관) ③ **7222 수집 실패 15:05 가드(F5) 미이식** — v9 신동은 15:05 를 2초 폴링(`_shindong_target_poll`)에서도 내므로 구멍이 없다 ④ 흐름 신선도 D3 보류 · 런처는 P4 로 이월.
+- **Why(daily_close)**: 미륵 전용 5묶음(재학습 대기·보정기/MetaConf 저장·자가학습 집계·재보정 모니터 / 극단성 보정기 / scaler_daily·CB③계측·Checklist·CUSUM·mc-conf·Registry / Phase5·섀도 후보 / 챔피언·heartbeat)을 게이트. 학습 상태 파일을 휴면 중 덮어쓰지 않아야 되살림이 「마지막 실가동 상태」가 된다. `_today_accuracy` 읽기 2줄은 `daily_stats` 저장이 쓰므로 게이트 밖.
+- **검증**: `test_713_*` 4종 67건 · 전체 회귀 3,345 passed / 16 failed — P1 이전 판(`1aec879`) 전체 회귀와 **실패 목록 동일**. 신동 EOD 채점은 `INSERT OR REPLACE` 라 전환 전 미륵 재학습과 같은 날 함께 돌아도 멱등.
+- **How to apply**: 전환 전 P4 — 건식 실행(`LIGHT_PASS_DRY_RUN=True`) 2거래일+ · 장후 재생 · off 실객체 스모크 · `TASK_SHINDONG_EOD_INSTALL.bat` 등록 후 1회 exit=0 · 런처 `start_Sindong.bat`. 상세 `docs/신동거래/신동주체전환_구현계획_미륵휴면_MW0601-20261025.md` §8.

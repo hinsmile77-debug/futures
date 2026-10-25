@@ -23184,12 +23184,16 @@ docs/정기점검/매일점검/evidence_MW0601-20260826_post.md
 계획 정본: `docs/신동거래/신동주체전환_구현계획_미륵휴면_MW0601-20261025.md` §3. 운영 브랜치 `Sindong2-V4`(v9-dev 동결).
 
 - [x] **P0** `Sindong2-V4` 분기 · 첫 커밋 · push · 자동조치 push 대상 변경 · CLAUDE.md 브랜치 표
-- [ ] **P1** 파이프라인 속 부품 전수표(Sindong-V4 12부품 + v9 전용 후보: 15:05 `live_legs` · `[RawFill]` · 9842 · 신동2·피터2 · 자본 3층) → 공유 메서드 추출(동작 무변경 커밋)
+- [x] **P1** (713차 `7d305a4`) 파이프라인 속 부품 전수표(Sindong-V4 12부품 + v9 전용 후보: 15:05 `live_legs` · `[RawFill]` · 9842 · 신동2·피터2 · 자본 3층) → 공유 메서드 추출(동작 무변경 커밋)
 - [ ] **P1-보조** 주말 과거 봉 재생(10-14–10-23)으로 구조 결함 선검출(장중 아님 — DB 분석 허용 시간)
-- [ ] **P2** `MIREUK_ENGINE` · `PRINCIPAL_ALLOWED=("SHINDONG","PETER")` · `PRINCIPAL_DEFAULT="SHINDONG"` · `_light_minute_pass` · `[MireukOff]` · 대시보드 `[미륵]` 비활성 — **기본값 `full`**
-- [ ] **P3** 재학습 진입점 차단 · `daily_close` 미륵 전용 분기 · `scripts/shindong_eod.py` + `TASK_SHINDONG_EOD_INSTALL.bat` · 7222 수집 실패 시 15:05 가드 · `LIGHT_PASS_DRY_RUN`
+- [x] **P2** (713차 `7d305a4`) `MIREUK_ENGINE` · `PRINCIPAL_ALLOWED=("SHINDONG","PETER")` · `PRINCIPAL_DEFAULT="SHINDONG"` · `_light_minute_pass` · `[MireukOff]` · 대시보드 `[미륵]` 비활성 — **기본값 `full`**
+- [x] **P3** (713차 후속) 재학습 진입점 차단 · `daily_close` 미륵 전용 분기 · `scripts/shindong_eod.py` + `TASK_SHINDONG_EOD_INSTALL.bat` · 7222 수집 실패 시 15:05 가드 · `LIGHT_PASS_DRY_RUN`
 - [ ] **P4** `conda run -n py37_32 python -m pytest`(신규 + 전체 회귀 + `test_711` off 케이스) · offscreen 스모크 · 건식 실행 불일치 0 · 장후 재생 PASS · 신동 EOD exit=0 · `audit_dll_bootstrap.py --fail-on-gap`
 - [ ] **P5 (2026-11-02 장전 · FLAT)** `off` · 허용 {신동,피터} · `\Sindong`(start_Sindong.bat) 기동 · `\미륵이`·`\MireukiEODRetrain` 비활성 · `strategy_events` 불연속 마커 · 수량 711차 그대로
 - [ ] **P6** 전환 첫날 감시(`[Engine] 미륵 엔진=off` · 경량 ATR · `raw_candles` 380봉 전후 · 08:50/09:30 맥점 · `[MireukOff]` 0건 · 15:05/`[ForceExitPass]` · `[DailyClose] 미륵 휴면` · FLAT 상태 피터 전환 1회)
 - [ ] **711차 판정 연동** 10거래일 X 2.0% 승격 판정 시 표본을 11-02 전/후로 나눠 기록
 - [ ] `shindong-daily-check` 이식(v9 규격 — R2/R3 레그·15:05·신동2·피터) — 휴면 후 `mireuk-daily-check`는 거짓 적신호
+- [ ] **P3 잔여 → P4** 7222 수집 실패 15:05 가드는 **불필요 확인**(2초 폴링이 시간청산) · D3 흐름 신선도 보류 · 런처 `start_Sindong.bat` + `scripts/sindong_launch_check.py`(입구: off · 허용 집합에 미륵 없음 · 브랜치 `Sindong2-V4`)
+- [ ] **P4-a** `TASK_SHINDONG_EOD_INSTALL.bat` 등록 → 평일 15:55 1회 exit=0 확인(`logs/shindong_eod_<날짜>.log`)
+- [ ] **P4-b** `LIGHT_PASS_DRY_RUN = True` 로 2거래일+ → `[LightPassDry] 요약` 불일치 0
+- [ ] **P4-c** off 모드 offscreen 실객체 스모크(가짜 브로커) · 장후 재생 스크립트(`light_pass_replay.py` 이식 여부 결정)
