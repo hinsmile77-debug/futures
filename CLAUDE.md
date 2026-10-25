@@ -124,6 +124,10 @@ con = connect_ro(DB_PATH)         # 읽기전용(쓰기 사고 방지용 — 지
   `mireuk-daily-check` 는 미륵 부활용으로 보존한다(휴면 중 쓰면 거짓 적신호). Cowork 예약 이름은 앱 호환을 위해 「Mireuk …」 그대로다.
 - 🔴 **리포트 절 제목은 기계가 읽는다** — `# 장후`(자동조치 가드)·`한 줄 결론`·`사용자 조치`·`다음 거래일 관측`(메일)·`Fix 작업 구현계획`·`고도화 방안`·`수익률 향상방안`(자동조치).
 - Cowork 점검은 커밋하지 않는다 — 커밋은 17:23 자동조치가 한다. 근거 `docs/미륵휴면/03_…md` §6.
+- 🔴 **Cowork 예약 프롬프트의 정본은 앱 편집기다** — 앱은 `~/Claude/Scheduled/*/SKILL.md` 파일을 실행하지 않고
+  자체 저장본을 쓴다(2026-10-25 실측: 파일을 고쳤는데 편집 화면은 구판 그대로였다). 바꿀 때는 **앱 편집기에 붙여 넣고**,
+  같은 본문을 저장소 사본 `docs/미륵휴면/cowork_prompts/MW0601_{premarket,intraday,postmarket}.txt` 에도 커밋한다.
+  반면 17:23 자동조치(Claude Code 예약)는 `~/.claude/scheduled-tasks/mireuk-postmarket-autofix/SKILL.md` **파일이 정본**이다(확인됨).
 
 ---
 
