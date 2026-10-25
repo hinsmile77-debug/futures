@@ -528,8 +528,8 @@ class TradingSystem:
             logger.info("[System] 미륵이 초기화")
             log_manager.system("미륵이 초기화")
         else:
-            logger.info("[System] 신동 주체 초기화 (미륵 엔진 off)")
-            log_manager.system("신동 주체 초기화 (미륵 엔진 off)")
+            # 한 줄만 — log_manager.system 이 SYSTEM 파일에도 쓴다(logger 를 함께 부르면 두 줄이 된다).
+            log_manager.system("[System] 신동 주체 초기화 (미륵 엔진 off)")
 
         # ── 키움 API 컴포넌트 ──────────────────────────────────
         self.broker        = create_broker()
@@ -17409,7 +17409,8 @@ class TradingSystem:
             and not self._mireuk_on()
         ):
             self._intraday_startup_warmup_done = True
-            logger.info("[StartupWarmup] 미륵 휴면 — 장중 재기동 스케일러 재적합 생략(미륵 상태 파일 보존)")
+            # 시각·거래일과 무관하게 프로세스당 1회 — 「장중」이라 쓰지 않는다(주말 기동에도 찍힌다).
+            logger.info("[StartupWarmup] 미륵 휴면 — 재기동 스케일러 재적합 생략(미륵 상태 파일 보존)")
         if (
             not getattr(self, "_intraday_startup_warmup_done", False)
             and is_trading_day(now)

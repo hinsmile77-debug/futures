@@ -113,6 +113,23 @@ def test_E8_cybos_system_helpers_log_once():
     assert msgs == ["[E8] info once", "[E8] warn once"], msgs
 
 
+def test_E9_restart_counter_message_does_not_claim_crash():
+    """5분 이상 실행 후 종료는 원인 무관 — 대시보드 「재시작」도 이 줄을 탄다(「일시적 크래시」 오인 금지)."""
+    body = "\r\n".join(_bat_lines())
+    assert "일시적 크래시" not in body
+    assert "실행 후 종료 -- 재시작 카운터 초기화" in body
+
+
+def test_E10_dormant_wording_and_single_banner():
+    src = io.open(os.path.join(_ROOT, "main.py"), encoding="utf-8").read()
+    # StartupWarmup 휴면 줄은 시각·거래일 무관 1회 — 「장중」이라 쓰지 않는다
+    i = src.index('logger.info("[StartupWarmup] 미륵 휴면')
+    assert "장중" not in src[i:src.index("\n", i)]
+    # 신동 초기화 배너는 log_manager 한 줄(logger 동시 호출 금지)
+    assert 'log_manager.system("[System] 신동 주체 초기화 (미륵 엔진 off)")' in src
+    assert 'logger.info("[System] 신동 주체 초기화' not in src
+
+
 def test_E7_no_data_text_has_no_tofu():
     import matplotlib
     matplotlib.use("Agg")

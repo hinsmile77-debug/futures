@@ -654,7 +654,7 @@ SET /A "_RUNTIME_MIN=!_EXIT_MIN! - !_LAUNCH_MIN!"
 IF !_RUNTIME_MIN! LSS 0 SET "_RUNTIME_MIN=0"
 IF !_RUNTIME_MIN! GTR 5 (
     SET "_RESTART_CNT=0"
-    CALL :L "[AUTO-RESTART] main.py 가 !_RUNTIME_MIN!분 실행됨 -- 일시적 크래시, 카운터 초기화."
+    CALL :L "[AUTO-RESTART] main.py 가 !_RUNTIME_MIN!분 실행 후 종료 -- 재시작 카운터 초기화. 크래시 여부는 logs\shutdown_reason.log 참조"
 )
 
 IF NOT DEFINED _RESTART_CNT SET "_RESTART_CNT=0"
