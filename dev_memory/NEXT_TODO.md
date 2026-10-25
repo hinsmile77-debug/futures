@@ -23178,3 +23178,18 @@ docs/정기점검/매일점검/evidence_MW0601-20260826_post.md
 - [ ] **O-t4 (계승)** `[ShindongRetractShadow]` 철회 섀도 — 다음 철회 상황 발생 시 로그 기록 확인.
 - [ ] (이월, 변경 없음) **606-4** 기동 access violation — 사용자 결정 대기 지속.
 - [ ] (이월, 변경 없음) **O-4 계열** 계좌잔고 vs 사이저 기준자본 괴리 — 10/24 장전 2일연속 미재현 시 완전종결.
+
+## 2026-10-25 (MW0601 713차 — 신동 주체 전환·미륵 휴면, 전환일 2026-11-02)
+
+계획 정본: `docs/신동거래/신동주체전환_구현계획_미륵휴면_MW0601-20261025.md` §3. 운영 브랜치 `Sindong2-V4`(v9-dev 동결).
+
+- [x] **P0** `Sindong2-V4` 분기 · 첫 커밋 · push · 자동조치 push 대상 변경 · CLAUDE.md 브랜치 표
+- [ ] **P1** 파이프라인 속 부품 전수표(Sindong-V4 12부품 + v9 전용 후보: 15:05 `live_legs` · `[RawFill]` · 9842 · 신동2·피터2 · 자본 3층) → 공유 메서드 추출(동작 무변경 커밋)
+- [ ] **P1-보조** 주말 과거 봉 재생(10-14–10-23)으로 구조 결함 선검출(장중 아님 — DB 분석 허용 시간)
+- [ ] **P2** `MIREUK_ENGINE` · `PRINCIPAL_ALLOWED=("SHINDONG","PETER")` · `PRINCIPAL_DEFAULT="SHINDONG"` · `_light_minute_pass` · `[MireukOff]` · 대시보드 `[미륵]` 비활성 — **기본값 `full`**
+- [ ] **P3** 재학습 진입점 차단 · `daily_close` 미륵 전용 분기 · `scripts/shindong_eod.py` + `TASK_SHINDONG_EOD_INSTALL.bat` · 7222 수집 실패 시 15:05 가드 · `LIGHT_PASS_DRY_RUN`
+- [ ] **P4** `conda run -n py37_32 python -m pytest`(신규 + 전체 회귀 + `test_711` off 케이스) · offscreen 스모크 · 건식 실행 불일치 0 · 장후 재생 PASS · 신동 EOD exit=0 · `audit_dll_bootstrap.py --fail-on-gap`
+- [ ] **P5 (2026-11-02 장전 · FLAT)** `off` · 허용 {신동,피터} · `\Sindong`(start_Sindong.bat) 기동 · `\미륵이`·`\MireukiEODRetrain` 비활성 · `strategy_events` 불연속 마커 · 수량 711차 그대로
+- [ ] **P6** 전환 첫날 감시(`[Engine] 미륵 엔진=off` · 경량 ATR · `raw_candles` 380봉 전후 · 08:50/09:30 맥점 · `[MireukOff]` 0건 · 15:05/`[ForceExitPass]` · `[DailyClose] 미륵 휴면` · FLAT 상태 피터 전환 1회)
+- [ ] **711차 판정 연동** 10거래일 X 2.0% 승격 판정 시 표본을 11-02 전/후로 나눠 기록
+- [ ] `shindong-daily-check` 이식(v9 규격 — R2/R3 레그·15:05·신동2·피터) — 휴면 후 `mireuk-daily-check`는 거짓 적신호
