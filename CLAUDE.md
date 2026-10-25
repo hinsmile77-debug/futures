@@ -90,13 +90,21 @@ con = connect_ro(DB_PATH)         # 읽기전용(쓰기 사고 방지용 — 지
 
 | 브랜치 | 거래 주체 | 용도 |
 |---|---|---|
-| **`Sindong2-V4`** | **신동** (피터 선택 가능 · 미륵 휴면 예정) | **현행 운영 브랜치. 2026-10-25 이후 모든 커밋은 여기에 한다** |
+| **`Sindong2-V4`** | **신동** (피터 선택 가능 · **미륵 휴면 — 2026-10-26 장전부터**) | **현행 운영 브랜치. 2026-10-25 이후 모든 커밋은 여기에 한다** |
 | **`v9-dev`** | 미륵 | **동결된 보존 브랜치** (`598fdae` · 711차). 향후 미륵을 부활할 때 쓴다 — **신동 작업을 커밋하지 않는다** |
 
 - `Sindong2-V4`는 2026-10-25 `v9-dev` HEAD `598fdae`에서 분기했다. 이름의 「2」는 MW0602 `Sindong-V4`와 짝을 맞춘 것이며 진행자 **「신동2」와 무관**하다.
 - 신동 전략은 v9 규격(`SD-2026-10-21-v3`)을 유지한다 — `Sindong-V4`의 V4 MAIN 직행은 이식하지 않는다.
-- 🔴 **미륵 엔진 휴면 전환일은 2026-11-02(월) 장전**이다. 그 전까지 엔진은 지금처럼 `full`(미륵 섀도 + 신동 실주체)로 돈다.
-  수량은 711차 규칙 그대로. 계획: `docs/신동거래/신동주체전환_구현계획_미륵휴면_MW0601-20261025.md` · 세션 정리: `docs/미륵휴면/`.
+- 🔴 **[2026-10-25 사용자 결정] 미륵 엔진은 2026-10-26(월) 장전부터 휴면이다**(당초 11-02 → 당김, 계획서 §10).
+  `config/settings.py`: `MIREUK_ENGINE="off"` · `PRINCIPAL_ALLOWED=("SHINDONG","PETER")` · `PRINCIPAL_DEFAULT="SHINDONG"` · `LIGHT_PASS_DRY_RUN=False`.
+  기동은 `\Sindong`(08:40 → `start_Sindong.bat` — 입구에서 `scripts/sindong_launch_check.py` 가 위 값·브랜치를 확인, 아니면 main.py 미실행).
+  `\미륵이`(start_mireuk.bat)는 **비활성**(삭제 아님). 되돌리기: `TASK_SINDONG_LAUNCHER_INSTALL.bat -Revert`(관리자) + settings 원복.
+  미륵 재학습 `\MireukiEODRetrain` 은 10-26 15:55 `\Mireuk\Shindong_EOD_1555` 성공 뒤 `TASK_SHINDONG_EOD_INSTALL.bat -DisableMireukRetrain`.
+  불연속 마커 `strategy_events` **id=127**. 수량은 711차 규칙 그대로.
+  계획: `docs/신동거래/신동주체전환_구현계획_미륵휴면_MW0601-20261025.md` · 검증: `docs/미륵휴면/전환검증_20261025/` · 세션 정리: `docs/미륵휴면/`.
+- 휴면 중에는 아래 절대원칙 §2 CB③ · §3 CORE · 확률 판단 기준 · 실전 전환 기준 · 검증 캠페인(미륵 기준 서술)의 적용 대상이 없다 —
+  본문은 사료로 보존한다. CB②·ProfitGuard·15:10·CB④⑤·거래소 CB 는 신동·피터에 그대로 적용된다(CB④⑤ 입력은 경량 분봉 패스).
+  `mireuk-daily-check` 는 휴면 중 CB③·캠페인·앙상블 항목에서 거짓 적신호를 낼 수 있다(신동 점검 체계는 후속 — NEXT_TODO 713).
 - 아래 문서 곳곳의 "MW0601 = `v9-dev`" 서술은 이 결정 이전의 것이다 — 운영 브랜치는 `Sindong2-V4`로 읽는다.
 
 ---

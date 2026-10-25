@@ -7892,7 +7892,8 @@ SHINDONG_RETRACT_SHADOW_BE_PTS = 0.0
 
 # ── [MW0601 713차 / 신동 주체 전환 P2] 미륵 휴면 스위치 ───────────────────────────────
 # 계획: docs/신동거래/신동주체전환_구현계획_미륵휴면_MW0601-20261025.md §2 (참조: MW0602 Sindong-V4 c3281a9)
-# 🔴 전환일 2026-11-02(월) 장전 — 그 전까지 아래 값은 **전부 종전 동작**이다(full · 3주체 · 기본 미륵).
+# 🔴 [2026-10-25 사용자 결정] 전환일을 11-02 → **10-26(월) 장전**으로 당겼다 — 아래 값은 전환 후 값이다.
+#   (당초 계획: 2026-11-02 · 그 전까지 full · 3주체 · 기본 미륵)
 #   전환일 값: MIREUK_ENGINE="off" · PRINCIPAL_ALLOWED=("SHINDONG", "PETER") · PRINCIPAL_DEFAULT="SHINDONG" ·
 #   LIGHT_PASS_DRY_RUN=False. 바꾸기 전 확인: 건식 실행 불일치 0 · 장후 재생 PASS · 신동 EOD 1회 성공.
 # MIREUK_ENGINE
@@ -7902,20 +7903,20 @@ SHINDONG_RETRACT_SHADOW_BE_PTS = 0.0
 #            예측·학습·미륵 진입·재학습 spawn·미륵 EOD 항목은 건너뛴다. 미륵 코드·모델·DB 는 지우지 않는다.
 #   🔴 **기동 시 한 번만 읽는다**(`TradingSystem.__init__`). 장중 핫리로드로 바뀌지 않는다 — 바꾸려면 FLAT 에서 재기동.
 #   알 수 없는 값은 "full"(오타로 미륵이 조용히 꺼지는 것보다 종전 동작이 안전) + ERROR 로그.
-MIREUK_ENGINE = "full"
+MIREUK_ENGINE = "off"     # [713차 / 사용자 결정 2026-10-25] 10-26(월) 장전부터 미륵 휴면 — 신동 주체
 # PRINCIPAL_ALLOWED — 대시보드에서 고를 수 있는 거래주체. None = 3주체 전부(종전).
 #   Sindong-V4 의 PRINCIPAL_LOCK(한 주체 고정)과 다르다 — 이 브랜치는 피터를 **선택 가능**으로 남긴다(사용자 결정 2026-10-25).
 #   파일(data/trade_principal.json)의 주체가 허용 밖이면 PRINCIPAL_DEFAULT 로 읽고 그 사실을 남긴다(파일은 고치지 않는다).
 #   알 수 없는 이름은 버린다. 남는 것이 없으면 3주체 전부(오타로 아무도 못 고르는 것보다 안전).
-PRINCIPAL_ALLOWED = None
+PRINCIPAL_ALLOWED = ("SHINDONG", "PETER")   # [713차 전환] 피터는 선택 가능
 # PRINCIPAL_DEFAULT — 파일 없음·깨짐·허용 밖일 때의 주체. None = 미륵(종전).
 #   허용 집합 밖이면 허용 집합의 첫 주체(미륵 → 신동 → 피터 순).
-PRINCIPAL_DEFAULT = None
+PRINCIPAL_DEFAULT = "SHINDONG"   # [713차 전환]
 # LIGHT_PASS_DRY_RUN — MIREUK_ENGINE="full" 일 때만 의미. 매분 미륵 파이프라인 **뒤에** 경량 패스를
 #   계산만 병행해(DB 쓰기·주문·CB 기록·화면 갱신 없음) 미륵 경로 값과 대조하고 `[LightPassDry]` 로 남긴다.
 #   실거래를 멈추지 않는 전환 검증 수단이다(계획서 P4). 기동 시 1회 읽는다.
 #   [713차 P4 / 사용자 지시 2026-10-25] 10-26 부터 켠다 — 전환일(11-02) 전 표본 5거래일. 전환일에 False 로 되돌린다.
-LIGHT_PASS_DRY_RUN = True
+LIGHT_PASS_DRY_RUN = False   # [713차 전환] off 에서는 무의미(건식 대조는 full 전용)
 
 # ── [MW0601 668차] 피터2 — 피터리 트윗 실시간 추종 매매 ─────────────────────────
 # 장중 피터리(@PeterLeejoa) 트윗을 Chrome 확장 → 로컬 수신기(127.0.0.1)로 받아

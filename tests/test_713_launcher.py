@@ -3,7 +3,7 @@
 
   L1  판정: off · 허용 집합(미륵 없음·신동 포함) · 기본 신동 — 하나라도 어긋나면 FATAL(종료 3).
   L2  None(3주체 전부)·미륵 포함·문자열 단일값을 올바르게 다룬다.
-  L3  현재 배포값(전환 전)은 **불통과**다 — 전환일 전에 start_Sindong.bat 이 main.py 를 띄우지 못한다.
+  L3  현재 배포값(2026-10-25 전환 후)은 통과한다 — 통과하지 못하면 \Sindong 이 main.py 를 띄우지 않는다.
   L4  start_Sindong.bat 은 start_mireuk.bat 파생이며 STEP 3.9 점검이 API 대기(STEP 4)보다 앞이고,
       실패 시 main.py 실행 전에 EXIT 한다. 로그 폴더 이름(Mireuk_batch)은 그대로다(수집기 호환).
 """
@@ -38,10 +38,11 @@ def test_L2_each_mismatch_fails():
     assert _ok(f)
 
 
-def test_L3_current_settings_refuse_until_cutover():
+def test_L3_current_settings_pass_after_cutover():
+    """[2026-10-25 전환] 배포 설정이 런처 입구 점검을 통과한다 — 통과하지 못하면 08:40 \Sindong 이 main.py 를 띄우지 않는다."""
     found = LC.read_settings(os.path.join(ROOT, "config", "settings.py"))
-    assert found["MIREUK_ENGINE"] == "full"
-    assert not _ok(found)
+    assert found["MIREUK_ENGINE"] == "off"
+    assert _ok(found)
     assert LC.EXPECT_BRANCH == "Sindong2-V4"
 
 

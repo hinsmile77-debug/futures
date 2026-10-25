@@ -23199,3 +23199,12 @@ docs/정기점검/매일점검/evidence_MW0601-20260826_post.md
 - [x] **P4-c** (713차 P4 — 스모크 off ERROR 0 · 재생 8일 7 PASS/10-15 FAIL 원인 규명, `docs/미륵휴면/전환검증_20261025/README.md`) off 모드 offscreen 실객체 스모크(가짜 브로커) · 장후 재생 스크립트(`light_pass_replay.py` 이식 여부 결정)
 - [ ] **P4-d** 매 거래일 장후 `python scripts/light_pass_replay.py --date <날짜> --out docs/미륵휴면/전환검증_20261025/replay_<날짜>.md` (10-26–10-30) · `[LightPassDry] 요약` 불일치 확인(재기동 직후 ATR 불일치는 10-15 와 같은 기준 쪽 냉시작인지 시각 대조)
 - [ ] **P5 (11-02 장전)** 계획서 §9-2 절차 — settings 4개 · `sindong_launch_check` pass · 관리자 `TASK_SINDONG_LAUNCHER_INSTALL.bat -Switch` · `-DisableMireukRetrain` · 불연속 마커
+
+### 713차 전환 — 2026-10-25 사용자 결정: **10-26(월) 장전 전환**(11-02 에서 당김)
+
+- [x] settings 4개(off · 신동·피터 · 기본 신동 · 건식 False) · launch check pass · 마커 id=127 · `\Sindong` 활성/`\미륵이` 비활성
+- [ ] 10-26 첫날 감시(계획서 §10-2) — `[MireukOff]` 0건 · 08:45 구독 · 맥점 · 신동 집행
+- [ ] 10-26 15:55 신동 EOD exit=0 확인 → `TASK_SHINDONG_EOD_INSTALL.bat -DisableMireukRetrain`(관리자)
+- [ ] 장후 `light_pass_replay.py --date 2026-10-26` (raw_features 없으므로 ②③ 미측정 정상)
+- [ ] 점검 스킬: `mireuk-daily-check` 는 휴면 중 거짓 적신호(CB③·캠페인·앙상블) — `shindong-daily-check` 이식 또는 휴면 분기(D-6)
+- [ ] 711차 X 2.0% 승격 판정(10거래일) — 이제 창 전체가 휴면 엔진 하나라 전/후 분리 불필요

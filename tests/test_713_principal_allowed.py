@@ -47,15 +47,15 @@ def test_A1_defaults_are_legacy(tp):
     assert st['principal'] == 'MIREUK' and st['measured'] is False and st['fallback'] is True
 
 
-def test_A1_settings_ship_legacy_values():
-    """배포값이 종전 동작이다 — 11-02 전환 전까지 바뀌면 안 된다."""
-    import importlib
-    src = io.open(os.path.join(ROOT, 'config', 'settings.py'), encoding='utf-8').read()
-    assert '\nMIREUK_ENGINE = "full"\n' in src.replace('\r\n', '\n')
-    assert '\nPRINCIPAL_ALLOWED = None\n' in src.replace('\r\n', '\n')
-    assert '\nPRINCIPAL_DEFAULT = None\n' in src.replace('\r\n', '\n')
-    # [P4] 건식 실행은 10-26 부터 켠다(계산만 — 주문·DB 쓰기·CB 무접촉). 엔진·주체 값은 여전히 종전이다.
-    assert '\nLIGHT_PASS_DRY_RUN = True\n' in src.replace('\r\n', '\n')
+def test_A1_settings_ship_cutover_values():
+    """[2026-10-25 사용자 결정 — 10-26 장전 전환] 배포값이 신동 주체 구성이다(런처 입구 점검과 같은 판정)."""
+    from scripts import sindong_launch_check as LC
+    found = LC.read_settings(os.path.join(ROOT, 'config', 'settings.py'))
+    assert found['MIREUK_ENGINE'] == 'off'
+    assert tuple(found['PRINCIPAL_ALLOWED']) == ('SHINDONG', 'PETER')
+    assert found['PRINCIPAL_DEFAULT'] == 'SHINDONG'
+    assert found['LIGHT_PASS_DRY_RUN'] is False
+    assert all(ok for ok, _ in LC.judge(found))
 
 
 def test_A1_file_choice_kept_by_default(tp):

@@ -33,6 +33,11 @@ def tp_tmp(tmp_path, monkeypatch):
     monkeypatch.setattr(TP, 'STATE_PATH', str(tmp_path / 'trade_principal.json'))
     monkeypatch.setattr(TP, 'LOG_PATH', str(tmp_path / 'trade_principal_log.jsonl'))
     monkeypatch.setattr(TP, 'DAY_ROOT', str(tmp_path / 'principal'))
+    # [MW0601 713차] 기본 주체·허용 집합이 설정에서 온다(전환 후 배포값 = 신동·피터). 이 묶음은
+    #   3주체 상태 모듈 자체를 검사하므로 종전 설정(None·None = 3주체 · 기본 미륵)으로 고정한다.
+    import config.settings as _S
+    monkeypatch.setattr(_S, 'PRINCIPAL_ALLOWED', None, raising=False)
+    monkeypatch.setattr(_S, 'PRINCIPAL_DEFAULT', None, raising=False)
     return tmp_path
 
 
