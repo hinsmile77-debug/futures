@@ -16710,7 +16710,8 @@ class TradingSystem:
             profile = _capital_profile(balance, price, pt_value,
                                        balance_measured=balance_measured)
             msg = _capital_format_profile(profile)
-            logger.info(msg)
+            # [2026-10-25] log_manager.system 이 SYSTEM 로그 파일에도 쓴다 — 종전에는 logger.* 를 함께 불러
+            #   [Capital] 4종이 매 기동 두 번씩 찍혔다(CRITICAL 까지 중복 → 점검 경보 개수 부풀림).
             log_manager.system(msg)
 
             for level, text in _capital_check_consistency(
@@ -16718,14 +16719,7 @@ class TradingSystem:
                 is_simulation=is_simul, effective_max_qty=eff_qty,
                 balance_measured=balance_measured,
             ):
-                full = "[Capital] " + text
-                if level == "CRITICAL":
-                    logger.critical(full)
-                elif level == "WARNING":
-                    logger.warning(full)
-                else:
-                    logger.info(full)
-                log_manager.system(full, level)
+                log_manager.system("[Capital] " + text, level)
         except Exception as _cap_e:
             logger.warning("[Capital] 자본 프로파일 로그 실패(무해): %s", _cap_e)
 

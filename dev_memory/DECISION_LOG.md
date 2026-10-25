@@ -2,6 +2,17 @@
 
 ---
 
+## 2026-10-25 (MW0602 661차 후속7 — 재기동 로그 정리 7건: 런처 한글 REM · 스타일시트 · 두부 글리프 · 주말 BarGap · Capital 중복 · shap 지연 import · 폴더 대기) — 🟢 **배포(10/26 08:40)**
+
+- 계기: f5c2a21 뒤 start_Sindong.bat 재기동 로그(launcher_20261025_115242).
+- **런처 한글 REM 57줄 → ASCII**: 관리자 승격으로 새로 열린 CP949 콘솔에서 `CHCP 65001` 뒤 바이트 정렬이 어긋나 `'하므로' is not recognized`·`'�' is not recognized`가 났다(2026-08-06 즉사 사고와 같은 기전, `start_mireuk.bat`에서 물려받음). CP949 콘솔 재현 구버전 2건 → 0건. 폴더 선택 대기 5초 → 2초(신동 작업 폴더 고정).
+- **스타일시트**: `dashboard/strategy_dashboard_tab.py` `_ParamHeatmap` 이 일반 문자열에 `}}` → 괄호가 남아 Qt 가 시트 전체 폐기(`Could not parse stylesheet` 6줄). offscreen 대시보드 생성 + Qt 메시지 핸들러로 위젯 특정.
+- **두부 글리프**: 봉차트·방향 인디케이터의 「데이터 없음 (장 시작 후 수집)」이 matplotlib 기본 폰트(한글 없음)로 그려졌다(`Glyph missing` 11자 × 3회). `mid_status_row.draw_no_data()` — 기존 `_ko_font()` 규약(없으면 ASCII).
+- **주말 BarGap**: `utils/bar_gap.startup_line` docstring 「거래일이 아니면 None」을 코드가 지키지 않아 주말·휴장일 기동마다 「결손 188봉」 WARNING. `is_trading_day` 확인 추가.
+- **Capital 중복**: `_log_capital_profile` 이 `logger.*` + `log_manager.system` 을 함께 불러 4종(CRITICAL 포함)이 두 번씩. `log_manager.system` 만(파일 기록·등급 유지).
+- **shap 지연 import**: `learning/shap/shap_tracker.py` 최상단 import 가 main import 2.96초 중 1.06초 + 「IPython could not be loaded!」. 필요할 때만 `_load_shap()`(주 경로 HGB 는 `estimators_` 가 없어 사실상 미로드). `_SHAP_OK=None` = 미시도. py37_32 실측 main import ≈2.0초.
+- **검증**: `tests/test_sindong_v4_launch_polish.py` 7건 + 관련 기존 테스트 합 198건 통과.
+
 ## 2026-10-25 (MW0602 661차 후속6 — 신동 런처 `start_Sindong.bat` · 휴면 기동 최적화 · init_all_dbs 콜드 스캔 제거) — 🟢 **배포(10/26 08:40 첫 실가동)**
 
 - **런처 분리**: `start_mireuk.bat` → `start_Sindong.bat`. STEP 3.9 `scripts/sindong_launch_check.py`가 `MIREUK_ENGINE="off"`·`PRINCIPAL_LOCK="SHINDONG"`·브랜치 `Sindong-V4`가 아니면 main.py 를 띄우지 않는다(같은 작업 폴더를 쓰는 `dev` 체크아웃이 실계좌로 미륵을 띄우는 경로 차단, exit 3). 로그 폴더 `logs/Mireuk_batch`·`launcher_*.log`는 소비처 호환으로 유지. 예약작업 `\Sindong`(평일 08:40) 신규 등록 · `\Maitreya`는 사용자가 사용 안 함으로 전환.

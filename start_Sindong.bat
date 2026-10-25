@@ -17,8 +17,8 @@ REM  Scheduler: task \Sindong 08:40 weekdays (replaces \Maitreya, disabled).
 REM ============================================================
 
 REM ============================================================
-REM  machine.cfg 읽기 -- BROKER=cybos|creon
-REM  machine.cfg 가 없으면 machine.cfg.example 을 복사해 설정하세요.
+REM  Read machine.cfg -- BROKER = cybos or creon
+REM  If machine.cfg is missing, copy machine.cfg.example and set it.
 REM ============================================================
 SET "BROKER="
 IF EXIST "%~dp0machine.cfg" (
@@ -37,9 +37,9 @@ IF "!BROKER!"=="" (
 )
 
 REM ============================================================
-REM  machine.cfg 읽기 -- SLACK_PC_NAME (선택, Slack 알림 헤더용)
-REM  미설정이면 SET 하지 않음 -- python 쪽(config/settings.py)이
-REM  COMPUTERNAME 으로 자동 감지하므로 신규 PC 는 설정 없이도 동작.
+REM  Read machine.cfg -- SLACK_PC_NAME (optional, Slack alert header)
+REM  If unset, do not SET it -- python side (config/settings.py)
+REM  auto-detects from COMPUTERNAME, so a new PC works without it.
 REM ============================================================
 SET "SLACK_PC_NAME="
 IF EXIST "%~dp0machine.cfg" (
@@ -52,9 +52,9 @@ IF EXIST "%~dp0machine.cfg" (
 )
 
 REM ============================================================
-REM  관리자 권한 확인 (CREON 전용)
-REM  coStarter.exe 는 UAC 상승 실행 → UIPI(UI Privilege Isolation) 가
-REM  mouse/PostMessage 를 차단함. 배치 자체를 관리자로 실행해야 정상 동작.
+REM  Admin rights check (CREON only)
+REM  coStarter.exe runs UAC-elevated, so UIPI (UI Privilege Isolation)
+REM  blocks mouse/PostMessage. The batch itself must run as admin.
 REM ============================================================
 IF /I "!BROKER!"=="creon" (
     net session >nul 2>&1
@@ -70,9 +70,9 @@ IF /I "!BROKER!"=="creon" (
 )
 
 REM ============================================================
-REM  배치 자체 로그 설정
-REM  저장 위치 : logs\Mireuk_batch\launcher_YYYYMMDD_HHMMSS.log
-REM  보관 개수 : 최신 10개 (초과분 자동 삭제)
+REM  Launcher log setup
+REM  Location : logs\Mireuk_batch\launcher_YYYYMMDD_HHMMSS.log
+REM  Keep     : newest 10 files (older ones deleted automatically)
 REM ============================================================
 SET "_BLOG_DIR=%USERPROFILE%\PycharmProjects\futures\logs\Mireuk_batch"
 IF NOT EXIST "!_BLOG_DIR!" MKDIR "!_BLOG_DIR!"
@@ -80,7 +80,7 @@ IF NOT EXIST "!_BLOG_DIR!" MKDIR "!_BLOG_DIR!"
 FOR /F "usebackq" %%T IN (`powershell -NoProfile -Command "Get-Date -Format 'yyyyMMdd_HHmmss'"`) DO SET "_BLOG_TS=%%T"
 SET "_BLOG=!_BLOG_DIR!\launcher_!_BLOG_TS!_%RANDOM%.log"
 
-REM 최신 10개 초과 로그 삭제 (날짜 내림차순 정렬 후 11번째부터 삭제)
+REM Delete logs beyond the newest 10 (sorted by date desc, from the 11th)
 FOR /F "skip=10 delims=" %%F IN ('DIR "!_BLOG_DIR!\launcher_*.log" /B /O-D /A-D 2^>NUL') DO (
     DEL "!_BLOG_DIR!\%%F" 2>NUL
 )
@@ -119,7 +119,8 @@ ECHO   2. 직접 입력
 ECHO   3. 현재 디렉터리 (%CD%)
 ECHO.
 
-CHOICE /C 123 /N /T 5 /D 1 /M "선택 (1, 2 or 3) [5초 후 자동 1]: "
+REM [2026-10-25] Sindong work dir is fixed, so the folder prompt waits 2s instead of 5s.
+CHOICE /C 123 /N /T 2 /D 1 /M "선택 (1, 2 or 3) [2초 후 자동 1]: "
 SET "_CHOICE=%ERRORLEVEL%"
 
 IF "!_CHOICE!"=="1" (
@@ -140,7 +141,7 @@ IF NOT EXIST "!WORKDIR!" (
 CALL :L "[INFO] WorkDir: !WORKDIR!"
 cd /d "!WORKDIR!"
 
-REM main.py 존재 확인 (설정 전 fail-fast)
+REM Check main.py exists (fail fast before setup)
 IF NOT EXIST "!WORKDIR!\main.py" (
     CALL :L "[FATAL] main.py 가 WORKDIR 에 없습니다."
     CALL :L "[FATAL] 확인: !WORKDIR!\main.py"
@@ -148,7 +149,7 @@ IF NOT EXIST "!WORKDIR!\main.py" (
     EXIT /B 1
 )
 
-REM WORKDIR 가 DEFAULT_DIR 와 다를 때 로그 경로 업데이트
+REM Update log path when WORKDIR differs from DEFAULT_DIR
 IF /I NOT "!WORKDIR!"=="!DEFAULT_DIR!" (
     SET "_BLOG_DIR=!WORKDIR!\logs\Mireuk_batch"
     IF NOT EXIST "!_BLOG_DIR!" MKDIR "!_BLOG_DIR!"
@@ -158,11 +159,11 @@ IF /I NOT "!WORKDIR!"=="!DEFAULT_DIR!" (
 
 REM ============================================================
 REM  1.5. Off-hours Launch Check
-REM       08:45 이전  → Y 기본 (스케줄러 / 자동 기동)
-REM       15:10 이후  → N 기본 (디버그 / 수동 전용)
-REM       08:45~15:10 → 정규 장중, 확인 생략
+REM       before 08:45  - default Y (scheduler / auto start)
+REM       after 15:10   - default N (debug / manual only)
+REM       08:45 to 15:10 - regular session, no prompt
 REM ============================================================
-REM 이전 실행의 장후 디버그 플래그는 항상 초기화 (오늘 재확인 없이 이어받지 않음)
+REM Always clear the previous after-hours debug flag (never inherit it)
 IF EXIST "!WORKDIR!\data\_debug_afterhours" DEL "!WORKDIR!\data\_debug_afterhours" 2>NUL
 
 FOR /F "usebackq" %%T IN (`powershell -NoProfile -Command "Get-Date -Format HHmm"`) DO SET "_LAUNCH_TIME=%%T"
@@ -172,7 +173,7 @@ IF "!_LAUNCH_TIME!"=="" SET "_LAUNCH_TIME=0900"
 IF !_LAUNCH_TIME! GEQ 0845 IF !_LAUNCH_TIME! LSS 1510 GOTO :offhours_skip
 IF !_LAUNCH_TIME! LSS 0845 GOTO :offhours_premarket
 
-REM 장후 (>= 15:10) -- 기본 N
+REM After hours (15:10 or later) -- default N
 CALL :L "[WARN] 장후 실행 [!_LAUNCH_TIME!] -- 디버그/수동 모드"
 CHOICE /C YN /N /T 10 /D N /M "장 마감 후 [!_LAUNCH_TIME!]. 계속 실행? (Y=예 / N=취소) [10초 후 자동 N]: "
 IF !ERRORLEVEL! EQU 2 (
@@ -187,7 +188,7 @@ ECHO.
 GOTO :offhours_skip
 
 :offhours_premarket
-REM 장전 (< 08:45) -- 기본 Y
+REM Pre-market (before 08:45) -- default Y
 CALL :L "[INFO] 장전 실행 [!_LAUNCH_TIME!] -- 10초 후 자동 Y"
 CHOICE /C YN /N /T 10 /D Y /M "장전 [!_LAUNCH_TIME!]. 진행? (Y=진행 / N=취소) [10초 후 자동 Y]: "
 IF !ERRORLEVEL! EQU 2 (
@@ -229,13 +230,13 @@ IF %ERRORLEVEL% NEQ 0 (
 CALL :L "[INFO] 환경 활성화: %CONDA_DEFAULT_ENV%"
 
 REM ============================================================
-REM  2.5. conda activate.bat 가 내부적으로 ENDLOCAL 을 호출하면
-REM  이 스크립트의 SETLOCAL 이 해제되어 지연 확장이 비활성화됨.
-REM  여기서 SETLOCAL 과 핵심 변수(WORKDIR, _BLOG, BROKER)를 복원.
+REM  2.5. If conda activate.bat calls ENDLOCAL internally,
+REM  this script's SETLOCAL is released and delayed expansion turns off.
+REM  Restore SETLOCAL and the key variables (WORKDIR, _BLOG, BROKER) here.
 REM ============================================================
 SETLOCAL EnableDelayedExpansion
 
-REM BROKER / SLACK_PC_NAME 복원 (machine.cfg 재읽기)
+REM Restore BROKER / SLACK_PC_NAME (re-read machine.cfg)
 SET "BROKER="
 SET "SLACK_PC_NAME="
 IF EXIST "%~dp0machine.cfg" (
@@ -250,7 +251,7 @@ IF EXIST "%~dp0machine.cfg" (
 )
 IF "!BROKER!"=="" SET "BROKER=cybos"
 
-REM conda init cmd.exe 미실행 경고 (MW0602 초기 설정 진단용)
+REM Warn when conda init cmd.exe was never run (MW0602 setup diagnostic)
 reg query "HKCU\Software\Microsoft\Command Processor" /v AutoRun >NUL 2>&1
 IF %ERRORLEVEL% NEQ 0 (
     CALL :L "[WARN] conda init cmd.exe 미설치 감지 (CMD AutoRun 미설정)"
@@ -293,7 +294,7 @@ IF DEFINED CONDA_PREFIX (
         ECHO [WARNING]   재설치: conda install -n py37_32 pyqt
     )
 
-    REM py37_32 root + Scripts 를 PATH 앞에 추가 (64-bit base python 보다 우선)
+    REM Put py37_32 root + Scripts first on PATH (ahead of 64-bit base python)
     SET "PATH=!CONDA_PREFIX!;!CONDA_PREFIX!\Scripts;!CONDA_PREFIX!\Library\bin;!PATH!"
     SET "QT_QPA_PLATFORM=windows"
 
@@ -303,10 +304,10 @@ IF DEFINED CONDA_PREFIX (
 )
 
 REM ============================================================
-REM  3.5. 32-bit Python 명시적 경로 탐색 (PY32)
-REM  배경: conda init cmd.exe 미실행 시 activate.bat 가 PATH 를 변경하지 못해
-REM        python 이 64-bit base 환경을 가리킬 수 있음.
-REM  대응: py37_32\python.exe 를 직접 탐색 → PY32 변수에 저장 → 이후 모든 python 호출에 사용.
+REM  3.5. Explicit 32-bit Python path lookup (PY32)
+REM  Why: without conda init cmd.exe, activate.bat may not change PATH,
+REM       so python can point at the 64-bit base env.
+REM  Fix: locate py37_32\python.exe directly, keep it in PY32, use it for every python call.
 REM ============================================================
 SET "PY32="
 IF /I "!CONDA_DEFAULT_ENV!"=="py37_32" IF DEFINED CONDA_PREFIX IF EXIST "!CONDA_PREFIX!\python.exe" SET "PY32=!CONDA_PREFIX!\python.exe"
@@ -332,7 +333,7 @@ IF !ERRORLEVEL! NEQ 0 (
 )
 CALL :L "[INFO] 32-bit Python 확인: !PY32!"
 
-REM py37_32 DLL 디렉터리를 PATH 앞에 추가 (64-bit DLL 충돌 방지)
+REM Put py37_32 DLL folders first on PATH (avoid 64-bit DLL clashes)
 SET "_PY32_DIR=!PY32:\python.exe=!"
 SET "PATH=!_PY32_DIR!;!_PY32_DIR!\Scripts;!_PY32_DIR!\Library\bin;!_PY32_DIR!\Library\mingw-w64\bin;!_PY32_DIR!\Library\usr\bin;!PATH!"
 CALL :L "[INFO] PATH 앞에 py37_32 경로 추가: !_PY32_DIR!"
@@ -416,10 +417,10 @@ REM ============================================================
 IF EXIST "!WORKDIR!\scripts\cybos_plus_preflight.py" (
     ECHO.
     CALL :L "[INFO] !BROKER! preflight 점검 중..."
-    REM [2026-09-29] preflight 출력(특히 CHECK 4/4 계좌목록)을 런처 로그에도 남긴다.
-    REM 종전에는 콘솔에만 찍혀, 무인 기동이 exit 4 로 멈췄을 때 로그의 HINT 가
-    REM 가리키는 "위 preflight 출력" 이 어디에도 없었다(계측 4원칙 3).
-    REM 파일 리다이렉트 시 py37 이 cp949 로 쓰므로 이 호출에만 UTF-8 을 강제하고 복원한다.
+    REM [2026-09-29] Copy preflight output (esp. CHECK 4/4 account list) into the launcher log.
+    REM It used to go to the console only, so when an unattended start stopped with exit 4
+    REM the HINT pointed at preflight output that existed nowhere (instrumentation rule 3).
+    REM py37 writes cp949 when redirected, so force UTF-8 for this call only and restore it.
     SET "_PF_OUT=!TEMP!\sindong_preflight_!RANDOM!.txt"
     SET "_PF_OLDENC=!PYTHONIOENCODING!"
     SET "PYTHONIOENCODING=utf-8"
@@ -501,12 +502,12 @@ IF EXIST "!WORKDIR!\tools\peter2_live\receiver.py" (
 )
 
 REM ============================================================
-REM  7. Launch main.py -- Auto-Restart Loop (장중 자동 재시작)
-REM  - 장중(09:00~15:10) 비정상 종료 시 최대 5회 자동 재시작
-REM  - 5분 이상 정상 실행 후 종료 시 재시작 카운터 초기화 (일시적 크래시 대응)
-REM  - 15:10 이후 종료 시 기본 종료(오버나이트 금지), 단 CHOICE Y 확인 시 디버그 모드로 재시작 계속
-REM  - 5회 초과 시 루프 종료
-REM  - AllowSetForegroundWindow(ASFW_ANY) 로 Qt 앱이 foreground 이동 가능
+REM  7. Launch main.py -- Auto-Restart Loop (intraday auto restart)
+REM  - abnormal exit during the session (09:00-15:10): up to 5 automatic restarts
+REM  - exit after 5+ minutes of normal run resets the restart counter (transient crash)
+REM  - exit after 15:10 ends by default (no overnight); CHOICE Y keeps restarting in debug mode
+REM  - more than 5 restarts ends the loop
+REM  - AllowSetForegroundWindow(ASFW_ANY) lets the Qt app take the foreground
 REM ============================================================
 CALL :L "============================================================"
 CALL :L "  [OK] !BROKER! 준비 완료 -- main.py 실행"
@@ -516,13 +517,13 @@ ECHO.
 
 SET "_RESTART_CNT=0"
 
-REM 이전 세션 잔류 플래그 정리
+REM Clean up flags left by the previous session
 IF EXIST "data\_exit_normally" (
     DEL "data\_exit_normally" 2>NUL
     CALL :L "[INFO] 이전 세션 정상 종료 플래그 정리됨 (새 세션 시작)."
 )
 
-REM ── 단일 인스턴스 보장 ────────────────────────────────────────────────
+REM ---- Single instance guard ----
 CALL :L "[GUARD] 기존 main.py 프로세스 체크..."
 REM ---- [MW0602 597cha] GUARD targets ONLY this WORKDIR's main.py ----
 REM On 2026-09-29 the GUARD listed another project (auto_trader_kiwoom, cmdline
@@ -602,7 +603,7 @@ CALL :L "[GUARD] 기존 main.py 없음 -- 단일 인스턴스 확인."
 
 :guard_done
 
-REM WORKDIR 최종 확인
+REM Final WORKDIR check
 IF NOT DEFINED WORKDIR (
     SET "WORKDIR=%USERPROFILE%\PycharmProjects\futures"
     CALL :L "[WARN] WORKDIR 미정의 -- 기본값 복원: !WORKDIR!"
@@ -614,7 +615,7 @@ IF "!WORKDIR!"=="" (
 
 :RESTART_LOOP
 
-REM RESTART_LOOP 진입 시마다 WORKDIR / PY32 복원
+REM Restore WORKDIR / PY32 on every RESTART_LOOP entry
 IF NOT DEFINED WORKDIR (
     SET "WORKDIR=%USERPROFILE%\PycharmProjects\futures"
     CALL :L "[WARN] WORKDIR 미정의 (루프 진입) -- 기본값 복원: !WORKDIR!"
@@ -634,7 +635,7 @@ IF NOT EXIST "!WORKDIR!\main.py" (
     GOTO :restart_done
 )
 
-REM 실행 시작 시각 기록 (분 단위)
+REM Record launch time (minutes)
 FOR /F "usebackq" %%T IN (`powershell -NoProfile -Command "(Get-Date).Hour*60+(Get-Date).Minute"`) DO SET "_LAUNCH_MIN=%%T"
 IF NOT DEFINED _LAUNCH_MIN SET "_LAUNCH_MIN=0"
 
@@ -642,11 +643,11 @@ CALL :L "[INFO] WORKDIR=!WORKDIR!  PY32=!PY32!  BROKER=!BROKER!"
 
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-Type -Name ASFG -Namespace '' -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool AllowSetForegroundWindow(uint pid);'; [ASFG]::AllowSetForegroundWindow(0xFFFFFFFF)" 2>NUL
 
-REM main.py 실행 (콘솔 + 로그 파일 동시 출력)
-REM 규칙: ^ 연속, 변수 내 파이프, 비ASCII REM 금지 (CP949/UTF-8 혼용 오류)
+REM Run main.py (console + log file at the same time)
+REM Rules: no caret line continuation, no pipe inside variables, no non-ASCII REM (CP949/UTF-8 mix)
 "!PY32!" "!WORKDIR!\main.py" 2>&1 | powershell -NoProfile -ExecutionPolicy Bypass -Command "$enc=[Text.Encoding]::UTF8;[Console]::OutputEncoding=$enc;$OutputEncoding=$enc;$lf=New-Object IO.StreamWriter('!_BLOG!',$true,$enc);try{$input|ForEach-Object{[Console]::Out.WriteLine($_);$lf.WriteLine($_)}}finally{$lf.Flush();$lf.Close()}"
 
-REM 실행 시간 계산 (5분 이상 정상 실행이면 재시작 카운터 초기화)
+REM Runtime calculation (5+ minutes of normal run resets the restart counter)
 FOR /F "usebackq" %%T IN (`powershell -NoProfile -Command "(Get-Date).Hour*60+(Get-Date).Minute"`) DO SET "_EXIT_MIN=%%T"
 IF NOT DEFINED _EXIT_MIN SET "_EXIT_MIN=!_LAUNCH_MIN!"
 SET /A "_RUNTIME_MIN=!_EXIT_MIN! - !_LAUNCH_MIN!"
@@ -666,7 +667,7 @@ FOR /F "usebackq" %%T IN (`powershell -NoProfile -Command "(Get-Date).ToString('
 IF NOT DEFINED _NOW SET "_NOW=2400"
 IF "!_NOW!"=="" SET "_NOW=2400"
 
-REM 정상 종료 플래그 확인 (UI X 버튼 / 자동 종료 → 재시작 안 함)
+REM Check normal-exit flag (UI X button / auto shutdown - no restart)
 SET "_EXIT_REASON="
 IF EXIST "data\_exit_normally" SET /P "_EXIT_REASON=" < "data\_exit_normally"
 IF EXIST "data\_exit_normally" DEL "data\_exit_normally" 2>NUL
@@ -674,11 +675,11 @@ IF DEFINED _EXIT_REASON CALL :L "[AUTO-RESTART] 정상 종료 감지 -- 이유: 
 IF DEFINED _EXIT_REASON CALL :L "[AUTO-RESTART] 재시작이 필요하면 start_Sindong.bat 를 다시 실행하세요."
 IF DEFINED _EXIT_REASON GOTO :restart_done
 
-REM 15:10 이후 종료 -- 오버나이트 금지가 기본이나, 디버깅 등 의도적 재시작은
-REM   장전(08:45 미만)/초기 장후(15:10 이후 기동) 실행처럼 Y 확인으로 계속 진행 가능.
-REM   _debug_afterhours 는 이 루프 안에서도 최초 1회 승인되면 세션 내내 재확인 없이 유지.
-REM   주의: GOTO는 절대 괄호 블록 안에 넣지 않음 (MW0602 실전 버그 -- jump table 오염으로
-REM   GOTO :restart_done 등 이후 모든 GOTO가 엉뚱한 위치로 점프, 5회 재시작 제한 무력화됨).
+REM Exit after 15:10 -- no-overnight is the default, but an intentional restart for debugging
+REM   can continue with Y, like pre-market (before 08:45) / after-hours (started after 15:10) runs.
+REM   _debug_afterhours, once approved inside this loop, stays for the session without re-asking.
+REM   Note: never put GOTO inside a parenthesised block (MW0602 live bug -- jump table corruption
+REM   sent GOTO :restart_done and every later GOTO to wrong places, disabling the 5-restart limit).
 SET "_AFTERHOURS_DENY="
 IF !_NOW! GEQ 1510 IF NOT EXIST "!WORKDIR!\data\_debug_afterhours" (
     CALL :L "[AUTO-RESTART] 15:10 이후 종료 감지 -- 의도적 재시작 여부 확인."
@@ -726,7 +727,7 @@ TIMEOUT /T 10 >NUL
 GOTO :EOF
 
 REM ============================================================
-REM  :L  콘솔 출력 + 로그파일 동시 기록 서브루틴
+REM  :L  console + log file output subroutine
 REM ============================================================
 :L
 ECHO %~1
@@ -734,7 +735,7 @@ ECHO %~1 >> "!_BLOG!"
 GOTO :EOF
 
 REM ============================================================
-REM  :find_py32  PY32 재탐색 (루프 재진입 시 PY32 유실 대응)
+REM  :find_py32  re-find PY32 (recover PY32 lost on loop re-entry)
 REM ============================================================
 :find_py32
 IF /I "!CONDA_DEFAULT_ENV!"=="py37_32" IF DEFINED CONDA_PREFIX IF EXIST "!CONDA_PREFIX!\python.exe" SET "PY32=!CONDA_PREFIX!\python.exe"

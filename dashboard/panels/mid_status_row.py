@@ -168,6 +168,20 @@ def _ko_font() -> str:
     return _ko_font_cache
 
 
+def draw_no_data(ax, color: str, fontsize: float) -> None:
+    """차트 「데이터 없음」 안내 — 한글 폰트가 있으면 한글, 없으면 ASCII(두부 대신).
+
+    [2026-10-25] 봉차트·방향 인디케이터가 이 문구를 기본 폰트로 그려 두부(□□)가 됐다
+    (`Glyph … missing from current font` 11자 × 기동마다). 같은 규약(`_ko_font`)을 쓴다.
+    """
+    _fn = _ko_font()
+    ax.text(
+        0.5, 0.5,
+        "데이터 없음  (장 시작 후 수집)" if _fn else "No data  (collected after market open)",
+        transform=ax.transAxes, color=color, ha="center", va="center", fontsize=fontsize,
+        **({"fontname": _fn} if _fn else {}))
+
+
 def position_levels() -> List[tuple]:
     """보유 중이면 [(label, value, color, lw, ls)], 아니면 [].
 

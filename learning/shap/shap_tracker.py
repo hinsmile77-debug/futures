@@ -21,11 +21,24 @@ from collections import deque
 
 import numpy as np
 
-try:
-    import shap as _shap
-    _SHAP_OK = True
-except ImportError:
-    _SHAP_OK = False
+# [2026-10-25] shap 은 **지연 import** 한다 — 모듈 최상단 import 가 기동마다 ≈1.06초(main import 2.96초 중 최대)와
+#   「IPython could not be loaded!」 출력을 냈다. 미륵 휴면(Sindong-V4)은 ShapTracker 를 만들지 않고, 주 경로 모델(HGB)은
+#   `estimators_` 가 없어 TreeExplainer 분기를 타지 않으므로 실제로 필요한 순간에만 불러온다.
+#   _SHAP_OK: None = 아직 시도 안 함(미측정) · True/False = import 결과(계측 4원칙 ②).
+_shap = None
+_SHAP_OK = None
+
+
+def _load_shap() -> bool:
+    global _shap, _SHAP_OK
+    if _SHAP_OK is None:
+        try:
+            import shap as _shap_mod
+            _shap = _shap_mod
+            _SHAP_OK = True
+        except ImportError:
+            _SHAP_OK = False
+    return bool(_SHAP_OK)
 
 try:
     from sklearn.inspection import permutation_importance as _permutation_importance
@@ -255,7 +268,7 @@ class ShapTracker:
         # 네이티브 크래시로 죽어 try/except가 못 잡고 프로세스 전체가 종료됨
         # (실사고: crash_fault.log). estimators_ 없는 모델(HGB)은 TreeExplainer가
         # 애초에 지원하는 구조가 아니므로 2)와 동일한 hasattr 게이트로 아예 스킵.
-        if _SHAP_OK and self._tree_explainer_ok and hasattr(model, "estimators_"):
+        if self._tree_explainer_ok and hasattr(model, "estimators_") and _load_shap():
             try:
                 explainer  = _shap.TreeExplainer(model)
                 shap_vals  = explainer.shap_values(X)

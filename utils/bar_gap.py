@@ -35,6 +35,7 @@ import sqlite3
 from utils.time_utils import (
     FORCE_EXIT_AT,
     expected_raw_candle_minutes,
+    is_trading_day,
     raw_candles_last_ts,
 )
 
@@ -148,6 +149,10 @@ def startup_line(db_path, now=None):
     반환: (메시지, 레벨) 또는 거래일·시간대가 아니면 `None`.
     """
     now = now or datetime.datetime.now()
+    # [2026-10-25] docstring 의 「거래일이 아니면 None」을 코드가 지키지 않아 주말·휴장일 수동 기동마다
+    #   「결손 188봉」 WARNING 이 났다(거짓 경보). 휴장일엔 봉이 없는 것이 정상이다.
+    if not is_trading_day(now):
+        return None
     # 상한은 `now − 1분`. 지금 비행 중인 봉을 결손으로 세면 매 기동마다 거짓양성이다.
     upto = (now - datetime.timedelta(minutes=1)).time()
     if upto < datetime.time(8, 45):

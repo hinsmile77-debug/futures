@@ -78,7 +78,7 @@ def _note_failure(obj, where, exc):
         )
 
 from dashboard.panels.mid_status_row import (
-    MidStatusRow, draw_position_levels, fetch_day_state,
+    MidStatusRow, draw_no_data, draw_position_levels, fetch_day_state,
     publish_position, read_position,
 )
 
@@ -552,11 +552,7 @@ class CandleChartDialog(QDialog):
 
         # ── 데이터 없음 처리 ─────────────────────────────────────
         if not candles:
-            ax.text(
-                0.5, 0.5, "데이터 없음  (장 시작 후 수집)",
-                transform=ax.transAxes,
-                color=_MUTED, ha="center", va="center", fontsize=11,
-            )
+            draw_no_data(ax, _MUTED, 11)
             for a in (ax, ax_dir, ax_reg):
                 a.set_xticks([])
                 a.set_yticks([])

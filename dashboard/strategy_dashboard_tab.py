@@ -1107,7 +1107,9 @@ class _ParamHeatmap(QWidget):
             f"gridline-color:{C['border']};border:none;font-size:9px;"
             "font-family:Consolas,D2Coding,monospace;}"
             f"QHeaderView::section{{background:{C['bg3']};color:{C['text2']};"
-            "font-size:9px;padding:2px;border:none;}}"
+            # [2026-10-25] 일반 문자열이라 `}` 하나 — 종전 `}}` 는 괄호가 남아 Qt 가 시트 전체를 버렸다
+            #   (「Could not parse stylesheet of object QTableWidget」 6줄, 표가 스타일 없이 그려짐).
+            "font-size:9px;padding:2px;border:none;}"
         )
         self._tbl.setFixedHeight(_S(160))
         lay.addWidget(self._tbl)

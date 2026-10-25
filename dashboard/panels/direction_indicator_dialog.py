@@ -29,7 +29,7 @@ from PyQt5.QtWidgets import (
 )
 
 from config.settings import PREDICTIONS_DB, RAW_DATA_DB
-from dashboard.panels.mid_status_row import MidStatusRow, draw_position_levels
+from dashboard.panels.mid_status_row import MidStatusRow, draw_no_data, draw_position_levels
 
 logger = logging.getLogger(__name__)
 
@@ -498,11 +498,7 @@ class DirectionIndicatorWidget(QWidget):
         ax.grid(axis="y", color=_GRID, linewidth=0.5, linestyle="--", alpha=0.7)
 
         if not candles:
-            ax.text(
-                0.5, 0.5, "데이터 없음  (장 시작 후 수집)",
-                transform=ax.transAxes,
-                color=_MUTED, ha="center", va="center", fontsize=10,
-            )
+            draw_no_data(ax, _MUTED, 10)
             self._canvas.draw_idle()
             return
 
