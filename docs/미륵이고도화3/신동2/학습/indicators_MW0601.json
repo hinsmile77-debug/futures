@@ -119,6 +119,23 @@
     "noise_95": null,
     "verdict": "UNMEASURED",
     "why": "표본 18 < 20"
+   },
+   {
+    "ts": "2026-10-23T17:01:31",
+    "days": 60,
+    "at": "10:00",
+    "perm": 200,
+    "first": "2026-07-29",
+    "last": "2026-10-23",
+    "n": 21,
+    "n_all": 58,
+    "hit_rate": 0.81,
+    "p_binom": 0.0072,
+    "ic": 0.288,
+    "p_perm": 0.23,
+    "noise_95": 0.451,
+    "verdict": "FAIL",
+    "why": "적중 0.81 (p=0.0072) · IC 0.288 (순열 p=0.23, 노이즈95 0.451)"
    }
   ],
   "mounted_at": null,
@@ -187,6 +204,23 @@
     "noise_95": null,
     "verdict": "UNMEASURED",
     "why": "표본 18 < 20"
+   },
+   {
+    "ts": "2026-10-23T17:01:45",
+    "days": 60,
+    "at": "10:00",
+    "perm": 200,
+    "first": "2026-07-29",
+    "last": "2026-10-23",
+    "n": 21,
+    "n_all": 58,
+    "hit_rate": 0.429,
+    "p_binom": 0.6636,
+    "ic": -0.505,
+    "p_perm": 0.02,
+    "noise_95": 0.449,
+    "verdict": "FAIL",
+    "why": "적중 0.429 (p=0.6636) · IC -0.505 (순열 p=0.02, 노이즈95 0.449)"
    }
   ],
   "mounted_at": null,
@@ -200,6 +234,65 @@
     "ts": "2026-10-20T19:59:31",
     "status": "검증",
     "why": "verify 실행 — UNMEASURED"
+   }
+  ]
+ },
+ {
+  "id": "I4",
+  "title": "감마핀 되돌림(OI 자석 거리)",
+  "source": "내부: option_strike_oi(7222 행사가 OI) + 1분봉 · web https://bookmap.com/blog/how-the-options-market-dictates-intraday-futures-moves-even-if-you-dont-trade-options",
+  "hypothesis": "가격은 최대 OI 행사가(감마핀)로 끌려간다 — 미드세션에 price<pin 이면 상방, price>pin 이면 하방 평균회귀. 만기 근접일수록 강함. MAIN R3 맥점 반전 다회전이 먹는 구간을 핀 거리로 정량화해 미드세션 재진입 타점을 잡는다(병목=회전/미드세션 공백)",
+  "formula": "pin = argmax_strike(call_OI+put_OI); signal = clip((pin - price)/ATR, -1, +1); 부호=되돌림 방향, 크기=끌림 강도",
+  "inputs": [
+   "atr",
+   "price",
+   "strike_oi"
+  ],
+  "status": "후보",
+  "implemented": false,
+  "sign": null,
+  "prereg": {
+   "min_days": 20,
+   "hit_min": 0.55,
+   "p_max": 0.05
+  },
+  "origin": "2026-10-23",
+  "verifications": [],
+  "mounted_at": null,
+  "history": [
+   {
+    "ts": "2026-10-23T17:03:27",
+    "status": "후보",
+    "why": "신설 — 플러그인 미구현(후보 메모)"
+   }
+  ]
+ },
+ {
+  "id": "I5",
+  "title": "기관 차익 선현 부호불일치",
+  "source": "내부: raw_investor_futures 기관(7221) + option_investor_flow kospi_spot 기관(7222) · web https://indexarb.com/iaTermsDescriptions.html",
+  "hypothesis": "기관이 선물과 현물을 반대 부호로 거래하면 지수 차익거래다 — 선물 매도+현물 매수(선물 고평가)면 선물은 하방 되돌림, 반대면 상방. I3 의 현물 외인 IC -0.505(역추종)가 같은 현선 연계의 실측. 수급 누계 한 점이 아니라 선현 부호 불일치로 방향을 읽는다",
+  "formula": "d_fut = sign(선물 기관 누계); d_spot = sign(현물 기관 누계); 불일치(d_fut != d_spot)일 때 signal = -d_fut (선물 되돌림 방향), 일치면 0",
+  "inputs": [
+   "inst_fut_net",
+   "inst_spot_net"
+  ],
+  "status": "후보",
+  "implemented": false,
+  "sign": null,
+  "prereg": {
+   "min_days": 20,
+   "hit_min": 0.55,
+   "p_max": 0.05
+  },
+  "origin": "2026-10-23",
+  "verifications": [],
+  "mounted_at": null,
+  "history": [
+   {
+    "ts": "2026-10-23T17:03:36",
+    "status": "후보",
+    "why": "신설 — 플러그인 미구현(후보 메모)"
    }
   ]
  }
