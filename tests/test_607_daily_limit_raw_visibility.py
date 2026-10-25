@@ -55,10 +55,11 @@ class _HeaderObj(object):
 
 
 def _msgs(records, level=None):
-    # `_system_info/_warning` 은 SYSTEM 로거 + log_manager 로 두 번 내보낸다 —
-    # api_connector 발신분만 센다.
+    # [2026-10-25] `_system_info/_warning` 은 log_manager 로 **한 번만** 내보낸다(종전 이중 기록 제거).
+    #   레코드 발신지는 log_manager.py(정상) 또는 api_connector.py(log_manager 실패 시 폴백)다.
     return [r.getMessage() for r in records
-            if r.pathname.replace("\\", "/").endswith("collection/cybos/api_connector.py")
+            if r.pathname.replace("\\", "/").endswith(
+                ("collection/cybos/api_connector.py", "logging_system/log_manager.py"))
             and (level is None or r.levelno == level)]
 
 

@@ -107,20 +107,21 @@ DAILY_PNL_HEADER_TODAY_PNL = 6
 DAILY_PNL_HEADER_LIQUIDATION_EVAL = 9
 
 
+# [2026-10-25] log_manager.system 은 같은 SYSTEM 로거(utils.logger.get_logger)로 파일에도 쓴다 —
+#   종전에는 system_logger 도 함께 불러 Cybos 계층 로그가 전부 두 번씩 찍혔다
+#   (2026-10-23 SYSTEM 8,538줄 중 [CybosInvestorRaw] 788줄이 직전 줄과 동일). 실패할 때만 직접 쓴다.
 def _system_info(message: str) -> None:
-    system_logger.info(message)
     try:
         log_manager.system(message, "INFO")
     except Exception:
-        pass
+        system_logger.info(message)
 
 
 def _system_warning(message: str) -> None:
-    system_logger.warning(message)
     try:
         log_manager.system(message, "WARNING")
     except Exception:
-        pass
+        system_logger.warning(message)
 
 
 def _system_info_throttled(message: str, key: str, min_interval_sec: float = 600.0) -> None:

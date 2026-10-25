@@ -85,6 +85,34 @@ def test_E6_shap_tracker_import_does_not_load_shap():
     assert out == "False None", out
 
 
+def test_E8_cybos_system_helpers_log_once():
+    """api_connector `_system_info/_warning` 은 SYSTEM 로거에 레코드 1개만 남긴다(종전 2개 — 10/23 788줄 중복)."""
+    import logging
+    import collection.cybos.api_connector as ac
+
+    class _H(logging.Handler):
+        def __init__(self):
+            logging.Handler.__init__(self)
+            self.records = []
+
+        def emit(self, record):
+            self.records.append(record)
+
+    h = _H()
+    lg = logging.getLogger("SYSTEM")
+    old = lg.level
+    lg.setLevel(logging.DEBUG)
+    lg.addHandler(h)
+    try:
+        ac._system_info("[E8] info once")
+        ac._system_warning("[E8] warn once")
+    finally:
+        lg.removeHandler(h)
+        lg.setLevel(old)
+    msgs = [r.getMessage() for r in h.records if r.getMessage().startswith("[E8]")]
+    assert msgs == ["[E8] info once", "[E8] warn once"], msgs
+
+
 def test_E7_no_data_text_has_no_tofu():
     import matplotlib
     matplotlib.use("Agg")

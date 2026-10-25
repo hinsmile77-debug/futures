@@ -2,6 +2,14 @@
 
 ---
 
+## 2026-10-25 (MW0602 661차 후속8 — Cybos 계층 SYSTEM 로그 이중 기록 제거) — 🟢 **배포(10/26 08:40)**
+
+- 계기: 35f43a2 뒤 재기동 로그(launcher_20261025_121226)의 `[CybosDailyPnl]` 줄이 매번 두 번씩.
+- 원인: `collection/cybos/api_connector.py` `_system_info`·`_system_warning` 이 `system_logger.*` + `log_manager.system` 을 함께 부르는데 후자도 같은 SYSTEM 로거(`utils.logger.get_logger`)로 파일에 쓴다. 661차 후속7 `[Capital]` 과 같은 결함. 규모: 10/23 SYSTEM 8,538줄 중 직전 줄과 동일 806줄, 그중 `[CybosInvestorRaw]` 788줄.
+- 수정: `log_manager.system` 1회 — 실패 시에만 `system_logger` 직접(독립 스크립트도 같은 로거로 수렴해 동작 동일).
+- 테스트: `tests/test_607_daily_limit_raw_visibility.py` 가 이중 기록을 전제로 「api_connector.py 발신분만」 셌다 → 발신지 조건만 갱신(단언 내용 무변경). `tests/test_sindong_v4_launch_polish.py` E8(1회 기록) 추가. 관련 246건 통과.
+- 관찰(무조치): 12:12 기동 잔고 조회 2,687ms — 주말 일일손익 TR 두 형식 왕복. 오늘 앞선 5회 109~188ms · 평일(10/20~23) 94~250ms · 평일 「두 형식 모두 실패」 0건. 10/26 08:40 `request_futures_balance 완료 총` 확인.
+
 ## 2026-10-25 (MW0602 661차 후속7 — 재기동 로그 정리 7건: 런처 한글 REM · 스타일시트 · 두부 글리프 · 주말 BarGap · Capital 중복 · shap 지연 import · 폴더 대기) — 🟢 **배포(10/26 08:40)**
 
 - 계기: f5c2a21 뒤 start_Sindong.bat 재기동 로그(launcher_20261025_115242).
