@@ -1,0 +1,61 @@
+미륵이(futures, KOSPI 200 선물 자동매매) 저장소에서 **신동 주체 장후 점검**을 수행하라. (2026-10-26부터 거래주체는 신동이고 미륵 엔진은 휴면이다 — 예약 이름은 앱 호환을 위해 그대로 둔다.)
+
+## 0. 시작 전 — 반드시 이 세 가지부터
+
+**① 스킬 정본을 먼저 Read 한다.**
+`C:\Users\82108\PycharmProjects\futures\.claude\skills\shindong-daily-check\SKILL.md`
+(첫 줄 `rev:` 확인 — Skill 도구로 로드되는 사본은 늙는다. **사본과 정본이 다르면 정본을 따른다.**)
+그다음 `shindong-daily-check` 스킬을 Skill 도구로 호출해도 된다. 호출이 안 되면 정본만으로 진행한다.
+
+**② 모든 git 명령에 `--no-optional-locks` 를 붙인다**(`status`·`branch`·`diff`·`log`·`ls-files` 전부, 손으로 치는 것도).
+없으면 git 이 인덱스를 다시 써서 `.git/index.lock` 을 남기고, 리눅스 샌드박스는 그 락을 지우지 못한다(2026-08-26 실측).
+
+**③ 병행 세션을 확인한다.** `git --no-optional-locks log --format="%ci %h %s" --since="<오늘 00:00>"` 와
+`ls -lt docs/정기점검/매일점검/ | head -20`. 딥다이브 파일이 있으면 읽는다.
+
+## 1. 전제 — 2026-10-26(월) 장전부터 미륵 휴면 · 신동 주체 [MW0601 713차]
+
+- 브랜치 **`Sindong2-V4`** 가 정상이다(`v9-dev` 는 미륵 보존용으로 동결 — 그 브랜치면 그것이 P0).
+  `git --no-optional-locks branch --show-current` 를 가장 먼저 확인한다.
+- `config/settings.py` `MIREUK_ENGINE` 이 **`"off"` 가 아니면** 이 예약은 미륵 점검이어야 한다 —
+  `.claude/skills/mireuk-daily-check/SKILL.md` 로 바꿔 수행하고 그 사실을 리포트 맨 위에 적는다(미륵을 되살린 상태).
+- 휴면 중 미륵 항목(EOD 재학습·SHAP·CB③·검증 캠페인·앙상블·매분 9단계 로그·`eod_retrain_done`·`strategy_report`)은
+  **「휴면 — 해당 없음」** 이다. 결함으로 올리지 않는다. 대신 스킬 §2 「휴면 감시 항목」을 본다(`[MireukOff]` 1건 = P0).
+- 리포 루트: `C:\Users\82108\PycharmProjects\futures` (bash 에서는 `/sessions/<세션>/mnt/futures`).
+
+## 2. 실행 — 장후(`post`) · 하루 중 가장 중요한 점검
+
+1. 15:55 신동 EOD(`data/shindong_eod_done_<날짜>.txt`)가 끝났는지 먼저 본다 — 아직이면 끝날 때까지 기다리고, 실패면 이상점으로 올린다.
+2. 증거 수집:
+   `cd <repo> && python .claude/skills/shindong-daily-check/scripts/collect_shindong_evidence.py --phase post --pc MW0601 --out-auto`
+3. **오늘 리포트 파일을 먼저 통째로 읽는다** — 장전·장중 항목을 하나도 빠짐없이 처분한 뒤 장후 이야기를 시작한다.
+4. 스킬 §3 「장후 절」 1–11 을 순서대로 — 특히 `4p. 신동 사후검증`(포지션 1건당 카드) · `5p. 수익률 향상방안`(6칸) · `사용자 조치`(표).
+   손익은 **브로커 net** 우선(`fetch_daily_net_for_verdict()`), 집계는 **포지션 단위**(레그 단위면 병기).
+5. 15:10 강제청산 미이행이 있으면 그 자체로 P0.
+
+## 허용 — 장후
+
+- 15:35 이후라 라이브 DB 사후검증이 허용된다(읽기 전용). 코드 변경은 하지 않는다 — Fix 는 계획까지, 구현은 17:23 자동조치(A·B등급) 또는 사용자 지시.
+
+## 산출 — 여기서 하루가 닫힌다
+
+- 같은 날 리포트 끝에 **`# 장후(post)`** 절 append — 자동조치 가드 1 과 종합 메일이 이 머리를 찾는다. 앞 국면 절 본문 무변경. `-post` 파일 금지.
+- **이 파일 하나만 읽고 그날이 전부 재구성되도록** 쓴다.
+- dev_memory: 스킬 §5 대로 append(커밋은 17:23 자동조치).
+
+## 커밋 — 하지 않는다
+
+- **`git commit`·`git push` 금지.** 17:23 자동조치(Claude Code)가 리포트·증거·dev_memory 를 함께 커밋한다(713차 B4).
+- `.git/index.lock` 이 남았으면 지우지 말고 사용자 조치로 올린다(`python scripts/git_lock_guard.py --check` 통과 후에만 회수).
+- 채팅 본문은 **평문 3–6줄** — 위험 여부, 이상점 건수(P0/P1/P2), 가장 시급한 것, 사용자가 할 일. 전문은 파일에 있다.
+- 리포트 파일을 `present_files` 로 사용자에게 전달한다.
+
+## 마지막 자체 검증
+
+- [ ] 정본 SKILL.md 를 먼저 Read 했나 · 모든 git 명령에 `--no-optional-locks` 를 붙였나 · 병행 세션을 확인했나
+- [ ] 브랜치 `Sindong2-V4` · `MIREUK_ENGINE="off"` 를 확인했나
+- [ ] 수집기에 `--pc MW0601` 을 붙였나(코웍 호스트명은 `claude`)
+- [ ] 휴면 미륵 항목을 결함으로 올리지 않았나 · 휴면 감시 항목을 다 봤나
+- [ ] 리포트 **한 파일** `MW0601-<YYYYMMDD>-점검리포트.md` 에 썼나 · 앞 국면 절을 고치지 않았나
+- [ ] 절 제목 규약(스킬 §3 — `한 줄 결론`·`Fix 작업 구현계획`·`고도화 방안`·`수익률 향상방안`·`사용자 조치`·`다음 거래일 관측`)을 지켰나
+- [ ] 코드를 변경하지 않았나 · 커밋하지 않았나
