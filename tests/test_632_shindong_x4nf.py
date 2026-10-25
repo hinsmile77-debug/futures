@@ -161,7 +161,8 @@ def test_tr44_preregistration():
     assert (spec.TR44_ACT, spec.TR44_DIST) == (4.0, 4.0) == spec.MAIN_TRAIL
     assert spec.LATE_SHADOW_START == {"SHADOW_V2": "2026-10-21", "SHADOW_X4NF": "2026-10-21",
                                       "SHADOW_X4NFA": "2026-10-21",
-                                      "SHADOW_ATRS": "2026-10-21"}   # [699차] v3 재시작 · [700차] ATRS
+                                      "SHADOW_ATRS": "2026-10-21",
+                                      "SHADOW_R2D7": "2026-10-26"}   # [699차] v3 재시작 · [700차] ATRS · [714차] R2D7
 
 
 def _frame(bars):

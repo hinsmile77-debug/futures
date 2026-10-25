@@ -230,7 +230,7 @@ def build(db=SHINDONG_DB, since=spec.SCORING_START, raw_db=RAW_DATA_DB):
     # [632차] 9/28 결과를 보고 만든 섀도(X4NF·TR44) — 같은 기준으로 MAIN 과 비교
     sec = 4
     for v in sorted(spec.LATE_SHADOW_START):
-        w("## %d. %s 판정 (%s 사전등록 · v3 재채점)" % (sec, v, {"SHADOW_X4NFA": "598차", "SHADOW_V2": "699차 되돌림", "SHADOW_ATRS": "700차"}.get(v, "632차")))
+        w("## %d. %s 판정 (%s 사전등록 · v3 재채점)" % (sec, v, {"SHADOW_X4NFA": "598차", "SHADOW_V2": "699차 되돌림", "SHADOW_ATRS": "700차", "SHADOW_R2D7": "714차"}.get(v, "632차")))
         w("")
         w("\n".join(_late_judge(live, days, v)))
         w("")

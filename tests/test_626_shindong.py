@@ -47,7 +47,7 @@ def test_spec_is_preregistered_values():
     assert (spec.T1_MIN_DIST, spec.TP_BUF, spec.OR_STOP_BUF) == (2.0, 0.5, 1.0)
     assert (spec.R3_START, spec.NEW_ENTRY_END, spec.TIME_EXIT) == ("09:30", "14:30", "15:05")
     assert spec.VARIANTS == ("MAIN", "SHADOW_V2", "SHADOW_E2F2", "SHADOW_X4NF",
-                             "SHADOW_X4NFA", "SHADOW_ATRS")   # [699차] TR44 → MAIN 승격 · 구 MAIN 은 SHADOW_V2 · [700차] ATRS
+                             "SHADOW_X4NFA", "SHADOW_ATRS", "SHADOW_R2D7")   # [699차] TR44 → MAIN 승격 · 구 MAIN 은 SHADOW_V2 · [700차] ATRS · [714차] R2D7
     assert "SHADOW_TR44" in spec.RETIRED_SHADOWS
     assert (spec.SCORING_START, spec.R3_KILL_AFTER_DAYS, spec.R3_KILL_NET_MAX,
             spec.R3_KILL_WINRATE_MAX) == ("2026-10-21", 10, 0, 0.35)   # [699차] v3 채점 재시작(v2: 09-30)

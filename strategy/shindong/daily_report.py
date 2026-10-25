@@ -41,7 +41,8 @@ VLABEL = {"MAIN": "MAIN(v3 본안·R3 트레일 4/4)", "SHADOW_V2": "V2(구 MAIN
           "SHADOW_E2F2": "E2F2(흐름순응)",
           "SHADOW_X4NF": "X4NF(가까운목표·flip금지)", "SHADOW_TR44": "TR44(R3 트레일 4/4 · 종료)",
           "SHADOW_X4NFA": "X4NFA(X4NF+깨진맥점금지)",
-          "SHADOW_ATRS": "ATRS(R3 손절 0.25×ATR14)"}   # [700차]
+          "SHADOW_ATRS": "ATRS(R3 손절 0.25×ATR14)",   # [700차]
+          "SHADOW_R2D7": "R2D7(R2 확정 09:07–09:16)"}   # [714차]
 REASON = {"TP1": "1차", "TP2": "최종", "SL": "손절", "BE": "본전", "TIME": "시간", "TR": "트레일"}
 
 
@@ -145,6 +146,8 @@ def attribute(main: List[Dict], sh: List[Dict], variant: str, d: "E.DayFrame") -
                     _man((s["net"] or 0) - (r["net"] or 0))))
             continue
         why = "진입 없음"
+        if r["rule"] == "R2" and variant == "SHADOW_R2D7":   # [714차]
+            why = "R2 확정 창 이동(09:07–09:16)"
         if r["rule"] == "R3":
             if variant == "SHADOW_E2F2" and sp0 is not None and r["entry_ts"] in d.sp:
                 trend = -1 if d.sp[r["entry_ts"]] - sp0 > 0 else 1
@@ -164,8 +167,10 @@ def attribute(main: List[Dict], sh: List[Dict], variant: str, d: "E.DayFrame") -
             r["entry_ts"], r["rule"], _side(r["side"]), "%.2f" % r["entry_px"], why, _man(r["net"])))
     for k, s in sk.items():
         if k not in mk:
-            out.append("%s %s %s: **섀도만 진입** %.2f (앞 거래가 없어 신호가 살아남) → %s" % (
-                s["entry_ts"], s["rule"], _side(s["side"]), s["entry_px"], _man(s["net"])))
+            why = ("R2 확정 창 09:07–09:16에서 확정" if (s["rule"] == "R2" and variant == "SHADOW_R2D7")
+                   else "앞 거래가 없어 신호가 살아남")   # [714차]
+            out.append("%s %s %s: **섀도만 진입** %.2f (%s) → %s" % (
+                s["entry_ts"], s["rule"], _side(s["side"]), s["entry_px"], why, _man(s["net"])))
     return out
 
 

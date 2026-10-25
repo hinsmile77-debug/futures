@@ -10,6 +10,8 @@
 
   I1. R2 는 변형과 무관하다 — 진입(시각·방향·가격)은 모든 변형이 같고, E2 를 쓰지 않는
       MAIN · SHADOW_V2 · X4NF 는 손익까지 같다([699차] v3 MAIN 의 트레일은 R3 에만 걸린다).
+      [714차] 예외: SHADOW_R2D7 은 **R2 확정 창 자체를 바꾸는** 섀도라 I1 대상에서 뺀다
+      — 대신 R2 확정 시각이 창(09:07–09:16) 안이고 R1 방향은 MAIN 과 같다는 것을 본다.
   I2. X4NF 는 같은 맥점에서 R3 진입 방향을 뒤집지 않는다.
   I3. X4NF 의 1차 목표는 같은 진입의 MAIN 1차 목표보다 멀지 않다.
   I4. E2F2 의 R3 는 모두 터치 시점의 당일 흐름 방향과 같은 쪽이다(F2).
@@ -78,8 +80,13 @@ def _key(t):
 @pytest.mark.parametrize("d", _DAYS or ["-"])
 def test_i1_r2_same_across_variants(d):
     r = _day(d)["results"]
-    ent = {v: [_key(t) for t in r[v]["trades"] if t["rule"] == "R2"] for v in spec.VARIANTS}
+    r2_shift = ("SHADOW_R2D7",)                 # [714차] R2 창을 옮기는 섀도 — I1 예외(아래에서 따로 본다)
+    ent = {v: [_key(t) for t in r[v]["trades"] if t["rule"] == "R2"] for v in spec.VARIANTS if v not in r2_shift}
     assert all(e == ent["MAIN"] for e in ent.values()), ent
+    for v in r2_shift:
+        assert r[v]["decision"]["bias"] == r["MAIN"]["decision"]["bias"]
+        assert all(spec.R2D7_CONF_START <= t["entry_ts"] <= spec.R2D7_CONF_END
+                   for t in r[v]["trades"] if t["rule"] == "R2")
     net = {v: [round(engine.trade_net(t)) for t in r[v]["trades"] if t["rule"] == "R2"]
            for v in ("MAIN", "SHADOW_V2", "SHADOW_X4NF")}
     assert net["SHADOW_X4NF"] == net["MAIN"] == net["SHADOW_V2"], net

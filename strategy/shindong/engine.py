@@ -267,7 +267,7 @@ def run_day(d: DayFrame, L, variant: str = "MAIN") -> Dict[str, Any]:
     #   SHADOW_TR44 이름은 종료됐지만 재현 테스트·과거 행 복기용으로 계속 알아듣는다(= v3 MAIN 과 같다).
     if variant == "SHADOW_TR44":
         tr44 = (S.TR44_ACT, S.TR44_DIST)
-    elif variant in ("MAIN", "SHADOW_ATRS"):
+    elif variant in ("MAIN", "SHADOW_ATRS", "SHADOW_R2D7"):
         tr44 = S.MAIN_TRAIL
     else:
         tr44 = None
@@ -295,16 +295,20 @@ def run_day(d: DayFrame, L, variant: str = "MAIN") -> Dict[str, Any]:
         dec["pm_sp"] = s
         dec["bias"] = 0 if abs(s) < S.BIAS_MIN else (-1 if s > 0 else 1)
     bias = dec["bias"]
-    busy = S.CONF_BASE          # 이 분까지는 신규 진입 없음(보유 중이면 청산 시각)
+    # [714차] SHADOW_R2D7 — R2 확정 창만 늦춘다(기준·시작·끝). R1·R3·청산은 MAIN 과 같다.
+    conf_base, conf_start, conf_end = ((S.R2D7_CONF_BASE, S.R2D7_CONF_START, S.R2D7_CONF_END)
+                                       if variant == "SHADOW_R2D7"
+                                       else (S.CONF_BASE, S.CONF_START, S.CONF_END))
+    busy = conf_base            # 이 분까지는 신규 진입 없음(보유 중이면 청산 시각)
 
     # R2
     if bias:
-        if S.CONF_BASE not in d.sp:
-            dec["r2"] = "PENDING" if (not d.idx or d.idx[-1] < S.CONF_BASE) else "NO_BASE"
+        if conf_base not in d.sp:
+            dec["r2"] = "PENDING" if (not d.idx or d.idx[-1] < conf_base) else "NO_BASE"
         else:
-            bc, bp, bs = d.call[S.CONF_BASE], d.put[S.CONF_BASE], d.sp[S.CONF_BASE]
+            bc, bp, bs = d.call[conf_base], d.put[conf_base], d.sp[conf_base]
             conf = None
-            for t in d.between(S.CONF_START, S.CONF_END):
+            for t in d.between(conf_start, conf_end):
                 if t not in d.sp or t not in d.c:    # [598차] 봉 없는 분엔 진입가가 없다
                     continue
                 dc, dp, ds = d.call[t] - bc, d.put[t] - bp, d.sp[t] - bs
@@ -319,7 +323,7 @@ def run_day(d: DayFrame, L, variant: str = "MAIN") -> Dict[str, Any]:
                 # [MW0602 598차] 봉이 없는 분(예: 09:00 1분봉 결손 — 2026-09-29 실측)은 흐름만 있고
                 #   h/l 가 없다. 예전엔 KeyError 로 그날 재생 전체가 죽었다(첫 실패만 WARNING, 이후 억제).
                 #   봉이 있는 분만 쓴다 — 정상일(봉 전부 있음)은 결과가 한 원도 바뀌지 않는다.
-                seg = [k for k in d.between(S.CONF_BASE, conf) if k in d.h]
+                seg = [k for k in d.between(conf_base, conf) if k in d.h]
                 ex = (max(d.h[k] for k in seg) + S.OR_STOP_BUF if bias < 0
                       else min(d.l[k] for k in seg) - S.OR_STOP_BUF)
                 e = d.c[conf]
@@ -329,7 +333,7 @@ def run_day(d: DayFrame, L, variant: str = "MAIN") -> Dict[str, Any]:
                 trades.append(tr)
                 busy = tr["exit_ts"] or "99:99"
             else:
-                dec["r2"] = "PENDING" if (d.idx and d.idx[-1] < S.CONF_END) else "NONE"
+                dec["r2"] = "PENDING" if (d.idx and d.idx[-1] < conf_end) else "NONE"
 
     # R3
     for t in [k for k in d.idx if S.R3_START <= k <= S.NEW_ENTRY_END]:

@@ -37,7 +37,9 @@ def test_spec_v3_registered():
     assert "SHADOW_TR44" in spec.RETIRED_SHADOWS and "SHADOW_TR44" not in spec.VARIANTS
     assert spec.SCORING_START == "2026-10-21" and spec.V2_SCORING_START == "2026-09-30"
     assert {"SHADOW_V2", "SHADOW_X4NF", "SHADOW_X4NFA"} <= set(spec.LATE_SHADOW_START)
-    assert all(v == spec.SCORING_START for v in spec.LATE_SHADOW_START.values())
+    # [714차] SHADOW_R2D7 은 v3 개정 뒤에 등록돼 그 다음 거래일(10-26)부터 센다 — 나머지는 v3 재시작일
+    assert all(v == spec.SCORING_START for k, v in spec.LATE_SHADOW_START.items() if k != "SHADOW_R2D7")
+    assert spec.LATE_SHADOW_START["SHADOW_R2D7"] > spec.SCORING_START
     assert (spec.COMPLEMENT_SCORING_START, spec.COMPLEMENT_JUDGE_AFTER_DAYS) == ("2026-10-21", 20)
 
 
