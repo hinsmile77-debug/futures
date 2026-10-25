@@ -54,7 +54,8 @@ def test_A1_settings_ship_legacy_values():
     assert '\nMIREUK_ENGINE = "full"\n' in src.replace('\r\n', '\n')
     assert '\nPRINCIPAL_ALLOWED = None\n' in src.replace('\r\n', '\n')
     assert '\nPRINCIPAL_DEFAULT = None\n' in src.replace('\r\n', '\n')
-    assert '\nLIGHT_PASS_DRY_RUN = False\n' in src.replace('\r\n', '\n')
+    # [P4] 건식 실행은 10-26 부터 켠다(계산만 — 주문·DB 쓰기·CB 무접촉). 엔진·주체 값은 여전히 종전이다.
+    assert '\nLIGHT_PASS_DRY_RUN = True\n' in src.replace('\r\n', '\n')
 
 
 def test_A1_file_choice_kept_by_default(tp):
@@ -134,3 +135,12 @@ def test_A5_dashboard_disables_not_allowed():
     src = io.open(os.path.join(ROOT, 'dashboard', 'main_dashboard.py'), encoding='utf-8').read()
     assert 'set(_tp.PRINCIPALS) - set(_tp.allowed())' in src
     assert 'self._principal_disabled = set(self._principal_disabled) | self._principal_not_allowed' in src
+
+
+def test_A3b_prev_without_file_is_configured_default(tp):
+    """파일이 없을 때 이력 prev 는 상수 미륵이 아니라 설정 기본 주체다(713차 P4 스모크에서 발견)."""
+    mp, _ = tp
+    _cutover(mp)
+    TP.save('PETER', reason='dashboard')
+    last = json.loads(io.open(TP.LOG_PATH, encoding='utf-8').read().strip().splitlines()[-1])
+    assert last['prev'] == 'SHINDONG' and last['prev_measured'] is False

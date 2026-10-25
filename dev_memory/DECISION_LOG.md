@@ -49465,3 +49465,13 @@ EKS는 366차 이전부터 존재하는 기존 설계이고, 이번 사이클은
 - **Why(daily_close)**: 미륵 전용 5묶음(재학습 대기·보정기/MetaConf 저장·자가학습 집계·재보정 모니터 / 극단성 보정기 / scaler_daily·CB③계측·Checklist·CUSUM·mc-conf·Registry / Phase5·섀도 후보 / 챔피언·heartbeat)을 게이트. 학습 상태 파일을 휴면 중 덮어쓰지 않아야 되살림이 「마지막 실가동 상태」가 된다. `_today_accuracy` 읽기 2줄은 `daily_stats` 저장이 쓰므로 게이트 밖.
 - **검증**: `test_713_*` 4종 67건 · 전체 회귀 3,345 passed / 16 failed — P1 이전 판(`1aec879`) 전체 회귀와 **실패 목록 동일**. 신동 EOD 채점은 `INSERT OR REPLACE` 라 전환 전 미륵 재학습과 같은 날 함께 돌아도 멱등.
 - **How to apply**: 전환 전 P4 — 건식 실행(`LIGHT_PASS_DRY_RUN=True`) 2거래일+ · 장후 재생 · off 실객체 스모크 · `TASK_SHINDONG_EOD_INSTALL.bat` 등록 후 1회 exit=0 · 런처 `start_Sindong.bat`. 상세 `docs/신동거래/신동주체전환_구현계획_미륵휴면_MW0601-20261025.md` §8.
+
+## 2026-10-25 (MW0601 713차 P4 — 전환 검증 · 런처 · 예약작업: 신동 EOD 등록 · 건식 실행 켜기 · \Sindong 비활성 설치) — 🟢 **사용자 지시 「1. 등록 2. 건식실행 P4구현해」**
+
+- **설정 변경 1건(실동작 영향 최소)**: `LIGHT_PASS_DRY_RUN = True` — 10-26 부터 매분 미륵 파이프라인 **뒤에** 경량 패스를 계산만(주문·DB 쓰기·CB·화면 무접촉, DB 읽기는 하루 1회 ATR 예열). 엔진·주체 값은 종전(`full`·None·None). 전환일에 False.
+- **예약작업**: `\Mireuk\Shindong_EOD_1555` 등록(평일 15:55, 다음 10-26) · `\Sindong` **비활성** 설치(`\미륵이` 복제 — 평일 08:40 · Highest · MW0601). `-Switch` 는 `sindong_launch_check` 통과 전 거부(현재 설정으로 실측 거부 확인).
+- **런처**: `start_Sindong.bat` = v9 `start_mireuk.bat` 파생(Sindong-V4 판이 아니다 — v9 런처와 103줄 다름) + STEP 3.9 입구 점검. `scripts/sindong_launch_check.py` 는 Sindong-V4 의 `PRINCIPAL_LOCK` 대신 **허용 집합·기본 주체·브랜치 `Sindong2-V4`** 를 AST 로 본다.
+- **장후 재생 8거래일(10-14–10-23)**: 7 PASS · **10-15 FAIL** — ATR ≤10% 비율 93.3%(기준 95%). 불일치 17봉이 전부 13:44–14:24 = 그날 장중 재기동 3회 직후이고, 미륵 피처 ATR 이 재기동 시 냉시작한 탓이다(13:44 경량 2.360 vs 미륵 0.960). 라이브 경량 패스는 당일 앞선 봉으로 예열해 연속값과 같다 → 경량 패스 결함 아님. **사전 고정 판정은 바꾸지 않고 FAIL 로 기록**. 함의: 휴면 뒤 CB④ 입력은 재기동 직후에도 연속값(종전보다 보수적).
+- **실객체 스모크(격리 worktree · 빈 DB · offscreen · 가짜 브로커)**: off — ERROR 0 · 파이프라인 0회 · `[MireukOff]` · 미륵 전환 거부 · 신동→피터 전환 성공 · 재학습 거부 · 미륵 버튼 비활성. 라이브 `trade_principal.json` 무변경 확인. **발견 결함 1건 수정** — 파일 없음일 때 전환 이력 `prev` 가 상수 미륵으로 적힘 → 설정 기본 주체.
+- **검증**: `test_713_*` 5종 · 전체 회귀 3,350 passed / 16 failed — 기준판과 실패 목록 동일.
+- **How to apply**: 10-26–10-30 매 장후 재생 + `[LightPassDry] 요약` 확인 · 10-26 15:55 신동 EOD exit=0 확인 · 11-02 계획서 §9-2 절차. 근거 `docs/미륵휴면/전환검증_20261025/README.md`.

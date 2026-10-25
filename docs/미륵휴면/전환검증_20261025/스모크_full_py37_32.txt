@@ -1,0 +1,10 @@
+init 1.4s engine full dry True principal PETER fallback False
+rf_ready False
+bars: 30 per-bar ms max 80 p50 5
+pipeline calls(off 모드 가로챔): 0
+atr ctx: None light last ts: None
+dry stats: {'day': '2026-10-23', 'bars': 30, 'mismatch': 30, 'atr_n': 0, 'atr_maxrel': 0.0, 'ms_max': 2.2991999999995016}
+grab+paint ok
+ERROR logs(30): ['[ERR-FATAL] minute_pipeline: no such table: raw_candles | 자동진입 OFF + 15분 쿨다운', '[ERR-FATAL] minute_pipeline: no such table: raw_candles | 자동진입 OFF + 15분 쿨다운', '[ERR-FATAL] minute_pipeline: no such table: raw_candles | 자동진입 OFF + 15분 쿨다운', '[ERR-FATAL] minute_pipeline: no such table: raw_candles | 자동진입 OFF + 15분 쿨다운',
+light/engine logs: ['[LightPassDry] 불일치 ts=2026-10-23 10:00:00 — 가드=통과 · 파이프라인완주=False', '[LightPassDry] 불일치 ts=2026-10-23 10:01:00 — 가드=통과 · 파이프라인완주=False', '[LightPassDry] 불일치 ts=2026-10-23 10:02:00 — 가드=통과 · 파이프라인완주=False', '[LightPassDry] 불일치 ts=2026-10-23 10:03:00 — 가드=통과 · 파이프�
+SMOKE_DONE

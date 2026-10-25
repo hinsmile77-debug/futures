@@ -1,0 +1,83 @@
+# -*- coding: utf-8 -*-
+# [MW0601 713차 P4] 격리 사본 전용 실객체 스모크 (py37_32 · offscreen · 가짜 브로커)
+# 원본: MW0602 Sindong-V4 docs/미륵중단/전환검증_20261025/스모크_스크립트_smoke_win.py.txt
+# 사용: python smoke_713.py off|full <날짜> <라이브 raw_data.db 경로(읽기 전용)>
+import os, sys, datetime, sqlite3, time
+from utils.dll_bootstrap import ensure_conda_dll_path; ensure_conda_dll_path()
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+from utils.runtime_mode import enable_test_mode; enable_test_mode()
+import main
+from PyQt5.QtWidgets import QApplication
+from collection.kiwoom.latency_sync import LatencySync
+
+
+class FakeBroker(object):
+    name = "cybos"
+    def create_latency_sync(self): return LatencySync()
+    def __getattr__(self, n):
+        def f(*a, **k): return None
+        return f
+
+
+main.create_broker = lambda: FakeBroker()
+mode, day, live_raw = sys.argv[1], sys.argv[2], sys.argv[3]
+import config.settings as S
+S.MIREUK_ENGINE = mode
+main.runtime_settings.MIREUK_ENGINE = mode
+S.LIGHT_PASS_DRY_RUN = (mode == "full")
+main.runtime_settings.LIGHT_PASS_DRY_RUN = (mode == "full")
+if mode == "off":
+    S.PRINCIPAL_ALLOWED = ("SHINDONG", "PETER")
+    S.PRINCIPAL_DEFAULT = "SHINDONG"
+logs = []
+main.log_manager.system = lambda msg, level="INFO": logs.append((level, msg))
+t0 = time.time()
+ts = main.TradingSystem()
+print("init %.1fs" % (time.time() - t0), "engine", ts._mireuk_engine, "dry", ts._light_pass_dry,
+      "principal", ts._principal_state["principal"], "fallback", ts._principal_state.get("fallback"))
+print("rf_ready", ts.rf_model.is_ready() if hasattr(ts.rf_model, "is_ready") else "?")
+main.is_pre_market = lambda now=None: False
+main.is_market_open = lambda now=None: True
+main.is_force_exit_time = lambda now=None: False
+calls = {"pipe": 0}
+if mode == "off":
+    main.TradingSystem.run_minute_pipeline = lambda self, bar: calls.__setitem__("pipe", calls["pipe"] + 1)
+app = QApplication.instance()
+con = sqlite3.connect("file:%s?mode=ro" % live_raw.replace("\\", "/"), uri=True)
+rows = con.execute("SELECT ts,open,high,low,close,volume FROM raw_candles WHERE ts>=? AND ts<? ORDER BY ts",
+                   (day + " 10:00:00", day + " 10:30:00")).fetchall()
+con.close()
+ms = []
+for r in rows:
+    c = {"ts": datetime.datetime.strptime(r[0][:19], "%Y-%m-%d %H:%M:%S"), "open": r[1], "high": r[2],
+         "low": r[3], "close": r[4], "volume": r[5], "buy_vol": r[5] // 2, "sell_vol": r[5] - r[5] // 2}
+    a = time.time()
+    ts._on_candle_closed(c)
+    app.processEvents()
+    ms.append((time.time() - a) * 1000)
+print("bars:", len(rows), "per-bar ms max %.0f p50 %.0f" % (max(ms), sorted(ms)[len(ms) // 2]))
+print("pipeline calls(off 모드 가로챔):", calls["pipe"])
+print("atr ctx:", ts._manual_entry_ctx.get("atr"), "light last ts:", ts._light_last_ts)
+print("dry stats:", ts._light_dry_stats)
+ts.dashboard._win.grab(); app.processEvents(); print("grab+paint ok")
+errs = [x for x in logs if x[0] in ("ERROR", "CRITICAL")]
+print("ERROR logs(%d):" % len(errs), [m[:200] for _, m in errs][:8])
+print("light/engine logs:", [m[:160] for _, m in logs if "LightPass" in m or "Engine" in m][:8])
+if mode == "off":
+    main._ts_execute_entry(ts, "LONG", 1050.0, 1, 2.0, "A", entry_source="SYSTEM_AUTO")
+    print("reject:", [m[:100] for l, m in logs if "MireukOff" in m][:1])
+    ts._on_principal_change_requested("MIREUK")
+    print("switch→미륵:", [m[:110] for l, m in logs if "전환 거부" in m][-1:], ts._principal_state["principal"])
+    ts._on_principal_change_requested("PETER")
+    print("switch→피터:", [m[:110] for l, m in logs if "거래주체 전환" in m or "전환 거부" in m][-1:],
+          ts._principal_state["principal"])
+    print("retrain started?", ts._start_gbm_retrain_subprocess(force=True, reason="smoke", is_warmup=False))
+    print("dash disabled:", sorted(getattr(ts.dashboard._win, "_principal_disabled", set())))
+print("SMOKE_DONE")
+sys.stdout.flush(); sys.stderr.flush()
+os._exit(0)

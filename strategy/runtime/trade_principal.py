@@ -130,7 +130,7 @@ def save(principal, reason='', now=None):
     if p not in allowed():
         raise ValueError('principal not allowed: %r (PRINCIPAL_ALLOWED=%r)' % (p, allowed()))
     now = now or datetime.datetime.now()
-    prev = load_file() or {'principal': DEFAULT, 'measured': False}
+    prev = load_file() or {'principal': default_principal(), 'measured': False}
     rec = {'principal': p, 'set_at': now.isoformat(timespec='seconds'), 'reason': reason}
     d = os.path.dirname(STATE_PATH)
     if not os.path.isdir(d):

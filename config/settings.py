@@ -7914,7 +7914,8 @@ PRINCIPAL_DEFAULT = None
 # LIGHT_PASS_DRY_RUN — MIREUK_ENGINE="full" 일 때만 의미. 매분 미륵 파이프라인 **뒤에** 경량 패스를
 #   계산만 병행해(DB 쓰기·주문·CB 기록·화면 갱신 없음) 미륵 경로 값과 대조하고 `[LightPassDry]` 로 남긴다.
 #   실거래를 멈추지 않는 전환 검증 수단이다(계획서 P4). 기동 시 1회 읽는다.
-LIGHT_PASS_DRY_RUN = False
+#   [713차 P4 / 사용자 지시 2026-10-25] 10-26 부터 켠다 — 전환일(11-02) 전 표본 5거래일. 전환일에 False 로 되돌린다.
+LIGHT_PASS_DRY_RUN = True
 
 # ── [MW0601 668차] 피터2 — 피터리 트윗 실시간 추종 매매 ─────────────────────────
 # 장중 피터리(@PeterLeejoa) 트윗을 Chrome 확장 → 로컬 수신기(127.0.0.1)로 받아

@@ -1,0 +1,15 @@
+init 1.4s engine off dry False principal SHINDONG fallback True
+rf_ready False
+bars: 30 per-bar ms max 91 p50 3
+pipeline calls(off 모드 가로챔): 0
+atr ctx: 2.8486 light last ts: 2026-10-23 10:29:00
+dry stats: {'day': None, 'bars': 0, 'mismatch': 0, 'atr_n': 0, 'atr_maxrel': 0.0, 'ms_max': 0.0}
+grab+paint ok
+ERROR logs(0): []
+light/engine logs: ['[LightPass] 경량 ATR 2026-10-23 시작 — 당일 앞선 봉 0봉 예열']
+reject: ['[MireukOff] 미륵 휴면 중 SYSTEM_AUTO 진입 요청 거부 — LONG 1계약 @1050.0 등급=A (도달 경로 점검 필요)']
+switch→미륵: ['[Principal] 전환 거부 신동 → 미륵 — 선택 불가 주체(PRINCIPAL_ALLOWED=신동·피터)'] SHINDONG
+switch→피터: ['[Principal] 거래주체 전환 신동 → 피터 — 이후 피터 진입만 실주문, 나머지는 섀도'] PETER
+retrain started? False
+dash disabled: ['MIREUK']
+SMOKE_DONE

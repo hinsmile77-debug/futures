@@ -23193,7 +23193,9 @@ docs/정기점검/매일점검/evidence_MW0601-20260826_post.md
 - [ ] **P6** 전환 첫날 감시(`[Engine] 미륵 엔진=off` · 경량 ATR · `raw_candles` 380봉 전후 · 08:50/09:30 맥점 · `[MireukOff]` 0건 · 15:05/`[ForceExitPass]` · `[DailyClose] 미륵 휴면` · FLAT 상태 피터 전환 1회)
 - [ ] **711차 판정 연동** 10거래일 X 2.0% 승격 판정 시 표본을 11-02 전/후로 나눠 기록
 - [ ] `shindong-daily-check` 이식(v9 규격 — R2/R3 레그·15:05·신동2·피터) — 휴면 후 `mireuk-daily-check`는 거짓 적신호
-- [ ] **P3 잔여 → P4** 7222 수집 실패 15:05 가드는 **불필요 확인**(2초 폴링이 시간청산) · D3 흐름 신선도 보류 · 런처 `start_Sindong.bat` + `scripts/sindong_launch_check.py`(입구: off · 허용 집합에 미륵 없음 · 브랜치 `Sindong2-V4`)
-- [ ] **P4-a** `TASK_SHINDONG_EOD_INSTALL.bat` 등록 → 평일 15:55 1회 exit=0 확인(`logs/shindong_eod_<날짜>.log`)
-- [ ] **P4-b** `LIGHT_PASS_DRY_RUN = True` 로 2거래일+ → `[LightPassDry] 요약` 불일치 0
-- [ ] **P4-c** off 모드 offscreen 실객체 스모크(가짜 브로커) · 장후 재생 스크립트(`light_pass_replay.py` 이식 여부 결정)
+- [ ] **P3 잔여 → P4** 7222 수집 실패 15:05 가드는 **불필요 확인**(2초 폴링이 시간청산) · D3 흐름 신선도 보류 · 런처 `start_Sindong.bat` + `scripts/sindong_launch_check.py` — ✅ 713차 P4 구현 · `\Sindong` 비활성 설치
+- [x] **P4-a** (713차 P4, 등록 완료 · 첫 실행 10-26 15:55 확인 필요) `TASK_SHINDONG_EOD_INSTALL.bat` 등록 → 평일 15:55 1회 exit=0 확인(`logs/shindong_eod_<날짜>.log`)
+- [ ] **P4-b** (10-26 부터 켜짐) `LIGHT_PASS_DRY_RUN = True` 로 2거래일+ → `[LightPassDry] 요약` 불일치 0
+- [x] **P4-c** (713차 P4 — 스모크 off ERROR 0 · 재생 8일 7 PASS/10-15 FAIL 원인 규명, `docs/미륵휴면/전환검증_20261025/README.md`) off 모드 offscreen 실객체 스모크(가짜 브로커) · 장후 재생 스크립트(`light_pass_replay.py` 이식 여부 결정)
+- [ ] **P4-d** 매 거래일 장후 `python scripts/light_pass_replay.py --date <날짜> --out docs/미륵휴면/전환검증_20261025/replay_<날짜>.md` (10-26–10-30) · `[LightPassDry] 요약` 불일치 확인(재기동 직후 ATR 불일치는 10-15 와 같은 기준 쪽 냉시작인지 시각 대조)
+- [ ] **P5 (11-02 장전)** 계획서 §9-2 절차 — settings 4개 · `sindong_launch_check` pass · 관리자 `TASK_SINDONG_LAUNCHER_INSTALL.bat -Switch` · `-DisableMireukRetrain` · 불연속 마커
