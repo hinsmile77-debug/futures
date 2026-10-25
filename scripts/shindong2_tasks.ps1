@@ -13,7 +13,8 @@
 
     Each task runs scripts\shindong2_run.ps1 -Phase <phase> hidden, as the logged-on user,
     Interactive, RunLevel Limited (no COM, no elevation needed). Holidays are skipped by the
-    wrapper (KRX calendar). Overlaps are prevented by a lock file. Time limit 12 min per run.
+    wrapper (KRX calendar). Overlaps are prevented by a lock file. Time limit 12 min per run
+    (postmarket 30 min - see LimitMin).
     Late starts are NOT caught up (StartWhenAvailable off) - a stale market view is worse than none.
 
     Usage
@@ -61,18 +62,20 @@ $Tasks = [ordered]@{
     'Intraday'   = @{ Phase = 'intraday';   Triggers = @((New-WeekdayRepeat '09:05' 10 61), (New-WeekdayRepeat '10:30' 30 241)) }
     'Poll'       = @{ Phase = 'poll';       Triggers = @(New-WeekdayRepeat '10:10' 10 291) }
     'Close'      = @{ Phase = 'close';      Triggers = @(New-Weekday '15:12') }
-    'Postmarket' = @{ Phase = 'postmarket'; Triggers = @(New-Weekday '15:55') }
+    'Postmarket' = @{ Phase = 'postmarket'; Triggers = @(New-Weekday '15:55'); LimitMin = 30 }   # MW0602 2026-10-25: 12 min killed it on 10-23 (rc=267014); no other shindong2 run in 15:55-16:25, so the 12-min stale lock cannot be taken over
     'Research'   = @{ Phase = 'research';   Triggers = @((New-ScheduledTaskTrigger -Weekly -DaysOfWeek Friday -At (At '17:00'))) }   # 640-4: Friday after close, done before 18:50 (user 2026-10-20)
 }
 
 if ($Action -eq 'Register') {
     if (-not (Test-Path $Runner)) { throw "runner not found: $Runner" }
-    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 12) `
-        -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-    $settings.StartWhenAvailable = $false
     $principal = New-ScheduledTaskPrincipal -UserId ("{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME) `
         -LogonType Interactive -RunLevel $RunLevel
     foreach ($k in $Tasks.Keys) {
+        $limit = 12
+        if ($Tasks[$k].LimitMin) { $limit = $Tasks[$k].LimitMin }
+        $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes $limit) `
+            -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+        $settings.StartWhenAvailable = $false
         $name = $Prefix + $k
         Register-ScheduledTask -TaskName $name -TaskPath $TaskPath -Action (New-RunAction $Tasks[$k].Phase) `
             -Trigger $Tasks[$k].Triggers -Settings $settings -Principal $principal `
