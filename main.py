@@ -145,6 +145,7 @@ from config.capital import (
     profit_guard_krw_scale as _capital_pg_scale,
     shindong_planned_qty as _capital_sd_planned_qty,
     shindong_entry_qty as _capital_sd_entry_qty,
+    shindong_stop_risk_qty as _capital_sd_stop_risk_qty,   # [711차] 손절거리 위험 수량
 )
 from config import secrets as _secrets
 
@@ -6096,6 +6097,27 @@ class TradingSystem:
             self._cap_day_start_qty(datetime.date.today().isoformat()),
             int(getattr(runtime_settings, "SHINDONG_LIVE_QTY", 2) or 2))
 
+    def _shindong_risk_qty(self, rec: dict):
+        """[MW0601 711차] 이 거래의 손절거리 위험 수량 → (수량 또는 None, 사유 문자열).
+
+        위험자본 = min(LIVE_OPERATING_CAPITAL_KRW, 시가 예탁금)(707차 단일 출처). None = 꺼짐 또는 미측정 —
+        호출자는 그때 계획 수량을 그대로 쓰고, 미측정이면 사유를 로그에 남긴다(계측 4원칙 ④).
+        """
+        if not getattr(runtime_settings, "SHINDONG_STOP_RISK_QTY_ENABLED", False):
+            return None, "위험수량 꺼짐"
+        pct = float(getattr(runtime_settings, "SHINDONG_STOP_RISK_PCT", 0.0) or 0.0)
+        buf = float(getattr(runtime_settings, "SHINDONG_STOP_RISK_BUF_PTS", 0.0) or 0.0)
+        try:
+            stop_pts = abs(float(rec["entry_px"]) - float(rec["stop"]))
+        except (KeyError, TypeError, ValueError):
+            stop_pts = None
+        cap = _capital_risk_capital(deposit_krw=self._broker_dep_base_today)
+        q = _capital_sd_stop_risk_qty(stop_pts, cap, self._pt_value, risk_pct=pct, buf_pts=buf)
+        if q is None:
+            return None, "위험수량 미측정(손절 %s · 자본 %s · 1pt %s)" % (stop_pts, cap, self._pt_value)
+        return q, "위험수량 %d (손절 %.2fpt + %.1f · %.1f%% · 자본 %.0f만)" % (
+            q, stop_pts, buf, 100 * pct, cap / 1e4)
+
     def _principal_live_qty(self, principal: str) -> int:
         """선택 주체의 실주문 수량 — ProfitGuard 원화 임계 배율의 기준."""
         if principal == principal_mod.SHINDONG:
@@ -6321,7 +6343,16 @@ class TradingSystem:
             log_manager.trade("[ShindongExec] 자본 모니터 계산 실패 — 주문가능수량 미측정으로 진행: %r" % (_cap_e,), "WARNING")
             _cap = {"margin_qty": None}
         _planned = self._shindong_live_qty()
-        qty = _capital_sd_entry_qty(_planned, _cap["margin_qty"])
+        # [MW0601 711차] 손절거리 위험 수량 — 계획 수량(최대허용 ∧ 장시작 가능)의 네 번째 상한.
+        #   거래마다 손절이 달라 계획 단계가 아니라 여기(진입 시점)에 건다. 계획 0(증거금 없음)은 그대로 둔다.
+        _risk_q, _risk_why = self._shindong_risk_qty(rec)
+        _planned_eff = min(_planned, _risk_q) if (_risk_q is not None and _planned > 0) else _planned
+        if _risk_q is None and _risk_why != "위험수량 꺼짐":
+            log_manager.trade("[ShindongExec] %s — 계획 수량 %d계약 그대로" % (_risk_why, _planned), "WARNING")
+        elif _risk_q is not None and _planned_eff < _planned:
+            log_manager.trade("[ShindongExec] 위험 기준 축소 %d→%d계약 · %s" % (_planned, _planned_eff, _risk_why))
+        qty = _capital_sd_entry_qty(_planned_eff, _cap["margin_qty"])
+        rec["planned_qty"], rec["risk_qty"] = _planned, _risk_q
         if qty <= 0:
             if pick["trade_key"] not in self._sd_exec_skipped:
                 self._sd_exec_skipped.add(pick["trade_key"])
@@ -6329,9 +6360,9 @@ class TradingSystem:
                 log_manager.trade("[ShindongExec] %s 진입 기각 — %s" % (pick["trade_key"], _why), "WARNING")
                 self._sd_exec_event(day, "REJECT", trade_key=pick["trade_key"], why=_why)
             return
-        if qty < _planned:
+        if qty < _planned_eff:
             log_manager.trade("[ShindongExec] 증거금 기준 축소 %d→%d계약 (지금 가능 %d)"
-                               % (_planned, qty, _cap["margin_qty"]), "WARNING")
+                               % (_planned_eff, qty, _cap["margin_qty"]), "WARNING")
         if _cap["margin_qty"] is None:
             log_manager.trade("[ShindongExec] 주문가능수량 미측정 — 계획 수량 %d계약 그대로 주문"
                                "(최종 판정은 브로커)" % qty, "WARNING")
@@ -6360,6 +6391,7 @@ class TradingSystem:
         rec["filled"] = True
         rec["entered_at"] = now.isoformat(timespec="seconds")
         rec["entry_hint"] = price
+        rec["entry_qty"] = int(qty)        # [711차] 거래마다 수량이 다르다 — 복원(_shindong_adopt)의 1차 판정 근거
         self._sd_exec[rec["trade_key"]] = rec
         self._sd_exec_save(day)
         self._sd_exec_event(day, "ENTER", **rec)
@@ -6427,6 +6459,10 @@ class TradingSystem:
             why = _ts_exchange_cb_entry_block(self) + "(가상)"
         if why is None:
             qty = max(1, self._shindong_live_qty())   # [707차] 실주문 계획 수량(가상은 진입 직전 조회 없음)
+            _vrq, _vrw = self._shindong_risk_qty(rec)   # [711차] 실집행 거울 — 같은 위험 수량
+            if _vrq is not None:
+                qty = max(1, min(qty, _vrq))
+            rec["planned_qty"], rec["risk_qty"], rec["entry_qty"] = self._shindong_live_qty(), _vrq, qty
             _ctx = self._manual_entry_ctx or {}
             atr = float(_ctx.get("atr") or 0.0) or 1.0
             ok = _ts_vbook_open(self, P, "LONG" if rec["side"] > 0 else "SHORT", price, qty, atr,
@@ -6517,13 +6553,22 @@ class TradingSystem:
         t = sorted(cands, key=lambda x: str(x.get("entry_ts")))[-1]
         rec = _ll.make_rec(t)
         rec["filled"] = True
-        rec["leg1_done"] = int(pos.quantity or 0) < self._shindong_live_qty()
+        # [MW0601 711차 · 선행 수정] 1차 청산 여부 = 지금 보유 < **진입 수량**. 예전엔 계획 수량과 비교했는데
+        #   위험 수량으로 거래마다 진입 수량이 달라지면(예: 계획 3 · 진입 2) 1차 전 포지션을 「1차 완료」로 오판한다.
+        #   진입 수량 원천 = 포지션 트래커 entry_quantity(상태 파일로 재기동 생존). 없으면 계획 수량 폴백 + 기록(④).
+        _eq = int(pos.entry_quantity or 0)
+        _eq_src = "tracker"
+        if _eq <= 0:
+            _eq, _eq_src = self._shindong_live_qty(), "planned_fallback"
+        rec["entry_qty"], rec["entry_qty_src"] = _eq, _eq_src
+        rec["leg1_done"] = int(pos.quantity or 0) < _eq
         rec["adopted"] = True
         self._sd_exec[rec["trade_key"]] = rec
         self._sd_exec_save(day)
         self._sd_exec_event(day, "ADOPT", **rec)
-        log_manager.system("[ShindongExec] 집행 기록 복원 %s (1차 %s)"
-                           % (rec["trade_key"], "완료" if rec["leg1_done"] else "대기"), "WARNING")
+        log_manager.system("[ShindongExec] 집행 기록 복원 %s (1차 %s · 보유 %d / 진입 %d · 진입수량 출처 %s)"
+                           % (rec["trade_key"], "완료" if rec["leg1_done"] else "대기",
+                              int(pos.quantity or 0), _eq, _eq_src), "WARNING")
         return rec
 
     def _shindong_hold_reconcile(self) -> None:

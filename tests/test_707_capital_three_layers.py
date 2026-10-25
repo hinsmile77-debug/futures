@@ -127,7 +127,7 @@ def test_shindong_entry_qty_follows_margin():
     src = _src('main.py')
     step = _func(src, '_shindong_exec_step')
     i_cap = step.index('_capital_monitor_refresh(force_margin=True)')
-    i_qty = step.index('qty = _capital_sd_entry_qty(_planned, _cap["margin_qty"])')
+    i_qty = step.index('qty = _capital_sd_entry_qty(_planned_eff, _cap["margin_qty"])')   # [711차] 위험 수량 상한 뒤
     i_rej = step.index('if qty <= 0:')
     i_exe = step.index('self._execute_entry(')
     assert i_cap < i_qty < i_rej < i_exe                               # 조회 → 수량 → 0 기각 → 주문
@@ -141,7 +141,8 @@ def test_shindong_entry_qty_follows_margin():
     assert 'principal_mod.read_json(' in _func(src, '_cap_day_start_qty')
     # 가상 집행·재기동 복원도 같은 계획 수량
     assert 'qty = max(1, self._shindong_live_qty())' in src
-    assert 'rec["leg1_done"] = int(pos.quantity or 0) < self._shindong_live_qty()' in src
+    # [711차] 복원은 계획 수량이 아니라 진입 수량(트래커 entry_quantity)과 비교한다 — test_711 이 고정
+    assert 'rec["leg1_done"] = int(pos.quantity or 0) < _eq' in src
 
 
 def test_pg_scale_synced_before_every_entry_judgement():
@@ -153,7 +154,7 @@ def test_pg_scale_synced_before_every_entry_judgement():
 
 def test_daily_loss_ratio_and_alert_use_deposit():
     src = _src('main.py')
-    assert src.count('deposit_krw=self._broker_dep_base_today)') == 3
+    assert src.count('deposit_krw=self._broker_dep_base_today)') == 4   # [711차] + 신동 위험 수량 자본
     assert 'cap = min(cap, float(self._broker_dep_base_today))' in src
 
 

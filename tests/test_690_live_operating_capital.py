@@ -19,7 +19,7 @@ from config import constants as K     # noqa: E402
 def test_user_decided_values():
     assert ST.SIZING_TARGET_CAPITAL_ENABLED is True
     assert ST.SIZING_TARGET_CAPITAL_KRW == 50_000_000
-    assert ST.LIVE_OPERATING_CAPITAL_KRW == 34_000_000   # [707차] 실계좌 예수금
+    assert ST.LIVE_OPERATING_CAPITAL_KRW == 30_000_000   # [707차] 3,400만 → [711차] 3,000만(위험자산 기준, 사용자 결정)
     assert ST.MAX_CONTRACTS == 3                         # [707차] 증거금 최대 3(예수금 3,400만 ÷ 약 901만)
     assert ST.MINI_MIN_CONTRACTS == 1                    # 최소 계약수 — 상한과 혼동 금지(2026-10-23 오편집 복원)
     assert ST.SHINDONG_LIVE_QTY == 3                     # [707차] 2 → 3
