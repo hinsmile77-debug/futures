@@ -107,6 +107,24 @@ con = connect_ro(DB_PATH)         # 읽기전용(쓰기 사고 방지용 — 지
   `mireuk-daily-check` 는 휴면 중 CB③·캠페인·앙상블 항목에서 거짓 적신호를 낼 수 있다(신동 점검 체계는 후속 — NEXT_TODO 713).
 - 아래 문서 곳곳의 "MW0601 = `v9-dev`" 서술은 이 결정 이전의 것이다 — 운영 브랜치는 `Sindong2-V4`로 읽는다.
 
+### 일일 점검·장후 흐름 (MW0601 · 신동 주체) [2026-10-25 사용자 지시 / 713차 A1–A3 · B1–B6]
+
+| 시각(평일) | 무엇 | 실행 | 산출 |
+|---|---|---|---|
+| 08:40 | 신동 기동 — `\Sindong` → `start_Sindong.bat`(STEP 3.9 입구 점검) | Windows 예약 | `logs/Mireuk_batch/launcher_*.log` |
+| 08:51 | 장전 점검 | Cowork 예약 `[MW0601] Mireuk premarket check` | `docs/정기점검/매일점검/MW0601-<날짜>-점검리포트.md` `# 장전(pre)` |
+| 12:25 | 장중 점검 — **주문·청산 경로 배포 첫날만**(그 밖엔 1줄) | Cowork `[MW0601] Mireuk intraday check` | 같은 파일 `# 장중(intra)` |
+| 15:40 | `[ShindongReport]` 신동 일일 리포트(md) — **메일은 끔**(`SHINDONG_REPORT_MAIL_ENABLED=False`) | 앱 | `docs/신동거래/일일/` |
+| 15:55 | 신동 EOD(맥점 캐시·신선도) | `\Mireuk\Shindong_EOD_1555` | `data/shindong_eod_done_<날짜>.txt` |
+| 16:15 | 장후 종합 점검 | Cowork `[MW0601] Mireuk postmarket check` | 같은 파일 `# 장후(post)` |
+| 17:23 | 자동조치 — A·B등급 구현 + **그날 점검 산출물 커밋** · push `Sindong2-V4` · 밀린 날 따라잡기 | Claude Code `~/.claude/scheduled-tasks/mireuk-postmarket-autofix` | 리포트 끝 `장후 자동조치 구현 결과` |
+| 18:10 | **장후 종합 메일 한 통**(점검 결론·사용자 조치·자동조치·관측 + 신동 리포트) | `\Mireuk\Shindong_DailyMail_1810` → `scripts/shindong_daily_mail.py` | 메일 · `data/shindong_daily_mail_done_<날짜>.txt` |
+
+- 점검 정본 스킬은 **`shindong-daily-check`**(`.claude/skills/shindong-daily-check/SKILL.md` · 수집기 `scripts/collect_shindong_evidence.py`).
+  `mireuk-daily-check` 는 미륵 부활용으로 보존한다(휴면 중 쓰면 거짓 적신호). Cowork 예약 이름은 앱 호환을 위해 「Mireuk …」 그대로다.
+- 🔴 **리포트 절 제목은 기계가 읽는다** — `# 장후`(자동조치 가드)·`한 줄 결론`·`사용자 조치`·`다음 거래일 관측`(메일)·`Fix 작업 구현계획`·`고도화 방안`·`수익률 향상방안`(자동조치).
+- Cowork 점검은 커밋하지 않는다 — 커밋은 17:23 자동조치가 한다. 근거 `docs/미륵휴면/03_…md` §6.
+
 ---
 
 ## 멀티PC 작업 컨벤션

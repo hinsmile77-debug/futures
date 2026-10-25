@@ -2,9 +2,15 @@
 name: mireuk-daily-check
 description: 미륵이(futures, KOSPI 200 선물 자동매매)의 장전·장중·장후 일일 운영 점검. 당일 로그를 훑어 CLAUDE.md 절대원칙·CORE.md·ROADMAP·dev_memory·커밋 이력 대비 이상점을 찾아내고, fix 구현계획과 고도화 방안까지 보고서로 낸다. 장후에는 진입 승패 사후검증(EOD+P8)까지 이어간다. 트리거 - "미륵이 점검", "장전 점검", "장중 점검", "장후 점검", "일일 점검", "dailycheck", "오늘 미륵이 로그 조사", "이상점 정리보고", "고도화 방안 수립", "mireuk daily check", "premarket/intraday/postmarket check", "승패 딥다이브", "사후검증", "EOD+P8", "수익률 향상방안", "진입결과 점검", "postmortem".
 ---
-<!-- rev: 2026-09-07 (538차 — 함정① 확정판정 정합성 게이트 추가 / G-3) -->
+<!-- rev: 2026-10-25 (713차 — 미륵 휴면 분기: MIREUK_ENGINE="off" 이면 shindong-daily-check) -->
 
 # 미륵이 일일 운영 점검
+
+> 🔴 **[2026-10-25 MW0601 713차] `config/settings.py` 의 `MIREUK_ENGINE="off"`(미륵 휴면 · 2026-10-26 장전부터 ·
+> 브랜치 `Sindong2-V4`)이면 이 스킬을 쓰지 마라 — `.claude/skills/shindong-daily-check/SKILL.md` 를 쓴다.**
+> 이 스킬은 EOD 재학습·SHAP·CB③·캠페인·앙상블·매분 9단계 로그를 필수로 봐서 휴면 중엔 매일 거짓 적신호를 내고,
+> 신동 실거래를 「추정」으로 분류한다. 미륵을 되살리는 `v9-dev`(보존 브랜치)·`full` 상태에서는 이 스킬이 그대로 정본이다.
+> 근거: `CLAUDE.md` 「브랜치 역할 (MW0601)」 · `docs/미륵휴면/02_…md` · `03_…md`.
 
 > 🔴 **이 문서는 사본일 수 있다. 정본은 저장소 안에 있다.**
 > 세션을 시작하면 **가장 먼저** 리포 루트의

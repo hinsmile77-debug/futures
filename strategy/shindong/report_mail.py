@@ -40,7 +40,8 @@ def send_daily(trade_date: str, report_dir: str, to=None, pc=None) -> str:
     with open(md, encoding="utf-8") as f:
         text = f.read()
     body = ("[%s] 신동 일일 리포트 %s — %s PC 의 리포트다. 전문은 첨부 PDF.\n\n%s\n\n"
-            "※ 가상거래(주문 없음). 판정 전 집계이므로 규격 변경 근거로 쓰지 말 것.\n— 미륵이 %s 자동 발송"
+            "※ MAIN 은 실거래(2026-10-13~ CREON)다 — 재생 net 과 실체결 net 은 슬립·수량만큼 다르다. 섀도는 가상. "
+            "판정 전 집계이므로 규격 변경 근거로 쓰지 말 것.\n— 미륵이 %s 자동 발송"
             % (pc, trade_date, pc, _summary(text), pc))
     rcpt = mailer.send_mail("[신동][%s] 일일 리포트 %s" % (pc, trade_date), body, [pdf], to=to)
     return ", ".join(rcpt)

@@ -7836,7 +7836,13 @@ SHINDONG_DAILY_REPORT_DIR = os.path.join(BASE_DIR, "docs", "신동거래", "일�
 # 리포트 생성 뒤 백그라운드 스레드에서 PDF 인쇄 + 메일 발송. 자격 정보·받는 주소는 **환경변수에만**
 #   (MIREUK_SMTP_USER / MIREUK_SMTP_PASSWORD / MIREUK_REPORT_MAIL_TO — `utils/mailer.py`).
 #   환경변수가 없으면 PDF 만 만들고 발송은 건너뛴다(로그에 빠진 이름을 남긴다).
-SHINDONG_REPORT_MAIL_ENABLED = True
+#   🟢 [MW0601 713차 B6 / 사용자 지시 2026-10-25] 15:40 즉시 메일은 끈다 — 18:10 장후 종합 메일 한 통으로 합쳤다
+#   (Sindong-V4 661차 후속5 D6 와 같다). 리포트 md 생성은 그대로다.
+SHINDONG_REPORT_MAIL_ENABLED = False
+# [713차 B6] 장후 종합 메일 — `scripts/shindong_daily_mail.py`(예약작업 \Mireuk\Shindong_DailyMail_1810, 평일 18:10).
+#   장후 점검 리포트(한 줄 결론·사용자 조치·자동조치 결과·다음 거래일 관측) + 신동 일일 리포트 → 하루 한 통.
+#   점검 리포트가 없으면 신동 리포트만 보내고 제목에 「점검 리포트 없음」(메일이 안 오는 날을 만들지 않는다).
+SHINDONG_DAILY_MAIL_ENABLED = True
 
 # ── [MW0602 거래주체분리 / v9-dev 이식] 거래주체(미륵·신동·피터) ──────────────────────
 # 대시보드 헤더 [미륵][신동][피터] 에서 고른 주체의 진입만 실주문, 나머지는 섀도.
