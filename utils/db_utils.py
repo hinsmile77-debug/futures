@@ -430,14 +430,24 @@ def _migrate_predictions_db():
                 row["name"]
                 for row in conn.execute("PRAGMA table_info(predictions)").fetchall()
             }
+            _added = []
             for name in ("up_prob", "down_prob", "flat_prob"):
                 if name not in cols:
                     conn.execute(f"ALTER TABLE predictions ADD COLUMN {name} REAL")
+                    _added.append(name)
             if "sigma_at_t" not in cols:
                 conn.execute(
                     "ALTER TABLE predictions ADD COLUMN sigma_at_t REAL DEFAULT 0.0"
                 )
-            conn.execute(
+            # [MW0602 Sindong-V4 / 2026-10-25] 백필은 확률 컬럼을 **방금 추가했을 때만** 한다.
+            #   WHERE 의 세 컬럼에 인덱스가 없어 이 UPDATE 는 매 기동마다 predictions 전체(행마다
+            #   features JSON — 실측 661MB)를 훑었다. 캐시가 식은 08:40 기동에서 init_all_dbs 를
+            #   17~62초 잡아먹은 원인(warm 0.55s / cold 9.2s 재현). 쓰기 경로
+            #   (learning/prediction_buffer.py 2곳)는 세 확률을 항상 함께 넣고, 2026-10-25 실측
+            #   NULL 행 0/153,801 이라 컬럼이 이미 있으면 백필할 것이 없다.
+            if not _added:
+                return
+            _n = conn.execute(
                 """
                 UPDATE predictions
                 SET
@@ -460,7 +470,9 @@ def _migrate_predictions_db():
                     END
                 WHERE up_prob IS NULL OR down_prob IS NULL OR flat_prob IS NULL
                 """
-            )
+            ).rowcount
+            logging.getLogger("SYSTEM").info(
+                "[DBMigrate] predictions 확률 컬럼 추가 %s — 백필 %d행", ",".join(_added), _n)
 
 
 def _migrate_ensemble_decisions_db():

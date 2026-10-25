@@ -514,8 +514,22 @@ class TradingSystem:
             pass
 
     def __init__(self):
-        logger.info("[System] 미륵이 초기화")
-        log_manager.system("미륵이 초기화")
+        # [MW0602 신동 주체 리뉴얼] 미륵 휴면 스위치 — **기동 시 한 번만** 읽는다(장중 핫리로드 무시).
+        #   "full" 이 아닌 알 수 없는 값은 full 로 다룬다(오타로 미륵이 조용히 꺼지는 것보다 종전 동작이 안전) —
+        #   그 사실은 남긴다(계측 4원칙 ④). 판정은 `_mireuk_on()` 한 곳에서만.
+        #   [Sindong-V4 기동 최적화] __init__ 맨 앞에서 읽는다 — 아래 GBM·RF·보정기 로드가 이 값으로 갈린다
+        #   (종전에는 그 로드가 다 끝난 뒤에 읽어 휴면에서도 보정기 사전학습 18,000건이 14초씩 돌았다).
+        _me_raw = str(getattr(runtime_settings, "MIREUK_ENGINE", "full") or "full").strip().lower()
+        if _me_raw not in ("full", "off"):
+            logger.error("[Engine] MIREUK_ENGINE=%r 알 수 없는 값 — full 로 동작", _me_raw)
+            _me_raw = "full"
+        self._mireuk_engine = _me_raw
+        if self._mireuk_on():
+            logger.info("[System] 미륵이 초기화")
+            log_manager.system("미륵이 초기화")
+        else:
+            logger.info("[System] 신동 주체 초기화 (미륵 엔진 off)")
+            log_manager.system("신동 주체 초기화 (미륵 엔진 off)")
 
         # ── 키움 API 컴포넌트 ──────────────────────────────────
         self.broker        = create_broker()
@@ -573,7 +587,10 @@ class TradingSystem:
         self._sgd_feat_indices: dict = {}
         self._rebuild_sgd_feat_indices()
         self.rf_model          = RFHorizonModel()
-        self.rf_model.load_all()   # pkl 없으면 is_ready()=False로 graceful 유지
+        # [Sindong-V4 기동 최적화] 휴면이면 RF pkl 을 읽지 않는다 — is_ready()=False(pkl 없음과 같은 graceful 상태).
+        #   GBM(`self.model`)은 생성·로드를 유지한다: 대시보드·feature_names 참조처가 많고 비용은 ≈1초다.
+        if self._mireuk_on():
+            self.rf_model.load_all()   # pkl 없으면 is_ready()=False로 graceful 유지
         self.ensemble          = EnsembleDecision()
         self._pt_value         = MINI_FUTURES_PT_VALUE  # [235차] 미니선물 전용 초기값 — connect_broker에서 get_contract_spec으로 재확정
         # ── [MW0601 534차] 당일 맥점 예측 — 거리 모델·구조 모델 ─────────────
@@ -634,13 +651,20 @@ class TradingSystem:
         # 극단성 보정이 오히려 ECE를 악화시킴(6개 호라이즌 전부 ECE 상승, 30m만 일관 개선).
         # 검증된 30m만 적용 — 나머지 호라이즌 확대는 별도 재검증 후 결정.
         self.extremity_corrector = MultiHorizonExtremityCorrector(["30m"])
-        self._preload_horizon_calibration()          # DB에서 사전 fit → 첫 tick부터 보정 효과
+        # [Sindong-V4 기동 최적화] 휴면이면 보정기 사전학습(predictions 18,000행 조회·fit, ≈14초)과
+        #   앙상블 보정기 복원을 건너뛴다 — 둘 다 미륵 예측 전용이다. 저장(daily_close)도 휴면이면 돌지 않으므로
+        #   디스크의 보정기 파일은 마지막 실가동 상태 그대로 남는다(되살림 원칙).
+        if self._mireuk_on():
+            self._preload_horizon_calibration()          # DB에서 사전 fit → 첫 tick부터 보정 효과
         self.ensemble.calibrator = self.horizon_calibrator   # 앙상블 2차 압축 연결
         # [403차 종합 P0-1] 앙상블 Platt 보정기 복원 — 종전에는 _scaler_warmup_worker()
         # 안에 있어 프리장 refit이 끝나 있으면(=매일) 도달하지 못했다. 기동 경로 중
         # 유일하게 "항상 1회" 보장되는 __init__으로 옮긴다. 장중 재시작도 여기를 지난다
         # (pre_market_setup()은 08:55~09:00에만 호출되므로 그쪽에 두면 재시작에서 또 누락).
-        self._restore_ensemble_calibrator()
+        if self._mireuk_on():
+            self._restore_ensemble_calibrator()
+        else:
+            logger.info("[Engine] 미륵 휴면 — RF 로드·보정기 사전학습·앙상블 보정기 복원 생략(파일 보존)")
         self.pred_buffer       = PredictionBuffer()
         self.meta_gate         = MetaGate()
         # selection bias 해소: skip된 신호의 meta_features 임시 보관
@@ -707,14 +731,7 @@ class TradingSystem:
         # [MW0602 거래주체분리] 현재 거래주체 — 파일(data/trade_principal.json)이 정본이고 이것은 캐시다.
         #   전환은 `_on_principal_change_requested` 한 곳에서만 일어나며 그때 둘을 함께 바꾼다.
         self._principal_state = principal_mod.load()
-        # [MW0602 신동 주체 리뉴얼] 미륵 휴면 스위치 — **기동 시 한 번만** 읽는다(장중 핫리로드 무시).
-        #   "full" 이 아닌 알 수 없는 값은 full 로 다룬다(오타로 미륵이 조용히 꺼지는 것보다 종전 동작이 안전) —
-        #   그 사실은 남긴다(계측 4원칙 ④). 판정은 `_mireuk_on()` 한 곳에서만.
-        _me_raw = str(getattr(runtime_settings, "MIREUK_ENGINE", "full") or "full").strip().lower()
-        if _me_raw not in ("full", "off"):
-            logger.error("[Engine] MIREUK_ENGINE=%r 알 수 없는 값 — full 로 동작", _me_raw)
-            _me_raw = "full"
-        self._mireuk_engine = _me_raw
+        # 미륵 휴면 스위치(`self._mireuk_engine`)는 __init__ 맨 앞에서 읽었다.
         # 경량 패스 상태 — off(실집행) 또는 full+LIGHT_PASS_DRY_RUN(대조)에서 쓴다.
         #   ATR 은 미륵 피처와 같은 계산기(features/technical/atr.py) — dry 대조가 같은 정의를 비교하게 한다.
         from features.technical.atr import ATRCalculator as _LightATR
@@ -1443,8 +1460,10 @@ class TradingSystem:
             lambda e: self.dashboard.append_health_log(e.message, e.level),
         )
         self._restore_analysis_buffers()
-        self._ensure_shap_tracker()
-        self._update_shap_dashboard()
+        # [Sindong-V4 기동 최적화] 휴면이면 SHAP 트래커 생성(피처 레지스트리 동기화 포함)·SHAP 패널 갱신 생략
+        if self._mireuk_on():
+            self._ensure_shap_tracker()
+            self._update_shap_dashboard()
 
     @staticmethod
     def _build_health_policy(src=None) -> dict:
@@ -1943,8 +1962,35 @@ class TradingSystem:
         self._start_manual_retrain(True, "reset to baseline feature set")
         self._update_shap_dashboard()
 
+    def _restore_vp_buffer(self) -> int:
+        """VP 버퍼 복원: 재시작 후 poc_distance cold-start z폭발 방지. 투입 봉 수를 돌려준다.
+
+        재시작 전 60봉 OHLCV를 VP 계산기에 미리 투입 → 첫 분봉부터 성숙 윈도우 사용.
+        """
+        try:
+            _vp_bars = fetch_recent_raw_candles(limit=60)
+            for _vrow in _vp_bars:
+                self.feature_builder._vol_profile.update(
+                    float(_vrow["high"]), float(_vrow["low"]),
+                    float(_vrow["close"]), float(_vrow["volume"]),
+                )
+            return len(_vp_bars)
+        except Exception as _vpe:
+            logger.warning("[VPRestore] VP 버퍼 복원 실패 — cold start 유지: %s", _vpe)
+            return 0
+
     def _restore_analysis_buffers(self) -> None:
         """Restore restart-sensitive analysis buffers from persisted state."""
+        # [Sindong-V4 기동 최적화] 휴면이면 미륵 분석 버퍼(파라미터 상관·SHAP·RegimeFingerprint —
+        #   raw_features 최대 5,000행 JSON 파싱)를 복원하지 않는다. 경량 패스·신동이 읽지 않는다.
+        #   VP 버퍼(60봉)만 종전대로 채운다(값싸고, feature_builder 상태를 기존과 같게 둔다).
+        if not self._mireuk_on():
+            _vp_restored = self._restore_vp_buffer()
+            logger.info(
+                "[AnalysisRestore] 미륵 휴면 — 상관·SHAP·RegimeFingerprint 복원 생략 vp_bars=%d",
+                _vp_restored,
+            )
+            return
         try:
             rows = fetch_recent_raw_features(limit=max(self._param_corr_history.maxlen, self._shap_feature_window.maxlen))
         except Exception as exc:
@@ -2027,19 +2073,7 @@ class TradingSystem:
                     _restored_ok, len(restored_vectors), len(self._cached_shap_importance),
                 )
 
-        # VP 버퍼 복원: 재시작 후 poc_distance cold-start z폭발 방지
-        # 재시작 전 60봉 OHLCV를 VP 계산기에 미리 투입 → 첫 분봉부터 성숙 윈도우 사용
-        _vp_restored = 0
-        try:
-            _vp_bars = fetch_recent_raw_candles(limit=60)
-            for _vrow in _vp_bars:
-                self.feature_builder._vol_profile.update(
-                    float(_vrow["high"]), float(_vrow["low"]),
-                    float(_vrow["close"]), float(_vrow["volume"]),
-                )
-            _vp_restored = len(_vp_bars)
-        except Exception as _vpe:
-            logger.warning("[VPRestore] VP 버퍼 복원 실패 — cold start 유지: %s", _vpe)
+        _vp_restored = self._restore_vp_buffer()
 
         # [371차] RegimeFingerprint 라이브 버퍼 워밍업 — _live_buf는 디스크에
         # 영속화된 적이 없어 매 거래일 재기동마다 비어서 시작했고, 그 결과
@@ -16291,7 +16325,10 @@ class TradingSystem:
 
         # ④ 스케일러 즉시 재적합 (백그라운드 daemon thread)
         # CB 후 가격 레벨이 크게 변해 microprice/vwap 등 절대값 피처가 극단값을 가짐
-        if not self._scaler_refresh_running:
+        # [Sindong-V4] 미륵 휴면이면 생략 — scaler_*.pkl 은 미륵 상태 파일이다(덮어쓰지 않는다).
+        if not self._mireuk_on():
+            log_manager.system("[ExchangeCB] 미륵 휴면 — 스케일러 재적합 생략", "INFO")
+        elif not self._scaler_refresh_running:
             def _ecb_scaler_worker(_gap=gap_min):
                 self._scaler_refresh_running = True
                 try:
@@ -16745,7 +16782,10 @@ class TradingSystem:
     def run(self):
         """메인 실행 — Qt 이벤트 루프 기반."""
         logger.info("=" * 60)
-        logger.info("미륵이 — KOSPI 200 선물 방향 예측 시스템 시작")
+        if self._mireuk_on():
+            logger.info("미륵이 — KOSPI 200 선물 방향 예측 시스템 시작")
+        else:
+            logger.info("신동 — KOSPI 200 미니선물 자동매매 시작 (거래주체=신동 · 미륵 엔진 off)")
         logger.info("=" * 60)
 
         # 키움 로그인 (블로킹)
@@ -16768,7 +16808,8 @@ class TradingSystem:
             _startup_srv = "Cybos 모의투자" if _is_simul else "Cybos 실서버"
         else:
             _startup_srv = "모의투자" if _is_simul else "실서버"
-        notify_startup(_startup_code, _startup_srv)
+        notify_startup(_startup_code, _startup_srv,
+                       engine_label="미륵이" if self._mireuk_on() else "신동(미륵 엔진 off)")
         # 대시보드에 실제 접속 서버 표시 (읽기전용 라벨 — 2026-10-14부터 라디오는 진입정지 용도)
         self.dashboard.set_server_mode("simul" if _is_simul else "real")
         # 정지 상태는 재기동해도 유지된다 — 모르고 멈춰 있지 않도록 기동 시 알린다.
@@ -17288,6 +17329,28 @@ class TradingSystem:
         # 기존 24h 조건은 장 마감(15:30)→다음날 08:45 = ~17h 케이스를 커버 못 함
         # 4h로 완화 → 매 영업일 항상 발동하여 scaler 노후화 원천 차단
         # 상한 08:57: 08:40 이전 시작 + Cybos 로그인 지연 시에도 EarlyWarmup 창 확보
+        # [Sindong-V4] 미륵 휴면이면 스케일러 재적합은 하지 않고(scaler_*.pkl = 미륵 상태 파일 — 덮어쓰지 않는다)
+        #   08:45 실시간 선행 구독만 한다. 신동이 쓰는 08:45~ 프리장 1분봉(raw_candles)·08:50 맥점이 이 구독에서 온다.
+        #   종전에는 선행 구독이 「scaler 노후 > EARLY_WARMUP_MIN_AGE_HOURS」 조건 안에 묶여 있어,
+        #   휴면 중에도 매일 스케일러를 다시 쓰는 대가로 우연히 켜지고 있었다.
+        if (
+            not getattr(self, "_early_warmup_started", False)
+            and is_trading_day(now)
+            and datetime.time(8, 45) <= now.time() < datetime.time(8, 57)
+            and not self._mireuk_on()
+        ):
+            self._early_warmup_started = True
+            log_manager.system("[EarlyWarmup] 미륵 휴면 — 스케일러 재적합 생략(미륵 상태 파일 보존)", "INFO")
+            try:
+                _rd_ew = getattr(self, "realtime_data", None)
+                if _rd_ew is not None and not getattr(_rd_ew, "_running", False):
+                    _rd_ew.start(load_history=True)
+                    log_manager.system(
+                        "[EarlyWarmup] Cybos RT 08:45 선행 구독 시작 (프리장 봉 15봉 확보)",
+                        "INFO",
+                    )
+            except Exception as _ea_e:
+                logger.warning("[EarlyWarmup] 선행 구독 시작 실패 (08:55 사전 구독이 재시도): %s", _ea_e)
         if (
             not getattr(self, "_early_warmup_started", False)
             and is_trading_day(now)
@@ -17346,6 +17409,13 @@ class TradingSystem:
         # [Bug-3] 하한 09:00 (기존 09:05에서 변경):
         #   GAP_OPEN(09:00~09:05) 재시작 시 ScalerWarmup·EarlyWarmup 모두 miss →
         #   09:05 까지 scaler 보호 공백 발생. _scaler_refresh_running 가드가 충돌 방지 역할.
+        # [Sindong-V4] 미륵 휴면이면 장중 재기동 스케일러 재적합도 하지 않는다(scaler_*.pkl 보존) — 1회만 남긴다.
+        if (
+            not getattr(self, "_intraday_startup_warmup_done", False)
+            and not self._mireuk_on()
+        ):
+            self._intraday_startup_warmup_done = True
+            logger.info("[StartupWarmup] 미륵 휴면 — 장중 재기동 스케일러 재적합 생략(미륵 상태 파일 보존)")
         if (
             not getattr(self, "_intraday_startup_warmup_done", False)
             and is_trading_day(now)

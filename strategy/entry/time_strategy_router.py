@@ -38,6 +38,11 @@ def _restore_mc_from_history() -> None:
     try:
         import os, sqlite3
         from config.settings import DB_DIR
+        # [Sindong-V4] 미륵 휴면(MIREUK_ENGINE="off")이면 복원값은 미륵 진입 임계라 쓰는 곳이 없다 —
+        #   복원 동작은 그대로 두고(되살림·대조 시 같은 상태) 구간별 7줄을 debug 로 내려 요약 1줄만 남긴다.
+        from config import settings as _s_eng
+        _dorm = str(getattr(_s_eng, "MIREUK_ENGINE", "full") or "full").strip().lower() == "off"
+        _log = logger.debug if _dorm else logger.info
         db = os.path.join(DB_DIR, "mc_history.db")
         if not os.path.exists(db):
             return
@@ -73,7 +78,7 @@ def _restore_mc_from_history() -> None:
                 old    = _ZONE_PARAMS[zone]["min_confidence"]
                 new_mc = min(float(r["new_mc"]), MC_ZONE_MAX)   # [P2] zone_mc 상한 적용
                 _ZONE_PARAMS[zone]["min_confidence"] = new_mc
-                logger.info("[DynMC] 기동 복원: %s  %.3f → %.3f", zone, old, new_mc)
+                _log("[DynMC] 기동 복원: %s  %.3f → %.3f", zone, old, new_mc)
                 bmc = r["base_mc"]
                 base_mcs.append(float(bmc) if bmc else new_mc)
             except Exception as _row_e:
@@ -89,8 +94,10 @@ def _restore_mc_from_history() -> None:
                 new_r = round(max(base, MC_ABS_FLOOR), 3)
                 if abs(new_r - old_r) >= 0.005:
                     _rmc[_regime] = new_r
-                    logger.info("[DynMC] 기동 복원 REGIME_MIN_CONF %s %.3f → %.3f",
+                    _log("[DynMC] 기동 복원 REGIME_MIN_CONF %s %.3f → %.3f",
                                 _regime, old_r, new_r)
+        if _dorm:
+            logger.info("[DynMC] 미륵 휴면 — 기동 복원 %d개 구간(미륵 진입 임계, 사용처 없음)", len(base_mcs))
     except Exception as exc:
         logger.debug("[DynMC] 기동 복원 실패 (무시): %s", exc)
 

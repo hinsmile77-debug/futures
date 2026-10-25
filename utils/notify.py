@@ -111,10 +111,10 @@ def notify_daily_summary(win: int, lose: int, total_pnl: float) -> None:
 
 # ── 시동 / 장전 / 첫 틱 / 장애 알림 ──────────────────────────────
 
-def notify_startup(code: str, server_label: str) -> None:
-    """connect_broker 성공 직후 — 기동 완료 확인."""
+def notify_startup(code: str, server_label: str, engine_label: str = "미륵이") -> None:
+    """connect_broker 성공 직후 — 기동 완료 확인. engine_label: 미륵 휴면이면 "신동(미륵 엔진 off)"."""
     notify(
-        f"미륵이 기동 완료\n종목: {code} | 서버: {server_label}\n09:00 장 시작 대기 중",
+        f"{engine_label} 기동 완료\n종목: {code} | 서버: {server_label}\n09:00 장 시작 대기 중",
         "INFO",
     )
 
