@@ -168,6 +168,32 @@ def _ko_font() -> str:
     return _ko_font_cache
 
 
+def no_data_text_kwargs() -> dict:
+    """[MW0601 713차] 빈 차트 안내문 — 한글 폰트가 있으면 한글, 없으면 영문(두부 □□ 금지).
+
+    → `ax.text(0.5, 0.5, **kw, transform=…)` 에 펼쳐 쓸 dict(`s`, `fontname`).
+    종전에는 matplotlib 기본 폰트로 「데이터 없음 (장 시작 후 수집)」을 그려 두부로 찍혔다
+    (2026-10-25 기동 로그 `Glyph … missing from current font`).
+    """
+    f = _ko_font()
+    if f:
+        return {"s": "데이터 없음  (장 시작 후 수집)", "fontname": f}
+    return {"s": "No data  (collected after market open)"}
+
+
+def market_session_now(now=None) -> bool:
+    """[MW0601 713차] 매매 프로세스가 매분 갱신을 보내는 시간대(평일 08:45–15:35)인가.
+
+    장외에는 포지션 갱신이 오지 않는 것이 정상이다 — 그때 「갱신 끊김」 경고를 띄우면
+    결함처럼 읽힌다. 휴장일 판정은 하지 않는다(평일 휴장엔 경고 대신 장외 표시가 나오지 않을 뿐).
+    """
+    import datetime as _dt
+    now = now or _dt.datetime.now()
+    if now.weekday() >= 5:
+        return False
+    return _dt.time(8, 45) <= now.time() <= _dt.time(15, 35)
+
+
 def position_levels() -> List[tuple]:
     """보유 중이면 [(label, value, color, lw, ls)], 아니면 [].
 
@@ -411,6 +437,11 @@ class MidStatusRow(QFrame):
                 "대시보드 없이 단독으로 띄웠거나, 아직 첫 갱신 전이다.\n"
                 "「무포지션」이라는 뜻이 **아니다**."
             )
+        elif pos_state == "stale" and not market_session_now():
+            # [713차] 장외에는 갱신이 안 오는 것이 정상 — 경고색 대신 회색 「장외」
+            self._lbl_pos.setText("장외 — 갱신 없음")
+            self._lbl_pos.setStyleSheet("color:%s;" % _MUTED)
+            self._lbl_pos.setToolTip("장외 시간(평일 08:45–15:35 밖)에는 포지션 갱신이 오지 않는다 — 정상.")
         elif pos_state == "stale":
             self._lbl_pos.setText("포지션 갱신 끊김")
             self._lbl_pos.setStyleSheet("color:%s;" % _WARN)

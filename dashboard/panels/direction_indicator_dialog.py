@@ -29,7 +29,17 @@ from PyQt5.QtWidgets import (
 )
 
 from config.settings import PREDICTIONS_DB, RAW_DATA_DB
-from dashboard.panels.mid_status_row import MidStatusRow, draw_position_levels
+from dashboard.panels.mid_status_row import MidStatusRow, draw_position_levels, no_data_text_kwargs
+
+
+def _mireuk_dormant() -> bool:
+    """[MW0601 713차] 미륵 엔진 휴면(`MIREUK_ENGINE="off"`)인가 — 방향 램프 표시 전용. 읽기 실패는 False(종전 표시)."""
+    try:
+        import config.settings as _s
+        return str(getattr(_s, "MIREUK_ENGINE", "full") or "full").strip().lower() == "off"
+    except Exception:
+        return False
+
 
 logger = logging.getLogger(__name__)
 
@@ -348,9 +358,15 @@ class DirectionIndicatorWidget(QWidget):
         if not ensemble:
             self._set_lamp_style("flat")
             self._lbl_arrow.setText("—")
-            self._lbl_dir.setText("대기")
-            self._lbl_meta.setText("")
-            self._lbl_conf.setText("conf —  mc —")
+            if _mireuk_dormant():
+                # [713차] 미륵 휴면 — 예측이 없는 것이 정상이다. 「대기」는 곧 올 것처럼 읽힌다.
+                self._lbl_dir.setText("미륵 휴면")
+                self._lbl_meta.setText("")
+                self._lbl_conf.setText("미륵 엔진 off — 예측 없음 (거래주체 신동·피터)")
+            else:
+                self._lbl_dir.setText("대기")
+                self._lbl_meta.setText("")
+                self._lbl_conf.setText("conf —  mc —")
             self._draw_chart(candles, 0, _FG["flat"])
             return
 
@@ -499,9 +515,8 @@ class DirectionIndicatorWidget(QWidget):
 
         if not candles:
             ax.text(
-                0.5, 0.5, "데이터 없음  (장 시작 후 수집)",
-                transform=ax.transAxes,
-                color=_MUTED, ha="center", va="center", fontsize=10,
+                0.5, 0.5, transform=ax.transAxes,                 # [713차] 한글 폰트 없으면 영문(두부 금지)
+                color=_MUTED, ha="center", va="center", fontsize=10, **no_data_text_kwargs()
             )
             self._canvas.draw_idle()
             return

@@ -73,3 +73,12 @@ def test_L5_launcher_task_installer_ascii_and_guards():
     assert "Unregister-ScheduledTask" not in ps                  # 지우지 않는다(되돌리기 경로 보존)
     tail = ps[ps.index("Write-Head 'Sindong launcher task - INSTALL (disabled)'"):]
     assert "Disable-ScheduledTask -TaskName $NewName" in tail    # 설치는 비활성으로
+
+
+def test_L6_launcher_rem_comments_are_ascii():
+    """[713차 후속] 한글 REM 주석은 cmd 가 UTF-8 바이트 정렬을 잃게 만들어 주석 조각을 명령으로 실행한다
+    (2026-10-25 실측: `'��로' is not recognized` 2건 → ASCII 화 뒤 0건, 새 콘솔 재현 시험). 437차와 같은 뿌리."""
+    lines = io.open(os.path.join(ROOT, "start_Sindong2.bat"), "rb").read().decode("utf-8").split("\r\n")
+    bad = [i + 1 for i, l in enumerate(lines)
+           if l.lstrip().upper().startswith("REM") and any(ord(c) > 127 for c in l)]
+    assert not bad, "한글 REM 줄: %s" % bad[:10]

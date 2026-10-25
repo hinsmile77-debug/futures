@@ -5660,78 +5660,81 @@ class TradingSystem:
         )
         self._restart_cause = "MANUAL"   # 다음 재기동 기본값 복원
 
-        # 장중(09:00~15:10) 재시작: pre_market_setup()이 재호출되지 않으므로 즉시 시작.
-        # 그렇지 않으면 첫 분봉 STEP 3에서 시작되어 파이프라인과 CPU 경합 → CB⑤ 5026ms 발동.
-        # [P0] 당일 08:50 이후 이미 재학습 완료된 경우 장중 재학습 중복 차단.
-        #      단, 마지막 재학습으로부터 _RESTART_RETRAIN_GAP_MIN 이상 경과 시 재학습 허용.
-        #      근거: 12:18 재시작에서 11:10 재학습 완료 이유로 스킵 → 오후 방향 전환 무감지.
-        #      오전/오후 시장 방향이 달라지는 경우 60분+ 경과 후 재시작 시 재학습이 필요.
-        # [P0-Gate] 14:30 이후 재시작: 장 마감 40분 전 — 재학습해도 실사용 시간 없음 → 스킵.
-        _RESTART_RETRAIN_GAP_MIN = 60   # 마지막 재학습으로부터 이 시간(분) 경과 시 재학습 허용
-        _rst_now = datetime.datetime.now()
-        _today_0850 = _rst_now.replace(hour=8, minute=50, second=0, microsecond=0)
-        _last_rt = getattr(self.batch_retrainer, "_last_retrain", None)
-        _mins_since_last_rt = (
-            (_rst_now - _last_rt).total_seconds() / 60 if _last_rt else float("inf")
-        )
-        _already_retrained_today = (
-            _last_rt is not None
-            and _last_rt.date() == _rst_now.date()
-            and _last_rt >= _today_0850
-            and _mins_since_last_rt < _RESTART_RETRAIN_GAP_MIN   # 60분 이내 재학습은 스킵
-        )
-        _late_restart = _rst_now.time() >= datetime.time(14, 30)   # 14:30 이후 재학습 무의미
-        if (
-            is_trading_day(_rst_now)
-            and datetime.time(9, 0) <= _rst_now.time() < datetime.time(15, 10)
-            and not self._gbm_retrain_running
-            and not _already_retrained_today
-            and not _late_restart
-        ):
-            self._warmup_retrain_pending = False
-            # [P0 260719] 여기서 _gbm_retrain_running=True 등을 미리 세팅하면 바로 아래
-            # _start_gbm_retrain_subprocess()의 최초 가드(이미 실행 중이면 스킵)가 이
-            # 자기 자신의 사전 세팅을 "이미 실행 중"으로 오인해 subprocess를 한 번도
-            # 실제로 띄우지 못하고 매번 자기 발목을 잡던 버그(0719 정기점검 발견) —
-            # 상태 세팅은 _start_gbm_retrain_subprocess() 내부(성공적으로 Popen한 뒤)에서만
-            # 하도록 위임한다. 실패 시(py310_64 미탐지 등)에도 플래그가 고착되지 않는 부수 이득.
-            self.dashboard.set_model_status("GBM 장중 재학습중...")
-            _rt_gap_tag = (
-                f" ({_mins_since_last_rt:.0f}분 경과, {_last_rt.strftime('%H:%M')} 이후)"
-                if _last_rt else ""
+        # [713차 후속] 미륵 휴면이면 아래 재학습 판단 전체를 건너뛴다 — 장중 재기동 첫 분기가
+        #   「GBM 장중 재학습 시작」 로그와 대시보드 「재학습중」 표시를 남긴 뒤에야 spawn 이 막혀 화면이 굳는다.
+        if self._mireuk_on():
+            # 장중(09:00~15:10) 재시작: pre_market_setup()이 재호출되지 않으므로 즉시 시작.
+            # 그렇지 않으면 첫 분봉 STEP 3에서 시작되어 파이프라인과 CPU 경합 → CB⑤ 5026ms 발동.
+            # [P0] 당일 08:50 이후 이미 재학습 완료된 경우 장중 재학습 중복 차단.
+            #      단, 마지막 재학습으로부터 _RESTART_RETRAIN_GAP_MIN 이상 경과 시 재학습 허용.
+            #      근거: 12:18 재시작에서 11:10 재학습 완료 이유로 스킵 → 오후 방향 전환 무감지.
+            #      오전/오후 시장 방향이 달라지는 경우 60분+ 경과 후 재시작 시 재학습이 필요.
+            # [P0-Gate] 14:30 이후 재시작: 장 마감 40분 전 — 재학습해도 실사용 시간 없음 → 스킵.
+            _RESTART_RETRAIN_GAP_MIN = 60   # 마지막 재학습으로부터 이 시간(분) 경과 시 재학습 허용
+            _rst_now = datetime.datetime.now()
+            _today_0850 = _rst_now.replace(hour=8, minute=50, second=0, microsecond=0)
+            _last_rt = getattr(self.batch_retrainer, "_last_retrain", None)
+            _mins_since_last_rt = (
+                (_rst_now - _last_rt).total_seconds() / 60 if _last_rt else float("inf")
             )
-            log_manager.system(
-                f"[WarmupRetrain] 장중 재시작 — GBM 경량 재학습 시작{_rt_gap_tag} (intraday)", "INFO"
+            _already_retrained_today = (
+                _last_rt is not None
+                and _last_rt.date() == _rst_now.date()
+                and _last_rt >= _today_0850
+                and _mins_since_last_rt < _RESTART_RETRAIN_GAP_MIN   # 60분 이내 재학습은 스킵
             )
+            _late_restart = _rst_now.time() >= datetime.time(14, 30)   # 14:30 이후 재학습 무의미
+            if (
+                is_trading_day(_rst_now)
+                and datetime.time(9, 0) <= _rst_now.time() < datetime.time(15, 10)
+                and not self._gbm_retrain_running
+                and not _already_retrained_today
+                and not _late_restart
+            ):
+                self._warmup_retrain_pending = False
+                # [P0 260719] 여기서 _gbm_retrain_running=True 등을 미리 세팅하면 바로 아래
+                # _start_gbm_retrain_subprocess()의 최초 가드(이미 실행 중이면 스킵)가 이
+                # 자기 자신의 사전 세팅을 "이미 실행 중"으로 오인해 subprocess를 한 번도
+                # 실제로 띄우지 못하고 매번 자기 발목을 잡던 버그(0719 정기점검 발견) —
+                # 상태 세팅은 _start_gbm_retrain_subprocess() 내부(성공적으로 Popen한 뒤)에서만
+                # 하도록 위임한다. 실패 시(py310_64 미탐지 등)에도 플래그가 고착되지 않는 부수 이득.
+                self.dashboard.set_model_status("GBM 장중 재학습중...")
+                _rt_gap_tag = (
+                    f" ({_mins_since_last_rt:.0f}분 경과, {_last_rt.strftime('%H:%M')} 이후)"
+                    if _last_rt else ""
+                )
+                log_manager.system(
+                    f"[WarmupRetrain] 장중 재시작 — GBM 경량 재학습 시작{_rt_gap_tag} (intraday)", "INFO"
+                )
 
-            # [226차] 64비트 subprocess 경량 재학습 — 32비트 OOM 없이 실행
-            self._start_gbm_retrain_subprocess(
-                force=False, reason="장중 재시작 WarmupRetrain", is_warmup=True, intraday=True,
-            )
-        elif _late_restart and not _already_retrained_today:
-            self._warmup_retrain_pending = False
-            log_manager.system(
-                f"[WarmupRetrain] 14:30 이후 재시작 → 재학습 스킵 (잔여시간 {(datetime.time(15, 10).hour*60+10) - (_rst_now.hour*60+_rst_now.minute)}분)",
-                "INFO",
-            )
-        elif _already_retrained_today:
-            self._warmup_retrain_pending = False
-            log_manager.system(
-                f"[WarmupRetrain] 최근 재학습({_last_rt.strftime('%H:%M')}, {_mins_since_last_rt:.0f}분 전) → 장중 재학습 스킵",
-                "INFO",
-            )
-        else:
-            # [MW0601 457차 / C8] 장전·장외 기동은 위 3개 분기 중 어느 것도 타지 않아
-            # 예약 플래그만 남고 로그가 끊겼다(2026-08-11 08:41:22 "예약" 이후 소진·취소
-            # 어느 기록도 없음). **기능 결함은 아니다** — 08:55 PreRetrain(4681행)이
-            # _warmup_retrain_pending을 정상 소비한다. 다만 태그가 [PreRetrain]으로
-            # 바뀌어 운영자가 두 로그를 연결하지 못한다. 이월 사실을 명시한다.
-            log_manager.system(
-                "[WarmupRetrain] 장전/장외 기동(%s) — 장중 분기 해당 없음 → "
-                "예약 유지, 08:55 PreRetrain에서 소진 예정"
-                % _rst_now.strftime("%H:%M"),
-                "INFO",
-            )
+                # [226차] 64비트 subprocess 경량 재학습 — 32비트 OOM 없이 실행
+                self._start_gbm_retrain_subprocess(
+                    force=False, reason="장중 재시작 WarmupRetrain", is_warmup=True, intraday=True,
+                )
+            elif _late_restart and not _already_retrained_today:
+                self._warmup_retrain_pending = False
+                log_manager.system(
+                    f"[WarmupRetrain] 14:30 이후 재시작 → 재학습 스킵 (잔여시간 {(datetime.time(15, 10).hour*60+10) - (_rst_now.hour*60+_rst_now.minute)}분)",
+                    "INFO",
+                )
+            elif _already_retrained_today:
+                self._warmup_retrain_pending = False
+                log_manager.system(
+                    f"[WarmupRetrain] 최근 재학습({_last_rt.strftime('%H:%M')}, {_mins_since_last_rt:.0f}분 전) → 장중 재학습 스킵",
+                    "INFO",
+                )
+            else:
+                # [MW0601 457차 / C8] 장전·장외 기동은 위 3개 분기 중 어느 것도 타지 않아
+                # 예약 플래그만 남고 로그가 끊겼다(2026-08-11 08:41:22 "예약" 이후 소진·취소
+                # 어느 기록도 없음). **기능 결함은 아니다** — 08:55 PreRetrain(4681행)이
+                # _warmup_retrain_pending을 정상 소비한다. 다만 태그가 [PreRetrain]으로
+                # 바뀌어 운영자가 두 로그를 연결하지 못한다. 이월 사실을 명시한다.
+                log_manager.system(
+                    "[WarmupRetrain] 장전/장외 기동(%s) — 장중 분기 해당 없음 → "
+                    "예약 유지, 08:55 PreRetrain에서 소진 예정"
+                    % _rst_now.strftime("%H:%M"),
+                    "INFO",
+                )
 
         if self.position.status != "FLAT":
             self.dashboard.set_ui_position_mode()

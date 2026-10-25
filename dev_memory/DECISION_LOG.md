@@ -49496,3 +49496,12 @@ EKS는 366차 이전부터 존재하는 기존 설계이고, 이번 사이클은
 - `git mv start_Sindong.bat start_Sindong2.bat`. 현행 참조 갱신: 런처 본문 · `scripts/sindong_launch_check.py` · `scripts/sindong_launcher_task.ps1` · `tests/test_713_launcher.py` · CLAUDE.md · 신동 수집기 · 자동조치 프롬프트(저장소 밖). 과거 기록(DECISION_LOG·NEXT_TODO·계획서)은 사료로 두었다 — 그 안의 `start_Sindong.bat` 은 이 이름 변경 이전 표기다.
 - 예약작업 `\Sindong`: 실행 경로만 `start_Sindong2.bat` 으로 교체(`Set-ScheduledTask -Action`) — 활성·트리거(평일 08:40)·Highest·MW0601 유지. 설치기 재실행은 비활성으로 되돌리므로 쓰지 않았다. 다음 실행 10-26 08:40.
 - `\Mireuk\Shindong_EOD_1555`: `TASK_SHINDONG_EOD_INSTALL.bat`(→ ps1) 재실행으로 재등록 확인 — Ready · 평일 15:55 · 다음 10-26 15:55.
+
+## 2026-10-25 (MW0601 713차 후속 — 신동 첫 기동(16:55, 장후 디버그) 로그 점검: 런처 한글 REM · 재학습 판단 게이트 · 휴면 화면) — 🟢 **사용자 지시 「흐름 점검 · GBM/RF 확인 · UI 개선」**
+
+- **흐름**: STEP 3.9 `result=pass` → preflight PASS → `신동 주체 초기화 (미륵 엔진 off)` · `[Engine] 미륵 휴면 — RF 로드·보정기 사전학습·앙상블 보정기 복원 생략` · `[AnalysisRestore] 미륵 휴면` · `[WarmupRetrain] … 재학습 예약 안 함` · 장외라 실시간 구독 미시작(정상) · 기동 알림 「신동(미륵 엔진 off)」. 설계대로.
+- **런처 결함(수정)**: 콘솔에 `'�' / '��로' is not recognized` 2건 — 한글 REM 주석으로 cmd 가 UTF-8 바이트 정렬을 잃어 주석 조각을 명령으로 실행(2026-08-06 437차와 같은 뿌리 — 그땐 `was unexpected at this time` 로 런처 사망까지 갔다). 한글 REM 68줄(33블록)을 ASCII 안내 1줄씩으로 · 번호 섹션 머리 3개는 영문으로. **새 콘솔 재현 시험**(`Start-Process cmd` · 장후 질문 자동 Y · GUARD 직전 EXIT): 수정 전 사본 2건 재현 / 수정 후 0건 · preflight·RECHECK 통과. 회귀 `test_713_launcher::test_L6`.
+- **GBM/RF**: RF 로드 생략 확인. GBM 6개 로드는 **의도적 유지**(≈1초 · 대시보드·피처명·첫 틱 `set_daily_gap_offset` 참조처 — Sindong-V4 동일 결정). 재학습 spawn 은 입구에서 차단. 남은 미륵 기동 흔적(DynMC·EnsembleGater 가중치 복원·FeatureBuilder 전일 버퍼·세션 복원 prediction 패널)은 읽기·표시뿐이라 유지.
+  **수정 1건**: `connect_broker` 의 장중 재기동 재학습 판단 블록이 휴면에서도 돌아, 장중 재기동이면 「GBM 장중 재학습 시작」 로그 + 대시보드 「GBM 장중 재학습중…」을 남긴 뒤에야 spawn 이 막혔다(화면이 재학습 중으로 굳음). 블록 전체를 `if self._mireuk_on():` 아래로.
+- **UI(수정)**: ① 빈 차트 안내문이 matplotlib 기본 폰트라 두부(□□) — `mid_status_row.no_data_text_kwargs()`(기존 `_ko_font()` 재사용, 없으면 영문)로 방향 지시·캔들 차트 2곳 교체 ② 방향 램프 예측 없음 + 휴면이면 「대기」 대신 「미륵 휴면 · 미륵 엔진 off — 예측 없음」 ③ 장외 「포지션 갱신 끊김」 경고 → 「장외 — 갱신 없음」(회색). offscreen 스모크: 램프 휴면 표시 · Malgun Gothic · Glyph 경고 0. 회귀 `tests/test_713_ui_dormant.py`.
+- **남김(기존 결함, 이번 범위 밖)**: `Could not parse stylesheet of object QTableWidget` ×6 · 대시보드 최소 폭(2709)이 화면(2560)보다 커서 `setGeometry` 경고 · `[SessionStateDrop] 완료 마커 소실`(미륵 재학습 마커 — 휴면 중 무해).

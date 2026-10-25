@@ -2,6 +2,7 @@
 SETLOCAL EnableDelayedExpansion
 CHCP 65001 >NUL
 TITLE Sindong Launcher
+REM  KEEP REM COMMENTS PURE ASCII (713 / 2026-08-06 437cha lesson: Korean REM -> "is not recognized" / parser death).
 
 REM ============================================================
 REM  start_Sindong2.bat -- MW0601 Sindong2-V4 launcher (principal SHINDONG, Peter selectable)
@@ -15,12 +16,11 @@ REM  Unchanged on purpose: log folder logs\Mireuk_batch and launcher_*.log
 REM  names (read by freeze_sentinel, daily-check collectors, monthly_cleanup),
 REM  API wait / preflight / GUARD / AUTO-RESTART logic (same main.py).
 REM  Scheduler: switch-over day 2026-11-02 -- task \Sindong 08:40 weekdays
-REM  replaces \미륵이 (disabled, not deleted).
+REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 REM ============================================================
 
 REM ============================================================
-REM  machine.cfg 읽기 -- BROKER=cybos|creon
-REM  machine.cfg 가 없으면 machine.cfg.example 을 복사해 설정하세요.
+REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 REM ============================================================
 SET "BROKER="
 IF EXIST "%~dp0machine.cfg" (
@@ -39,9 +39,7 @@ IF "!BROKER!"=="" (
 )
 
 REM ============================================================
-REM  관리자 권한 확인 (CREON 전용)
-REM  coStarter.exe 는 UAC 상승 실행 → UIPI(UI Privilege Isolation) 가
-REM  mouse/PostMessage 를 차단함. 배치 자체를 관리자로 실행해야 정상 동작.
+REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 REM ============================================================
 IF /I "!BROKER!"=="creon" (
     net session >nul 2>&1
@@ -57,9 +55,7 @@ IF /I "!BROKER!"=="creon" (
 )
 
 REM ============================================================
-REM  배치 자체 로그 설정
-REM  저장 위치 : logs\Mireuk_batch\launcher_YYYYMMDD_HHMMSS.log
-REM  보관 개수 : 최신 10개 (초과분 자동 삭제)
+REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 REM ============================================================
 SET "_BLOG_DIR=%USERPROFILE%\PycharmProjects\futures\logs\Mireuk_batch"
 IF NOT EXIST "!_BLOG_DIR!" MKDIR "!_BLOG_DIR!"
@@ -67,7 +63,7 @@ IF NOT EXIST "!_BLOG_DIR!" MKDIR "!_BLOG_DIR!"
 FOR /F "usebackq" %%T IN (`powershell -NoProfile -Command "Get-Date -Format 'yyyyMMdd_HHmmss'"`) DO SET "_BLOG_TS=%%T"
 SET "_BLOG=!_BLOG_DIR!\launcher_!_BLOG_TS!_%RANDOM%.log"
 
-REM 최신 10개 초과 로그 삭제 (날짜 내림차순 정렬 후 11번째부터 삭제)
+REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 FOR /F "skip=10 delims=" %%F IN ('DIR "!_BLOG_DIR!\launcher_*.log" /B /O-D /A-D 2^>NUL') DO (
     DEL "!_BLOG_DIR!\%%F" 2>NUL
 )
@@ -127,7 +123,7 @@ IF NOT EXIST "!WORKDIR!" (
 CALL :L "[INFO] WorkDir: !WORKDIR!"
 cd /d "!WORKDIR!"
 
-REM main.py 존재 확인 (설정 전 fail-fast)
+REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 IF NOT EXIST "!WORKDIR!\main.py" (
     CALL :L "[FATAL] main.py 가 WORKDIR 에 없습니다."
     CALL :L "[FATAL] 확인: !WORKDIR!\main.py"
@@ -135,7 +131,7 @@ IF NOT EXIST "!WORKDIR!\main.py" (
     EXIT /B 1
 )
 
-REM WORKDIR 가 DEFAULT_DIR 와 다를 때 로그 경로 업데이트
+REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 IF /I NOT "!WORKDIR!"=="!DEFAULT_DIR!" (
     SET "_BLOG_DIR=!WORKDIR!\logs\Mireuk_batch"
     IF NOT EXIST "!_BLOG_DIR!" MKDIR "!_BLOG_DIR!"
@@ -145,11 +141,9 @@ IF /I NOT "!WORKDIR!"=="!DEFAULT_DIR!" (
 
 REM ============================================================
 REM  1.5. Off-hours Launch Check
-REM       08:45 이전  → Y 기본 (스케줄러 / 자동 기동)
-REM       15:10 이후  → N 기본 (디버그 / 수동 전용)
-REM       08:45~15:10 → 정규 장중, 확인 생략
+REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 REM ============================================================
-REM 이전 실행의 장후 디버그 플래그는 항상 초기화 (오늘 재확인 없이 이어받지 않음)
+REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 IF EXIST "!WORKDIR!\data\_debug_afterhours" DEL "!WORKDIR!\data\_debug_afterhours" 2>NUL
 
 FOR /F "usebackq" %%T IN (`powershell -NoProfile -Command "Get-Date -Format HHmm"`) DO SET "_LAUNCH_TIME=%%T"
@@ -159,7 +153,7 @@ IF "!_LAUNCH_TIME!"=="" SET "_LAUNCH_TIME=0900"
 IF !_LAUNCH_TIME! GEQ 0845 IF !_LAUNCH_TIME! LSS 1510 GOTO :offhours_skip
 IF !_LAUNCH_TIME! LSS 0845 GOTO :offhours_premarket
 
-REM 장후 (>= 15:10) -- 기본 N
+REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 CALL :L "[WARN] 장후 실행 [!_LAUNCH_TIME!] -- 디버그/수동 모드"
 CHOICE /C YN /N /T 10 /D N /M "장 마감 후 [!_LAUNCH_TIME!]. 계속 실행? (Y=예 / N=취소) [10초 후 자동 N]: "
 IF !ERRORLEVEL! EQU 2 (
@@ -174,7 +168,7 @@ ECHO.
 GOTO :offhours_skip
 
 :offhours_premarket
-REM 장전 (< 08:45) -- 기본 Y
+REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 CALL :L "[INFO] 장전 실행 [!_LAUNCH_TIME!] -- 10초 후 자동 Y"
 CHOICE /C YN /N /T 10 /D Y /M "장전 [!_LAUNCH_TIME!]. 진행? (Y=진행 / N=취소) [10초 후 자동 Y]: "
 IF !ERRORLEVEL! EQU 2 (
@@ -216,13 +210,12 @@ IF %ERRORLEVEL% NEQ 0 (
 CALL :L "[INFO] 환경 활성화: %CONDA_DEFAULT_ENV%"
 
 REM ============================================================
-REM  2.5. conda activate.bat 가 내부적으로 ENDLOCAL 을 호출하면
-REM  이 스크립트의 SETLOCAL 이 해제되어 지연 확장이 비활성화됨.
-REM  여기서 SETLOCAL 과 핵심 변수(WORKDIR, _BLOG, BROKER)를 복원.
+REM  2.5. conda activate.bat -- do not call it after ENDLOCAL (environment would be lost)
+REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 REM ============================================================
 SETLOCAL EnableDelayedExpansion
 
-REM BROKER 복원 (machine.cfg 재읽기)
+REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 SET "BROKER="
 IF EXIST "%~dp0machine.cfg" (
     FOR /F "usebackq eol=# tokens=1,* delims==" %%A IN ("%~dp0machine.cfg") DO (
@@ -234,7 +227,7 @@ IF EXIST "%~dp0machine.cfg" (
 )
 IF "!BROKER!"=="" SET "BROKER=cybos"
 
-REM conda init cmd.exe 미실행 경고 (MW0602 초기 설정 진단용)
+REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 reg query "HKCU\Software\Microsoft\Command Processor" /v AutoRun >NUL 2>&1
 IF %ERRORLEVEL% NEQ 0 (
     CALL :L "[WARN] conda init cmd.exe 미설치 감지 (CMD AutoRun 미설정)"
@@ -277,7 +270,7 @@ IF DEFINED CONDA_PREFIX (
         ECHO [WARNING]   재설치: conda install -n py37_32 pyqt
     )
 
-    REM py37_32 root + Scripts 를 PATH 앞에 추가 (64-bit base python 보다 우선)
+    REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
     SET "PATH=!CONDA_PREFIX!;!CONDA_PREFIX!\Scripts;!CONDA_PREFIX!\Library\bin;!PATH!"
     SET "QT_QPA_PLATFORM=windows"
 
@@ -287,10 +280,8 @@ IF DEFINED CONDA_PREFIX (
 )
 
 REM ============================================================
-REM  3.5. 32-bit Python 명시적 경로 탐색 (PY32)
-REM  배경: conda init cmd.exe 미실행 시 activate.bat 가 PATH 를 변경하지 못해
-REM        python 이 64-bit base 환경을 가리킬 수 있음.
-REM  대응: py37_32\python.exe 를 직접 탐색 → PY32 변수에 저장 → 이후 모든 python 호출에 사용.
+REM  3.5. Locate 32-bit Python (PY32)
+REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 REM ============================================================
 SET "PY32="
 IF /I "!CONDA_DEFAULT_ENV!"=="py37_32" IF DEFINED CONDA_PREFIX IF EXIST "!CONDA_PREFIX!\python.exe" SET "PY32=!CONDA_PREFIX!\python.exe"
@@ -316,7 +307,7 @@ IF !ERRORLEVEL! NEQ 0 (
 )
 CALL :L "[INFO] 32-bit Python 확인: !PY32!"
 
-REM py37_32 DLL 디렉터리를 PATH 앞에 추가 (64-bit DLL 충돌 방지)
+REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 SET "_PY32_DIR=!PY32:\python.exe=!"
 SET "PATH=!_PY32_DIR!;!_PY32_DIR!\Scripts;!_PY32_DIR!\Library\bin;!_PY32_DIR!\Library\mingw-w64\bin;!_PY32_DIR!\Library\usr\bin;!PATH!"
 CALL :L "[INFO] PATH 앞에 py37_32 경로 추가: !_PY32_DIR!"
@@ -471,12 +462,8 @@ IF !_RECHECK_ERR! NEQ 0 (
 )
 
 REM ============================================================
-REM  7. Launch main.py -- Auto-Restart Loop (장중 자동 재시작)
-REM  - 장중(09:00~15:10) 비정상 종료 시 최대 5회 자동 재시작
-REM  - 5분 이상 정상 실행 후 종료 시 재시작 카운터 초기화 (일시적 크래시 대응)
-REM  - 15:10 이후 종료 시 기본 종료(오버나이트 금지), 단 CHOICE Y 확인 시 디버그 모드로 재시작 계속
-REM  - 5회 초과 시 루프 종료
-REM  - AllowSetForegroundWindow(ASFW_ANY) 로 Qt 앱이 foreground 이동 가능
+REM  7. Launch main.py -- Auto-Restart Loop (intraday auto restart)
+REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 REM ============================================================
 CALL :L "============================================================"
 CALL :L "  [OK] !BROKER! 준비 완료 -- main.py 실행"
@@ -486,26 +473,15 @@ ECHO.
 
 SET "_RESTART_CNT=0"
 
-REM 이전 세션 잔류 플래그 정리
+REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 IF EXIST "data\_exit_normally" (
     DEL "data\_exit_normally" 2>NUL
     CALL :L "[INFO] 이전 세션 정상 종료 플래그 정리됨 (새 세션 시작)."
 )
 
-REM ── 단일 인스턴스 보장 ────────────────────────────────────────────────
-REM [MW0601 498차 / F-2] 인라인 파이썬 원라이너를 걷어내고 scripts\guard_single_instance.py
-REM 로 교체한다. 새로 설계한 것은 없다 — 스크립트·유닛 테스트·리허설은 493차 후속7
-REM (커밋 35ed037)에 이미 들어 있고, 그 커밋이 되돌린 것은 **배치 배선 한 조각뿐**이다.
+REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 REM
-REM 종전 원라이너의 결함 3가지:
-REM   1) 종료코드 혼동 — 크래시(exit 1)와 "발견"이 같은 분기로 갔다. psutil 이 없거나
-REM      권한 오류가 나면 "기존 인스턴스 있음"으로 읽혔다(계측 4원칙 ②: 미측정 ≠ 발견).
-REM   2) `2>NUL` 이 stderr 를 통째로 버려 그 크래시가 어디에도 안 남았다.
-REM   3) 지연확장 `!` 파싱 사고 — 인라인 파이썬 안의 문자열이 cmd.exe 에 노출됐다.
-REM      스크립트 파일로 옮기면 `!` 가 cmd.exe 를 통과하지 않는다.
-REM 그리고 아래 "[GUARD] 기존 프로세스 종료 완료" 는 terminate 성공 여부와 무관하게
-REM **무조건** 찍혔다. 이제 스크립트가 재확인 후 종료코드로 답한다.
-REM   종료코드: 0=없음 / 1=발견(또는 종료 후 잔여) / 3=프로브 자체 실패
+REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 CALL :L "[GUARD] 기존 main.py 프로세스 체크..."
 "!PY32!" "!WORKDIR!\scripts\guard_single_instance.py" --probe --workdir "!WORKDIR!"
 SET "_GUARD_RC=!ERRORLEVEL!"
@@ -514,8 +490,7 @@ IF !_GUARD_RC! EQU 3 (
     ECHO.
     CALL :L "[GUARD][ERROR] 프로브 자체가 실패했다 -- 단일 인스턴스를 **보장하지 못한다**."
     CALL :L "[GUARD][ERROR] '기존 인스턴스 없음'이 아니다. 위 traceback 을 확인할 것."
-    REM 미측정을 「없음」으로 흘려보내지 않는다. 아래 발견 경로와 같은 확인을 거치되
-    REM 문구를 구분해 남긴다 — 기동 자체를 막지는 않는다(막으면 그날 거래가 0이 된다).
+    REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 )
 
 ECHO.
@@ -538,12 +513,11 @@ IF !ERRORLEVEL! EQU 2 (
     GOTO :EOF
 )
 CALL :L "[GUARD] 기존 main.py 프로세스 종료 중..."
-REM [498차 F-2] 스크립트가 죽이기 **전에** 대상 목록을, 죽인 **뒤에** 잔여를 찍는다.
-REM WORKDIR 밖 프로세스는 종료하지 않는다(다른 리포의 main.py 보호).
+REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 "!PY32!" "!WORKDIR!\scripts\guard_single_instance.py" --terminate --workdir "!WORKDIR!"
 SET "_GUARD_RC=!ERRORLEVEL!"
 IF !_GUARD_RC! EQU 0 (
-    REM 무조건 문자열 금지 — 실제로 잔여 0이 확인됐을 때만 "완료"라고 쓴다.
+    REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
     CALL :L "[GUARD] 기존 프로세스 종료 확인 (잔여 0) -- 새 인스턴스 시작."
 ) ELSE (
     CALL :L "[GUARD][WARN] 종료를 확인하지 못했다 (rc=!_GUARD_RC!) -- 잔여 또는 프로브 실패."
@@ -557,7 +531,7 @@ CALL :L "[GUARD] 기존 main.py 없음 -- 단일 인스턴스 확인."
 :guard_done
 
 
-REM WORKDIR 최종 확인
+REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 IF NOT DEFINED WORKDIR (
     SET "WORKDIR=%USERPROFILE%\PycharmProjects\futures"
     CALL :L "[WARN] WORKDIR 미정의 -- 기본값 복원: !WORKDIR!"
@@ -616,7 +590,7 @@ IF EXIST "!WORKDIR!\scripts\freeze_sentinel.py" (
 
 :RESTART_LOOP
 
-REM RESTART_LOOP 진입 시마다 WORKDIR / PY32 복원
+REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 IF NOT DEFINED WORKDIR (
     SET "WORKDIR=%USERPROFILE%\PycharmProjects\futures"
     CALL :L "[WARN] WORKDIR 미정의 (루프 진입) -- 기본값 복원: !WORKDIR!"
@@ -636,7 +610,7 @@ IF NOT EXIST "!WORKDIR!\main.py" (
     GOTO :restart_done
 )
 
-REM 실행 시작 시각 기록 (분 단위)
+REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 FOR /F "usebackq" %%T IN (`powershell -NoProfile -Command "(Get-Date).Hour*60+(Get-Date).Minute"`) DO SET "_LAUNCH_MIN=%%T"
 IF NOT DEFINED _LAUNCH_MIN SET "_LAUNCH_MIN=0"
 
@@ -644,11 +618,10 @@ CALL :L "[INFO] WORKDIR=!WORKDIR!  PY32=!PY32!  BROKER=!BROKER!"
 
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-Type -Name ASFG -Namespace '' -MemberDefinition '[DllImport(\"user32.dll\")] public static extern bool AllowSetForegroundWindow(uint pid);'; [ASFG]::AllowSetForegroundWindow(0xFFFFFFFF)" 2>NUL
 
-REM main.py 실행 (콘솔 + 로그 파일 동시 출력)
-REM 규칙: ^ 연속, 변수 내 파이프, 비ASCII REM 금지 (CP949/UTF-8 혼용 오류)
+REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 "!PY32!" "!WORKDIR!\main.py" 2>&1 | powershell -NoProfile -ExecutionPolicy Bypass -Command "$enc=[Text.Encoding]::UTF8;[Console]::OutputEncoding=$enc;$OutputEncoding=$enc;$lf=New-Object IO.StreamWriter('!_BLOG!',$true,$enc);try{$input|ForEach-Object{[Console]::Out.WriteLine($_);$lf.WriteLine($_)}}finally{$lf.Flush();$lf.Close()}"
 
-REM 실행 시간 계산 (5분 이상 정상 실행이면 재시작 카운터 초기화)
+REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 FOR /F "usebackq" %%T IN (`powershell -NoProfile -Command "(Get-Date).Hour*60+(Get-Date).Minute"`) DO SET "_EXIT_MIN=%%T"
 IF NOT DEFINED _EXIT_MIN SET "_EXIT_MIN=!_LAUNCH_MIN!"
 SET /A "_RUNTIME_MIN=!_EXIT_MIN! - !_LAUNCH_MIN!"
@@ -673,7 +646,7 @@ FOR /F "usebackq" %%T IN (`powershell -NoProfile -Command "(Get-Date).ToString('
 IF NOT DEFINED _NOW SET "_NOW=2400"
 IF "!_NOW!"=="" SET "_NOW=2400"
 
-REM 정상 종료 플래그 확인 (UI X 버튼 / 자동 종료 → 재시작 안 함)
+REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 SET "_EXIT_REASON="
 IF EXIST "data\_exit_normally" SET /P "_EXIT_REASON=" < "data\_exit_normally"
 IF EXIST "data\_exit_normally" DEL "data\_exit_normally" 2>NUL
@@ -681,11 +654,7 @@ IF DEFINED _EXIT_REASON CALL :L "[AUTO-RESTART] 정상 종료 감지 -- 이유: 
 IF DEFINED _EXIT_REASON CALL :L "[AUTO-RESTART] 재시작이 필요하면 start_Sindong2.bat 를 다시 실행하세요."
 IF DEFINED _EXIT_REASON GOTO :restart_done
 
-REM 15:10 이후 종료 -- 오버나이트 금지가 기본이나, 디버깅 등 의도적 재시작은
-REM   장전(08:45 미만)/초기 장후(15:10 이후 기동) 실행처럼 Y 확인으로 계속 진행 가능.
-REM   _debug_afterhours 는 이 루프 안에서도 최초 1회 승인되면 세션 내내 재확인 없이 유지.
-REM   주의: GOTO는 절대 괄호 블록 안에 넣지 않음 (MW0602 실전 버그 -- jump table 오염으로
-REM   GOTO :restart_done 등 이후 모든 GOTO가 엉뚱한 위치로 점프, 5회 재시작 제한 무력화됨).
+REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 SET "_AFTERHOURS_DENY="
 IF !_NOW! GEQ 1510 IF NOT EXIST "!WORKDIR!\data\_debug_afterhours" (
     CALL :L "[AUTO-RESTART] 15:10 이후 종료 감지 -- 의도적 재시작 여부 확인."
@@ -733,7 +702,7 @@ TIMEOUT /T 10 >NUL
 GOTO :EOF
 
 REM ============================================================
-REM  :L  콘솔 출력 + 로그파일 동시 기록 서브루틴
+REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 REM ============================================================
 :L
 ECHO %~1
@@ -741,7 +710,7 @@ ECHO %~1 >> "!_BLOG!"
 GOTO :EOF
 
 REM ============================================================
-REM  :find_py32  PY32 재탐색 (루프 재진입 시 PY32 유실 대응)
+REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 REM ============================================================
 :find_py32
 IF /I "!CONDA_DEFAULT_ENV!"=="py37_32" IF DEFINED CONDA_PREFIX IF EXIST "!CONDA_PREFIX!\python.exe" SET "PY32=!CONDA_PREFIX!\python.exe"
