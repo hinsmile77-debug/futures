@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""[MW0601 713차 P4 / Sindong2-V4] start_Sindong.bat 기동 전 「신동 주체」 구성 확인.
+"""[MW0601 713차 P4 / Sindong2-V4] start_Sindong2.bat 기동 전 「신동 주체」 구성 확인.
 
 원본: MW0602 Sindong-V4 scripts/sindong_launch_check.py(f5c2a21) — 이 브랜치는 주체를 **고정하지 않고**
 허용 집합(신동·피터)으로 두므로 판정 항목이 다르다.

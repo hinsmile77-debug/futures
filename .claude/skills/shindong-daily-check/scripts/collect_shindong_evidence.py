@@ -381,7 +381,7 @@ def build(root, day, phase, pcid, pclabel):
       % (len(lh), "정상" if lh and "result=pass" in lh[-1][1] else ("**이상**" if lh else ("**누락**" if ok_td else "휴장")),
          tr(lh[-1][1], 80) if lh else ""))
     if ok_td and (not lh or "result=pass" not in lh[-1][1]):
-        flags.append("런처 입구 점검 통과 기록 없음 — `\\Sindong`(start_Sindong.bat) 으로 기동되지 않았을 수 있다")
+        flags.append("런처 입구 점검 통과 기록 없음 — `\\Sindong`(start_Sindong2.bat) 으로 기동되지 않았을 수 있다")
     errs = dedup(grep(logs, r"\[(?:ERROR|CRITICAL)\]"))
     known = [h for h in errs if any(re.search(k, h[1]) for k in KNOWN_CRITICAL)]
     # HealthPolicy 매분 판정 줄은 한 상태가 수십 줄로 반복된다 — 따로 세고 첫·끝 시각만 남긴다(목록을 덮지 않게)

@@ -4,7 +4,7 @@ CHCP 65001 >NUL
 TITLE Sindong Launcher
 
 REM ============================================================
-REM  start_Sindong.bat -- MW0601 Sindong2-V4 launcher (principal SHINDONG, Peter selectable)
+REM  start_Sindong2.bat -- MW0601 Sindong2-V4 launcher (principal SHINDONG, Peter selectable)
 REM  Derived from start_mireuk.bat (713). Differences:
 REM   - STEP 3.9 refuses to start main.py unless MIREUK_ENGINE="off",
 REM     PRINCIPAL_ALLOWED has no MIREUK, PRINCIPAL_DEFAULT="SHINDONG"
@@ -678,7 +678,7 @@ SET "_EXIT_REASON="
 IF EXIST "data\_exit_normally" SET /P "_EXIT_REASON=" < "data\_exit_normally"
 IF EXIST "data\_exit_normally" DEL "data\_exit_normally" 2>NUL
 IF DEFINED _EXIT_REASON CALL :L "[AUTO-RESTART] 정상 종료 감지 -- 이유: !_EXIT_REASON! -- 재시작 안 함"
-IF DEFINED _EXIT_REASON CALL :L "[AUTO-RESTART] 재시작이 필요하면 start_Sindong.bat 를 다시 실행하세요."
+IF DEFINED _EXIT_REASON CALL :L "[AUTO-RESTART] 재시작이 필요하면 start_Sindong2.bat 를 다시 실행하세요."
 IF DEFINED _EXIT_REASON GOTO :restart_done
 
 REM 15:10 이후 종료 -- 오버나이트 금지가 기본이나, 디버깅 등 의도적 재시작은

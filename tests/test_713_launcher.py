@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""[MW0601 713차 P4] 신동 런처 입구 점검(scripts/sindong_launch_check.py) · start_Sindong.bat 구성.
+"""[MW0601 713차 P4] 신동 런처 입구 점검(scripts/sindong_launch_check.py) · start_Sindong2.bat 구성.
 
   L1  판정: off · 허용 집합(미륵 없음·신동 포함) · 기본 신동 — 하나라도 어긋나면 FATAL(종료 3).
   L2  None(3주체 전부)·미륵 포함·문자열 단일값을 올바르게 다룬다.
   L3  현재 배포값(2026-10-25 전환 후)은 통과한다 — 통과하지 못하면 \Sindong 이 main.py 를 띄우지 않는다.
-  L4  start_Sindong.bat 은 start_mireuk.bat 파생이며 STEP 3.9 점검이 API 대기(STEP 4)보다 앞이고,
+  L4  start_Sindong2.bat 은 start_mireuk.bat 파생이며 STEP 3.9 점검이 API 대기(STEP 4)보다 앞이고,
       실패 시 main.py 실행 전에 EXIT 한다. 로그 폴더 이름(Mireuk_batch)은 그대로다(수집기 호환).
 """
 import io
@@ -47,7 +47,7 @@ def test_L3_current_settings_pass_after_cutover():
 
 
 def test_L4_launcher_order_and_exit():
-    src = io.open(os.path.join(ROOT, "start_Sindong.bat"), encoding="utf-8").read()
+    src = io.open(os.path.join(ROOT, "start_Sindong2.bat"), encoding="utf-8").read()
     i_chk = src.index("scripts\sindong_launch_check.py")
     i_api = src.index("REM  4. Wait for API session.")
     i_main = src.index("REM  7. Launch main.py")       # 실제 기동 구간(앞의 IF NOT EXIST main.py 는 존재 확인일 뿐)
@@ -55,7 +55,7 @@ def test_L4_launcher_order_and_exit():
     blk = src[i_chk:i_api]
     assert 'IF "!_SC_ERR!" NEQ "0" (' in blk and "EXIT /B 1" in blk
     assert "Mireuk_batch" in src                      # 로그 폴더 이름 호환
-    b = io.open(os.path.join(ROOT, "start_Sindong.bat"), "rb").read()
+    b = io.open(os.path.join(ROOT, "start_Sindong2.bat"), "rb").read()
     assert b.count(b"\r\n") == b.count(b"\n")         # CRLF
 
 

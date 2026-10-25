@@ -3,7 +3,7 @@
 
   Why
     The 08:40 weekday launcher task runs start_mireuk.bat (Mireuk principal, frozen v9-dev).
-    On switch-over day (2026-11-02) it must be replaced by start_Sindong.bat, whose STEP 3.9
+    On switch-over day (2026-11-02) it must be replaced by start_Sindong2.bat, whose STEP 3.9
     refuses to start main.py unless MIREUK_ENGINE="off" / PRINCIPAL_ALLOWED / PRINCIPAL_DEFAULT
     and branch Sindong2-V4 (scripts\sindong_launch_check.py).
 
@@ -32,7 +32,7 @@ $ErrorActionPreference = 'Stop'
 $Root      = Split-Path -Parent $PSScriptRoot
 $NewName   = 'Sindong'
 $NewPath   = '\'
-$NewBat    = Join-Path $Root 'start_Sindong.bat'
+$NewBat    = Join-Path $Root 'start_Sindong2.bat'
 $Check     = Join-Path $Root 'scripts\sindong_launch_check.py'
 
 function Write-Head($t) {
@@ -112,7 +112,7 @@ if (-not (Test-Path -LiteralPath $NewBat)) {
     Write-Host "[FAIL] not found: $NewBat" -ForegroundColor Red; exit 1
 }
 $action = New-ScheduledTaskAction -Execute $NewBat
-$desc = 'Sindong launcher (MW0601 Sindong2-V4): start_Sindong.bat - principal SHINDONG/PETER, Mireuk engine off. ' +
+$desc = 'Sindong launcher (MW0601 Sindong2-V4): start_Sindong2.bat - principal SHINDONG/PETER, Mireuk engine off. ' +
         'Cloned from the Mireuk launcher (trigger/principal/settings unchanged).'
 Register-ScheduledTask -TaskName $NewName -TaskPath $NewPath -Action $action -Trigger $m.Triggers `
     -Settings $m.Settings -Principal $m.Principal -Description $desc -Force | Out-Null

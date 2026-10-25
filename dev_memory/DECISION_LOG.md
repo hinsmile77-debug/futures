@@ -49490,3 +49490,9 @@ EKS는 366차 이전부터 존재하는 기존 설계이고, 이번 사이클은
 - **v9 판 차이**: Sindong-V4 수집기는 미륵 수집기의 공통 함수(`db_rows`·`is_trading_day`·`git_lock_state`·`scan_pending_observations` 등)를 import 하는데 v9 미륵 수집기에는 없다 → 자급식. 메일 주소 가림 테스트는 v9 진입 로그의 가격 표기 `@834.22` 때문에 '@' 대신 주소 형식으로 단언.
 - **검증**: `tests/test_713_daily_check.py` 12건(수집기 실데이터 10-23 · 메일 폴백·최종 절·휴장·중복 · 절 제목 계약 · 휴면 감시 패턴 · 미륵 형식 장후 머리 · C등급). 메일 dry-run 10-23 정상. DLL 감사 결손 없음.
 - **사용자 확인**: Cowork 앱이 프롬프트 파일 변경을 반영하는지. 근거 `docs/미륵휴면/03_…md` §6.
+
+## 2026-10-25 (MW0601 713차 후속 — 런처 이름 `start_Sindong.bat` → `start_Sindong2.bat` · 예약작업 재확인) — 🟢 **사용자 지시**
+
+- `git mv start_Sindong.bat start_Sindong2.bat`. 현행 참조 갱신: 런처 본문 · `scripts/sindong_launch_check.py` · `scripts/sindong_launcher_task.ps1` · `tests/test_713_launcher.py` · CLAUDE.md · 신동 수집기 · 자동조치 프롬프트(저장소 밖). 과거 기록(DECISION_LOG·NEXT_TODO·계획서)은 사료로 두었다 — 그 안의 `start_Sindong.bat` 은 이 이름 변경 이전 표기다.
+- 예약작업 `\Sindong`: 실행 경로만 `start_Sindong2.bat` 으로 교체(`Set-ScheduledTask -Action`) — 활성·트리거(평일 08:40)·Highest·MW0601 유지. 설치기 재실행은 비활성으로 되돌리므로 쓰지 않았다. 다음 실행 10-26 08:40.
+- `\Mireuk\Shindong_EOD_1555`: `TASK_SHINDONG_EOD_INSTALL.bat`(→ ps1) 재실행으로 재등록 확인 — Ready · 평일 15:55 · 다음 10-26 15:55.

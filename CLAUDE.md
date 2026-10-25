@@ -97,7 +97,7 @@ con = connect_ro(DB_PATH)         # 읽기전용(쓰기 사고 방지용 — 지
 - 신동 전략은 v9 규격(`SD-2026-10-21-v3`)을 유지한다 — `Sindong-V4`의 V4 MAIN 직행은 이식하지 않는다.
 - 🔴 **[2026-10-25 사용자 결정] 미륵 엔진은 2026-10-26(월) 장전부터 휴면이다**(당초 11-02 → 당김, 계획서 §10).
   `config/settings.py`: `MIREUK_ENGINE="off"` · `PRINCIPAL_ALLOWED=("SHINDONG","PETER")` · `PRINCIPAL_DEFAULT="SHINDONG"` · `LIGHT_PASS_DRY_RUN=False`.
-  기동은 `\Sindong`(08:40 → `start_Sindong.bat` — 입구에서 `scripts/sindong_launch_check.py` 가 위 값·브랜치를 확인, 아니면 main.py 미실행).
+  기동은 `\Sindong`(08:40 → `start_Sindong2.bat` — 입구에서 `scripts/sindong_launch_check.py` 가 위 값·브랜치를 확인, 아니면 main.py 미실행).
   `\미륵이`(start_mireuk.bat)는 **비활성**(삭제 아님). 되돌리기: `TASK_SINDONG_LAUNCHER_INSTALL.bat -Revert`(관리자) + settings 원복.
   미륵 재학습 `\MireukiEODRetrain` 은 10-26 15:55 `\Mireuk\Shindong_EOD_1555` 성공 뒤 `TASK_SHINDONG_EOD_INSTALL.bat -DisableMireukRetrain`.
   불연속 마커 `strategy_events` **id=127**. 수량은 711차 규칙 그대로.
@@ -111,7 +111,7 @@ con = connect_ro(DB_PATH)         # 읽기전용(쓰기 사고 방지용 — 지
 
 | 시각(평일) | 무엇 | 실행 | 산출 |
 |---|---|---|---|
-| 08:40 | 신동 기동 — `\Sindong` → `start_Sindong.bat`(STEP 3.9 입구 점검) | Windows 예약 | `logs/Mireuk_batch/launcher_*.log` |
+| 08:40 | 신동 기동 — `\Sindong` → `start_Sindong2.bat`(STEP 3.9 입구 점검) | Windows 예약 | `logs/Mireuk_batch/launcher_*.log` |
 | 08:51 | 장전 점검 | Cowork 예약 `[MW0601] Mireuk premarket check` | `docs/정기점검/매일점검/MW0601-<날짜>-점검리포트.md` `# 장전(pre)` |
 | 12:25 | 장중 점검 — **주문·청산 경로 배포 첫날만**(그 밖엔 1줄) | Cowork `[MW0601] Mireuk intraday check` | 같은 파일 `# 장중(intra)` |
 | 15:40 | `[ShindongReport]` 신동 일일 리포트(md) — **메일은 끔**(`SHINDONG_REPORT_MAIL_ENABLED=False`) | 앱 | `docs/신동거래/일일/` |
