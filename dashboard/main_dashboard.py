@@ -9410,6 +9410,18 @@ _DIR_BAR_COLOR = {
 
 
 
+def _mireuk_dormant() -> bool:
+    """[MW0601 713차] 미륵 엔진 휴면(`MIREUK_ENGINE="off"`)인가 — 차트 토글 표시 전용.
+
+    읽기 실패는 False(종전 표시) — 표시를 위해 설정 판독 실패를 휴면으로 위장하지 않는다.
+    """
+    try:
+        from config import settings as _s
+        return str(getattr(_s, "MIREUK_ENGINE", "full") or "full").strip().lower() == "off"
+    except Exception:
+        return False
+
+
 def _as_num(v):
     """숫자면 float, 아니면 None. **0 으로 채우지 않는다** — 결측은 결측이다."""
     try:
@@ -10222,7 +10234,11 @@ class MinuteChartCanvas(QWidget):
         self._emit_view()
         self.update()
 
-    def sync_active_trade(self, direction: str, price: float, ts=None):
+    def sync_active_trade(self, direction: str, price: float, ts=None, source=None):
+        """`source` = 진입 출처(`trades.entry_source` 와 같은 값). [713차] 주체별 레이어 분기용.
+
+        None 은 「모른다」다 — 같은 방향의 기존 보유가 출처를 알고 있으면 그것을 지킨다.
+        """
         direction = str(direction or "").upper()
         price = float(price or 0.0)
         if direction not in ("LONG", "SHORT") or price <= 0:
@@ -10237,12 +10253,14 @@ class MinuteChartCanvas(QWidget):
                 "direction": direction,
                 "entry_price": price,
                 "entry_ts": entry_ts,
+                "source": source or existing.get("source"),
             }
         else:
             self._active_trade = {
                 "direction": direction,
                 "entry_price": price,
                 "entry_ts": dt,
+                "source": source,
             }
         self.update()
 
@@ -10250,8 +10268,8 @@ class MinuteChartCanvas(QWidget):
         self._active_trade = None
         self.update()
 
-    def record_entry(self, direction: str, price: float, ts=None):
-        self.sync_active_trade(direction, price, ts=ts)
+    def record_entry(self, direction: str, price: float, ts=None, source=None):
+        self.sync_active_trade(direction, price, ts=ts, source=source)
 
     def record_exit(
         self,
@@ -10277,6 +10295,9 @@ class MinuteChartCanvas(QWidget):
             "reason": str(reason or ""),
             "direction": str(direction or (self._active_trade or {}).get("direction") or "").upper(),
             "outcome": outcome,
+            # [713차] 부분청산 마커도 주체 레이어를 따른다 — 그 포지션의 진입으로 묶는다
+            "source": (self._active_trade or {}).get("source"),
+            "entry_ts": (self._active_trade or {}).get("entry_ts"),
         })
         if finalize and self._active_trade:
             trade = dict(self._active_trade)
@@ -12443,11 +12464,59 @@ class MinuteChartCanvas(QWidget):
         finally:
             painter.restore()
 
+    # ── [MW0601 713차] 실거래는 **주체별 레이어**에 그린다 ─────────────────────
+    # 🔴 종전에는 trades.db 실거래가 출처와 무관하게 전부 「거래미륵」이었다. Sindong2-V4 는
+    #   미륵이 휴면이라 그 토글을 끄는데, 그러면 **신동 실거래까지 같이 사라진다.**
+    #   그래서 `entry_source` 로 가른다:
+    #     SHINDONG → 「거래신동」 · PETER2* → 「거래피터」 또는 「거래미륵」(종전 표시 보존)
+    #     그 밖(SYSTEM_AUTO · 수동 · NULL=미측정) → 「거래미륵」
+    _OWNER_GLYPH = {"sd": "신동", "pt": "피터", "mr": "미륵이"}
+
+    @staticmethod
+    def _trade_owner(t) -> str:
+        src = str((t or {}).get("source") or "").upper()
+        if src == SHINDONG_ENTRY_SOURCE:
+            return "sd"
+        if src.startswith(PETER2_ENTRY_SOURCE):
+            return "pt"
+        return "mr"
+
+    def _trade_shown(self, t) -> bool:
+        owner = self._trade_owner(t)
+        if owner == "sd":
+            return bool(self._ov.get("trade_shindong", True))
+        if owner == "pt":
+            # 종전에는 「거래미륵」으로 보였다 — 미륵이 켜져 있으면 그대로 보이게 둔다
+            return bool(self._ov.get("trade_peter") or self._ov.get("trade_mireuk", True))
+        return bool(self._ov.get("trade_mireuk", True))
+
+    def _has_real_shindong(self) -> bool:
+        """그날 신동 **실거래**가 하나라도 있는가 — 있으면 재생(shindong.db)은 그리지 않는다."""
+        if self._active_trade and self._trade_owner(self._active_trade) == "sd":
+            return True
+        return any(self._trade_owner(t) == "sd"
+                   for t in list(self._completed_trades) + list(self._exit_markers))
+
+    def _sd_partial_pts(self, trade) -> float:
+        """신동 실거래의 부분청산(1차) 손익 합 — 같은 진입의 마커만 더한다."""
+        e = self._coerce_dt(trade.get("entry_ts"))
+        tot = 0.0
+        for m in self._exit_markers:
+            if m.get("finalize") or self._trade_owner(m) != "sd":
+                continue
+            if e is not None and self._coerce_dt(m.get("entry_ts")) == e:
+                try:
+                    tot += float(m.get("pnl_pts") or 0.0)
+                except (TypeError, ValueError):
+                    pass
+        return tot
+
     def _draw_trade_spans(self, painter: QPainter, plot: QRectF, candles, index_map, lo: float, hi: float, padded_count: int):
         count = max(padded_count, 1)
         step = plot.width() / count
-        _show = self._ov.get("trade_mireuk", True)
-        for trade in (self._completed_trades if _show else []):
+        _shown = [t for t in self._completed_trades if self._trade_shown(t)]
+        _chips = len(_shown) <= self.TRADE_CHIP_MAX
+        for trade in _shown:
             entry_dt = self._coerce_dt(trade.get("entry_ts"))
             exit_dt = self._coerce_dt(trade.get("exit_ts"))
             if not entry_dt or not exit_dt:
@@ -12464,6 +12533,11 @@ class MinuteChartCanvas(QWidget):
             x1 = plot.left() + step * (start_idx + 0.5)
             x2 = plot.left() + step * (end_idx + 0.5)
             pnl_pts = float(trade.get("pnl_pts") or 0.0)
+            _owner = self._trade_owner(trade)
+            if _owner == "sd":
+                # 신동은 2계약(1차 익절 → 본전 → 최종)이라 최종 다리만 보면 「본전 0.00p」로
+                #   읽힌다. 같은 진입의 1차 다리를 더한 **다리 합**을 쓴다.
+                pnl_pts += self._sd_partial_pts(trade)
             if pnl_pts > 0:
                 color = QColor("#2FBF71")
             elif pnl_pts < 0:
@@ -12474,10 +12548,10 @@ class MinuteChartCanvas(QWidget):
             self._draw_trade_span_area(painter, x1, y1, x2, y2, color, step, plot)
             # 🔴 칩은 **건수가 적을 때만**. 40건인 날(실측 09-01)에 전부 찍으면
             #   서로를 덮어 둘 다 못 읽는다(원칙 6 — 빼는 것도 설계다).
-            if len(self._completed_trades) <= self.TRADE_CHIP_MAX:
+            if _chips:
                 try:
                     painter.setFont(QFont("Consolas", 8))
-                    _pl = "%+.2fp 미륵이" % pnl_pts
+                    _pl = "%+.2fp %s" % (pnl_pts, self._OWNER_GLYPH[_owner])
                     self._draw_label_chip(painter, min(x1, x2), min(y1, y2) - S.p(20),
                                           _pl, QColor(13, 17, 23, 225), color, True)
                     _wh = "%s %s→%s · %s" % (
@@ -12497,7 +12571,7 @@ class MinuteChartCanvas(QWidget):
                 self._draw_off_axis_caret(painter, x2, y2, color,
                                           above=exit_px > (self._axis_hi or 0))
 
-        if self._active_trade and _show:
+        if self._active_trade and self._trade_shown(self._active_trade):
             entry_dt = self._coerce_dt(self._active_trade.get("entry_ts"))
             start_idx = self._resolve_index(index_map, candles, entry_dt)
             end_idx = len(candles) - 1 if candles else None
@@ -12558,9 +12632,16 @@ class MinuteChartCanvas(QWidget):
             return
         if not self._sd_trades or not candles:
             return
+        # [713차] 실거래가 있는 날은 재생을 그리지 않는다 — 같은 거래가 두 번 그려진다.
+        #   실거래는 `_draw_trade_spans` 가 「거래신동」 토글로 그린다.
+        if self._has_real_shindong():
+            return
         count = max(padded_count, 1)
         step = plot.width() / count
         last_idx = len(candles) - 1
+        _chips = (len(self._sd_trades)
+                  + sum(1 for t in self._completed_trades if self._trade_shown(t))
+                  ) <= self.TRADE_CHIP_MAX
 
         for trade in self._sd_trades:
             entry_dt = self._coerce_dt(trade.get("entry_ts"))
@@ -12588,9 +12669,48 @@ class MinuteChartCanvas(QWidget):
             x_end = plot.left() + step * (end_idx + 0.5)
             y = self._price_to_y(entry_price, plot, lo, hi)
 
-            # ① 계획선 — 목표 2개 · 손절
-            self._draw_sd_plan(painter, plot, trade, lo, hi, x1, x_end, color, open_trade,
-                               entry_price)
+            # ① 계획선 — 목표 2개 · 손절. [713차] **보유 중에만** — 청산 뒤에는 면·칩이
+            #   결과를 말하므로 옅은 계획선이 화면만 시끄럽게 한다(원칙 6).
+            if open_trade:
+                self._draw_sd_plan(painter, plot, trade, lo, hi, x1, x_end, color, open_trade,
+                                   entry_price)
+
+            # ①' [713차] 면 + 칩 — 「거래미륵」과 같은 문법(사용자 지시 2026-10-25).
+            #   색은 손익(다리 합)에서 온다. 보유 중은 방향색(아직 손익이 아니다 — 계측 4원칙 ②).
+            _pts = 0.0
+            for _gi, _gp, _g in legs:
+                try:
+                    _pts += float(_g.get("pts") or 0.0)
+                except (TypeError, ValueError):
+                    pass
+            if open_trade:
+                _ac = color
+            else:
+                _ac = QColor("#2FBF71" if _pts > 0 else ("#FF5D73" if _pts < 0 else "#8B949E"))
+            _last_px = (max(legs, key=lambda L: L[0])[1] if (legs and not open_trade)
+                        else float(candles[end_idx].get("close") or entry_price))
+            y_end = self._price_to_y(_last_px, plot, lo, hi)
+            self._draw_trade_span_area(painter, x1, y, x_end, y_end, _ac, step, plot)
+            if _chips:
+                try:
+                    _why = "+".join(self._SD_REASON.get(str(_g.get("reason") or ""), "?")
+                                    for _gi, _gp, _g in legs) or "보유"
+                    painter.setFont(QFont("Consolas", 8))
+                    _top = ("보유 신동(재생)" if open_trade
+                            else "%+.2fp 신동(재생)" % _pts)
+                    self._draw_label_chip(painter, min(x1, x_end), min(y, y_end) - S.p(20),
+                                          _top, QColor(13, 17, 23, 225), _ac, True)
+                    _end_dt = (self._coerce_dt(candles[end_idx].get("ts"))
+                               if candles[end_idx].get("ts") else None)
+                    _wh = "%s %s→%s · %s" % (
+                        "LONG" if is_long else "SHORT", entry_dt.strftime("%H:%M"),
+                        ("보유" if open_trade else
+                         (_end_dt.strftime("%H:%M") if _end_dt else "?")), _why[:14])
+                    painter.setFont(QFont("Consolas", 7))
+                    self._draw_label_chip(painter, min(x1, x_end), max(y, y_end) + S.p(4),
+                                          _wh, QColor(13, 17, 23, 205), _ac, False)
+                except Exception as _e:
+                    logger.debug("[ChartDBG] 신동 칩 실패: %s", _e)
 
             # ② 진입 → 다리별 청산을 직접 잇는다(GP·실측과 같은 방식)
             for g_idx, g_px, _g in legs:
@@ -12608,9 +12728,9 @@ class MinuteChartCanvas(QWidget):
                     self._draw_link_line(painter, x1, y, x_end, y2, color,
                                          width=1, style=Qt.DotLine)
 
-            # ③ 진입 화살표 + 글리프
+            # ③ 진입 화살표 — [713차] 글리프·규칙은 칩이 말하므로 화살표만(속 빈 = 재생)
             self._draw_sd_entry_marker(painter, x1, y, color, up=is_long,
-                                       rule=str(trade.get("rule") or ""))
+                                       rule=str(trade.get("rule") or ""), glyph=False)
             if self._is_off_axis(entry_price):
                 self._draw_off_axis_caret(painter, x1, y, color,
                                           above=entry_price > (self._axis_hi or 0))
@@ -12622,9 +12742,8 @@ class MinuteChartCanvas(QWidget):
             for (g_idx, g_px), gs in groups.items():
                 x2 = plot.left() + step * (g_idx + 0.5)
                 y2 = self._price_to_y(g_px, plot, lo, hi)
-                pts = gs[0].get("pts")
-                why = "+".join(self._SD_REASON.get(str(g.get("reason") or ""), "?") for g in gs)
-                self._draw_sd_exit_marker(painter, x2, y2, color, pts, why)
+                # [713차] 손익·사유 문자는 칩으로 옮겼다 — X 만 남긴다(같은 값을 두 번 쓰지 않는다)
+                self._draw_sd_exit_marker(painter, x2, y2, color, None, "")
                 if self._is_off_axis(g_px):
                     self._draw_off_axis_caret(painter, x2, y2, color,
                                               above=g_px > (self._axis_hi or 0))
@@ -12670,7 +12789,7 @@ class MinuteChartCanvas(QWidget):
                     logger.debug("[ChartDBG] 신동 계획 칩 실패: %s", _e)
 
     def _draw_sd_entry_marker(self, painter: QPainter, x: float, y: float,
-                              color: QColor, up: bool, rule: str = ""):
+                              color: QColor, up: bool, rule: str = "", glyph: bool = True):
         """속 빈 화살표(축 + 머리) + `신동` 글리프. 규칙(R2/R3)을 글리프 옆에 붙인다."""
         pen = QPen(color, 2.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
         painter.setPen(pen)
@@ -12689,6 +12808,8 @@ class MinuteChartCanvas(QWidget):
         painter.setBrush(Qt.NoBrush)          # 속 빈 머리 — 실측 배지(채움)와 구분
         painter.setPen(QPen(color, 1.6))
         painter.drawPolygon(head)
+        if not glyph:
+            return
         painter.setPen(color)
         painter.drawText(QRectF(x - S.p(22), gy, S.p(44), S.p(13)),
                          Qt.AlignCenter, self.SD_GLYPH + (rule[-2:] if rule else ""))
@@ -12712,16 +12833,15 @@ class MinuteChartCanvas(QWidget):
                          Qt.AlignCenter, "%+.2f %s" % (val, why))
 
     def _draw_markers(self, painter: QPainter, plot: QRectF, candles, index_map, lo: float, hi: float, padded_count: int):
-        # 🔴 「거래미륵」 토글은 **거래 표시 전부**를 끈다. 스팬만 끄면 마커가 남아
+        # 🔴 토글은 **그 주체의 거래 표시 전부**를 끈다. 스팬만 끄면 마커가 남아
         #   토글이 안 듣는 것처럼 보인다 — 실측으로 확인했다.
-        #   신동(_draw_shindong_layer)은 별개 레이어라 여기 걸리지 않는다 — 「거래신동」 토글이 따로 있다.
-        if not self._ov.get("trade_mireuk", True):
-            return
+        #   [713차] 주체 판정은 `_trade_shown` 하나로 — 스팬과 마커가 갈리면 같은 거래가
+        #   반쪽만 보인다.
         count = max(padded_count, 1)
         step = plot.width() / count
         occupied = []
 
-        if self._active_trade:
+        if self._active_trade and self._trade_shown(self._active_trade):
             marker = {
                 "ts": self._active_trade.get("entry_ts"),
                 "price": self._active_trade.get("entry_price"),
@@ -12730,6 +12850,8 @@ class MinuteChartCanvas(QWidget):
             self._draw_one_marker(painter, plot, candles, index_map, lo, hi, step, marker, occupied)
 
         for trade in self._completed_trades:
+            if not self._trade_shown(trade):
+                continue
             entry_marker = {
                 "ts": trade.get("entry_ts"),
                 "price": trade.get("entry_price"),
@@ -12748,7 +12870,7 @@ class MinuteChartCanvas(QWidget):
             self._draw_one_marker(painter, plot, candles, index_map, lo, hi, step, exit_marker, occupied)
 
         for marker in self._exit_markers:
-            if not marker.get("finalize"):
+            if not marker.get("finalize") and self._trade_shown(marker):
                 self._draw_one_marker(painter, plot, candles, index_map, lo, hi, step, marker, occupied)
 
     def _draw_one_marker(self, painter, plot, candles, index_map, lo, hi, step, marker, occupied):
@@ -13757,7 +13879,7 @@ class MinuteChartDialog(QDialog):
     def _set_status(self, sd_trades=None, sd_wired=False, sd_info=None):
         self._status.setText(
             "%s  |  휠 줌  |  드래그 이동  |  더블클릭 전체보기  |  크로스헤어"
-            "  |  신동(재생) ↑매수 청록 · ↓매도 호박 · 선=목표/손절 · 청산 ⊗  |  %s"
+            "  |  신동 = 면·칩(실거래 · 없는 날은 재생 점선) · 보유 중 선=목표/손절  |  %s"
             % (self.SHORTCUT_TEXT,
                self._sd_status_text(sd_trades or [], sd_wired, sd_info))
         )
@@ -13856,12 +13978,8 @@ class MinuteChartDialog(QDialog):
         self._layer_lbl.setStyleSheet(f"font-size:{S.f(10)}px;")
         self._layer_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         bar.addWidget(self._layer_lbl, 1)
-        # [626차] 「거래신동」 토글은 레이어 줄이 아니라 **여기** 둔다 — 레이어 줄은 최소 폭
-        #   예산(625차 `MIN_WIDTH_BUDGET_S`)이 S=0.8 에서 41px 모자랐다. 바로 왼쪽 배지가
-        #   「신동 n건」을 보여주므로 토글이 그 상태 옆에 있는 편이 읽기에도 낫다.
-        #   실시간 표시가 요구사항이라 **켜고 시작**한다.
-        bar.addWidget(self._make_ov_button(self._SD_OV_KEY, "거래신동",
-                                           MinuteChartCanvas.SD_LONG_COLOR, checked=True))
+        # [713차] 「거래신동」 토글은 레이어 줄(거래미륵·거래피터 사이)로 옮겼다(사용자 지시).
+        #   빈 자리는 배지(늘임 1)가 가져간다 — 따로 메우지 않는다.
         return bar
 
     # ── [오버레이 P3] 레이어 토글 바 ──────────────────────────────────
@@ -13879,6 +13997,11 @@ class MinuteChartDialog(QDialog):
 
     _SD_OV_KEY = "trade_shindong"
 
+    # [713차] 레이어 줄 단추 가로 여백. 12 → 8px — 「거래신동」을 이 줄로 들이면서
+    #   최소 폭 예산(`MIN_WIDTH_BUDGET_S`)을 지키는 값이다(단추 12개 × 4px × 2 = 96px 확보,
+    #   S=0.8 에서 단추 하나 폭 ≈ 75px). 늘리면 `test_625_chart_dialog_fit` 이 깨진다.
+    _OV_BTN_PAD_X = 8
+
     def _make_ov_button(self, key, txt, col, checked=False):
         """레이어 토글 단추 하나. `_ov_btn` 에 등록하고 캔버스 토글에 잇는다."""
         b = QPushButton(txt)
@@ -13887,8 +14010,10 @@ class MinuteChartDialog(QDialog):
         b.setStyleSheet(
             f"QPushButton{{background:{C['bg3']};color:{C['text2']};"
             f"border:1px solid {C['border']};border-radius:7px;"
-            f"padding:5px 12px;font-size:{S.f(10)}px;font-weight:600;}}"
+            f"padding:5px {self._OV_BTN_PAD_X}px;font-size:{S.f(10)}px;font-weight:600;}}"
             f"QPushButton:checked{{color:{col};border-color:{col};}}"
+            f"QPushButton:disabled{{color:{C['text2']};border-color:{C['border']};"
+            f"background:{C['bg2']};text-decoration:line-through;}}"
         )
         b.toggled.connect(lambda on, k=key: self._on_overlay_toggled(k, on))
         self._ov_btn[key] = b
@@ -13900,16 +14025,32 @@ class MinuteChartDialog(QDialog):
         lbl = QLabel("레이어")
         lbl.setStyleSheet(f"color:{C['text2']};font-size:{S.f(10)}px;")
         bar.addWidget(lbl)
+        _dormant = _mireuk_dormant()
         for _key, _txt, _col in self._OV_SPEC:
-            bar.addWidget(self._make_ov_button(_key, _txt, _col,
-                                               checked=(_key == "trade_mireuk")))
+            _b = self._make_ov_button(_key, _txt, _col,
+                                      checked=(_key == "trade_mireuk" and not _dormant))
+            if _key == "trade_mireuk" and _dormant:
+                # [713차] 미륵 휴면(MIREUK_ENGINE="off") — 그릴 미륵 거래가 생기지 않는다.
+                #   켜 둘 이유가 없고, 눌러 보게 두면 「미륵이 안 그려진다」로 오독한다.
+                #   캔버스 기본값(True)도 함께 내린다 — 단추만 끄면 캔버스는 그대로 그린다.
+                _b.setEnabled(False)
+                _b.setToolTip("미륵 휴면(MIREUK_ENGINE=\"off\") — 미륵 거래가 없다.\n"
+                              "신동·피터 실거래는 각자의 레이어(거래신동·거래피터)에 그린다.")
+                self._chart.set_overlay("trade_mireuk", False)
+            bar.addWidget(_b)
+            if _key == "trade_mireuk":
+                # [713차] 「거래신동」은 거래미륵·거래피터 **사이**(사용자 지시 2026-10-25).
+                #   실시간 표시가 요구사항이라 **켜고 시작**한다(626차).
+                bar.addWidget(self._make_ov_button(self._SD_OV_KEY, "거래신동",
+                                                   MinuteChartCanvas.SD_LONG_COLOR,
+                                                   checked=True))
         # 🔴 토글들 옆에서 흐린 라벨처럼 보이면 **누를 것으로 안 읽힌다** — 실측으로 확인했다.
         #   피터 레이어의 유일한 입구이므로 그 레이어 색(보라)을 그대로 입힌다.
         self._btn_peter = QPushButton("✎ 피터 입력…")
         self._btn_peter.setStyleSheet(
             f"QPushButton{{background:rgba(188,140,255,0.14);color:#BC8CFF;"
             f"border:1px solid #BC8CFF;border-radius:7px;"
-            f"padding:5px 12px;font-size:{S.f(10)}px;font-weight:600;}}"
+            f"padding:5px {self._OV_BTN_PAD_X}px;font-size:{S.f(10)}px;font-weight:600;}}"
             f"QPushButton:hover{{background:rgba(188,140,255,0.26);}}"
         )
         self._btn_peter.clicked.connect(self._open_peter_input)
@@ -13917,7 +14058,10 @@ class MinuteChartDialog(QDialog):
         # ── [MW0601 589차] 전일정 x축 토글 — 기본 꺼짐 ────────────────────────
         # 🔴 레이어 토글이 **아니다.** 무엇을 그리느냐가 아니라 가로 격자를 어디까지
         #   잡느냐를 바꾼다. 그래서 `_OV_SPEC` 에 넣지 않고 따로 세운다.
-        # 켜면 장 초반 화면 대부분이 빈칸이 되므로 기본값은 끈 상태다(사용자 결정).
+        # 켜면 장 초반 화면 대부분이 빈칸이 되므로 기본값은 끈 상태였다(사용자 결정).
+        # 🔴 [713차] **기본 켜짐**으로 바꿨다(사용자 지시 2026-10-25). 아래 `setChecked(True)` 는
+        #   `toggled` 연결 **뒤**에 둔다 — 앞에 두면 신호가 안 나가 가격·구조 레이어와
+        #   캔버스 축이 꺼진 채로 단추만 켜진다.
         # 기호는 이 UI에서 이미 쓰는 계열(■·▲▼)로 맞춘다 — 폰트에 없는 글자는
         # 두부(□)가 되고(`_no_long_mark` 참조) 버튼 라벨의 두부는 기능을 통째로 가린다.
         # ⚠ `⛶`(U+26F6)도 Malgun Gothic 에 **글리프는 있다**(QRawFont 실측 2026-09-16).
@@ -13938,10 +14082,11 @@ class MinuteChartDialog(QDialog):
         self._btn_fullx.setStyleSheet(
             f"QPushButton{{background:{C['bg3']};color:{C['text2']};"
             f"border:1px solid {C['border']};border-radius:7px;"
-            f"padding:5px 12px;font-size:{S.f(10)}px;font-weight:600;}}"
+            f"padding:5px {self._OV_BTN_PAD_X}px;font-size:{S.f(10)}px;font-weight:600;}}"
             f"QPushButton:checked{{color:{C['cyan']};border-color:{C['cyan']};}}"
         )
         self._btn_fullx.toggled.connect(self._on_full_session_toggled)
+        self._btn_fullx.setChecked(True)
         bar.addWidget(self._btn_fullx)
         # [625차 F1] 두 문구는 여기서 **만들기만** 하고 이 줄에 넣지 않는다 —
         #   `_build_note_bar` 가 줄바꿈되는 별도 줄에 싣는다(사유는 그쪽 주석).
@@ -14840,6 +14985,9 @@ class MinuteChartDialog(QDialog):
                     "reason": str(row["exit_reason"] or ""),
                     "direction": str(row["direction"] or "").upper(),
                     "outcome": "PARTIAL",
+                    # [713차] 주체 레이어 분기 + 신동 다리 합(같은 진입끼리 묶는다)
+                    "source": row["entry_source"],
+                    "entry_ts": entry_ts,
                 })
             else:
                 completed_trades.append({
@@ -14851,6 +14999,7 @@ class MinuteChartDialog(QDialog):
                     "exit_reason": str(row["exit_reason"] or ""),
                     "pnl_pts": float(row["pnl_pts"] or 0.0),
                     "outcome": self._chart._infer_exit_outcome(True, row["pnl_pts"], row["exit_reason"]),
+                    "source": row["entry_source"],     # [713차] 주체 레이어 분기
                 })
         sd_trades, sd_wired, sd_info = self._load_shindong_trades(self._session_date)
         self._sd_info = sd_info
@@ -15071,11 +15220,11 @@ class MinuteChartDialog(QDialog):
         self._chart.set_direction_at(ts_key, direction)
         self._bump_live_counts()
 
-    def record_entry(self, direction: str, price: float, ts=None):
+    def record_entry(self, direction: str, price: float, ts=None, source=None):
         if not self._live_mode:
             return   # 복기 모드 — 실시간 유입 차단
         self.maybe_roll_session()
-        self._chart.record_entry(direction, price, ts=ts)
+        self._chart.record_entry(direction, price, ts=ts, source=source)
 
     def record_exit(
         self,
@@ -15098,11 +15247,11 @@ class MinuteChartDialog(QDialog):
             direction=direction,
         )
 
-    def sync_active_position(self, direction: str, price: float, ts=None):
+    def sync_active_position(self, direction: str, price: float, ts=None, source=None):
         if not self._live_mode:
             return   # 복기 모드 — 실시간 유입 차단
         self.maybe_roll_session()
-        self._chart.sync_active_trade(direction, price, ts=ts)
+        self._chart.sync_active_trade(direction, price, ts=ts, source=source)
 
     def clear_active_position(self):
         if not self._live_mode:
@@ -16526,8 +16675,21 @@ class MireukDashboard(QMainWindow):
         """파이프라인 완료 후 봉 방향예측 색상 업데이트."""
         self._minute_chart_dialog.set_direction_at(ts_key, direction)
 
+    def _live_trade_source(self):
+        """[713차] 지금 거래주체의 진입 출처(`entry_source` 값). 모르면 None — 「미륵」으로 위장하지 않는다.
+
+        차트가 실시간 진입을 주체별 레이어에 싣는 데만 쓴다. 정본은 trades.db 이고,
+        다음 재적재(`reload_today`)가 DB 의 `entry_source` 로 다시 가른다.
+        """
+        try:
+            from strategy.runtime import trade_principal as _tp
+            return _tp.PRINCIPAL_SOURCE.get(self._principal)
+        except Exception:
+            return None
+
     def minute_chart_record_entry(self, direction: str, price: float, ts=None):
-        self._minute_chart_dialog.record_entry(direction, price, ts=ts)
+        self._minute_chart_dialog.record_entry(direction, price, ts=ts,
+                                               source=self._live_trade_source())
 
     def minute_chart_refresh_peter(self):
         """[MW0601 668차] 피터2 실시간 사료 갱신 → 당일 1분봉의 피터맥점·거래피터 레이어."""
@@ -16555,7 +16717,8 @@ class MireukDashboard(QMainWindow):
         )
 
     def minute_chart_sync_active_position(self, direction: str, price: float, ts=None):
-        self._minute_chart_dialog.sync_active_position(direction, price, ts=ts)
+        self._minute_chart_dialog.sync_active_position(direction, price, ts=ts,
+                                                       source=self._live_trade_source())
 
     def minute_chart_clear_active_position(self):
         self._minute_chart_dialog.clear_active_position()
