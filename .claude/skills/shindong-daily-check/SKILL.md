@@ -2,6 +2,7 @@
 name: shindong-daily-check
 description: 신동 주체(MW0602 Sindong-V4 · MIREUK_ENGINE=off) 일일 운영 점검. 장전·장후 2회(장중은 주문·청산 경로 배포 첫날만). 신동 V4 실거래가 절대원칙·사전등록 규격대로 집행됐는지 로그·shindong.db·trades.db·브로커 net 으로 심문하고, 이상점 → Fix 계획 → 고도화 → 신동 사후검증 → 수익률 향상방안 → 사용자 조치를 하루 한 파일로 낸다. 장후 리포트는 17:23 자동조치와 18:10 종합 메일이 기계적으로 읽는다. 트리거 - "신동 점검", "신동 장전 점검", "신동 장후 점검", "신동 장중 점검", "일일 점검"(Sindong-V4 에서), "shindong daily check".
 ---
+<!-- rev: 2026-10-26a (663차 후속 — F-SD-1: 국면 절 append 자체 검증 `--verify-append` · 앞 국면 절 누락 §0 적신호) -->
 <!-- rev: 2026-10-25a (661차 후속5 — D6 신설: 장전·장후 2회 · 장중은 배포 첫날만 · 장중 확인 항목 장후 판정 · 종합 메일 절 규약) -->
 
 # 신동 일일 운영 점검 (MW0602 · Sindong-V4)
@@ -142,3 +143,7 @@ Fix·고도화 항목마다 한 줄로 쓴다: `등급: A(계측·도구 — 동
 - [ ] 「장중 확인 항목」 소절을 썼나 · 3거래일 연속 미발생을 격상했나
 - [ ] Fix·고도화마다 등급 표식이 있나 · C 대상을 A/B 로 쓰지 않았나
 - [ ] Cowork 세션에서 커밋하지 않았나
+- [ ] **리포트에 이 국면 절이 실제로 들어갔나** — 장중의 「1줄 생략」도 예외 없다(2026-10-26 장중 절 누락, F-SD-1):
+  `python .claude/skills/shindong-daily-check/scripts/collect_shindong_evidence.py --phase <pre|intra|post> --pc MW0602 --verify-append`
+  → `FAIL`(exit 1)이면 append 를 다시 하고, 그래도 안 되면 세션 마지막 답변에 「리포트 append 실패」를 적는다.
+  다음 국면 수집기 §0 도 앞 국면 절 누락을 적신호로 띄운다(장전은 직전 거래일 전 국면).

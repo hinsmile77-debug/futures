@@ -266,6 +266,35 @@ def prereg_progress(root, day):
     return rows[0] if rows else None
 
 
+# 리포트 국면 절 — 「증거는 모였는데 리포트에 절이 안 들어갔다」 검출 (F-SD-1, 2026-10-26 장중 절 누락)
+PHASE_ORDER = ("pre", "intra", "post")
+PHASE_HEADINGS = {"pre": u"# 장전(pre)", "intra": u"# 장중(intra)", "post": u"# 장후(post)"}
+
+
+def report_phase_sections(root, day, pcid):
+    """국면별 {evidence: 증거 파일 수, section: 리포트에 절 헤딩이 있는가(None=리포트 없음)}."""
+    d = os.path.join(root, "docs", "정기점검", "매일점검")
+    tok = day.strftime("%Y%m%d")
+    lines = _read_lines(os.path.join(d, "%s-%s-점검리포트.md" % (pcid, tok)))
+    try:
+        names = os.listdir(d)
+    except Exception:
+        names = []
+    out = {}
+    for ph in PHASE_ORDER:
+        pre_ = "evidence_sd_%s-%s_%s" % (pcid, tok, ph)
+        ev = sum(1 for n in names if n.startswith(pre_) and n.endswith(".md"))
+        sec = None if lines is None else any(l.strip() == PHASE_HEADINGS[ph] for l in lines)
+        out[ph] = {"evidence": ev, "section": sec}
+    return out
+
+
+def missing_phase_sections(root, day, pcid, phases):
+    """증거 파일은 있는데 리포트에 절 헤딩이 없는 국면 목록."""
+    st = report_phase_sections(root, day, pcid)
+    return [ph for ph in phases if st[ph]["evidence"] and not st[ph]["section"]]
+
+
 # ------------------------------------------------------------------ 렌더
 def build(root, day, phase, pcid, pclabel):
     A = []
@@ -509,6 +538,14 @@ def build(root, day, phase, pcid, pclabel):
     if not lg:
         a("- 없음")
     a("")
+    # 앞 국면 절 누락 — 오늘의 앞 국면, 장전이면 직전 거래일 전 국면
+    checks = [(day, PHASE_ORDER[:PHASE_ORDER.index(phase)])]
+    if phase == "pre" and prev:
+        checks.append((prev, PHASE_ORDER))
+    for dd, phs in checks:
+        for ph in missing_phase_sections(root, dd, pcid, phs):
+            flags.append("%s 리포트에 `%s` 절이 없다 — 증거 파일(`evidence_sd_%s-%s_%s`)은 있다. 그 국면 세션이 append 에 실패했다(F-SD-1)"
+                         % (dd.isoformat(), PHASE_HEADINGS[ph], pcid, dd.strftime("%Y%m%d"), ph))
     # §0 적신호를 맨 위로
     head_ = ["## 0. 자동 적신호 (출발점이지 결론이 아니다)", ""]
     if not ok_td:
@@ -526,6 +563,8 @@ def main(argv=None):
     ap.add_argument("--pc", default=None)
     ap.add_argument("--out", default=None)
     ap.add_argument("--out-auto", action="store_true")
+    ap.add_argument("--verify-append", action="store_true",
+                    help="리포트를 쓴 뒤 그 국면 절 헤딩이 실제로 들어갔는지만 확인(없으면 exit 1). 수집은 하지 않는다")
     a = ap.parse_args(argv)
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -536,6 +575,13 @@ def main(argv=None):
     root = CE.find_repo_root(os.getcwd()) or CE.find_repo_root(_HERE)
     day = _date.fromisoformat(a.date) if a.date else datetime.now().date()
     pcid, pclabel = CE.pc_id()
+    if a.verify_append:
+        st = report_phase_sections(root, day, pcid)[a.phase]
+        ok = bool(st["section"])
+        print("[collect_shindong_evidence] verify-append %s %s: %s (증거 파일 %d개 · 리포트 %s)"
+              % (day.isoformat(), a.phase, "OK" if ok else "FAIL — `%s` 절 없음" % PHASE_HEADINGS[a.phase],
+                 st["evidence"], "없음" if st["section"] is None else "있음"))
+        return 0 if ok else 1
     txt = build(root, day, a.phase, pcid, pclabel)
     out = a.out
     if a.out_auto:
