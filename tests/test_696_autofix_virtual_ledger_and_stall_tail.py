@@ -111,7 +111,8 @@ def test_1a_virtual_patterns_do_not_double_count(pats):
 
 def test_1b_counts_10_15(mod, pats):
     """10-15 지문: 진입 4 = 피터2 1 + 가상 3 · 엔진 0 (종전엔 엔진 1로 셌다)."""
-    assert mod.count_entry_sources(_day(pats)) == {"엔진": 0, "피터2": 1, "가상": 3, "추정": 0}
+    # [717차 후속 / 10-23 F-2] 「신동」 출처 추가 — 신동 표식이 없으므로 0.
+    assert mod.count_entry_sources(_day(pats)) == {"엔진": 0, "피터2": 1, "신동": 0, "가상": 3, "추정": 0}
 
 
 def test_1c_virtual_beats_horizon(mod, pats):

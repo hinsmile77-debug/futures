@@ -33,7 +33,7 @@ import sqlite3
 import subprocess
 import sys
 from datetime import date as _date
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _CE_DIR = os.path.normpath(os.path.join(_HERE, "..", "..", "mireuk-daily-check", "scripts"))
@@ -86,6 +86,41 @@ _MAIL_RX = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 
 
 # ------------------------------------------------------------------ 기초
+KST = timezone(timedelta(hours=9))
+
+
+def now_kst():
+    """[717차 후속 / 10-26 F-1] KST 현재 시각(naive) — 컨테이너 시계가 UTC 여도 거래일을 맞춘다.
+
+    Cowork 샌드박스는 UTC 라 KST 00:00–09:00(예약 08:51·12:25·16:15 중 08:51 포함)에
+    `datetime.now().date()` 가 하루 전이 된다(2026-10-26 장전 `evidence_sd_…-20261025_pre.md` 실측).
+    Python 3.7 호환을 위해 zoneinfo 대신 고정 +09:00 을 쓴다(한국은 일광절약시간이 없다).
+    """
+    return datetime.now(KST).replace(tzinfo=None)
+
+
+def strike_status(root, day):
+    """[717차 후속 / 10-26 G-5] 9842 행사가별 투자자 수집 상태를 유형별로 센다.
+
+    반환 {유형: 건수} · 실패 = None(미측정). 유형은 `ok`(전 행 수신) 와 실패 `msg` 접두사
+    (`SKIP_QUOTA` · `BLOCKED` · `EMPTY` · `truncated` · 그 밖 = `기타`)다 — 704-5 사전 체크리스트는
+    BLOCKED/EMPTY 만 실패로 봐서 `SKIP_QUOTA`(쿼터 보존 자발 생략)가 안 보였다.
+    """
+    rows = db_rows(root, "data/db/strike_investor.db",
+                   "SELECT ok, COALESCE(msg, '') FROM strike_investor_flow_status WHERE trade_date=?",
+                   (day.isoformat(),))
+    if rows is None:
+        return None
+    out = {}
+    for ok, msg in rows:
+        if ok:
+            k = "ok"
+        else:
+            k = next((p for p in ("SKIP_QUOTA", "BLOCKED", "EMPTY", "truncated") if msg.startswith(p)), "기타")
+        out[k] = out.get(k, 0) + 1
+    return out
+
+
 def _read_lines(path):
     try:
         with io.open(path, encoding="utf-8", errors="replace") as f:
@@ -313,7 +348,7 @@ def risk_window(root, day):
 def build(root, day, phase, pcid, pclabel):
     A = []
     a = A.append
-    now = datetime.now()
+    now = now_kst()
     ok_td, why_td = is_trading_day(root, day)
     prev = prev_trading_day(root, day)
     logs = today_logs(root, day)
@@ -524,6 +559,20 @@ def build(root, day, phase, pcid, pclabel):
             h = dedup(grep(logs, pat))
             a("- %s: %d건%s" % (lab, len(h), (" — 예: `%s`" % tr(h[0][1][11:], 150)) if h else ""))
         a("")
+        # [717차 후속 / 10-26 G-5] 매매 미배선 참고 데이터 — 판정에 관여하지 않는다(관찰).
+        a("### 4-4. 행사가별 투자자 수집(9842) 상태 — 유형별")
+        a("")
+        ss = strike_status(root, day)
+        if ss is None:
+            a("- 미측정(`data/db/strike_investor.db` 없음·조회 실패)")
+        elif not ss:
+            a("- 행 없음(수집 미가동 또는 휴장)")
+        else:
+            tot = sum(ss.values())
+            order = ["ok", "SKIP_QUOTA", "BLOCKED", "EMPTY", "truncated", "기타"]
+            a("- 전체 %d건 · %s" % (tot, " · ".join("`%s` %d(%.1f%%)" % (k, ss[k], 100.0 * ss[k] / tot)
+                                                  for k in order if k in ss)))
+        a("")
 
     # §5 장후
     if phase == "post":
@@ -593,7 +642,7 @@ def main(argv=None):
     if a.pc:
         CE.set_pc_override(a.pc)
     root = CE.find_repo_root(os.getcwd()) or CE.find_repo_root(_HERE)
-    day = datetime.strptime(a.date, "%Y-%m-%d").date() if a.date else datetime.now().date()
+    day = datetime.strptime(a.date, "%Y-%m-%d").date() if a.date else now_kst().date()
     pcid, pclabel = CE.pc_id()
     txt = build(root, day, a.phase, pcid, pclabel)
     out = a.out
