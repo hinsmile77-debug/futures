@@ -257,7 +257,9 @@ def run_trade(d: DayFrame, side, t0, stop, t1, t2, e2=False,
 # ── 하루 ────────────────────────────────────────────────────────────────
 def run_day(d: DayFrame, L, variant: str = "MAIN") -> Dict[str, Any]:
     """하루 판정. 반환: {"decision": {...}, "trades": [...]}."""
-    e2 = f2 = variant == "SHADOW_E2F2"
+    e2 = variant == "SHADOW_E2F2"
+    # [719차] SHADOW_F2 = SHADOW_V2(트레일 없음) + R3 F2 만(E2 없음) — 분석명 「V2+F2」. F2 판정은 E2F2 와 같은 줄을 쓴다.
+    f2 = variant in ("SHADOW_E2F2", "SHADOW_F2")
     # [632차] SHADOW_X4NF — R3 만 바꾼다: 1차 목표 X4 + 같은 맥점 방향 뒤집기(flip) 금지. R2 는 MAIN 과 같다.
     # [MW0602 598차] SHADOW_X4NFA — X4NF 전부 + 깨진 맥점 진입 금지(A). R2 는 MAIN 과 같다.
     broken_guard = variant == "SHADOW_X4NFA"

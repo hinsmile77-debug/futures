@@ -88,8 +88,8 @@ def test_i1_r2_same_across_variants(d):
         assert all(spec.R2D7_CONF_START <= t["entry_ts"] <= spec.R2D7_CONF_END
                    for t in r[v]["trades"] if t["rule"] == "R2")
     net = {v: [round(engine.trade_net(t)) for t in r[v]["trades"] if t["rule"] == "R2"]
-           for v in ("MAIN", "SHADOW_V2", "SHADOW_X4NF")}
-    assert net["SHADOW_X4NF"] == net["MAIN"] == net["SHADOW_V2"], net
+           for v in ("MAIN", "SHADOW_V2", "SHADOW_X4NF", "SHADOW_F2")}   # [719차] F2 는 R3 에만 걸린다
+    assert net["SHADOW_X4NF"] == net["MAIN"] == net["SHADOW_V2"] == net["SHADOW_F2"], net
 
 
 @pytest.mark.parametrize("d", _DAYS or ["-"])
@@ -114,11 +114,12 @@ def test_i3_x4nf_first_target_not_farther(d):
 
 
 @pytest.mark.parametrize("d", _DAYS or ["-"])
-def test_i4_e2f2_r3_follows_day_flow(d):
+@pytest.mark.parametrize("v", ["SHADOW_E2F2", "SHADOW_F2"])   # [719차] SHADOW_F2 도 같은 F2
+def test_i4_e2f2_r3_follows_day_flow(d, v):
     day = _day(d)
     dd = day["d"]
     base = dd.sp.get(spec.CONF_BASE)
-    for t in day["results"]["SHADOW_E2F2"]["trades"]:
+    for t in day["results"][v]["trades"]:
         if t["rule"] != "R3":
             continue
         assert base is not None and t["touch_ts"] in dd.sp

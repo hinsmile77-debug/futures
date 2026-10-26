@@ -22,7 +22,7 @@ from strategy.shindong import engine, spec  # noqa: E402
 
 def test_preregistered():
     assert (spec.R2D7_CONF_BASE, spec.R2D7_CONF_START, spec.R2D7_CONF_END) == ("09:06", "09:07", "09:16")
-    assert spec.VARIANTS[-1] == "SHADOW_R2D7"
+    assert "SHADOW_R2D7" in spec.VARIANTS                                # [719차] 뒤에 SHADOW_F2 가 붙었다
     assert spec.LATE_SHADOW_START["SHADOW_R2D7"] == "2026-10-27"         # [718차] v4 재시작(714차 등록 10-26)
     assert spec.SPEC_VERSION == "SD-2026-10-27-v4"                       # [718차] v4 — R2D7 정의(v3 MAIN 그대로 + R2 창)는 무변경
     assert (spec.PREMARKET_LAST, spec.CONF_BASE, spec.CONF_START, spec.CONF_END) == \

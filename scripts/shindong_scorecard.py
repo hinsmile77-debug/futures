@@ -5,7 +5,7 @@
 
 무엇을 내나
 -----------
-1. 변형(spec.VARIANTS — v4: MAIN / SHADOW_V3 / SHADOW_V2 / SHADOW_E2F2 / SHADOW_X4NF / SHADOW_X4NFA) × 규칙(R2 / R3)별 거래 수 · 승 · 순손익 · 거래당
+1. 변형(spec.VARIANTS — v4: MAIN / SHADOW_V3 / SHADOW_V2 / SHADOW_E2F2 / SHADOW_X4NF / SHADOW_X4NFA / … / SHADOW_F2) × 규칙(R2 / R3)별 거래 수 · 승 · 순손익 · 거래당
 2. 규칙가 vs **실현가능가** — 라이브 행은 처음 알아챈 시각의 최신 종가(`detect_px`)로
    진입했다고 보고 같은 청산가로 다시 잰다. 09:00·09:01 흐름은 09:02 수집(PEAK_SKIP)에서야
    들어오므로 R2 는 구조적으로 늦게 탐지된다 — 그 비용이 여기서 드러난다.
@@ -143,7 +143,10 @@ def _r1_hits(days, raw_db):
     return out
 
 
-def build(db=SHINDONG_DB, since=spec.SCORING_START, raw_db=RAW_DATA_DB):
+REGULAR_DB = os.path.join(os.path.dirname(SHINDONG_DB), "regular_candles.db")   # [719차 후속] GAPSW 갭 원천(장후 수집)
+
+
+def build(db=SHINDONG_DB, since=spec.SCORING_START, raw_db=RAW_DATA_DB, reg_db=REGULAR_DB):
     lines = []
     w = lines.append
     w("# 신동 채점표 (%s 기준)" % _dt.date.today().isoformat())
@@ -230,11 +233,17 @@ def build(db=SHINDONG_DB, since=spec.SCORING_START, raw_db=RAW_DATA_DB):
     # [632차] 9/28 결과를 보고 만든 섀도(X4NF·TR44) — 같은 기준으로 MAIN 과 비교
     sec = 4
     for v in sorted(spec.LATE_SHADOW_START):
-        w("## %d. %s 판정 (%s 사전등록 · v4 재채점)" % (sec, v, {"SHADOW_X4NFA": "598차", "SHADOW_V2": "699차", "SHADOW_V3": "718차 되돌림", "SHADOW_ATRS": "700차", "SHADOW_R2D7": "714차"}.get(v, "632차")))
+        w("## %d. %s 판정 (%s 사전등록 · v4 재채점)" % (sec, v, {"SHADOW_X4NFA": "598차", "SHADOW_V2": "699차", "SHADOW_V3": "718차 되돌림", "SHADOW_ATRS": "700차", "SHADOW_R2D7": "714차", "SHADOW_F2": "719차"}.get(v, "632차")))
         w("")
         w("\n".join(_late_judge(live, days, v)))
         w("")
         sec += 1
+    w("## %d. GAPSW 합성 줄 판정 (719차 후속 사전등록 — 갭 ≤ %.1f%% → %s, 그 밖 → %s)" % (
+        sec, spec.GAPSW_DOWN_PCT, spec.GAPSW_DOWN_VARIANT, spec.GAPSW_ELSE_VARIANT))
+    w("")
+    w("\n".join(_gapsw_judge(live, days, reg_db)))
+    w("")
+    sec += 1
     w("## %d. R1 방향 적중률 (표시 — 판정 아님)" % sec)
     w("")
     w("\n".join(_r1_section(_r1_hits(days, raw_db))))
@@ -402,14 +411,85 @@ def _late_judge(live, days, variant):
     return out
 
 
+def _gap_pct(reg_db, day):
+    """[719차 후속] 10100 08:45 첫 봉 시가 ÷ 전 거래일 마지막 봉 종가 − 1(%). 원천 없음 → None(미측정 ≠ 0)."""
+    if not reg_db or not os.path.exists(reg_db):
+        return None
+    con = sqlite3.connect("file:%s?mode=ro" % reg_db.replace("\\", "/"), uri=True)
+    try:
+        o = con.execute("SELECT open FROM regular_candles WHERE code=? AND trade_date=? ORDER BY ts LIMIT 1",
+                        (spec.GAPSW_GAP_CODE, day)).fetchone()
+        pc = con.execute("SELECT close FROM regular_candles WHERE code=? AND trade_date<? ORDER BY ts DESC LIMIT 1",
+                         (spec.GAPSW_GAP_CODE, day)).fetchone()
+    finally:
+        con.close()
+    if not o or not pc or not o[0] or not pc[0]:
+        return None
+    return (float(o[0]) / float(pc[0]) - 1.0) * 100.0
+
+
+def _gapsw_judge(live, days, reg_db):
+    """[719차 후속] 합성 줄 — 갭으로 그날 변형을 고른 손익 vs MAIN. 기록 행에서 원 단위로 계산한다."""
+    dn, el = spec.GAPSW_DOWN_VARIANT, spec.GAPSW_ELSE_VARIANT
+    start = spec.GAPSW_SCORING_START
+    have = {}
+    for d in days:
+        if d["trade_date"] >= start:
+            have.setdefault(d["trade_date"], set()).add(d["variant"])
+    xdays = sorted(k for k, v in have.items() if {"MAIN", dn, el} <= v)
+    if not xdays:
+        return ["- 기록 없음 — 채점 시작 %s 이후 MAIN·%s 가 함께 기록된 날이 없다(미측정 ≠ 0)" % (start, dn)]
+
+    def by_day(v):
+        m = {k: 0.0 for k in xdays}
+        for t in live:
+            if t["variant"] == v and t["trade_date"] in m and t["status"] == "CLOSED":
+                m[t["trade_date"]] += float(t.get("net_krw") or 0)
+        return m
+    mm, dd, ee = by_day("MAIN"), by_day(dn), by_day(el)
+    out = ["| 날짜 | 갭 | 고른 변형 | MAIN | %s | **GAPSW** |" % dn, "|---|---|---|---|---|---|"]
+    gs, miss = {}, []
+    for k in xdays:
+        g = _gap_pct(reg_db, k)
+        if g is None:
+            miss.append(k)
+            out.append("| %s | 미측정 | - | %s | %s | 미측정 |" % (k, _fmt(mm[k]), _fmt(dd[k])))
+            continue
+        pick = dn if g <= spec.GAPSW_DOWN_PCT else el
+        gs[k] = dd[k] if pick == dn else ee[k]
+        out.append("| %s | %+.2f%% | %s | %s | %s | **%s** |" % (k, g, pick, _fmt(mm[k]), _fmt(dd[k]), _fmt(gs[k])))
+    out.append("")
+    if miss:
+        out.append("- ⚠ 갭 미측정 %d일(%s) — 판정 일수에서 뺀다(`regular_candles.db` 장후 수집 확인)" % (
+            len(miss), ", ".join(miss)))
+    if not gs:
+        return out + ["- 판정: **대기** — 갭 측정일 0"]
+    mk = {k: mm[k] for k in gs}
+    dk = {k: dd[k] for k in gs}
+    out.append("| 변형 | 측정일 | 순손익(원) | 최악일(원) |")
+    out.append("|---|---|---|---|")
+    for lab, m in (("MAIN", mk), ("**GAPSW**", gs), ("%s 항상(참고 — 판정 아님)" % dn, dk)):
+        out.append("| %s | %d | %s | %s |" % (lab, len(m), _fmt(sum(m.values())), _fmt(min(m.values()))))
+    out.append("")
+    if len(gs) < spec.X4NF_JUDGE_AFTER_DAYS:
+        out.append("- 판정: **대기** — %d/%d 측정일" % (len(gs), spec.X4NF_JUDGE_AFTER_DAYS))
+    else:
+        ok = sum(gs.values()) > sum(mk.values()) and min(gs.values()) > min(mk.values())
+        out.append("- 판정: **%s** (기준: 순손익 우위 **그리고** 최악일 개선)" % (
+            "채택 후보 — 운영 전환은 새 SPEC_VERSION 개정으로만" if ok else "폐기"))
+    out.append("- 합성 줄이다 — 실주문은 MAIN 그대로이고, 기록된 두 변형 중 하루 단위로 고른 값이다.")
+    return out
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--since", default=spec.SCORING_START)
     ap.add_argument("--db", default=SHINDONG_DB)
     ap.add_argument("--raw-db", dest="raw_db", default=RAW_DATA_DB)
+    ap.add_argument("--reg-db", dest="reg_db", default=REGULAR_DB)
     ap.add_argument("--out")
     a = ap.parse_args(argv)
-    txt = build(a.db, a.since, a.raw_db)
+    txt = build(a.db, a.since, a.raw_db, a.reg_db)
     if a.out:
         with open(a.out, "w", encoding="utf-8") as f:
             f.write(txt + "\n")

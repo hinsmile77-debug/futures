@@ -162,7 +162,8 @@ def test_tr44_preregistration():
     # [718차] v4 — 인과 R3 선택이 모든 변형을 바꾸므로 전부 10-27 부터 다시 센다(v3 창: 10-21 · R2D7 10-26)
     assert spec.LATE_SHADOW_START == {"SHADOW_V3": "2026-10-27", "SHADOW_V2": "2026-10-27",
                                       "SHADOW_X4NF": "2026-10-27", "SHADOW_X4NFA": "2026-10-27",
-                                      "SHADOW_ATRS": "2026-10-27", "SHADOW_R2D7": "2026-10-27"}
+                                      "SHADOW_ATRS": "2026-10-27", "SHADOW_R2D7": "2026-10-27",
+                                      "SHADOW_F2": "2026-10-27"}   # [719차] F2(V2+F2) 10-26 장후 등록
 
 
 def _frame(bars):

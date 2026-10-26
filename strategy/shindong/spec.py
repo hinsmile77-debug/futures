@@ -111,8 +111,14 @@ SLIP_TICK = 0.02              # 시장가 1틱 — 진입 + (손절·시간 청�
 # MAIN       = v3 MAIN(R3 트레일 4/4) + R3 F2X 방향 필터 — 실집행 대상. R2 는 무변경.
 # SHADOW_V3  = 구 MAIN(v3, 필터 없음) 그대로 — **되돌림 기준**(v3 때 SHADOW_V2 와 같은 역할).
 # 나머지 섀도는 등록 정의 그대로(F2X 를 쓰지 않는다). 모두 인과 R3 선택 위에서 다시 센다.
+# SHADOW_F2  = [2026-10-26 MW0601 719차 / 사용자 결정 · 장후 등록] SHADOW_V2(트레일 없음) 그대로 + **R3 F2 만**
+#   (터치 분의 09:00 대비 콜−풋 Δ > 0 → 매도만, 그 밖 → 매수만 · 중립 폭 없음 · E2 없음). 분석명 「V2+F2」.
+#   값은 하나도 새로 정하지 않았다 — F2 는 SHADOW_E2F2(9/24 사전등록)의 판정 줄을 그대로 쓴다.
+#   근거: 인과 엔진 22거래일(09-21–10-26) 가상 2계약 +796.7만 / 최악 −256.7 / MDD −266.0 — 분석 1위였으나
+#   v4 VARIANTS 에 없어 표본 밖 검증이 끊길 뻔했다. 갭하락일 평균 +85.9 vs v3 MAIN −34.6(사후 관찰 — 판정 아님).
+#   `docs/미륵이고도화3/신동2/신동2_SHADOW_F2_사전등록_MW0601-20261026.md`. MAIN 값 무변경 → SPEC_VERSION 유지.
 VARIANTS = ("MAIN", "SHADOW_V3", "SHADOW_V2", "SHADOW_E2F2", "SHADOW_X4NF", "SHADOW_X4NFA", "SHADOW_ATRS",
-            "SHADOW_R2D7")
+            "SHADOW_R2D7", "SHADOW_F2")
 F2X_SP_BAND = 50              # [v4] 수급 중립 폭(백만원) — |09:00 대비 콜−풋 Δ| ≤ 이것이면 수급 판정 없음
 F2X_EMA_FAST = 20             # [v4] 가격 EMA 빠름(분)
 F2X_EMA_SLOW = 60             # [v4] 가격 EMA 느림(분)
@@ -156,7 +162,25 @@ X4NF_JUDGE_AFTER_DAYS = 10    # 채점 시작 후 이 거래일 수가 차면 MA
 LATE_SHADOW_START = {"SHADOW_V3": SCORING_START, "SHADOW_V2": SCORING_START, "SHADOW_X4NF": X4NF_SCORING_START,
                      "SHADOW_X4NFA": SCORING_START,
                      "SHADOW_ATRS": SCORING_START,
-                     "SHADOW_R2D7": SCORING_START}
+                     "SHADOW_R2D7": SCORING_START,
+                     "SHADOW_F2": SCORING_START}     # [719차] 10-26 장후 등록 → v4 첫날 10-27 부터(22일 분석은 표본 밖)
+
+# ── [719차 후속] 합성 줄 GAPSW(사전등록 — 결과 보기 전에 고정) ───────────────────────
+# 질문: 「08:45 시가 갭으로 그날 따를 변형을 고르면」 v4 MAIN 보다 나은가.
+# 정의: 갭 = 10100 연결선물 08:45 첫 봉 시가 ÷ 전 거래일 마지막 봉 종가 − 1(`regular_candles.db`, 장후 수집).
+#   갭 ≤ GAPSW_DOWN_PCT(%) 인 날 → GAPSW_DOWN_VARIANT 의 그날 손익, 그 밖 → GAPSW_ELSE_VARIANT.
+#   **새 섀도가 아니다** — 이미 기록되는 두 변형 중 하루 단위로 고르기만 하므로 진입 순서가 바뀌지 않고
+#   채점표가 기록 행에서 원 단위로 계산한다. 갭 미수집일은 미측정(판정 일수에서 뺀다 · 개수 표기).
+# 판정: 측정일 X4NF_JUDGE_AFTER_DAYS(10) 이 차면 GAPSW 순손익 > MAIN **그리고** 최악일 > MAIN → 「채택 후보」
+#   (자동 운영 전환 없음 — 채택하려면 새 SPEC_VERSION 개정). 갭 반대 방향 R3 스킵 원안은 22일 반사실에서
+#   손해(갭하락일 F2 +930.3 → +550.3만)라 등록하지 않았다.
+# 근거(표본 안 — 판정 아님): 22일 +1,030.9만 / 최악 −190.6 / MDD −190.6 vs v4 MAIN +637.9 / −190.6 / −190.6.
+#   `docs/미륵이고도화3/신동2/신동2_GAPSW_합성줄_사전등록_MW0601-20261026.md`.
+GAPSW_DOWN_PCT = -0.5
+GAPSW_DOWN_VARIANT = "SHADOW_F2"
+GAPSW_ELSE_VARIANT = "MAIN"
+GAPSW_GAP_CODE = "10100"
+GAPSW_SCORING_START = SCORING_START
 # [598차] X4NFA 는 9/29 결과를 보고 만들었다 → 채점은 **9/30** 부터(9/29 행은 표본 제외).
 #   판정은 X4NF 와 같다: 10거래일 뒤 MAIN 대비 순손익 우위 **그리고** 최악일 개선. 둘 다 아니면 폐기.
 #   X4NF 대비 차이(= A 필터 몫)는 채점표에 **표시만** 한다 — 판정 기준이 아니다(다중비교 방지).

@@ -44,7 +44,8 @@ VLABEL = {"MAIN": "MAIN(v4 본안·트레일 4/4·F2X)", "SHADOW_V3": "V3(구 MA
           "SHADOW_X4NF": "X4NF(가까운목표·flip금지)", "SHADOW_TR44": "TR44(R3 트레일 4/4 · 종료)",
           "SHADOW_X4NFA": "X4NFA(X4NF+깨진맥점금지)",
           "SHADOW_ATRS": "ATRS(R3 손절 0.25×ATR14)",   # [700차]
-          "SHADOW_R2D7": "R2D7(R2 확정 09:07–09:16)"}   # [714차]
+          "SHADOW_R2D7": "R2D7(R2 확정 09:07–09:16)",   # [714차]
+          "SHADOW_F2": "F2(V2+R3 흐름 한쪽만)"}   # [719차]
 REASON = {"TP1": "1차", "TP2": "최종", "SL": "손절", "BE": "본전", "TIME": "시간", "TR": "트레일"}
 
 
@@ -151,7 +152,7 @@ def attribute(main: List[Dict], sh: List[Dict], variant: str, d: "E.DayFrame") -
         if r["rule"] == "R2" and variant == "SHADOW_R2D7":   # [714차]
             why = "R2 확정 창 이동(09:07–09:16)"
         if r["rule"] == "R3":
-            if variant == "SHADOW_E2F2" and sp0 is not None and r["entry_ts"] in d.sp:
+            if variant in ("SHADOW_E2F2", "SHADOW_F2") and sp0 is not None and r["entry_ts"] in d.sp:   # [719차] F2
                 trend = -1 if d.sp[r["entry_ts"]] - sp0 > 0 else 1
                 if trend != r["side"]:
                     why = "F2 차단(당일 흐름 역방향)"
