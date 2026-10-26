@@ -160,6 +160,11 @@ try {
         if ($p -ne 10) { Log ("no new events (rc={0}) -> no claude" -f $p); exit 0 }
         $skillPhase = 'position'
     }
+    # 3b) [2026-10-27 peter-method] score the P-layer/box/peter views deterministically before claude reads them
+    if ($Phase -eq 'postmarket') {
+        $pmr = Run-Live @('pmethod')
+        Log ("pmethod rc={0}" -f $pmr)
+    }
 
     # 4) claude headless, restricted tools
     $claude = Find-Claude

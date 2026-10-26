@@ -153,6 +153,19 @@ class Peter2Follower(object):
             if res.get('ignore') and not replay:
                 self._ev('IGNORE', tt, sig=tid, why=res['ignore'],
                          raw=(tweet.get('text') or '')[:60])
+            elif not replay:
+                # [MW0601 2026-10-27 · 피터의 방법] 매매 사실이 없는 트윗을 흔적 없이 버리지 않는다
+                #   (10-26 「870 850 싸움」이 signals.jsonl 에 남지 않았다 — 계측 4원칙 ③).
+                #   기록만 한다 — 주문 의도(intents)는 여전히 비어 있다. 관점 해석 실패가 틱을 깨지 않게 감싼다.
+                try:
+                    from strategy.peter2.view import parse_view
+                    v = parse_view(tweet.get('text') or '')
+                    self._ev('VIEW' if v['kind'] not in ('none', 'report') else 'NOFACT', tt, sig=tid,
+                             view=v['kind'], box=v['box'], bias=v['bias'], bias_level=v['bias_level'],
+                             levels=v['levels'][:6], raw=(tweet.get('text') or '').replace('\n', ' / ')[:120])
+                except Exception as e:                       # noqa: BLE001 — 기록 실패도 남긴다
+                    self._ev('NOFACT', tt, sig=tid, why='view_error:%s' % type(e).__name__,
+                             raw=(tweet.get('text') or '')[:60])
             return intents
         price = engine.get('price')
         if not replay:

@@ -295,5 +295,159 @@
     "why": "신설 — 플러그인 미구현(후보 메모)"
    }
   ]
+ },
+ {
+  "id": "I6",
+  "title": "피터 최신 관점 편향",
+  "source": "내부: data/peter_feed/_raw 피터리 트윗 실시간 수집(strategy/peter2/view.py)",
+  "hypothesis": "피터가 장중 밝힌 방향 편향이 이후 방향을 맞힌다 — 표본 극소(09-30 보합·10-13 빗나감·10-26 풋)",
+  "formula": "latest VIEW bias (seen ≤ upto): short −1 / long +1",
+  "inputs": [
+   "peter_feed"
+  ],
+  "status": "검증",
+  "implemented": true,
+  "sign": "follow",
+  "prereg": {
+   "min_days": 20,
+   "hit_min": 0.55,
+   "p_max": 0.05
+  },
+  "origin": "2026-10-27",
+  "verifications": [
+   {
+    "ts": "2026-10-27T04:41:47",
+    "days": 60,
+    "at": "10:00",
+    "perm": 200,
+    "first": "2026-07-29",
+    "last": "2026-10-26",
+    "n": 3,
+    "n_all": 59,
+    "hit_rate": null,
+    "p_binom": null,
+    "ic": null,
+    "p_perm": null,
+    "noise_95": null,
+    "verdict": "UNMEASURED",
+    "why": "표본 3 < 20"
+   }
+  ],
+  "mounted_at": null,
+  "history": [
+   {
+    "ts": "2026-10-27T04:40:21",
+    "status": "후보",
+    "why": "신설"
+   },
+   {
+    "ts": "2026-10-27T04:41:47",
+    "status": "검증",
+    "why": "verify 실행 — UNMEASURED"
+   }
+  ]
+ },
+ {
+  "id": "I7",
+  "title": "피터 상자(B2@09:10) 안 위치",
+  "source": "내부: 1분봉 OR + P층 앵커 — docs/미륵이고도화3/피터2/피터_870-850_장초판단근거_딥다이브_MW0601-20261026.md",
+  "hypothesis": "상자 상단(+)에서 되돌림 하락·하단(−)에서 반등 — 백필 H-B1 FAIL 위에서 위치 신호만 별도 검증",
+  "formula": "box_position(px, B2@09:10) − 0.5",
+  "inputs": [
+   "option_book",
+   "regular_candles"
+  ],
+  "status": "검증",
+  "implemented": true,
+  "sign": "contra",
+  "prereg": {
+   "min_days": 20,
+   "hit_min": 0.55,
+   "p_max": 0.05
+  },
+  "origin": "2026-10-27",
+  "verifications": [
+   {
+    "ts": "2026-10-27T04:41:24",
+    "days": 60,
+    "at": "10:00",
+    "perm": 200,
+    "first": "2026-07-29",
+    "last": "2026-10-26",
+    "n": 52,
+    "n_all": 59,
+    "hit_rate": 0.423,
+    "p_binom": 0.3317,
+    "ic": -0.057,
+    "p_perm": 0.685,
+    "noise_95": 0.285,
+    "verdict": "FAIL",
+    "why": "적중 0.423 (p=0.3317) · IC -0.057 (순열 p=0.685, 노이즈95 0.285)"
+   }
+  ],
+  "mounted_at": null,
+  "history": [
+   {
+    "ts": "2026-10-27T04:40:52",
+    "status": "후보",
+    "why": "신설"
+   },
+   {
+    "ts": "2026-10-27T04:41:24",
+    "status": "검증",
+    "why": "verify 실행 — FAIL"
+   }
+  ]
+ },
+ {
+  "id": "I8",
+  "title": "반발형 P맥점 근접 방향",
+  "source": "내부: regular_candles 직전 7세션 일중 고저 군집 — docs/미륵이고도화3/피터2/피터방법_사전등록_MW0601.json",
+  "hypothesis": "3pt 안 아래 반발 군집=지지(+1)·위=저항(−1) — 백필 H-P1 FAIL, 근접 방향으로만 별도 검증",
+  "formula": "sign(px − nearest_rebound) if |·|≤3",
+  "inputs": [
+   "regular_candles"
+  ],
+  "status": "검증",
+  "implemented": true,
+  "sign": "follow",
+  "prereg": {
+   "min_days": 20,
+   "hit_min": 0.55,
+   "p_max": 0.05
+  },
+  "origin": "2026-10-27",
+  "verifications": [
+   {
+    "ts": "2026-10-27T04:41:42",
+    "days": 60,
+    "at": "10:00",
+    "perm": 200,
+    "first": "2026-07-29",
+    "last": "2026-10-26",
+    "n": 7,
+    "n_all": 59,
+    "hit_rate": null,
+    "p_binom": null,
+    "ic": null,
+    "p_perm": null,
+    "noise_95": null,
+    "verdict": "UNMEASURED",
+    "why": "표본 7 < 20"
+   }
+  ],
+  "mounted_at": null,
+  "history": [
+   {
+    "ts": "2026-10-27T04:40:56",
+    "status": "후보",
+    "why": "신설"
+   },
+   {
+    "ts": "2026-10-27T04:41:42",
+    "status": "검증",
+    "why": "verify 실행 — UNMEASURED"
+   }
+  ]
  }
 ]
