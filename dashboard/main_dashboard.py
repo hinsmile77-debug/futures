@@ -448,6 +448,14 @@ _ORDER_TAB_TIP = (
     "</div>"
 )
 
+# [MW0601 717차 후속] 창3 주문/체결 탭 — 표시 문구(테스트가 이 상수로 고정한다).
+CAPITAL_IDLE_TEXT = ("[Capital] 거래일 08:30–15:35 에만 갱신 — 아직 미측정 "
+                     "(장외에 재기동했으면 다음 거래일 08:30부터 표시)")
+_ORDER_LAT_UNMEASURED_TIP = (
+    "체결 지연 측정기(LatencySync)는 키움 시절 부품이다.\n"
+    "Cybos 경로에는 측정 호출이 연결돼 있지 않아 표본이 0 이면 「미측정」으로 표시한다\n"
+    "(측정된 0ms 가 아니다 — 계측 4원칙 ②).")
+
 _VAR_TIP = (
     "<div style='font-family:Consolas,monospace;font-size:12px;line-height:1.7;"
     "min-width:360px;'>"
@@ -8692,11 +8700,14 @@ class LogPanel(QWidget):
             if key == "order":
                 mrow = QHBoxLayout()
                 self._order_vals = {}
+                # [MW0601 717차 후속] 지연·수신 3칸은 LatencySync(키움 전용) 값이다 — Cybos 경로에서는
+                #   record() 호출처가 없어 표본이 0 이다. 「0회」·「——ms」는 측정된 0 처럼 읽혀
+                #   「미측정」으로 둔다(계측 4원칙 ②). 당일 거래는 재기동 복원 직후 채워진다.
                 for om_lbl, om_attr, om_init in [
                     ("당일 거래",  "trades",   "0건"),
-                    ("평균 지연",  "avg_lat",  "——ms"),
-                    ("최대 지연",  "peak_lat", "——ms"),
-                    ("수신 횟수",  "samples",  "0회"),
+                    ("평균 지연",  "avg_lat",  "미측정"),
+                    ("최대 지연",  "peak_lat", "미측정"),
+                    ("수신 횟수",  "samples",  "미측정"),
                 ]:
                     mf = QFrame()
                     mf.setStyleSheet(f"background:{C['bg3']};border:1px solid {C['border']};border-radius:3px;")
@@ -8706,10 +8717,15 @@ class LogPanel(QWidget):
                     mfl.addWidget(vl)
                     mrow.addWidget(mf)
                     self._order_vals[om_attr] = vl
+                    if om_attr != "trades":
+                        mf.setToolTip(_ORDER_LAT_UNMEASURED_TIP)
+                        vl.setStyleSheet(f"color:{C['text2']};font-size:{S.f(13)}px;font-weight:bold;")
                 pl.addLayout(mrow)
                 # [MW0601 707차] 실전 자본 모니터 — 관측(예탁금·주문가능수량)·정책(위험자본)·통제(실주문 수량).
                 #   main `_capital_monitor_refresh` 가 30초 스케줄러·신동 진입 직전에 채운다.
-                self._capital_lbl = QLabel("[Capital] 장전 08:30부터 표시 — 아직 미측정")
+                # [MW0601 717차 후속] 장외 재기동(2026-10-26 18:11)에서 「장전 08:30부터 표시」가
+                #   고장처럼 읽혔다 — 갱신 창(거래일 08:30–15:35)을 문구에 박는다.
+                self._capital_lbl = QLabel(CAPITAL_IDLE_TEXT)
                 self._capital_lbl.setWordWrap(True)
                 self._capital_lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
                 self._capital_lbl.setStyleSheet(
@@ -8944,21 +8960,36 @@ class LogPanel(QWidget):
         """창3 주문/체결 탭 상단 지표 갱신."""
         if not hasattr(self, "_order_vals"):
             return
-        self._order_vals["trades"].setText(f"{trades}건")
+        self.update_order_trades(trades)
+        # [MW0601 717차 후속] 표본 0 = 미측정(측정된 0ms 가 아니다 — 계측 4원칙 ②).
+        measured = int(samples or 0) > 0
         for attr, val_ms, warn_ms in [
             ("avg_lat",  avg_lat_ms,  500),
             ("peak_lat", peak_lat_ms, 1000),
         ]:
             lbl = self._order_vals[attr]
-            if val_ms > 0:
+            if not measured:
+                text = "미측정"
+                c = C['text2']
+            elif val_ms > 0:
                 text = f"{val_ms:.0f}ms"
                 c = C['green'] if val_ms < warn_ms else C['orange']
             else:
-                text = "——ms"
-                c = C['text2']
+                text = "0ms"
+                c = C['green']
             lbl.setText(text)
             lbl.setStyleSheet(f"color:{c};font-size:{S.f(13)}px;font-weight:bold;")
-        self._order_vals["samples"].setText(f"{samples}회")
+        self._order_vals["samples"].setText(f"{samples}회" if measured else "미측정")
+
+    def update_order_trades(self, trades: int):
+        """창3 「당일 거래」 칸만 갱신 — [MW0601 717차 후속] 재기동 복원 직후에도 부른다.
+
+        매분 경로(`_push_position_panels`)는 분봉이 와야 돌아서, 장외 재기동이면
+        복원된 거래가 있어도 초기값 「0건」이 남았다(2026-10-26 18:11 — 11건 복원).
+        """
+        if not hasattr(self, "_order_vals"):
+            return
+        self._order_vals["trades"].setText(f"{trades}건")
 
     def update_capital_monitor(self, text: str, level: str = "OK"):
         """[MW0601 707차] 창3 주문/체결 탭 — 실전 자본 모니터 한 줄."""
@@ -18898,6 +18929,10 @@ class DashboardAdapter:
     def update_order_metrics(self, trades: int, avg_lat_ms: float, peak_lat_ms: float, samples: int):
         """창3 주문/체결 탭 상단 지표 갱신"""
         self._win.log_panel.update_order_metrics(trades, avg_lat_ms, peak_lat_ms, samples)
+
+    def update_order_trades(self, trades: int):
+        """[MW0601 717차 후속] 창3 「당일 거래」 칸만 — 재기동 복원 직후 갱신용"""
+        self._win.log_panel.update_order_trades(trades)
 
     def update_capital_monitor(self, text: str, level: str = "OK"):
         """[MW0601 707차] 창3 주문/체결 탭 — 실전 자본 모니터 한 줄"""

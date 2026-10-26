@@ -260,6 +260,14 @@ class SessionRecoveryService:
         system.position.reset_daily()
         system.position.restore_daily_stats(rows)
 
+        # [MW0601 717차 후속] 창3 「당일 거래」 즉시 갱신 — 매분 경로는 분봉이 와야 돌아,
+        # 장외 재기동이면 복원된 거래가 있어도 초기값 「0건」이 남았다(2026-10-26 18:11, 11건).
+        # ⚠ 표시만이다. 어떤 예외도 복원을 막으면 안 된다.
+        try:
+            system.dashboard.update_order_trades(system.position.daily_stats()["trades"])
+        except Exception as _ot_e:
+            logger.debug("[Restore] 주문/체결 탭 당일 거래 갱신 실패(무해): %s", _ot_e)
+
         # ── [MW0601 546차] ProfitGuard 판정용 **시스템 한정** 누적기 복원 ──────
         # 라이브 경로는 `_record_trade_result()` 에서 매 청산 레그마다 더하지만,
         # 세션이 재시작되면 그 누적이 통째로 사라진다. 여기서 당일 행으로 1회
