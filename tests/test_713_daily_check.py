@@ -206,5 +206,5 @@ def test_K3_shindong_skill_c_grade_and_branch():
     blk = sk[i:i + 900]
     for frag in ("live_legs.py", "spec.py", "_shindong_*", "MIREUK_ENGINE", "PRINCIPAL_*", "SHINDONG_*"):
         assert frag in blk, frag
-    assert "`Sindong2-V4`" in sk and "SD-2026-10-21-v3" in sk
+    assert "`Sindong2-V4`" in sk and "SD-2026-10-27-v4" in sk          # [718차] v4
     assert "배포 첫날" in sk                           # 장중은 배포 첫날만(B3)

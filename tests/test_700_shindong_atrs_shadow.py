@@ -23,8 +23,8 @@ from strategy.shindong import engine, spec  # noqa: E402
 def test_preregistered():
     assert spec.R3_ATR_STOP_K == 0.25
     assert "SHADOW_ATRS" in spec.VARIANTS                       # [714차] 뒤에 SHADOW_R2D7 이 붙었다
-    assert spec.LATE_SHADOW_START["SHADOW_ATRS"] == "2026-10-21"
-    assert spec.SPEC_VERSION == "SD-2026-10-21-v3"            # MAIN 값 무변경 → 버전 유지
+    assert spec.LATE_SHADOW_START["SHADOW_ATRS"] == "2026-10-27"   # [718차] v4 재시작(700차 등록 10-21)
+    assert spec.SPEC_VERSION == "SD-2026-10-27-v4"            # [718차] v4 — ATRS 정의(v3 MAIN 그대로 + 손절)는 무변경
     assert spec.MAIN_TRAIL == (4.0, 4.0)
 
 
@@ -89,9 +89,10 @@ def test_fallback_without_atr_is_recorded():
 
 def test_r2_and_trail_same_as_main():
     src = open(os.path.join(ROOT, "strategy", "shindong", "engine.py"), encoding="utf-8").read()
-    assert 'elif variant in ("MAIN", "SHADOW_ATRS", "SHADOW_R2D7"):' in src   # 같은 트레일([714차] R2D7 도)
+    assert 'elif variant in ("MAIN", "SHADOW_V3", "SHADOW_ATRS", "SHADOW_R2D7"):' in src   # 같은 트레일([714차] R2D7 · [718차] V3 도)
+    assert 'f2x = variant == "MAIN"' in src                                  # [718차] F2X 는 MAIN 만 — ATRS 는 쓰지 않는다
     a = src.index("# [700차] SHADOW_ATRS — R3 초기 손절")
-    assert src.index("# R3\n") < a < src.index('tr.update(rule="R3"')   # R3 경로 안에서만 손절을 바꾼다
+    assert src.index("# R3 — [v4") < a < src.index('tr.update(rule="R3"')   # R3 경로 안에서만 손절을 바꾼다([718차] 머리 주석 변경)
 
 
 def test_report_label():

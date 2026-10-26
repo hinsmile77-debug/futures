@@ -6077,7 +6077,7 @@ class TradingSystem:
                 self._sd_seen[_k] = "RETRACTED"
                 logger.info(
                     "[Shindong] %s %s RETRACTED 진입 %.2f(%s) | 철회 전 상태 %s · 현재가 %s · 기준분 %s | "
-                    "원천 흐름 재수신으로 신호 소멸 — 채점 표본 제외",
+                    "재생에서 신호 소멸 — 채점 표본 제외(v4 인과 R3 이후 남는 원인은 원천 흐름 정정뿐 — 반복되면 이상점)",
                     _t["rule"], "매수" if _t["side"] > 0 else "매도", _t["entry_px"],
                     str(_t["entry_ts"])[11:16], _t["status"],
                     ("%.2f" % payload["last_close"]) if payload.get("last_close") is not None else "-",
@@ -6192,16 +6192,17 @@ class TradingSystem:
             return None, "위험수량 꺼짐"
         pct = float(getattr(runtime_settings, "SHINDONG_STOP_RISK_PCT", 0.0) or 0.0)
         buf = float(getattr(runtime_settings, "SHINDONG_STOP_RISK_BUF_PTS", 0.0) or 0.0)
+        flo = float(getattr(runtime_settings, "SHINDONG_STOP_RISK_FLOOR_PTS", 0.0) or 0.0)   # [718차] 위험거리 하한
         try:
             stop_pts = abs(float(rec["entry_px"]) - float(rec["stop"]))
         except (KeyError, TypeError, ValueError):
             stop_pts = None
         cap = _capital_risk_capital(deposit_krw=self._broker_dep_base_today)
-        q = _capital_sd_stop_risk_qty(stop_pts, cap, self._pt_value, risk_pct=pct, buf_pts=buf)
+        q = _capital_sd_stop_risk_qty(stop_pts, cap, self._pt_value, risk_pct=pct, buf_pts=buf, floor_pts=flo)
         if q is None:
             return None, "위험수량 미측정(손절 %s · 자본 %s · 1pt %s)" % (stop_pts, cap, self._pt_value)
-        return q, "위험수량 %d (손절 %.2fpt + %.1f · %.1f%% · 자본 %.0f만)" % (
-            q, stop_pts, buf, 100 * pct, cap / 1e4)
+        return q, "위험수량 %d (손절 %.2fpt · 하한 %.1f + %.1f · %.1f%% · 자본 %.0f만)" % (
+            q, stop_pts, flo, buf, 100 * pct, cap / 1e4)
 
     def _principal_live_qty(self, principal: str) -> int:
         """선택 주체의 실주문 수량 — ProfitGuard 원화 임계 배율의 기준."""

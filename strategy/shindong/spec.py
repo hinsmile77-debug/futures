@@ -19,8 +19,20 @@
 #   그 규정 그대로 「새 SPEC_VERSION 개정 뒤 재채점」한다. ② MW0602 신동 MAIN(HYBR60)의 보완 후보 1순위
 #   (일손익 상관 ≈ 0 · HYBR60 손실일에 이익) — `docs/신동거래/신동_개정_v3_TR44승격_MW0601-20261020.md`.
 #   값은 하나도 새로 정하지 않았다(TR44_ACT·TR44_DIST 632차 사전등록값). 구 MAIN 은 SHADOW_V2 가 그대로 기록한다.
-SPEC_VERSION = "SD-2026-10-21-v3"
-SPEC_VERSION_PREV = "SD-2026-09-29-v2"
+# [2026-10-26 MW0601 718차 / 사용자 결정 · 개정 v4] 두 가지를 한 번에 바꾼다 — 판정 동작이 바뀌므로 버전을 올린다.
+#   ① **R3 인과 선택**(분석명 v3.1): 확인(진입) 분이 가장 이른 신호가 자리를 갖는다. 값은 하나도 안 바꿨다.
+#      v3 의 「터치 시각 순 훑기」가 나중 확인 신호로 이미 진입한 거래를 소급 점유해 RETRACTED 를 만들었다
+#      (v3 4일 14/14건 · 분 단위 라이브 흉내에서 인과판 0건). 모든 변형에 적용된다.
+#   ② **MAIN = v3 MAIN + R3 F2X 방향 필터**(분석명 ②SHADOW_F2X): 수급(09:00 대비 콜−풋 Δ, ±F2X_SP_BAND 중립)과
+#      가격 EMA(F2X_EMA_FAST) − EMA(F2X_EMA_SLOW) 가 일치할 때만 그 방향만 받는다(불일치·0 이면 필터 없음).
+#   근거(인과 엔진 22거래일 09-21–10-26 · 가상 2계약): v3 MAIN +120.4만 / 최악 −182.8 / MDD −333.1 / 효율 0.05 →
+#   F2X +637.9만 / −190.6 / −190.6 / 0.33. 전·후반 모두 플러스(+434.3 / +203.6).
+#   ⚠ 이 22일을 보고 약 60조합에서 고른 값이다(파라미터 3개) — 사전등록 섀도 판정을 건너뛴 **사용자 결정 승격**이다.
+#     그래서 SHADOW_V3(구 MAIN)를 되돌림 기준으로 남기고, 10거래일 뒤 같은 기준으로 되돌림 여부를 본다.
+#   문서 `docs/신동거래/신동_개정_v4_인과R3·F2X승격_MW0601-20261026.md`.
+SPEC_VERSION = "SD-2026-10-27-v4"
+SPEC_VERSION_PREV = "SD-2026-10-21-v3"
+V3_SPEC_VERSION = "SD-2026-10-21-v3"        # v3 창(사료) — 2026-10-21–2026-10-26 · 4거래일
 V2_SPEC_VERSION = "SD-2026-09-29-v2"        # v2 창(사료) — 2026-09-30–2026-10-20 · 13거래일
 V1_SPEC_VERSION = "SD-2026-09-24-v1"
 V1_SCORING = ("2026-09-28", "2026-09-29")   # v1 로 채점된 거래일 — 이력 보존용(채점에 합산하지 않는다)
@@ -95,7 +107,15 @@ SLIP_TICK = 0.02              # 시장가 1틱 — 진입 + (손절·시간 청�
 #   `docs/미륵이고도화3/신동2/신동보완분석_MW0601-20261020/R1R2_시프트_격자_MW0601-20261025.md`.
 #   R2 +54.7 → +522.0만 · MAIN 전체 +902 → +1,473만이지만 R2 이득의 75%(+351만)가 10-15 하루, 28조합 중 고른 값이다
 #   (부트스트랩 우위 89%). 그래서 규격 개정이 아니라 섀도로 표본 밖에서 잰다. MAIN 값 무변경 → SPEC_VERSION 유지.
-VARIANTS = ("MAIN", "SHADOW_V2", "SHADOW_E2F2", "SHADOW_X4NF", "SHADOW_X4NFA", "SHADOW_ATRS", "SHADOW_R2D7")
+# ── [v4 · 718차] 변형 재구성 ───────────────────────────────────────────────
+# MAIN       = v3 MAIN(R3 트레일 4/4) + R3 F2X 방향 필터 — 실집행 대상. R2 는 무변경.
+# SHADOW_V3  = 구 MAIN(v3, 필터 없음) 그대로 — **되돌림 기준**(v3 때 SHADOW_V2 와 같은 역할).
+# 나머지 섀도는 등록 정의 그대로(F2X 를 쓰지 않는다). 모두 인과 R3 선택 위에서 다시 센다.
+VARIANTS = ("MAIN", "SHADOW_V3", "SHADOW_V2", "SHADOW_E2F2", "SHADOW_X4NF", "SHADOW_X4NFA", "SHADOW_ATRS",
+            "SHADOW_R2D7")
+F2X_SP_BAND = 50              # [v4] 수급 중립 폭(백만원) — |09:00 대비 콜−풋 Δ| ≤ 이것이면 수급 판정 없음
+F2X_EMA_FAST = 20             # [v4] 가격 EMA 빠름(분)
+F2X_EMA_SLOW = 60             # [v4] 가격 EMA 느림(분)
 R2D7_CONF_BASE = "09:06"
 R2D7_CONF_START = "09:07"
 R2D7_CONF_END = "09:16"
@@ -111,15 +131,17 @@ RETIRED_SHADOWS = {"SHADOW_TR44": "[v3 · 699차] MAIN 으로 승격 — v2 창 
 #   규칙 값은 그대로이므로 SPEC_VERSION 은 올리지 않는다(사전등록 문서 §6-1에 기록).
 # [2026-09-29 v2 개정] 채점 재시작 → **2026-09-30**(v2 첫 거래일). R3 중단 판정의 10거래일도 여기서 다시 센다.
 # [2026-10-20 v3 개정] 채점 재시작 → **2026-10-21**(v3 첫 거래일). v2 창(09-30–10-20)은 V2_SCORING_START.
+# [2026-10-26 v4 개정] 채점 재시작 → **2026-10-27**(v4 첫 거래일). v3 창(10-21–10-26)은 V3_SCORING_START.
 V2_SCORING_START = "2026-09-30"
-SCORING_START = "2026-10-21"
+V3_SCORING_START = "2026-10-21"
+SCORING_START = "2026-10-27"
 R3_KILL_AFTER_DAYS = 10       # 채점 시작 후 이 거래일 수가 차면 판정
 R3_KILL_NET_MAX = 0           # R3 누적 순손익이 이것 미만이고
 R3_KILL_WINRATE_MAX = 0.35    # R3 승률(거래 단위)이 이것 미만이면 R3 중단
 
 # ── SHADOW_X4NF 판정(사전등록, 2026-09-28 결과를 본 뒤 추가 → 채점은 그다음 거래일부터) ──
 # 9/28 은 이 변형을 만든 날이므로 표본에서 뺀다(사후 적합 방지).
-X4NF_SCORING_START = SCORING_START  # [v3] 2026-10-21 재시작(v2: 2026-09-30 · v1: 2026-09-29)
+X4NF_SCORING_START = SCORING_START  # [v4] 2026-10-27 재시작(v3: 2026-10-21 · v2: 2026-09-30 · v1: 2026-09-29)
 X4NF_JUDGE_AFTER_DAYS = 10    # 채점 시작 후 이 거래일 수가 차면 MAIN 과 비교
 # 채택 후보 조건: 같은 기간 X4NF 순손익 > MAIN 순손익 **그리고** X4NF 최악일 > MAIN 최악일.
 # 둘 중 하나라도 아니면 폐기. 채택 후보여도 바로 채택하지 않는다 — 새 SPEC_VERSION 개정 뒤 재채점.
@@ -128,10 +150,13 @@ X4NF_JUDGE_AFTER_DAYS = 10    # 채점 시작 후 이 거래일 수가 차면 MA
 # TR44 도 X4NF 와 같은 날·같은 판정 기준(10거래일 · 순손익 우위 **그리고** 최악일 개선)으로 비교한다.
 # [v3 · 699차] 판정 대상을 v3 MAIN 기준으로 다시 센다 — 모두 SCORING_START(2026-10-21)부터 · 같은 기준.
 #   SHADOW_V2 가 이 기준을 만족하면 「되돌림 후보」(v2 복귀는 새 SPEC_VERSION 개정으로만).
-LATE_SHADOW_START = {"SHADOW_V2": SCORING_START, "SHADOW_X4NF": X4NF_SCORING_START,
+# [v4 · 718차] 인과 R3 선택이 모든 변형을 바꾸므로 **전부 v4 첫날(2026-10-27)부터** 다시 센다.
+#   v3 창 기록: SHADOW_ATRS 2026-10-21 · SHADOW_R2D7 2026-10-26(714차) — 사료.
+#   SHADOW_V3 가 이 기준을 만족하면 「되돌림 후보」(v3 복귀는 새 SPEC_VERSION 개정으로만).
+LATE_SHADOW_START = {"SHADOW_V3": SCORING_START, "SHADOW_V2": SCORING_START, "SHADOW_X4NF": X4NF_SCORING_START,
                      "SHADOW_X4NFA": SCORING_START,
-                     "SHADOW_ATRS": "2026-10-21",   # [700차] 장전 추가 · 같은 날 장 시작부터 채점(결과 보기 전 등록)
-                     "SHADOW_R2D7": "2026-10-26"}   # [714차] 일요일(10-25) 등록 · 다음 거래일부터 채점 — 9/21–10/23 격자는 표본 밖
+                     "SHADOW_ATRS": SCORING_START,
+                     "SHADOW_R2D7": SCORING_START}
 # [598차] X4NFA 는 9/29 결과를 보고 만들었다 → 채점은 **9/30** 부터(9/29 행은 표본 제외).
 #   판정은 X4NF 와 같다: 10거래일 뒤 MAIN 대비 순손익 우위 **그리고** 최악일 개선. 둘 다 아니면 폐기.
 #   X4NF 대비 차이(= A 필터 몫)는 채점표에 **표시만** 한다 — 판정 기준이 아니다(다중비교 방지).
@@ -152,5 +177,5 @@ R1_BREAKEVEN_HINT = 0.58
 #   → 「보완 유효」. 둘 다 아니면 「보완 무효」, 하나만이면 「부분」. 판정이지 자동 조치가 아니다(절대원칙 §6).
 # 대조(표시만 — 판정 아님, 다중비교 방지): MW0602 FLOWR60 섀도 50:50 · MW0601 SHADOW_X4NFA 50:50 ·
 #   MW0601 (MAIN+X4NFA)/2 50:50.
-COMPLEMENT_SCORING_START = SCORING_START
+COMPLEMENT_SCORING_START = SCORING_START   # [v4 · 718차] MAIN 이 바뀌었으므로 2026-10-27 부터 다시 센다(v3 창 10-21–10-26 사료)
 COMPLEMENT_JUDGE_AFTER_DAYS = 20

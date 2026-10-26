@@ -28,8 +28,8 @@ from strategy.shindong import engine, spec  # noqa: E402
 def test_x4nf_preregistration():
     assert "SHADOW_X4NF" in spec.VARIANTS
     assert spec.VARIANTS[0] == "MAIN"
-    assert (spec.X4NF_SCORING_START, spec.X4NF_JUDGE_AFTER_DAYS) == ("2026-10-21", 10)   # [699차] v3 재시작
-    assert spec.SPEC_VERSION == "SD-2026-10-21-v3"      # X4NF 규칙 무변경 — [699차] MAIN 개정으로 v3
+    assert (spec.X4NF_SCORING_START, spec.X4NF_JUDGE_AFTER_DAYS) == ("2026-10-27", 10)   # [718차] v4 재시작
+    assert spec.SPEC_VERSION == "SD-2026-10-27-v4"      # X4NF 규칙 무변경 — [699차] v3 · [718차] v4 MAIN 개정
 
 
 # ── B ────────────────────────────────────────────────────────────────────
@@ -146,11 +146,11 @@ def test_scorecard_excludes_build_day_and_waits(tmp_path):
                     "pts": 10.85, "net": 500000.0}]}
     res = {"decision": {"pm_sp": 279.0, "bias": -1, "r2": "CONFIRMED", "r2_ts": "09:03", "notes": []},
            "trades": [tr]}
-    for day in ("2026-10-20", "2026-10-21"):             # [699차] v3 — 채점 시작 10/21 기준
+    for day in ("2026-10-26", "2026-10-27"):             # [718차] v4 — 채점 시작 10/27 기준
         for v in spec.VARIANTS:
             store.save_day(db, day, v, "wk_mon", "", res, "15:08", spec.SPEC_VERSION, source="backfill")
     txt = sc.build(db, spec.SCORING_START)
-    assert "판정 기록 거래일: **1일**" in txt                # 10/20 은 SCORING_START 전이라 날짜로 빠진다
+    assert "판정 기록 거래일: **1일**" in txt                # 10/26 은 SCORING_START 전이라 날짜로 빠진다
     assert "판정: **대기** — 1/10 거래일" in txt
 
 
@@ -159,10 +159,10 @@ def test_tr44_preregistration():
     # [699차] TR44 는 v3 MAIN 으로 승격돼 섀도 목록에서 빠졌다(이름은 엔진이 계속 알아듣는다)
     assert "SHADOW_TR44" not in spec.VARIANTS and "SHADOW_TR44" in spec.RETIRED_SHADOWS
     assert (spec.TR44_ACT, spec.TR44_DIST) == (4.0, 4.0) == spec.MAIN_TRAIL
-    assert spec.LATE_SHADOW_START == {"SHADOW_V2": "2026-10-21", "SHADOW_X4NF": "2026-10-21",
-                                      "SHADOW_X4NFA": "2026-10-21",
-                                      "SHADOW_ATRS": "2026-10-21",
-                                      "SHADOW_R2D7": "2026-10-26"}   # [699차] v3 재시작 · [700차] ATRS · [714차] R2D7
+    # [718차] v4 — 인과 R3 선택이 모든 변형을 바꾸므로 전부 10-27 부터 다시 센다(v3 창: 10-21 · R2D7 10-26)
+    assert spec.LATE_SHADOW_START == {"SHADOW_V3": "2026-10-27", "SHADOW_V2": "2026-10-27",
+                                      "SHADOW_X4NF": "2026-10-27", "SHADOW_X4NFA": "2026-10-27",
+                                      "SHADOW_ATRS": "2026-10-27", "SHADOW_R2D7": "2026-10-27"}
 
 
 def _frame(bars):
@@ -212,10 +212,11 @@ def test_replay_tr44(day, tr44):
     if not r["results"]["MAIN"]["trades"] and "봉 없음" in str(r["results"]["MAIN"]["decision"]):
         pytest.skip("그날 봉이 이 PC DB 에 없다")
     # [699차] TR44 재현값 = v3 MAIN(같은 규칙). R2 는 트레일 없음 → v2 MAIN(SHADOW_V2)과 같다
-    got = round(sum(engine.trade_net(t) for t in r["results"]["MAIN"]["trades"]))
+    # [718차] v4 — 구 MAIN 은 SHADOW_V3. 이 네 날은 인과 R3 선택으로도 한 거래도 바뀌지 않는다(값 그대로)
+    got = round(sum(engine.trade_net(t) for t in r["results"]["SHADOW_V3"]["trades"]))
     assert got == pytest.approx(tr44, abs=2)
     from strategy.shindong import engine as _E
-    assert [(_t["entry_ts"], round(_E.trade_net(_t))) for _t in r["results"]["MAIN"]["trades"]] ==         [(_t["entry_ts"], round(_E.trade_net(_t))) for _t in _tr44_alias(day)]
+    assert [(_t["entry_ts"], round(_E.trade_net(_t))) for _t in r["results"]["SHADOW_V3"]["trades"]] ==         [(_t["entry_ts"], round(_E.trade_net(_t))) for _t in _tr44_alias(day)]
     r2 = lambda v: [(t["entry_ts"], round(engine.trade_net(t))) for t in r["results"][v]["trades"]
                     if t["rule"] == "R2"]
     assert r2("MAIN") == r2("SHADOW_V2")

@@ -37,7 +37,9 @@ from strategy.shindong import spec as S
 from strategy.shindong.calendar import select_flow_product
 
 # [v3 · 699차] MAIN = v2 + R3 트레일 4/4(구 TR44). SHADOW_V2 = 구 MAIN(되돌림 기준). TR44 는 종료(과거 행 표시용 라벨만 남긴다).
-VLABEL = {"MAIN": "MAIN(v3 본안·R3 트레일 4/4)", "SHADOW_V2": "V2(구 MAIN·트레일 없음)",
+# [v4 · 718차] MAIN = v3 MAIN + R3 F2X 방향 필터(인과 R3 선택). SHADOW_V3 = 필터 없는 v3 MAIN(되돌림 기준).
+VLABEL = {"MAIN": "MAIN(v4 본안·트레일 4/4·F2X)", "SHADOW_V3": "V3(구 MAIN·F2X 없음)",
+          "SHADOW_V2": "V2(트레일·F2X 없음)",
           "SHADOW_E2F2": "E2F2(흐름순응)",
           "SHADOW_X4NF": "X4NF(가까운목표·flip금지)", "SHADOW_TR44": "TR44(R3 트레일 4/4 · 종료)",
           "SHADOW_X4NFA": "X4NFA(X4NF+깨진맥점금지)",
@@ -113,7 +115,7 @@ def trade_rows(d: "E.DayFrame", res: Dict[str, Any], stored: Dict, variant: str)
         st = stored.get((variant, _key(tr))) or {}
         out.append(dict(
             key=_key(tr), rule=tr["rule"], side=side, entry_ts=tr["entry_ts"], entry_px=e,
-            level=tr.get("touch_level"), stop=tr["stop_init"], t1=tr["t1"], t2=tr["t2"],
+            level=tr.get("touch_level"), touch_ts=tr.get("touch_ts"), stop=tr["stop_init"], t1=tr["t1"], t2=tr["t2"],
             legs=[(g.get("ts"), g.get("px"), g.get("reason")) for g in tr["legs"]],
             exit_ts=tr["exit_ts"], status=tr["status"], net=net, cum=cum, mfe=mfe,
             detected_at=(str(st.get("detected_at"))[11:16] if st.get("detected_at") else None),
@@ -165,10 +167,16 @@ def attribute(main: List[Dict], sh: List[Dict], variant: str, d: "E.DayFrame") -
                 why = "앞 거래 보유 중/시점 이동"
         out.append("%s %s %s: MAIN 진입 %s → **%s** (MAIN 손익 %s 제외)" % (
             r["entry_ts"], r["rule"], _side(r["side"]), "%.2f" % r["entry_px"], why, _man(r["net"])))
+    f2x = None                                   # [v4 · 718차] 섀도만 진입한 R3 가 MAIN F2X 에 막혔는가
     for k, s in sk.items():
         if k not in mk:
             why = ("R2 확정 창 09:07–09:16에서 확정" if (s["rule"] == "R2" and variant == "SHADOW_R2D7")
                    else "앞 거래가 없어 신호가 살아남")   # [714차]
+            if s["rule"] == "R3" and s.get("touch_ts"):
+                f2x = E.f2x_direction(d) if f2x is None else f2x
+                v = f2x.get(s["touch_ts"], 0)
+                if v != 0 and v != s["side"]:
+                    why = "MAIN F2X 차단(수급·가격 추세 모두 반대)"
             out.append("%s %s %s: **섀도만 진입** %.2f (%s) → %s" % (
                 s["entry_ts"], s["rule"], _side(s["side"]), s["entry_px"], why, _man(s["net"])))
     return out
@@ -262,7 +270,7 @@ def observations(day: Dict[str, Any], rows: Dict[str, List[Dict]], sums: Dict[st
                        % (len(losers), len(shallow), S.TR44_ACT,
                           ", ".join("%.1f" % r["mfe"] for r in shallow)))
         if deep:
-            # [v3 · 699차] MAIN 이 이미 R3 트레일을 쓴다 — 이 손실은 트레일 간격·R2(트레일 없음) 쪽 관찰 대상이다.
+            # [v3 · 699차 · v4 유지] MAIN 이 이미 R3 트레일을 쓴다 — 이 손실은 트레일 간격·R2(트레일 없음) 쪽 관찰 대상이다.
             obs.append("**청산** — MAIN 손실 %d건은 %.0fpt 이상 유리하게 갔다가 손절됐다(MFE %s) → "
                        "트레일 간격(R3)·R2 청산 쪽 관찰 대상." % (len(deep), S.TR44_ACT, ", ".join("%.1f" % r["mfe"] for r in deep)))
     lv = {}

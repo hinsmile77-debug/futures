@@ -18,7 +18,9 @@ description: 신동 주체(MW0601 Sindong2-V4 · MIREUK_ENGINE=off · 피터 선
 - 대상 브랜치 **`Sindong2-V4`**, 설정 `MIREUK_ENGINE="off"` · `PRINCIPAL_ALLOWED=("SHINDONG","PETER")` · `PRINCIPAL_DEFAULT="SHINDONG"`.
   `MIREUK_ENGINE` 이 `"off"` 가 아니면 이 스킬이 아니라 **`mireuk-daily-check`** 를 쓴다(미륵을 되살린 상태 —
   `v9-dev` = 미륵 보존 브랜치, CLAUDE.md 「브랜치 역할 (MW0601)」).
-- 신동 규격은 **v3**(`strategy/shindong/spec.py` `SPEC_VERSION="SD-2026-10-21-v3"` — R2/R3 · 1차/최종 레그 · 공통 손절 본전 이동 · 15:05 시간청산).
+- 신동 규격은 **v4**(`strategy/shindong/spec.py` `SPEC_VERSION="SD-2026-10-27-v4"` — R2/R3 · 1차/최종 레그 · 공통 손절 본전 이동 · 15:05 시간청산 ·
+  [718차] R3 **인과 선택**(확인 분 우선 — RETRACTED 가 구조적으로 사라져야 정상, 다시 나오면 이상점) · MAIN R3 **F2X 방향 필터** ·
+  수량 `SHINDONG_STOP_RISK_*` = 2.0% · 버퍼 0.5 · 하한 4pt(대개 2계약, 손절 > 5.5pt 면 1계약)). v3 창(10-21–10-26)은 사료.
   MW0602 의 V4(MAIN 직행)와 **다르다** — 그쪽 문구·문턱을 가져오지 말 것.
 - 미륵 점검의 재학습·스케일러·SHAP·`ensemble_decisions`·CORE·CB③·검증 캠페인은 **휴면이라 보지 않는다.** 그것들이 「없다」는 것은 결함이 아니다.
 - 신동2(재량 해설)·`[ShindongReport]`(15:40 기계 리포트)·피터2 기록은 **다른 산출물**이다. 이 점검은 그것들을 **인용**하고 다시 계산하지 않는다.
@@ -122,7 +124,7 @@ python .claude/skills/shindong-daily-check/scripts/collect_shindong_evidence.py 
 5. `3p. 고도화 방안` — 오늘 점검 결과에서만.
 6. `4p. 신동 사후검증` — **포지션 1건당 카드 1장**(수집기 §4-1 케이스 표가 출발점):
    규격 진입가 vs 실체결(슬립, 불리+) · 실 수량(711차 위험 수량 · 증거금 축소) · 손절 경로(초기/본전 이동/트레일/15:05 시간청산/틱 하드스톱) ·
-   재생 1차·최종 vs 실청산 · 같은 날 섀도(`SHADOW_V2`·`E2F2`·`X4NF`·`X4NFA`·`ATRS`)의 같은 구간 결과 · 옵션흐름 지연(`정규 재생 대조 N초 미갱신`) · ProfitGuard·CB 영향.
+   재생 1차·최종 vs 실청산 · 같은 날 섀도(`SHADOW_V3`(되돌림 기준)·`SHADOW_V2`·`E2F2`·`X4NF`·`X4NFA`·`ATRS`)의 같은 구간 결과 · 옵션흐름 지연(`정규 재생 대조 N초 미갱신`) · ProfitGuard·CB 영향.
    요인 태그: `규격`(재생과 다르게 집행) · `슬립` · `수량` · `손절경로` · `흐름지연` · `시장`(규격대로였는데 시장이 이김) · `계측`.
    대사(로그 진입 = MAIN live = trades 신동 포지션 · 브로커 net ≈ trades net)가 깨지면 그것부터 P1.
    **피터를 고른 날**은 피터 포지션도 같은 카드로(피터2 일일 기록 `docs/미륵이고도화3/피터2/` 인용).

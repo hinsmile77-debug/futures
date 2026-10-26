@@ -264,10 +264,13 @@ def run_day(d: DayFrame, L, variant: str = "MAIN") -> Dict[str, Any]:
     x4nf = variant == "SHADOW_X4NF" or broken_guard
     # [632차 후속] SHADOW_TR44 — MAIN 과 같은 진입·목표에 R3 만 트레일(+4pt 발동 · 4pt 간격). 비교 기록용.
     # [v3 · 699차] MAIN 이 그 규칙을 승계했다(spec.MAIN_TRAIL). SHADOW_V2 = 트레일 없는 구 MAIN(되돌림 기준).
-    #   SHADOW_TR44 이름은 종료됐지만 재현 테스트·과거 행 복기용으로 계속 알아듣는다(= v3 MAIN 과 같다).
+    #   SHADOW_TR44 이름은 종료됐지만 재현 테스트·과거 행 복기용으로 계속 알아듣는다(= v3 MAIN · v4 SHADOW_V3 와 같다).
+    # [v4 · 718차] MAIN = v3 MAIN(트레일 4/4) + R3 F2X 방향 필터(구 분석명 ②SHADOW_F2X). SHADOW_V3 = 필터 없는 v3 MAIN
+    #   (되돌림 기준). ATRS · R2D7 은 등록 정의(「v3 MAIN 그대로 + …」)대로 F2X 를 쓰지 않는다.
+    f2x = variant == "MAIN"
     if variant == "SHADOW_TR44":
         tr44 = (S.TR44_ACT, S.TR44_DIST)
-    elif variant in ("MAIN", "SHADOW_ATRS", "SHADOW_R2D7"):
+    elif variant in ("MAIN", "SHADOW_V3", "SHADOW_ATRS", "SHADOW_R2D7"):
         tr44 = S.MAIN_TRAIL
     else:
         tr44 = None
@@ -335,10 +338,16 @@ def run_day(d: DayFrame, L, variant: str = "MAIN") -> Dict[str, Any]:
             else:
                 dec["r2"] = "PENDING" if (d.idx and d.idx[-1] < conf_end) else "NONE"
 
-    # R3
+    # R3 — [v4 · 718차] 인과 선택: **확인(진입) 분이 가장 이른 신호**가 자리를 갖는다(동률이면 먼저 터치한 것).
+    #   v3 까지는 터치 시각 순으로 훑어, 먼저 터치·나중 확인된 신호가 그사이 확인·진입한 다른 신호의 자리를
+    #   **소급 점유**했다 → 라이브에서 이미 진입한 거래가 다음 분 재생에서 사라짐(RETRACTED, v3 4일 14건 전부).
+    #   후보 계산(터치 → 반전 확인 → 손절)은 v3 와 한 줄도 다르지 않다 — 고른 순서만 바뀐다.
+    #   근거 `docs/미륵이고도화3/신동2/신동2_철회신호_메커니즘·개선대책_MW0601-20261026.md`.
+    #   후보는 busy 와 무관하므로 분마다 한 번만 계산한다(X4NF flip 금지만 선택 시점의 lvl_side 로 본다).
+    f2x_dir = f2x_direction(d) if f2x else None
+    pos = {k: i for i, k in enumerate(d.idx)}
+    cands = []
     for t in [k for k in d.idx if S.R3_START <= k <= S.NEW_ENTRY_END]:
-        if t <= busy:
-            continue
         if t not in d.c:
             continue
         _, lv = levels_at(L, t)
@@ -354,8 +363,6 @@ def run_day(d: DayFrame, L, variant: str = "MAIN") -> Dict[str, Any]:
         if not sig:
             continue
         side, L0 = sig
-        if x4nf and lvl_side.get(L0, side) != side:
-            continue                    # 같은 맥점에서 방향 뒤집기 — 박스권 양쪽 잡기 방지
         if f2:
             if t not in d.sp:
                 continue
@@ -363,24 +370,38 @@ def run_day(d: DayFrame, L, variant: str = "MAIN") -> Dict[str, Any]:
             trend = -1 if (base is not None and d.sp[t] - base > 0) else 1
             if side != trend:
                 continue
+        if f2x_dir is not None:
+            # [v4 · 718차] MAIN F2X — 수급(F2 ±F2X_SP_BAND)과 가격 추세(EMA 빠름−느림)가 **일치할 때만** 그 방향만.
+            #   불일치·판정 불가(0)면 필터 없이 통과한다.
+            v = f2x_dir.get(t, 0)
+            if v != 0 and side != v:
+                continue
         endw = min(S.NEW_ENTRY_END, _plus_min(t, S.REV_WIN_MIN))
         ent = None
-        for u in d.between(t, endw):
-            seg = [d.sp[k] for k in d.between(t, u) if k in d.sp]
-            if not seg or u not in d.sp:
-                continue
-            if side < 0 and d.sp[u] - min(seg) >= S.REV_MIN:
-                ent = u
+        # [v4] 모든 분의 후보를 계산하므로 색인 조각 + 누적 극값으로 훑는다(v3 의 between() 반복 스캔과 같은 값).
+        i0 = pos[t]
+        lo = hi = None
+        for j in range(i0, len(d.idx)):
+            u = d.idx[j]
+            if u > endw:
                 break
-            if side > 0 and max(seg) - d.sp[u] >= S.REV_MIN:
-                ent = u
+            if u not in d.sp:
+                continue
+            x = d.sp[u]
+            lo = x if lo is None else min(lo, x)
+            hi = x if hi is None else max(hi, x)
+            if side < 0 and x - lo >= S.REV_MIN:
+                ent, j_ent = u, j
+                break
+            if side > 0 and hi - x >= S.REV_MIN:
+                ent, j_ent = u, j
                 break
         if not ent:
             continue
         e = d.c[ent]
         if broken_guard and side * (e - L0) <= 0:
             continue                    # 반전 대기 중 가격이 맥점을 다시 넘어감 — 되밀림 신호 무효
-        span = d.between(t, ent)
+        span = d.idx[i0:j_ent + 1]
         stop = (max(L0 + S.LV_STOP_BUF, max(d.h[k] for k in span) + S.EXT_STOP_BUF) if side < 0
                 else min(L0 - S.LV_STOP_BUF, min(d.l[k] for k in span) - S.EXT_STOP_BUF))
         if side * (e - stop) <= 0:
@@ -394,6 +415,21 @@ def run_day(d: DayFrame, L, variant: str = "MAIN") -> Dict[str, Any]:
                     stop = wide
             elif "ATR14 없음 — R3 손절 폴백(현행 맥점 손절)" not in dec["notes"]:
                 dec["notes"].append("ATR14 없음 — R3 손절 폴백(현행 맥점 손절)")
+        cands.append((ent, t, side, L0, e, stop))
+    cands.sort(key=lambda x: (x[0], x[1]))
+    while True:
+        pick = None
+        for x in cands:
+            ent, t, side, L0 = x[0], x[1], x[2], x[3]
+            if t <= busy:
+                continue
+            if x4nf and lvl_side.get(L0, side) != side:
+                continue                # 같은 맥점에서 방향 뒤집기 — 박스권 양쪽 잡기 방지
+            pick = x
+            break
+        if pick is None:
+            break
+        ent, t, side, L0, e, stop = pick
         t1, t2 = (targets_x4 if x4nf else targets)(L, ent, side, e)
         tr = run_trade(d, side, ent, stop, t1, t2, e2=e2, trail=tr44)
         tr.update(rule="R3", touch_level=L0, touch_ts=t)
@@ -401,6 +437,42 @@ def run_day(d: DayFrame, L, variant: str = "MAIN") -> Dict[str, Any]:
         lvl_side[L0] = side
         busy = tr["exit_ts"] or "99:99"
     return {"decision": dec, "trades": trades}
+
+
+def _ema(series: Dict[str, float], keys: List[str], n: int) -> Dict[str, float]:
+    """분 순서 EMA(α = 2/(n+1)). 값이 없는 분은 직전 EMA 를 잇는다 — t 까지의 값만 쓴다(인과)."""
+    a = 2.0 / (n + 1)
+    out, v = {}, None
+    for k in keys:
+        if k in series:
+            v = series[k] if v is None else v + a * (series[k] - v)
+        if v is not None:
+            out[k] = v
+    return out
+
+
+def f2x_direction(d: DayFrame) -> Dict[str, int]:
+    """[v4 · 718차] F2X 방향(분 → −1 매도 · +1 매수 · 0 판정 불가).
+
+    수급: 09:00 대비 콜−풋 변화 Δ — |Δ| ≤ F2X_SP_BAND 이면 0, Δ>0 이면 −1(개인 콜 매수 쏠림 역추종).
+    가격: 종가 EMA(F2X_EMA_FAST) − EMA(F2X_EMA_SLOW) 의 부호(0 이면 0).
+    둘이 같고 0 이 아닐 때만 그 방향, 아니면 0. 분석 `f2_filters.build` 「조합: F2±50 ∧ 가격 EMA20−60」과 같다.
+    """
+    base = d.sp.get(S.CONF_BASE)
+    fast = _ema(d.c, d.idx, S.F2X_EMA_FAST)
+    slow = _ema(d.c, d.idx, S.F2X_EMA_SLOW)
+    out: Dict[str, int] = {}
+    for k in d.idx:
+        a = 0
+        if base is not None and k in d.sp:
+            x = d.sp[k] - base
+            a = 0 if abs(x) <= S.F2X_SP_BAND else (-1 if x > 0 else 1)
+        b = 0
+        if k in fast and k in slow:
+            y = fast[k] - slow[k]
+            b = 0 if y == 0 else (1 if y > 0 else -1)
+        out[k] = a if (a == b and a != 0) else 0
+    return out
 
 
 def trade_net(tr) -> float:

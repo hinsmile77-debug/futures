@@ -30,17 +30,17 @@ def _src(rel):
 
 # ── A. 규격 ─────────────────────────────────────────────────────────────
 def test_spec_v3_registered():
-    assert spec.SPEC_VERSION == "SD-2026-10-21-v3"
-    assert spec.SPEC_VERSION_PREV == spec.V2_SPEC_VERSION == "SD-2026-09-29-v2"
-    assert spec.VARIANTS[:5] == ("MAIN", "SHADOW_V2", "SHADOW_E2F2", "SHADOW_X4NF", "SHADOW_X4NFA")   # [700차] 뒤에 ATRS
+    # [718차] v4 개정 뒤 — v3 는 사료(V3_SPEC_VERSION · V3_SCORING_START). 트레일 값·TR44 종료는 그대로
+    assert spec.V3_SPEC_VERSION == spec.SPEC_VERSION_PREV == "SD-2026-10-21-v3"
+    assert spec.V2_SPEC_VERSION == "SD-2026-09-29-v2"
+    assert spec.VARIANTS[:6] == ("MAIN", "SHADOW_V3", "SHADOW_V2", "SHADOW_E2F2", "SHADOW_X4NF", "SHADOW_X4NFA")
     assert spec.MAIN_TRAIL == (spec.TR44_ACT, spec.TR44_DIST) == (4.0, 4.0)     # 632차 사전등록값 그대로
     assert "SHADOW_TR44" in spec.RETIRED_SHADOWS and "SHADOW_TR44" not in spec.VARIANTS
-    assert spec.SCORING_START == "2026-10-21" and spec.V2_SCORING_START == "2026-09-30"
-    assert {"SHADOW_V2", "SHADOW_X4NF", "SHADOW_X4NFA"} <= set(spec.LATE_SHADOW_START)
-    # [714차] SHADOW_R2D7 은 v3 개정 뒤에 등록돼 그 다음 거래일(10-26)부터 센다 — 나머지는 v3 재시작일
-    assert all(v == spec.SCORING_START for k, v in spec.LATE_SHADOW_START.items() if k != "SHADOW_R2D7")
-    assert spec.LATE_SHADOW_START["SHADOW_R2D7"] > spec.SCORING_START
-    assert (spec.COMPLEMENT_SCORING_START, spec.COMPLEMENT_JUDGE_AFTER_DAYS) == ("2026-10-21", 20)
+    assert spec.V3_SCORING_START == "2026-10-21" and spec.V2_SCORING_START == "2026-09-30"
+    assert {"SHADOW_V3", "SHADOW_V2", "SHADOW_X4NF", "SHADOW_X4NFA"} <= set(spec.LATE_SHADOW_START)
+    # [718차] v4 — 전 섀도가 v4 첫날(10-27)부터 다시 센다(v3 창: 10-21 · R2D7 10-26)
+    assert all(v == spec.SCORING_START == "2026-10-27" for v in spec.LATE_SHADOW_START.values())
+    assert (spec.COMPLEMENT_SCORING_START, spec.COMPLEMENT_JUDGE_AFTER_DAYS) == ("2026-10-27", 20)
 
 
 def test_amendment_documented():
@@ -147,7 +147,8 @@ def test_mireuk_runner_frozen_to_v2_main():
 
 def test_shindong2_rival_reregistered_before_open():
     src = _src("scripts/shindong2_rival.py")
-    assert '"MW0601": dict(version="SD2AI-MW0601-2026-10-21-v2", scoring_start="2026-10-21")' in src
+    # [718차] v4 로 MAIN 이 바뀌어 v3 재등록(SD2AI-MW0601-2026-10-27-v3) — v2 는 이력으로 남는다(test_718 이 현행을 고정)
+    assert '"MW0601": dict(version="SD2AI-MW0601-2026-10-27-v3", scoring_start="2026-10-27")' in src
     doc = _src("docs/맥점x옵션사다리개선/02_사전등록_AI대MAIN_판정_MW0601-20261020.md")
     assert "SD2AI-MW0601-2026-10-21-v2" in doc and "SD-2026-10-21-v3" in doc
 

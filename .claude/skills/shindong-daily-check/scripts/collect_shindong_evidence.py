@@ -4,7 +4,7 @@
 
 원본: MW0602 Sindong-V4 `.claude/skills/shindong-daily-check/scripts/collect_shindong_evidence.py`(661차 후속5).
 v9 판으로 옮기며 바꾼 것:
-  · 신동 규격이 다르다 — v3(`SD-2026-10-21-v3` · R2/R3 · 1차/최종 레그 · 15:05) · 집행 기록
+  · 신동 규격이 다르다 — v4(`SD-2026-10-27-v4` · R2/R3(인과 선택 · MAIN R3 F2X 필터) · 1차/최종 레그 · 15:05) · 집행 기록
     `data/principal/<날짜>/shindong_exec.jsonl`(ENTER · EXIT_LEG1 · SET_STOP · CLOSED_ELSEWHERE …) · 로그 `[ShindongExec]`
   · 주체는 고정이 아니라 허용 집합 — `PRINCIPAL_ALLOWED`·`PRINCIPAL_DEFAULT` · 피터 선택 가능
   · 711차 손절거리 위험 수량(`[ShindongExec] 위험 기준 축소`) · 실전 자본 3층(`[Capital]`)
@@ -375,7 +375,7 @@ def build(root, day, phase, pcid, pclabel):
     # §1 설정
     keys = ("MIREUK_ENGINE", "PRINCIPAL_ALLOWED", "PRINCIPAL_DEFAULT", "LIGHT_PASS_DRY_RUN",
             "PRINCIPAL_SHINDONG_ENABLED", "SHINDONG_LIVE_QTY", "SHINDONG_STOP_RISK_QTY_ENABLED",
-            "SHINDONG_STOP_RISK_PCT", "MAX_CONTRACTS", "LIVE_OPERATING_CAPITAL_KRW", "CB_CONSEC_STOP_LIMIT",
+            "SHINDONG_STOP_RISK_PCT", "SHINDONG_STOP_RISK_BUF_PTS", "SHINDONG_STOP_RISK_FLOOR_PTS", "MAX_CONTRACTS", "LIVE_OPERATING_CAPITAL_KRW", "CB_CONSEC_STOP_LIMIT",
             "PETER2_FOLLOW_MODE", "SHINDONG_REPORT_MAIL_ENABLED", "SHINDONG_DAILY_MAIL_ENABLED")
     sv = setting_values(root, keys)
     a("## 1. 설정 (config/settings.py — 엔진·주체는 기동 시 1회 읽힌다)")

@@ -58,9 +58,10 @@ except ImportError:                      # dev 등 미정의 브랜치 호환
 try:
     # [MW0601 711차] 신동 손절거리 위험 수량 — 설정 설명은 config/settings.py SHINDONG_STOP_RISK_* 절.
     from config.settings import (SHINDONG_STOP_RISK_QTY_ENABLED, SHINDONG_STOP_RISK_PCT,
-                                 SHINDONG_STOP_RISK_BUF_PTS)
+                                 SHINDONG_STOP_RISK_BUF_PTS, SHINDONG_STOP_RISK_FLOOR_PTS)
 except ImportError:                      # 미정의 브랜치 호환 — 꺼짐(종전 동작)
     SHINDONG_STOP_RISK_QTY_ENABLED, SHINDONG_STOP_RISK_PCT, SHINDONG_STOP_RISK_BUF_PTS = False, 0.0, 0.0
+    SHINDONG_STOP_RISK_FLOOR_PTS = 0.0
 
 # 최대노출 레버리지 경고 임계 (기준자본 대비 MAX_CONTRACTS 총 계약가치 배수).
 # 자동 조치는 하지 않는다 — 경고만.
@@ -185,8 +186,10 @@ def shindong_planned_qty(ui_max_qty, day_start_margin_qty=None, configured_qty=N
     return min(ui, base) if ui > 0 else base
 
 
-def shindong_stop_risk_qty(stop_pts, capital_krw, pt_value, risk_pct=None, buf_pts=None):
-    """[MW0601 711차] 거래당 위험 동일화 수량 = max(1, floor(위험자본 × X% ÷ ((손절 거리 + 버퍼) × 1pt 원))).
+def shindong_stop_risk_qty(stop_pts, capital_krw, pt_value, risk_pct=None, buf_pts=None, floor_pts=None):
+    """[MW0601 711차] 거래당 위험 동일화 수량 = max(1, floor(위험자본 × X% ÷ ((max(손절 거리, 하한) + 버퍼) × 1pt 원))).
+
+    floor_pts = [718차] 위험거리 하한(pt). 손절이 이보다 좁아도 이 거리로 계산한다 — 좁은 손절에 수량을 더 싣지 않는다.
 
     stop_pts  = 그 거래의 |진입가 − 초기 손절|(pt). 신동2는 거래마다 손절이 명시돼 있어 ATR 근사가 필요 없다
                 (dev 657차는 손절이 0.6×ATR 하나라 ATR 분모를 쓴다 — 신동2에 그대로 쓰면 효율이 나빠진다).
@@ -199,9 +202,10 @@ def shindong_stop_risk_qty(stop_pts, capital_krw, pt_value, risk_pct=None, buf_p
     cap, pv = _f(capital_krw), _f(pt_value)
     pct = _f(SHINDONG_STOP_RISK_PCT if risk_pct is None else risk_pct)
     buf = _f(SHINDONG_STOP_RISK_BUF_PTS if buf_pts is None else buf_pts)
+    flo = _f(SHINDONG_STOP_RISK_FLOOR_PTS if floor_pts is None else floor_pts)
     if sp < 0 or cap <= 0 or pv <= 0 or pct <= 0:
         return None
-    per = (sp + max(0.0, buf)) * pv
+    per = (max(sp, max(0.0, flo)) + max(0.0, buf)) * pv
     if per <= 0:
         return None
     return max(1, int((cap * pct) // per))

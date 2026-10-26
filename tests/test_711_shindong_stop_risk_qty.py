@@ -35,14 +35,17 @@ def _func(src, name):
 def test_user_decided_values():
     assert ST.LIVE_OPERATING_CAPITAL_KRW == 30_000_000
     assert ST.SHINDONG_STOP_RISK_QTY_ENABLED is True
-    assert ST.SHINDONG_STOP_RISK_PCT == 0.015          # 10거래일 실측 뒤 2.0% 승격 여부 결정 — 그전 변경 금지
-    assert ST.SHINDONG_STOP_RISK_BUF_PTS == 1.0
+    # [718차 / 사용자 결정 2026-10-26] 1.5% · 버퍼 1 → 2.0% · 버퍼 0.5 · 하한 4pt(v4 MAIN F2X 전용) — test_718 이 고정
+    assert ST.SHINDONG_STOP_RISK_PCT == 0.020
+    assert ST.SHINDONG_STOP_RISK_BUF_PTS == 0.5
+    assert ST.SHINDONG_STOP_RISK_FLOOR_PTS == 4.0
     assert not hasattr(ST, "SHINDONG_TRADE_RISK_PCT")   # dev 657차(7% · ATR 분모)와 다른 상수 — 이름 충돌 방지
 
 
 # ── B ─────────────────────────────────────────────────────────────────
 def _q(stop, cap=30_000_000):
-    return CAP.shindong_stop_risk_qty(stop, cap, 50_000, risk_pct=0.015, buf_pts=1.0)
+    # 711차 공식 그대로(하한 없음) — [718차] 하한 인자가 생겨 0 을 명시한다(기본값은 설정의 4pt)
+    return CAP.shindong_stop_risk_qty(stop, cap, 50_000, risk_pct=0.015, buf_pts=1.0, floor_pts=0.0)
 
 
 def test_formula_examples():

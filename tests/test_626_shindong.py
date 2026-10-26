@@ -37,8 +37,9 @@ from strategy.shindong.calendar import select_flow_product  # noqa: E402
 # ── A. 규격 고정 ──────────────────────────────────────────────────────────
 def test_spec_is_preregistered_values():
     """🔴 값이 바뀌면 검증 시계가 초기화된다 — 이 테스트를 고치기 전에 사전등록 문서부터."""
-    assert spec.SPEC_VERSION == "SD-2026-10-21-v3"      # [699차] v3 — MAIN = v2 + R3 트레일 4/4(구 TR44 승격)
-    assert spec.SPEC_VERSION_PREV == "SD-2026-09-29-v2"  # 639차 개정 — 최종 목표 최소거리(값 무변경)
+    assert spec.SPEC_VERSION == "SD-2026-10-27-v4"      # [718차] v4 — 인과 R3 선택 + MAIN R3 F2X 필터
+    assert spec.SPEC_VERSION_PREV == "SD-2026-10-21-v3"  # [699차] v3 — MAIN = v2 + R3 트레일 4/4(구 TR44 승격)
+    assert (spec.F2X_SP_BAND, spec.F2X_EMA_FAST, spec.F2X_EMA_SLOW) == (50, 20, 60)
     assert spec.MAIN_TRAIL == (4.0, 4.0) == (spec.TR44_ACT, spec.TR44_DIST)
     assert (spec.BIAS_MIN, spec.CONF_MIN, spec.CONF_END, spec.REV_MIN, spec.REV_WIN_MIN) == \
         (50, 50, "09:10", 50, 10)
@@ -46,11 +47,11 @@ def test_spec_is_preregistered_values():
         (1.0, 1.5, 1.5, 0.5)
     assert (spec.T1_MIN_DIST, spec.TP_BUF, spec.OR_STOP_BUF) == (2.0, 0.5, 1.0)
     assert (spec.R3_START, spec.NEW_ENTRY_END, spec.TIME_EXIT) == ("09:30", "14:30", "15:05")
-    assert spec.VARIANTS == ("MAIN", "SHADOW_V2", "SHADOW_E2F2", "SHADOW_X4NF",
-                             "SHADOW_X4NFA", "SHADOW_ATRS", "SHADOW_R2D7")   # [699차] TR44 → MAIN 승격 · 구 MAIN 은 SHADOW_V2 · [700차] ATRS · [714차] R2D7
+    assert spec.VARIANTS == ("MAIN", "SHADOW_V3", "SHADOW_V2", "SHADOW_E2F2", "SHADOW_X4NF",
+                             "SHADOW_X4NFA", "SHADOW_ATRS", "SHADOW_R2D7")   # [699차] TR44 → MAIN 승격 · 구 MAIN 은 SHADOW_V2 · [700차] ATRS · [714차] R2D7 · [718차] 구 MAIN 은 SHADOW_V3
     assert "SHADOW_TR44" in spec.RETIRED_SHADOWS
     assert (spec.SCORING_START, spec.R3_KILL_AFTER_DAYS, spec.R3_KILL_NET_MAX,
-            spec.R3_KILL_WINRATE_MAX) == ("2026-10-21", 10, 0, 0.35)   # [699차] v3 채점 재시작(v2: 09-30)
+            spec.R3_KILL_WINRATE_MAX) == ("2026-10-27", 10, 0, 0.35)   # [718차] v4 채점 재시작(v3: 10-21 · v2: 09-30)
 
 
 # ── B. 상품 선택 ──────────────────────────────────────────────────────────
