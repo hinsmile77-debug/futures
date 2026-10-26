@@ -435,6 +435,7 @@ class CybosAPI:
         self._msg_callbacks = []
         # [MW0602 2026-10-17] B-02 — 주문가능수량 조회(CpTd6722) 실패 횟수(장후 알림 판정용)
         self.margin_qty_fail_count = 0
+        self._margin_qty_ok_day = ""   # [717차 후속 / F-1] 당일 첫 성공 원값 로그 1회
         self._investor_mapping_warned = set()
         self._last_order_error: Optional[Dict[str, Any]] = None
         # [308차 후속] fill 콜백 경량화 — OnReceived(COM 콜백) 안에서는 payload
@@ -733,7 +734,11 @@ class CybosAPI:
     # 실서버가 날짜로 거르는 것이라면 6자리가 원인이다 — **미확정 가설**이다.
     # ⇒ 기본 형식은 그대로 두고, `12242`(내용 없음)일 때만 8자리로 **1회** 재시도해
     #   성공한 형식을 계좌별로 기억한다. 결과는 어느 쪽이든 로그로 남긴다(계측 4원칙 ④).
-    _DAILY_PNL_DATE_FMTS = ("%y%m%d", "%Y%m%d")
+    # [MW0601 2026-10-26] 가설 확정 → 기본 형식을 8자리로 뒤집었다.
+    # 실계좌 783343908 에서 10-15–10-26 **매 기동** 6자리 `12242` → 8자리 성공(6자리 성공 0회).
+    # 기억이 프로세스 메모리뿐이라 재기동마다 실패 요청 1회 + `형식 전환` WARN 이 반복됐다.
+    # 6자리는 모의계좌(777020696 류) 대비 폴백으로 남긴다 — 그 경우 `8→6 전환` 로그가 1회 뜬다.
+    _DAILY_PNL_DATE_FMTS = ("%Y%m%d", "%y%m%d")
     _DAILY_PNL_NO_DATA_CODE = "12242"
 
     def _request_futures_daily_pnl_summary(self, account_no: str) -> Dict[str, str]:
@@ -1192,13 +1197,16 @@ class CybosAPI:
                 "buy_new_qty": _safe_int(obj.GetHeaderValue(MARGIN_QTY_HEADER_BUY_NEW)),
             }
 
+        # [MW0601 717차 후속 / F-1(709-1) 사용자 승인 2026-10-26] 시장가(idx3="2") 조회에는 단가(idx2)를
+        #   **넣지 않는다.** 0.0 이라도 SetInputValue 하면 브로커가 `msg=11298 시장가/…주문은 단가를 입력하지
+        #   않습니다` 로 거부해, 10-13 이래 이 조회가 한 번도 성공하지 못했다(늘 None = 미측정).
+        #   `price` 인자는 시그니처 호환용으로 남긴다(지정가 조회를 붙일 때 idx3 과 함께 쓴다).
         try:
             ret, status, msg, data = _run_block_request(
                 progid=CYBOS_FUTURES_ORDER_MARGIN_QTY_PROGID,
                 input_pairs=[
                     (0, account_no),
                     (1, _code),
-                    (2, float(price or 0.0)),
                     (3, ORDER_HOGA_MARKET),
                     (4, CYBOS_GOODS_CODE_FUTURES),
                     (5, "Y"),
@@ -1221,6 +1229,15 @@ class CybosAPI:
                 ret, status, msg, account_no, _code,
             )
             return None
+        # [717차 후속 / F-1] 첫 성공은 하루 1회 원값을 남긴다 — 머리값 위치(매도 19 · 매수 29)는
+        #   F-1 이전엔 한 번도 실측된 적이 없다. 단위·부호가 예상과 다르면 이 줄로 바로 드러난다.
+        _today = time.strftime("%Y-%m-%d")
+        if self._margin_qty_ok_day != _today:
+            self._margin_qty_ok_day = _today
+            system_logger.info(
+                "[CybosMarginQty] 조회 성공(당일 첫 회) — 매도 신규가능 %s · 매수 신규가능 %s (account=%s code=%s)",
+                (data or {}).get("sell_new_qty"), (data or {}).get("buy_new_qty"), account_no, _code,
+            )
         return data
 
     def get_index_price(

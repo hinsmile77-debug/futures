@@ -266,7 +266,10 @@ def test_main_retracted_behavior(monkeypatch):
         def warning(self, fmt, *args, **kw):
             msgs.append("WARN " + (fmt % args))
 
-    ns = {"datetime": dt, "logger": _Log(), "logging": logging,
+    import time as _time
+    from strategy.shindong.perf_monitor import ShindongPerf
+    # [717차 후속 / F-3] `_run_shindong` 이 `time.perf_counter()` 와 `self._sd_perf` 로 소요시간을 잰다.
+    ns = {"datetime": dt, "logger": _Log(), "logging": logging, "time": _time,
           "runtime_settings": types.SimpleNamespace(
               SHINDONG_ENABLED=True, RAW_DATA_DB="r", WEEKLY_OPTION_FLOW_DB="f",
               PREMARKET_LEVELS_DB="l", SHINDONG_DB="s")}
@@ -285,6 +288,7 @@ def test_main_retracted_behavior(monkeypatch):
     #   (없어서 AttributeError → 바깥 except → WARN 으로 이 테스트가 깨져 있었다 — 제품 결함 아님).
     me = types.SimpleNamespace(_sd_day=None, _sd_seen={}, _sd_last={}, _sd_warned=False, dashboard=None,
                                _sd_hold_gap_logged=False, _sd_exec_last_sync=None,
+                               _sd_perf=ShindongPerf(),
                                _refresh_pnl_history=lambda: None,
                                _shindong_exec_step=lambda payload, now: None)
     for m in (49, 50, 51):

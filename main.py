@@ -146,6 +146,7 @@ from config.capital import (
     shindong_planned_qty as _capital_sd_planned_qty,
     shindong_entry_qty as _capital_sd_entry_qty,
     shindong_stop_risk_qty as _capital_sd_stop_risk_qty,   # [711차] 손절거리 위험 수량
+    margin_per_contract_est as _capital_margin_est,        # [717차 후속 / F-1] 0 판독 의심 가드 전용
 )
 from config import secrets as _secrets
 
@@ -971,6 +972,10 @@ class TradingSystem:
         #   None = 이 세션에서 아직 대조하지 않음(재기동 직후 → 즉시 1회 대조).
         self._sd_exec_last_sync = None
         self._sd_hold_gap_logged = False   # 수집 미갱신으로 대체 대조 중임을 알렸는가(회복 시 리셋)
+        # [MW0601 717차 후속 / F-3·G-4] 신동 경로 소요시간·정규 대조 간격 — 관찰 전용(판정·주문 무관).
+        from strategy.shindong.perf_monitor import ShindongPerf as _SdPerf
+        self._sd_perf = _SdPerf(summary_every_sec=float(
+            getattr(runtime_settings, "SHINDONG_PERF_SUMMARY_SEC", 600) or 600))
         # 잔고 스트립 「전일손익」 주체 실적 캐시 (오늘, 직전 거래일, 그날 요약, 주체). None = 아직 안 셈
         self._principal_prev_cache = None
         # [MW0601 612차 후속5] 수급 첫 호출 실패 시 조기 재시도 — 세션당 1회.
@@ -5954,7 +5959,9 @@ class TradingSystem:
                 flow = WeeklyOptionFlow(getattr(
                     runtime_settings, "WEEKLY_OPTION_FLOW_DB", "data/db/option_flow.db"))
                 self._weekly_option_flow = flow
+            _t_flow = time.perf_counter()
             flow.fetch_and_store()
+            self._sd_perf.record_ms("flow", (time.perf_counter() - _t_flow) * 1000.0, now)   # [F-3]
             self._wof_last_ts = now
             # [MW0601 612차 후속3] 개인 옵션 6종 시초 대비 증감을 패널로 민다.
             # (아래 선물 수급 push 와 함께, 이 타이머가 15:09 이후의 유일한
@@ -6037,6 +6044,7 @@ class TradingSystem:
                 self._sd_day = day
                 self._sd_seen = {}
                 self._sd_last = {}
+            _t_replay = time.perf_counter()
             payload = _sd.run_and_store(
                 day,
                 raw_db=runtime_settings.RAW_DATA_DB,
@@ -6045,6 +6053,7 @@ class TradingSystem:
                 levels_db=runtime_settings.PREMARKET_LEVELS_DB,
                 sd_db=runtime_settings.SHINDONG_DB,
                 now=now, live=True)
+            self._sd_perf.record_ms("replay", (time.perf_counter() - _t_replay) * 1000.0, now)   # [F-3]
             # 진입·청산이 **바뀔 때만** TRADE 로그 한 줄 — 복기의 두 번째 증인이다.
             _newly_closed = False
             for t in payload.get("trades") or []:
@@ -6085,8 +6094,11 @@ class TradingSystem:
             # [MW0601 685차] 거래주체가 신동이면 재생을 실포지션에 옮긴다(아니면 아무것도 안 한다).
             #   재생 기록과 예외를 섞지 않는다 — 집행 실패는 매번 ERROR 로 남긴다(억제하지 않는다).
             try:
+                _t_exec = time.perf_counter()
                 self._shindong_exec_step(payload, now)
                 self._sd_exec_last_sync = now
+                self._sd_perf.record_ms("exec", (time.perf_counter() - _t_exec) * 1000.0, now)   # [F-3]
+                self._sd_perf.mark_regular_sync(now)
                 if self._sd_hold_gap_logged:
                     self._sd_hold_gap_logged = False
                     log_manager.system("[ShindongExec] 옵션흐름 수집 회복 — 정규 재생 대조로 복귀", "INFO")
@@ -6101,6 +6113,12 @@ class TradingSystem:
             #   재기동 직후 첫 계산은 그날 청산분이 전부 「새로」 보여 한 번 갱신된다 — 의도다.
             if _newly_closed:
                 self._refresh_pnl_history()
+            # [717차 후속 / G-4] 신동 건강 지표 요약 — 주기마다 한 줄(관찰 전용).
+            try:
+                if self._sd_perf.summary_due(now):
+                    logger.info(self._sd_perf.format_summary(now))
+            except Exception as _sp_e:
+                logger.debug("[ShindongPerf] 요약 실패(무해): %s", _sp_e)
         except Exception as e:
             if not self._sd_warned:
                 self._sd_warned = True
@@ -6233,9 +6251,29 @@ class TradingSystem:
         if not info:
             return None
         try:
-            return min(int(info.get("buy_new_qty", 0) or 0), int(info.get("sell_new_qty", 0) or 0))
+            _q = min(int(info.get("buy_new_qty", 0) or 0), int(info.get("sell_new_qty", 0) or 0))
         except Exception:
             return None
+        # [MW0601 717차 후속 / F-1] 판독 의심 가드 — F-1 로 이 조회가 처음 성공하기 시작했고, 머리값 위치
+        #   (매도 19·매수 29)는 실측된 적이 없다. 위치·단위를 잘못 읽어 0 이 나오면 신동 진입이 **전부 기각**된다.
+        #   그래서 「0계약」이 예탁금 추정(2계약 이상)과 정면으로 모순될 때만 0 을 버리고 미측정(None)으로 둔다.
+        #   ⚠ 추정치로 수량을 **늘리지는 않는다** — None 이면 계획 수량 그대로 나가고 최종 판정은 브로커다
+        #   (`margin_per_contract_est` 「판정에 쓰지 않는다」의 예외는 이 강등 한 방향뿐이다).
+        if _q <= 0:
+            try:
+                _dep = float(self._broker_dep_base_today or 0.0)
+                _m1 = _capital_margin_est(float(price), self._pt_value)
+                _est = int(_dep // _m1) if (_dep > 0 and _m1 > 0) else None
+            except Exception:
+                _est = None
+            if _est is not None and _est >= 2:
+                log_manager.trade(
+                    "[Capital] 주문가능수량 0 판독 의심 — 예탁금 %s원 기준 추정 %d계약(매수 %s · 매도 %s) "
+                    "→ 미측정으로 처리(계획 수량 그대로 · 최종 판정은 브로커)"
+                    % (format(int(_dep), ","), _est, info.get("buy_new_qty"), info.get("sell_new_qty")),
+                    "WARNING")
+                return None
+        return _q
 
     def _capital_monitor_refresh(self, now=None, force_margin: bool = False) -> dict:
         """관측 → 정책 → 통제 상태를 계산해 「3 주문/체결」 탭에 띄우고, 바뀌면 `[Capital]` 로그를 남긴다.
@@ -6683,15 +6721,31 @@ class TradingSystem:
             return
         from strategy.shindong import store as _sd_store
         day = now.date().isoformat()
+        _t_rec = time.perf_counter()
         trades = _sd_store.load_trades(runtime_settings.SHINDONG_DB, day, "MAIN")
         if not self._sd_hold_gap_logged:
             self._sd_hold_gap_logged = True
+            # [717차 후속 / F-3] 경합 판정용 꼬리 — 정확한 경과(소수 1자리) · 수급 타이머 다음 발화까지 ·
+            #   직전 수집 성공 시각. 「60초」 문두는 그대로 둔다(수집기 정규식 `정규 재생 대조 \d+초 미갱신`).
+            #   타이머 잔여가 수 초 이내면 수집 실패가 아니라 문턱(60초)=주기(60초) 경합이다.
+            try:
+                _rem = self._investor_timer.remainingTime()
+                _rem_txt = "%dms" % _rem if _rem is not None and _rem >= 0 else "미측정"
+            except Exception:
+                _rem_txt = "미측정"
+            _wof = self._wof_last_ts
             log_manager.system(
                 "[ShindongExec] 정규 재생 대조 %s — 직전 재생 결과(DB %d건)로 보유 포지션 대조"
+                " | 경과 %s · 수급 타이머 다음 발화까지 %s · 직전 수집 성공 %s"
                 % ("없음(재기동 직후)" if last is None
                    else "%.0f초 미갱신(옵션흐름 수집 미성공)" % (now - last).total_seconds(),
-                   len(trades)), "WARNING")
+                   len(trades),
+                   "미측정" if last is None else "%.1f초" % (now - last).total_seconds(),
+                   _rem_txt,
+                   _wof.strftime("%H:%M:%S") if _wof is not None else "없음"), "WARNING")
         self._shindong_exec_step({"trades": trades}, now)
+        self._sd_perf.mark_fallback(now)
+        self._sd_perf.record_ms("reconcile", (time.perf_counter() - _t_rec) * 1000.0, now)   # [F-3]
         self._sd_exec_last_sync = now
 
     def _shindong_target_poll(self) -> None:
