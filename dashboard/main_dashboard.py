@@ -10118,6 +10118,7 @@ class MinuteChartCanvas(QWidget):
             self._draw_peter_orders(painter, plot, candles, index_map, lo, hi, padded_count)
             self._draw_peter_aux(painter, plot, candles, index_map, lo, hi, padded_count)
             self._draw_trade_spans(painter, plot, candles, index_map, lo, hi, padded_count)
+            self._draw_sd_spans(painter, plot, candles, index_map, lo, hi, padded_count)
             # 피터 사료는 실측 **아래**에 깐다 — 겹치면 실측이 이긴다
             self._draw_peter_trades(painter, plot, candles, index_map, lo, hi, padded_count)
             # [621차 후속6] 진행 중 봉은 캐시에 넣지 않는다 — 틱마다 오버레이가 그린다.
@@ -11959,6 +11960,54 @@ class MinuteChartCanvas(QWidget):
                 painter.setPen(pen)
                 painter.drawLine(int(x1), int(y), int(x2), int(y))
 
+    def _draw_sd_spans(self, painter: QPainter, plot: QRectF, candles, index_map, lo: float, hi: float, padded_count: int):
+        """[MW0602 2026-10-25 사용자 지시] 신동 거래도 미륵처럼 진입~청산 **구간 면** + 칩.
+
+        면은 진입 → **마지막 닫힌 다리**까지(다리 = 1계약). 색은 닫힌 다리 pt 합의 손익.
+        닫힌 다리가 없으면(보유 중·미청산) 면을 깔지 않는다 — 보유 점선은 `_draw_sd_markers` 몫.
+        🔴 paint 경로 — strftime 포맷에 한글 금지(557차), 값 변환은 방어한다.
+        """
+        if not self._ov.get("trade_sd", True) or not self._sd_trades or not candles:
+            return
+        count = max(padded_count, 1)
+        step = plot.width() / count
+        _chips = len(self._sd_trades) <= self.TRADE_CHIP_MAX
+        for t in self._sd_trades:
+            try:
+                entry_dt = self._coerce_dt(t.get("entry_ts"))
+                exs = [x for x in (t.get("exits") or []) if self._coerce_dt(x.get("ts"))]
+                if not entry_dt or not exs:
+                    continue
+                last = max(exs, key=lambda x: self._coerce_dt(x.get("ts")))
+                exit_dt = self._coerce_dt(last.get("ts"))
+                i1 = self._resolve_index(index_map, candles, entry_dt)
+                i2 = self._resolve_index(index_map, candles, exit_dt)
+                if i1 is None or i2 is None:
+                    continue
+                pts = [float(x["pts"]) for x in exs if x.get("pts") is not None]
+                pnl = sum(pts)
+                _col = QColor("#2FBF71" if pnl > 0 else ("#FF5D73" if pnl < 0 else "#8B949E"))
+                y = self._price_to_y(float(t.get("entry_price") or 0.0), plot, lo, hi)
+                _ep = float(last.get("price") or 0.0)
+                _y2 = self._price_to_y(_ep, plot, lo, hi) if _ep > 0 else y
+                x1 = plot.left() + step * (i1 + 0.5)
+                x2 = plot.left() + step * (i2 + 0.5)
+                self._draw_trade_span_area(painter, x1, y, x2, _y2, _col, step, plot)
+                if _chips:
+                    painter.setFont(QFont("Consolas", 8))
+                    _pl = ("%+.2fp" % pnl) + " 신동" + (" (보유중)" if t.get("open") else "")
+                    self._draw_label_chip(painter, min(x1, x2), min(y, _y2) - S.p(20),
+                                          _pl, QColor(13, 17, 23, 225), _col, True)
+                    _rule = str(t.get("rule") or "")
+                    _wh = (str(t.get("direction_txt") or "") + " "
+                           + entry_dt.strftime("%H:%M") + "→" + exit_dt.strftime("%H:%M")
+                           + (" · " + _rule[:14] if _rule else ""))
+                    painter.setFont(QFont("Consolas", 7))
+                    self._draw_label_chip(painter, min(x1, x2), max(y, _y2) + S.p(4),
+                                          _wh, QColor(13, 17, 23, 205), _col, False)
+            except Exception as _e:
+                logger.debug("[ChartDBG] 신동 스팬 실패: %s", _e)
+
     def _draw_markers(self, painter: QPainter, plot: QRectF, candles, index_map, lo: float, hi: float, padded_count: int):
         # 🔴 「거래미륵」 토글은 **거래 표시 전부**를 끈다. 스팬만 끄면 마커가 남아
         #   토글이 안 듣는 것처럼 보인다 — 실측으로 확인했다.
@@ -13216,6 +13265,13 @@ class MinuteChartDialog(QDialog):
         lbl = QLabel("레이어")
         lbl.setStyleSheet(f"color:{C['text2']};font-size:{S.f(10)}px;")
         bar.addWidget(lbl)
+        # [MW0602 661차 후속] 미륵 휴면(MIREUK_ENGINE="off")이면 「거래미륵」을 끄고 잠근다
+        #   (사용자 지시 2026-10-25). 신동 거래는 「거래신동」이 그린다.
+        try:
+            from config.settings import MIREUK_ENGINE as _eng
+            _mireuk_off = str(_eng).lower() == "off"
+        except Exception:
+            _mireuk_off = False
         for _key, _txt, _col in self._OV_SPEC:
             b = QPushButton(_txt)
             b.setCheckable(True)
@@ -13230,6 +13286,10 @@ class MinuteChartDialog(QDialog):
                 f"QPushButton:checked{{color:{_col};border-color:{_col};}}"
             )
             b.toggled.connect(lambda on, k=_key: self._on_overlay_toggled(k, on))
+            if _key == "trade_mireuk" and _mireuk_off:
+                b.setChecked(False)          # toggled → 캔버스 _ov 도 False
+                b.setEnabled(False)
+                b.setToolTip("미륵 휴면(MIREUK_ENGINE=off) — 사용 안 함. 신동 거래는 「거래신동」")
             self._ov_btn[_key] = b
             bar.addWidget(b)
         # 🔴 토글들 옆에서 흐린 라벨처럼 보이면 **누를 것으로 안 읽힌다** — 실측으로 확인했다.
@@ -13246,7 +13306,8 @@ class MinuteChartDialog(QDialog):
         # ── [MW0601 589차] 전일정 x축 토글 — 기본 꺼짐 ────────────────────────
         # 🔴 레이어 토글이 **아니다.** 무엇을 그리느냐가 아니라 가로 격자를 어디까지
         #   잡느냐를 바꾼다. 그래서 `_OV_SPEC` 에 넣지 않고 따로 세운다.
-        # 켜면 장 초반 화면 대부분이 빈칸이 되므로 기본값은 끈 상태다(사용자 결정).
+        # 켜면 장 초반 화면 대부분이 빈칸이 되므로 기본값은 끈 상태였다(사용자 결정).
+        #   → [MW0602 2026-10-25 사용자 지시] 기본 켜짐으로 바꿨다(아래 setChecked).
         # 기호는 이 UI에서 이미 쓰는 계열(■·▲▼)로 맞춘다 — 폰트에 없는 글자는
         # 두부(□)가 되고(`_no_long_mark` 참조) 버튼 라벨의 두부는 기능을 통째로 가린다.
         # ⚠ `⛶`(U+26F6)도 Malgun Gothic 에 **글리프는 있다**(QRawFont 실측 2026-09-16).
@@ -13271,6 +13332,9 @@ class MinuteChartDialog(QDialog):
             f"QPushButton:checked{{color:{C['cyan']};border-color:{C['cyan']};}}"
         )
         self._btn_fullx.toggled.connect(self._on_full_session_toggled)
+        # [MW0602 661차 후속] 기본 켜짐(사용자 지시 2026-10-25) — 연결 뒤에 켜야
+        #   가격·구조모델 레이어와 캔버스 x축에 함께 반영된다.
+        self._btn_fullx.setChecked(True)
         bar.addWidget(self._btn_fullx)
         # [625차 F1] 두 문구는 여기서 **만들기만** 하고 이 줄에 넣지 않는다 —
         #   `_build_note_bar` 가 줄바꿈되는 별도 줄에 싣는다(사유는 그쪽 주석).
