@@ -47,6 +47,7 @@ from PyQt5.QtGui import (
 
 from config.constants import FUTURES_PT_VALUE, MINI_FUTURES_PT_VALUE
 from config.constants import PETER2_ENTRY_SOURCE   # [MW0602 610차] 손익 추이 「피터2」 출처 필터
+from config.constants import SHINDONG_ENTRY_SOURCE  # [2026-10-26] 손익 추이 「신동실」(실거래) 화면
 from config.settings import (
     RAW_DATA_DB, DATA_DIR, TIME_ZONES, ENTRY_GRADE, MAX_CONTRACTS,
     HEALTH_LATENCY_WARN_MS, HEALTH_LATENCY_CRIT_MS,
@@ -7047,6 +7048,10 @@ class PnlHistoryPanel(QWidget):
 
     MODE_MIREUK = "mireuk"
     MODE_SHINDONG = "shindong"
+    # [MW0602 2026-10-26 사용자 지시] 신동 **실거래**(trades.db entry_source=SHINDONG).
+    #   가상(MODE_SHINDONG)은 분봉 종가 체결 · 편도 1틱 슬리피지라 실거래보다 낙관적이다 —
+    #   두 화면을 나란히 두고, 배너가 그 체결 차를 말한다(`display.live_gap`).
+    MODE_SHINDONG_LIVE = "shindong_live"
 
     def __init__(self):
         super().__init__()
@@ -7063,6 +7068,7 @@ class PnlHistoryPanel(QWidget):
         # 🔴 `trades` 를 읽지 않는다(원천은 shindong.db). 계측 4원칙 ②·④:
         #    「미배선」·「조회 실패」·「0건」을 같은 빈 표로 말하지 않는다.
         self._sd_rows: list = []          # display.pnl_rows() — 청산 완료만
+        self._sd_raw: list = []           # store.load_closed_for_pnl() 원행 — 실거래 대조용
         self._sd_open_n: int = 0          # 오늘 보유 중(미청산) — 손익 합산 대상 아님
         self._sd_wired = None             # None=미조회 / False=DB 없음 / True=있음
         self._sd_loaded = None            # None=미시도 / False=조회 실패 / True=성공
@@ -7209,15 +7215,26 @@ class PnlHistoryPanel(QWidget):
             "신동 **가상거래** 손익 추이(MAIN 변형, 청산 완료분).\n"
             "· 원천: shindong.db (실주문 없음 · trades 무오염)\n"
             "· 요율: 크레온 0.0019% 편도로 재환산 · 미니 50,000원/pt · 2계약(1차·최종)\n"
+            "  ⚠ V4(FLOW·R60)는 익절 12pt 하나라 두 다리가 같은 가격·시각에 함께 청산된다\n"
+            "· 체결: 분봉 종가 + 편도 1틱 가정 — 실거래보다 낙관적(배너의 「실거래 대조」 참조)\n"
             "🔴 실적이 아니다 — 실전 전환 기준 ① 판정에 쓰지 말 것.")
+        self._btn_sd_live = _mode_btn(
+            "신동실", C['blue'],
+            "신동 **실거래** 손익 추이(trades.db entry_source=SHINDONG).\n"
+            "· 일 손익: 그날 거래가 전부 신동이면 브로커 실측 net, 아니면 엔진 net\n"
+            "· 수량은 그날 실제 계약수 — 가상 화면의 「2계약 고정」과 다르다\n"
+            "· 배너: 같은 진입을 가상과 짝지은 체결 차(실 − 가상, 계약당 pt)")
         self._mode_grp = QButtonGroup(self)
         self._mode_grp.setExclusive(True)
         self._mode_grp.addButton(self._btn_mireuk)
         self._mode_grp.addButton(self._btn_shindong)
-        (self._btn_shindong if self._mode == self.MODE_SHINDONG
-         else self._btn_mireuk).setChecked(True)
+        self._mode_grp.addButton(self._btn_sd_live)
+        {self.MODE_SHINDONG: self._btn_shindong,
+         self.MODE_SHINDONG_LIVE: self._btn_sd_live}.get(
+            self._mode, self._btn_mireuk).setChecked(True)
         self._btn_mireuk.toggled.connect(self._on_mode_toggled)
         self._btn_shindong.toggled.connect(self._on_mode_toggled)
+        self._btn_sd_live.toggled.connect(self._on_mode_toggled)
 
         _corner = QWidget()
         _cl = QHBoxLayout(_corner)
@@ -7225,6 +7242,7 @@ class PnlHistoryPanel(QWidget):
         _cl.setSpacing(6)
         _cl.addWidget(self._btn_mireuk)
         _cl.addWidget(self._btn_shindong)
+        _cl.addWidget(self._btn_sd_live)
         _cl.addSpacing(S.p(8))
         _cl.addWidget(self._cb_forward)
         _cl.addWidget(self._cb_reverse)
@@ -7341,6 +7359,10 @@ class PnlHistoryPanel(QWidget):
                     "reverse_entry_enabled": int(r["reverse_entry_enabled"] or 0),
                     # [610차] 구버전 행(열 없음)은 None — 미륵 거래로 둔다(피터2는 610차 이후에만 존재)
                     "is_p2": self._row_src(r) == PETER2_ENTRY_SOURCE,
+                    # [2026-10-26] 신동 실거래 화면·가상 대조용 — 진입 시각·방향은 원행 그대로
+                    "src": self._row_src(r),
+                    "open_ts": r["entry_ts"] or "",
+                    "direction": r["direction"] or "",
                 })
             except Exception:
                 pass
@@ -7401,7 +7423,7 @@ class PnlHistoryPanel(QWidget):
             })
 
     def _bf_on(self) -> bool:
-        return (not self._sd_mode()) and self._cb_p2bf.isChecked()
+        return self._mode == self.MODE_MIREUK and self._cb_p2bf.isChecked()
 
     def _sync_b_column(self):
         """B 재생 열은 미륵 화면의 피터2백필에서만 보인다."""
@@ -7465,6 +7487,7 @@ class PnlHistoryPanel(QWidget):
         ⚠ 빈 결과가 「0건」인지 「미배선(DB 없음)」인지 「조회 실패」인지 셋을 가른다.
         """
         self._sd_rows = []
+        self._sd_raw = []
         self._sd_open_n = 0
         self._sd_wired = None
         self._sd_loaded = None
@@ -7475,7 +7498,8 @@ class PnlHistoryPanel(QWidget):
             from strategy.shindong.display import pnl_rows
             self._sd_wired = bool(os.path.exists(SHINDONG_DB))
             if self._sd_wired:
-                self._sd_rows = pnl_rows(_sd_store.load_closed_for_pnl(SHINDONG_DB, 90, "MAIN"))
+                self._sd_raw = _sd_store.load_closed_for_pnl(SHINDONG_DB, 90, "MAIN")
+                self._sd_rows = pnl_rows(self._sd_raw)
                 # 미청산 — 손익에는 안 들어가지만 배너가 말해야 한다(미청산 ≠ 없음).
                 self._sd_open_n = sum(
                     1 for _t in _sd_store.load_trades(
@@ -7490,12 +7514,64 @@ class PnlHistoryPanel(QWidget):
     def _sd_mode(self) -> bool:
         return self._mode == self.MODE_SHINDONG
 
+    def _sd_live_mode(self) -> bool:
+        return self._mode == self.MODE_SHINDONG_LIVE
+
+    def _sd_live_rows(self):
+        return [r for r in self._rows if r.get("src") == SHINDONG_ENTRY_SOURCE]
+
+    def _sd_gap_text(self) -> str:
+        """가상 ↔ 실거래 체결 차 한 줄. 짝 0건은 「미측정」으로 말한다(0pt 가 아니다)."""
+        try:
+            from strategy.shindong.display import live_gap
+            from strategy.shindong import spec as _sp
+            _g = live_gap(self._sd_raw, [
+                {"entry_ts": r["open_ts"], "direction": r["direction"],
+                 "pnl_pts": r["pnl_pts"], "quantity": r["quantity"]}
+                for r in self._sd_live_rows()])
+        except Exception as _e:
+            logger.debug("[PnlHistory] 신동 체결 차 대조 실패: %s", _e)
+            return "  · ⚠ 실거래 대조 실패(미측정)"
+        if not _g["n_live"]:
+            return "  · 실거래 대조: 신동 실거래 없음(미측정)"
+        if not _g["n_matched"]:
+            return "  · 실거래 대조: 짝지은 진입 0/%d건(미측정)" % _g["n_live"]
+        _legs = sum(1 for t in self._sd_raw for i in (1, 2)
+                    if t.get("leg%d_exit_ts" % i) and t.get("leg%d_pts" % i) is not None)
+        _est = _g["gap_avg_pt"] * _legs * _sp.PT_VALUE_KRW
+        _txt = ("  · 실거래 대조 %d/%d건(%s~): 체결 차 평균 %+.2fpt/계약(실−가상) · 지연 %.1f분"
+                % (_g["n_matched"], _g["n_live"], _g["first_date"][5:],
+                   _g["gap_avg_pt"], _g["lag_avg_min"]))
+        if self._sd_mode():
+            _txt += " → 가상 누적에 적용 시 약 %s원(추정)" % format(_est, "+,.0f")
+        if _g["n_unmatched"]:
+            _txt += " · 짝 없는 실거래 %d건" % _g["n_unmatched"]
+        return _txt
+
     def _update_mode_banner(self):
         """지금 표가 담은 것을 한 줄로. QLabel 은 평문이다 — 마크다운 금지."""
         if self._bf_on():
             _col, _txt = self._bf_banner_text()
             self._mode_banner.setStyleSheet(f"color:{_col};")
             self._mode_banner.setText(_txt)
+            return
+        if self._sd_live_mode():
+            _lr = self._sd_live_rows()
+            if not _lr:
+                self._mode_banner.setStyleSheet(f"color:{C['text2']};")
+                self._mode_banner.setText(
+                    "⚪ 신동 실거래 0건(최근 90일 청산, trades.db entry_source=SHINDONG).")
+                return
+            _days = sorted(set(r["entry_ts"][:10] for r in _lr))
+            _pos = len(set((r["open_ts"], r["direction"]) for r in _lr))
+            _bk = sum(1 for d in _days
+                      if self._broker_pnl.get(d) is not None
+                      and self._day_total_n.get(d) == sum(1 for r in _lr if r["entry_ts"][:10] == d))
+            self._mode_banner.setStyleSheet(f"color:{C['blue']};")
+            self._mode_banner.setText(
+                "🔵 신동 실거래 %d행(포지션 %d) · %d일 — 일 손익 브로커 실측 %d일 / 엔진 net %d일 · "
+                "수량은 실제 계약수(가상의 2계약 고정과 다르다)"
+                % (len(_lr), _pos, len(_days), _bk, len(_days) - _bk) + self._sd_gap_text())
             return
         if not self._sd_mode():
             _fwd, _rev = self._cb_forward.isChecked(), self._cb_reverse.isChecked()
@@ -7556,19 +7632,21 @@ class PnlHistoryPanel(QWidget):
         self._mode_banner.setStyleSheet(f"color:{C['purple']};")
         self._mode_banner.setText(
             f"🟣 신동 가상거래 {_n}건(최근 90일 청산) — 크레온 요율 0.0019% 재환산 · "
-            "미니 50,000원/pt · 2계약. 실적이 아니며 실전 전환 기준 ① 판정에 쓰지 말 것."
-            + _tail)
+            "미니 50,000원/pt · 2계약(분봉 종가 체결 가정). 실적이 아니며 실전 전환 기준 ① 판정에 쓰지 말 것."
+            + _tail + self._sd_gap_text())
 
     def _sync_mode_widgets(self):
         """순방향/역방향은 미륵 전용 필터다 — 신동에서는 숨긴다(눌러도 아무 일 없는 버튼 금지)."""
-        _m = not self._sd_mode()
+        _m = self._mode == self.MODE_MIREUK
         self._cb_forward.setVisible(_m)
         self._cb_reverse.setVisible(_m)
         self._cb_peter2.setVisible(_m)
         self._cb_p2bf.setVisible(_m)
 
     def _on_mode_toggled(self, _on=None):
-        _new = self.MODE_SHINDONG if self._btn_shindong.isChecked() else self.MODE_MIREUK
+        _new = (self.MODE_SHINDONG if self._btn_shindong.isChecked()
+                else self.MODE_SHINDONG_LIVE if self._btn_sd_live.isChecked()
+                else self.MODE_MIREUK)
         if _new == self._mode:
             return
         self._mode = _new
@@ -7584,6 +7662,9 @@ class PnlHistoryPanel(QWidget):
         """
         if self._sd_mode():
             return list(self._sd_rows)
+        if self._sd_live_mode():
+            # 순/역방향·피터2 필터는 미륵 축이다 — 신동 실거래에는 걸지 않는다
+            return self._sd_live_rows()
         fwd = self._cb_forward.isChecked()
         rev = self._cb_reverse.isChecked()
         p2 = self._cb_peter2.isChecked()
@@ -7627,12 +7708,12 @@ class PnlHistoryPanel(QWidget):
             return "?"
 
     def is_peter2_only(self) -> bool:
-        return (not self._sd_mode() and self._cb_peter2.isChecked()
+        return (self._mode == self.MODE_MIREUK and self._cb_peter2.isChecked()
                 and not self._cb_forward.isChecked() and not self._cb_reverse.isChecked())
 
     def set_peter2_only(self, only: bool) -> None:
         """P&L 탭 「피터2」 버튼용 — 피터2 단독 ↔ 계좌 전체(셋 다 체크)."""
-        if self._sd_mode():
+        if self._mode != self.MODE_MIREUK:
             self._btn_mireuk.setChecked(True)        # toggled → _on_mode_toggled
         for cb, on in ((self._cb_forward, not only), (self._cb_reverse, not only),
                        (self._cb_peter2, True), (self._cb_p2bf, only)):   # [677차] 백필 동반
@@ -7818,7 +7899,8 @@ class PnlHistoryPanel(QWidget):
     def _load_mode_pref(self) -> str:
         """[590차] 주체 선택 복원. 🔴 기본값 **미륵** — 가상을 여는 것은 사용자 행위다."""
         _m = self._load_prefs_dict().get("pnl_mode", self.MODE_MIREUK)
-        return _m if _m in (self.MODE_MIREUK, self.MODE_SHINDONG) else self.MODE_MIREUK
+        return (_m if _m in (self.MODE_MIREUK, self.MODE_SHINDONG, self.MODE_SHINDONG_LIVE)
+                else self.MODE_MIREUK)
 
     def _save_cb_prefs(self):
         """현재 선택 상태를 ui_prefs.json에 저장."""

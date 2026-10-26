@@ -135,7 +135,9 @@ class FakePanel(object):
                  wired=True, loaded=True, sd_open=0, p2=True):
         from dashboard.main_dashboard import PnlHistoryPanel as _P
         self.MODE_MIREUK, self.MODE_SHINDONG = _P.MODE_MIREUK, _P.MODE_SHINDONG
+        self.MODE_SHINDONG_LIVE = _P.MODE_SHINDONG_LIVE    # [2026-10-26] 신동 실거래 화면
         self._rows, self._broker_pnl, self._sd_rows = rows, dict(broker), sd_rows
+        self._sd_raw = []
         self._mode = mode
         self._cb_forward, self._cb_reverse = _CB(fwd), _CB(rev)
         self._cb_peter2 = _CB(p2)          # [MW0602 610차] 피터2 출처 필터(기본 켜짐 = 종전 화면)
@@ -149,7 +151,8 @@ class FakePanel(object):
         for _n in ("_sd_mode", "_active_rows", "_group", "_stats", "_daily_bucket",
                    "_effective_day_krw", "_day_is_whole", "_effective_day_pt",
                    "_group_effective_krw", "_group_effective_pt", "_mdd", "_mdd_daily",
-                   "_update_mode_banner", "_virtual_mark", "_peter2_mode", "_bf_on"):
+                   "_update_mode_banner", "_virtual_mark", "_peter2_mode", "_bf_on",
+                   "_sd_live_mode", "_sd_live_rows", "_sd_gap_text"):
             setattr(self, _n, getattr(_P, _n).__get__(self, FakePanel))
 
 
@@ -182,6 +185,22 @@ def test_c3_mireuk_mode_unchanged_and_partial_day_blocks_broker():
     part = FakePanel(_M, _B, sd, "mireuk", rev=False)
     bp = part._daily_bucket(part._active_rows())["2026-09-28"]
     assert part._effective_day_krw("2026-09-28", bp) == 100_000
+
+
+def test_c4_shindong_live_mode_is_real_shindong_rows_only():
+    """[2026-10-26] 「신동실」 = trades 의 SHINDONG 출처만. 그날 전부가 신동일 때만 브로커 net."""
+    sh = dict(_mrow("2026-09-29 09:10:00", 50_000), src="SHINDONG",
+              open_ts="2026-09-29 09:09:00", direction="LONG")
+    rows = [dict(r, src=None) for r in _M] + [sh]
+    p = FakePanel(rows, dict(_B, **{"2026-09-29": 48_000}), [], "shindong_live")
+    assert p._active_rows() == [sh]
+    assert p._virtual_mark() == ""                          # 실거래 — 🟣 아님
+    assert p._effective_day_krw("2026-09-29", [sh]) == 48_000   # 그날 전부 신동 → 브로커
+    mixed = dict(sh, entry_ts="2026-09-28 12:00:00")
+    q = FakePanel([dict(r, src=None) for r in _M] + [mixed], _B, [], "shindong_live")
+    assert q._effective_day_krw("2026-09-28", [mixed]) == 50_000  # 미륵이 섞인 날 → 엔진 net
+    p._update_mode_banner()
+    assert "신동 실거래" in p._mode_banner.text and "미측정" in p._mode_banner.text
 
 
 # ── D. 배너 ──────────────────────────────────────────────────────

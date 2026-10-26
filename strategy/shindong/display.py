@@ -107,3 +107,75 @@ def pnl_rows(trades: List[Dict[str, Any]], rate: Optional[float] = None) -> List
             "rule": t.get("rule") or "",
         })
     return out
+
+
+def _parse_ts(ts):
+    import datetime as _dt
+    try:
+        return _dt.datetime.strptime(str(ts)[:19], "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+
+
+def live_gap(sd_trades: List[Dict[str, Any]], live_trades: List[Dict[str, Any]],
+             tol_min: float = 5.0) -> Dict[str, Any]:
+    """[MW0602 2026-10-26 사용자 지시] 가상(MAIN) ↔ 실거래(SHINDONG) **체결 차** 대조.
+
+    같은 날 · 같은 방향 · 진입 시각 `tol_min` 분 이내를 가장 가까운 것끼리 1:1 로 짝짓는다.
+    · `sd_trades`   : `store.load_closed_for_pnl()` 행(청산 완료). 가상 pt = 닫힌 다리 pt 평균(계약당)
+    · `live_trades` : {entry_ts, direction('LONG'|'SHORT'), pnl_pts(계약당), quantity}
+      같은 `entry_ts`·방향의 여러 레그는 **한 포지션**으로 묶는다(수량 가중 pt) — 계측 4원칙 ①.
+    반환 `gap` = 실 − 가상 (계약당 pt, 음수 = 실거래가 불리). 짝 없는 실거래는 `n_unmatched` 로 남긴다
+    (가상에 없는 진입 · 시각 어긋남 — 0 차로 세지 않는다, 계측 4원칙 ③).
+    """
+    pos: Dict[Any, Dict[str, Any]] = {}
+    for r in live_trades or []:
+        ts = _parse_ts(r.get("entry_ts"))
+        d = str(r.get("direction") or "").upper()
+        if ts is None or d not in ("LONG", "SHORT") or r.get("pnl_pts") is None:
+            continue
+        q = max(int(r.get("quantity") or 1), 1)
+        p = pos.setdefault((ts, d), {"ts": ts, "side": 1 if d == "LONG" else -1, "q": 0, "pq": 0.0})
+        p["q"] += q
+        p["pq"] += float(r["pnl_pts"]) * q
+
+    cands = []
+    for t in sd_trades or []:
+        if str(t.get("status")) != "CLOSED":
+            continue
+        ts = _parse_ts(t.get("entry_ts"))
+        legs = [float(pts) for _i, _ts, _px, pts, _n, _rs in _legs(t) if pts is not None]
+        if ts is None or not legs:
+            continue
+        cands.append({"ts": ts, "side": 1 if int(t.get("side") or 0) > 0 else -1,
+                      "pt": sum(legs) / len(legs)})
+
+    used = set()
+    pairs = []
+    for p in sorted(pos.values(), key=lambda x: x["ts"]):
+        best, best_dt = None, None
+        for i, c in enumerate(cands):
+            if i in used or c["side"] != p["side"] or c["ts"].date() != p["ts"].date():
+                continue
+            dt = abs((p["ts"] - c["ts"]).total_seconds()) / 60.0
+            if dt <= tol_min and (best_dt is None or dt < best_dt):
+                best, best_dt = i, dt
+        if best is None:
+            continue
+        used.add(best)
+        live_pt = p["pq"] / p["q"]
+        pairs.append({"date": p["ts"].date().isoformat(), "live_pt": live_pt,
+                      "sd_pt": cands[best]["pt"], "gap": live_pt - cands[best]["pt"],
+                      "lag_min": (p["ts"] - cands[best]["ts"]).total_seconds() / 60.0})
+    n = len(pairs)
+    gsum = sum(x["gap"] for x in pairs)
+    return {
+        "n_live": len(pos),
+        "n_matched": n,
+        "n_unmatched": len(pos) - n,
+        "gap_sum_pt": gsum,
+        "gap_avg_pt": (gsum / n) if n else None,      # None = 짝 0건(미측정) — 0.0 과 다르다
+        "lag_avg_min": (sum(x["lag_min"] for x in pairs) / n) if n else None,
+        "first_date": pairs[0]["date"] if pairs else None,
+        "pairs": pairs,
+    }
