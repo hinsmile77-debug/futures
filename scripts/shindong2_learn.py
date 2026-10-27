@@ -444,7 +444,7 @@ def lesson_add(lid, title, rule, trigger="", status="후보", origin=None, evide
     return l
 
 
-def lesson_set(lid, status=None, note=None, rule=None, why="", now=None, axis=None):
+def lesson_set(lid, status=None, note=None, rule=None, why="", now=None, axis=None, title=None, trigger=None):
     ls = load_lessons()
     l = _find(ls, lid)
     if not l:
@@ -457,8 +457,17 @@ def lesson_set(lid, status=None, note=None, rule=None, why="", now=None, axis=No
         l["history"].append(dict(ts=now.isoformat(timespec="seconds"), status=status, why=why))
     if note is not None:
         l["note"] = note
+    # [MW0601 723차 이식] 본문 개정(제목·규칙·조건)도 이력이다 — 상태를 안 바꿔도 무엇을 왜 고쳤는지 남긴다
+    changed = [k for k, v in (("title", title), ("rule", rule), ("trigger", trigger)) if v is not None and v != l.get(k)]
+    if title is not None:
+        l["title"] = title
+    if trigger is not None:
+        l["trigger"] = trigger
     if rule is not None:
         l["rule"] = rule
+    if changed and not status:
+        l["history"].append(dict(ts=now.isoformat(timespec="seconds"), status=l["status"],
+                                 why="개정(%s) %s" % ("·".join(changed), why or "")))
     if axis is not None:                                  # [640차 ③] 축 귀속 — 이력에 남긴다(소급 부여도 이력이다)
         if axis not in AXES:
             raise SystemExit("--axis 는 %s 중 하나" % (AXES,))

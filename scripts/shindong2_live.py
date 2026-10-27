@@ -201,6 +201,10 @@ def _foreign_profile(day, t_cut, prev_days=3):
         con = sqlite3.connect("file:%s?mode=ro" % p, uri=True, timeout=5.0)
         rows = con.execute("SELECT ts, fields FROM raw_investor_futures WHERE ts >= ? AND ts <= ? ORDER BY ts",
                            (day + " 00:00:00", hi)).fetchall()
+        # [MW0601 723차 이식] 자른 뒤에 무엇이 남았는지 — t_cut 이후에도 적재분이 있으면 「마감 누계 미반영」을 띄운다
+        r = con.execute("SELECT MAX(ts) FROM raw_investor_futures WHERE ts >= ? AND ts <= ?",
+                        (day + " 00:00:00", day + " 23:59:59")).fetchone()
+        out["db_last"] = r[0][11:16] if r and r[0] else None
         prev, cur = [], day
         for _ in range(prev_days):
             r = con.execute("SELECT ts, fields FROM raw_investor_futures WHERE ts < ? ORDER BY ts DESC LIMIT 1",
@@ -354,6 +358,10 @@ def source_warnings(st, now=None):
                 W.append("7221 선물 투자자 최신 %s — 완결 봉 %s 보다 %d분 늦다(수집 지연). 외인 선물 경로를 현재값으로 읽지 말 것" % (fp["fut_path"][-1]["t"], st["last_bar"], lag))
         except Exception:
             pass
+    # [MW0601 723차 이식] 장 마감 뒤인데 완결 봉에서 잘라 읽었다 — 장후 해설이 15:07 잠정치를 마감으로 쓴다
+    if fp.get("t_cut") and fp.get("db_last") and fp["db_last"] > fp["t_cut"] and now is not None             and now.strftime("%H:%M") >= "15:35":
+        W.append("외인 선물 마감 누계 미반영 — %s 까지만 읽었고 DB 에는 %s 까지 있다(정규봉 미적재로 장중 모드). "
+                 "외인·기관 마감치로 쓰지 말 것" % (fp["t_cut"], fp["db_last"]))
     if st.get("live") and not fp.get("fut_path"):
         W.append("7221 선물 투자자 경로 없음 — 오늘 수집 전이거나 미륵이 미실행(미측정)")
     f = st.get("flow") or {}
@@ -809,7 +817,8 @@ def _learn_cmd(a):
         elif a.op == "set":
             if not a.id:
                 raise SystemExit("--id 필수")
-            l = LN.lesson_set(a.id, status=a.status, note=a.note, rule=a.rule, why=a.why, axis=a.axis)
+            l = LN.lesson_set(a.id, status=a.status, note=a.note, rule=a.rule, why=a.why, axis=a.axis,
+                             title=a.title, trigger=a.trigger or None)
             print("레슨 갱신 %s [%s%s] %s" % (l["id"], l["status"], ("·" + l["axis"]) if l.get("axis") else "", l["title"]))
         elif a.op == "tally":
             if not a.id or not (a.hit or a.miss or a.applied):
