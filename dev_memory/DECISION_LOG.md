@@ -49732,3 +49732,4 @@ EKS는 366차 이전부터 존재하는 기존 설계이고, 이번 사이클은
   3. 신동 점검 수집기 §3-b — 실행 중 main.py 수(GUARD `scan` 재사용) · start_mireuk.bat 예약작업 상태(이름이 아니라 동작으로) · 당일 런처 로그 종류(Sindong/Mireuk, 휴면 거부 여부) · `[SingleInstance] 중복 기동 거부` 건수. 10-27 소급 실행에서 미륵 런처 기동을 적발했다.
 - **검증**: `tests/test_724_single_instance.py` 7건(S1 프로세스 간 뮤텍스 실측 포함) + 런처·수집기 관련 13파일 128 통과. 실 main.py 종단: 뮤텍스 보유 중 기동 → 12초(모듈 import) 만에 종료 17·플래그 기록(이 시험이 `logs/20261027_*` 에 `[SingleInstance] 중복 기동 거부` CRITICAL 1줄을 19:49:56 에 남겼다 — 실사건 아님). 런처 블록은 원문 추출 후 cmd 지연확장 환경에서 플래그 유/무·게이트 거부/통과 4경로 실행 확인.
 - ⚠ 기존 실패 1건 무관: `test_457 … peter_paste`(main_dashboard.py, 이번 변경 밖).
+- **Sindong-V4(MW0602) 배포** `aeb17a4d` — 같은 3겹을 런처 이름(`start_Sindong.bat`)·입구 점검(`PRINCIPAL_LOCK`) 차이에 맞춰 이식. MW0602 판 수집기는 GUARD 스크립트가 없어 psutil 직접 판정(런처 원라이너와 같은 규칙). worktree 관련 78 passed · 2 skipped (기존 실패 test_596 CREON 1건 무관). 이식메모 `docs/정기점검/MW0601_to_MW0602_이중기동방지_이식메모_20261027.md`(MW0602 확인 절차 §4).
