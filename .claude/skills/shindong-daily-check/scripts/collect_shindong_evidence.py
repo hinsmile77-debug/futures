@@ -28,7 +28,19 @@ import statistics
 import subprocess
 import sys
 from datetime import date as _date
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+# [F-SD-2 · 666차 후속] 「오늘」은 항상 KST 로 잡는다. Cowork 샌드박스 시계가 UTC 라
+# datetime.now() 를 그대로 쓰면 KST 00:00~09:00(장전 08:51 포함) 세션이 전일을 오늘로 오판했다
+# (664차 재현: evidence_sd_MW0602-20261026_pre_2.md). 한국은 DST 가 없어 고정 +9 로 충분하다
+# (zoneinfo 는 3.9+ 라 py37_32 에서 못 쓴다).
+KST = timezone(timedelta(hours=9))
+
+
+def _now_kst():
+    """KST 현재 시각(naive) — 표시·날짜 산출 공통."""
+    return datetime.now(KST).replace(tzinfo=None)
+
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _CE_DIR = os.path.normpath(os.path.join(_HERE, "..", "..", "mireuk-daily-check", "scripts"))
@@ -299,7 +311,7 @@ def missing_phase_sections(root, day, pcid, phases):
 def build(root, day, phase, pcid, pclabel):
     A = []
     a = A.append
-    now = datetime.now()
+    now = _now_kst()
     ok_td, why_td = CE.is_trading_day(root, day)
     prev = CE.prev_trading_day(root, day)
     logs = today_logs(root, day)
@@ -573,7 +585,7 @@ def main(argv=None):
     if a.pc:
         CE._PC_OVERRIDE = CE._norm_pc(a.pc)
     root = CE.find_repo_root(os.getcwd()) or CE.find_repo_root(_HERE)
-    day = _date.fromisoformat(a.date) if a.date else datetime.now().date()
+    day = _date.fromisoformat(a.date) if a.date else _now_kst().date()
     pcid, pclabel = CE.pc_id()
     if a.verify_append:
         st = report_phase_sections(root, day, pcid)[a.phase]

@@ -34,8 +34,9 @@ description: 신동 주체(MW0602 Sindong-V4 · MIREUK_ENGINE=off) 일일 운영
 **장중 「배포 첫날」 판정(기계적으로)** — 직전 거래일 15:40 이후 커밋 중 아래 경로를 바꾼 것이 있으면 본 점검:
 `main.py` · `strategy/shindong/` · `strategy/runtime/` · `safety/` · `collection/broker/` · `collection/cybos/` · `config/settings.py`
 ```
-git --no-optional-locks log --since="<직전 거래일> 15:40" --name-only --format="%h %s" -- main.py strategy/shindong strategy/runtime safety collection/broker collection/cybos config/settings.py
+git --no-optional-locks log --since="<직전 거래일> 15:40 +0900" --name-only --format="%h %s" -- main.py strategy/shindong strategy/runtime safety collection/broker collection/cybos config/settings.py
 ```
+⚠ `+0900` 을 빼지 말 것(F-SD-3 · 666차 후속) — Cowork 샌드박스 시계가 UTC 라 타임존 없는 `--since` 는 9시간 늦게 잡혀 대상 커밋을 놓친다(665차 재현: 미지정 0건 vs KST 1건 `55375b5`). `TZ=Asia/Seoul` 환경변수 방식은 Windows git 에서 tzdata 이름을 못 읽을 수 있어 오프셋 표기를 쓴다.
 없으면 리포트에 `# 장중(intra)` 절을 **한 줄**(「장중 점검 생략 — 주문·청산 경로 배포 없음(대상 커밋 0건)」)만 쓰고 끝낸다.
 장중 경보(`[AlertMail]`·`[FlowStaleHold]`·ProfitGuard 래치)가 왔을 때는 사용자가 수동으로 장중 점검을 부른다.
 
