@@ -6,8 +6,11 @@ status=-1 msg=12242 조회된 내용이 없습니다` 가 하루 종일 12건, �
 같은 입력(`yyMMdd`)으로 정상 응답해 왔다. 원인은 **미확정**(날짜 자릿수 가설)이라
 기본 형식은 바꾸지 않고, `12242` 일 때만 다른 형식으로 1회 재시도한다.
 
+[MW0601 2026-10-26] 가설 확정 — 실계좌 783343908 10-15–10-26 매 기동 6자리 실패·8자리 성공.
+기본 형식을 8자리로 뒤집었다. 6자리는 모의계좌 폴백(역방향 재시도)으로 남는다.
+
 고정하는 불변식:
-  ① 기본 형식이 성공하면 요청은 1회뿐이다(모의계좌 정상 경로 무변경).
+  ① 기본 형식(8자리)이 성공하면 요청은 1회뿐이다 — 실계좌가 재기동마다 실패 요청을 보내지 않는다.
   ② `12242` → 대체 형식 성공이면 그 형식을 계좌별로 기억하고, 다음 호출은 처음부터 그 형식.
   ③ 두 형식 모두 실패하면 그날은 재시도하지 않는다(BlockRequest 낭비 방지)
      — 그리고 **빈 dict**(미수신)를 돌려준다. 0 을 지어내지 않는다(계측 4원칙 ②).
@@ -48,24 +51,36 @@ def _install(monkeypatch, responder):
 
 def test_기본형식_성공이면_1회만_요청(monkeypatch):
     calls = _install(monkeypatch, lambda d: (0, 0, "", dict(_HEADERS)))
-    out = _api()._request_futures_daily_pnl_summary("777020696")
-    assert calls == [time.strftime("%y%m%d")]
+    out = _api()._request_futures_daily_pnl_summary("783343908")
+    assert calls == [time.strftime("%Y%m%d")]
     assert out["실현손익"] == "-647000"
 
 
-def test_12242면_8자리로_재시도하고_기억한다(monkeypatch):
-    six, eight = time.strftime("%y%m%d"), time.strftime("%Y%m%d")
+def test_실계좌_8자리만_받으면_첫요청에_성공_재시도_없음(monkeypatch):
+    # 10-15–10-26 MW0601 실측 지문: 6자리 12242 · 8자리 성공 → 이제 실패 요청이 0회
+    eight = time.strftime("%Y%m%d")
     calls = _install(monkeypatch, lambda d: (0, 0, "", dict(_HEADERS)) if d == eight
                      else (0, -1, _NO_DATA, {}))
     api = _api()
-    out = api._request_futures_daily_pnl_summary("783293269")
-    assert calls == [six, eight]
+    assert api._request_futures_daily_pnl_summary("783343908")["총매매"] == "100000000"
+    assert calls == [eight]
+    assert "783343908" not in api._daily_pnl_date_fmt
+
+
+def test_12242면_6자리로_재시도하고_기억한다(monkeypatch):
+    # 모의계좌 폴백 — 8자리가 12242 면 6자리로 역방향 재시도
+    six, eight = time.strftime("%y%m%d"), time.strftime("%Y%m%d")
+    calls = _install(monkeypatch, lambda d: (0, 0, "", dict(_HEADERS)) if d == six
+                     else (0, -1, _NO_DATA, {}))
+    api = _api()
+    out = api._request_futures_daily_pnl_summary("777020696")
+    assert calls == [eight, six]
     assert out["총매매"] == "100000000"
-    assert api._daily_pnl_date_fmt["783293269"] == "%Y%m%d"
+    assert api._daily_pnl_date_fmt["777020696"] == "%y%m%d"
     # 다음 호출은 처음부터 성공 형식 — 실패 요청을 다시 보내지 않는다
     del calls[:]
-    api._request_futures_daily_pnl_summary("783293269")
-    assert calls == [eight]
+    api._request_futures_daily_pnl_summary("777020696")
+    assert calls == [six]
 
 
 def test_두형식_모두_실패면_그날_재시도_생략_그리고_미수신(monkeypatch):
