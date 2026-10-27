@@ -37,8 +37,9 @@ description: 신동 주체(MW0601 Sindong2-V4 · MIREUK_ENGINE=off · 피터 선
 
 **장중 「배포 첫날」 판정(기계적으로)** — 직전 거래일 15:40 이후 아래 경로를 바꾼 커밋이 있으면 본 점검:
 ```
-git --no-optional-locks log --since="<직전 거래일> 15:40" --name-only --format="%h %s" -- main.py strategy/shindong strategy/runtime safety collection/broker collection/cybos config/settings.py
+git --no-optional-locks log --since="<직전 거래일> 15:40 +0900" --name-only --format="%h %s" -- main.py strategy/shindong strategy/runtime safety collection/broker collection/cybos config/settings.py
 ```
+⚠ `+0900` 을 빼지 말 것(MW0602 F-SD-3 이식) — Cowork 샌드박스 시계가 UTC 라 시간대 없는 `--since` 는 9시간 늦게 잡혀 대상 커밋을 놓친다(MW0602 665차 재현: 미지정 0건 vs KST 1건). 아래 「병행 세션 확인」의 `<오늘 00:00>` 도 같다.
 없으면 리포트에 `# 장중(intra)` 절을 **한 줄**(「장중 점검 생략 — 주문·청산 경로 배포 없음(대상 커밋 0건). 장중 대응은 긴급 알림 메일이 맡는다.」)만 쓰고 끝낸다.
 ⚠ 2026-10-26 은 미륵 휴면 전환 첫날이라 **본 점검**이다.
 
@@ -49,7 +50,7 @@ git --no-optional-locks log --since="<직전 거래일> 15:40" --name-only --for
 **Cowork 세션은 커밋하지 않는다** — 커밋은 17:23 자동조치(Claude Code, Windows)가 리포트·증거·dev_memory 와 함께 한다.
 
 ### 병행 세션 확인
-`git --no-optional-locks log --format="%ci %h %s" --since="<오늘 00:00>"` + `docs/정기점검/매일점검/` 오늘 산출물 목록.
+`git --no-optional-locks log --format="%ci %h %s" --since="<오늘 00:00> +0900"` + `docs/정기점검/매일점검/` 오늘 산출물 목록.
 딥다이브 파일이 있으면 읽는다 — 그 결론이 앞 국면 판정을 뒤집었을 수 있다.
 
 ### 샌드박스 계측 오탐
