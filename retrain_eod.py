@@ -316,6 +316,12 @@ def _run_campaign_steps():
 def main():
     _check_env()
 
+    # [MW0602 661차 후속7] 미륵 휴면(Sindong-V4)이면 재학습하지 않는다 — 예약작업이 다시 켜지거나
+    #   손으로 돌려도 휴면 모델을 덮지 않게. 맥점 캐시·신선도는 신동 EOD(scripts/shindong_eod.py)가 맡는다.
+    from utils.mireuk_dormant import should_block as _dormant_block
+    if _dormant_block("retrain_eod.py", log):
+        sys.exit(0)
+
     # 중복 실행 방지: 완료 마커가 이미 **온전히** 존재하면 스킵
     #
     # 🔴 [MW0601 563차 후속] 종전엔 `os.path.exists()` 만 봤다 — **파일이 있으면 성공**이었다.

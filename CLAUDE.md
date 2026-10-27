@@ -129,6 +129,9 @@ dt.strftime("GP진입 %H:%M")     # ← UnicodeEncodeError → paintEvent → �
 - 🔴 **맥점 이력 캐시 EOD 갱신이 미륵 재학습 스크립트 안에만 있었다.** 재학습 예약작업(`MireukiEODRetrain` · ⚠ **MW0602 는 `\Maitreya_EODretrain`**, RunLevel=Highest 라 끄려면 관리자 프롬프트)을 끄기 **전에**
   `TASK_SHINDONG_EOD_INSTALL.bat`(→ `scripts/shindong_eod.py`)가 한 번 이상 성공해야 한다 — 그렇지 않으면 신동 V4 ATR14·맥점이 조용히 낡는다.
 - 휴면 중 미륵 `SYSTEM_AUTO` 진입은 `_ts_execute_entry` 입구에서 ERROR 로 거부된다(`[MireukOff]`). 그 로그가 보이면 도달 경로 결함이다.
+- [2026-10-27 661차 후속7] **앱 밖 재학습 진입점도 휴면이면 멈춘다** — `retrain_eod.py`(예약 `\Maitreya_EODretrain`, Disabled 유지 · XML 백업
+  `~/Claude/Scheduled/_backup_20261025_pre_D6/`) · `scripts/eod_retrain.py`(`EOD_RETRAIN.bat`) · `retrain_intraday.py` 가 `utils/mireuk_dormant.py` 로
+  판정해 `[MireukDormant]` 한 줄 남기고 종료. 의도적 수동 재학습은 `--allow-dormant` 또는 `MIREUK_ALLOW_DORMANT_RETRAIN=1`. 회귀 `tests/test_661_mireuk_dormant_retrain_guard.py`.
 - 휴면 중에도 **원천 수집은 끄지 않는다**(1분봉·7222·외국인 선물·맥점·연결선물). 미륵 모델·학습 상태 파일은 덮어쓰지 않는다(되살림 = 마지막 실가동 상태).
   - [2026-10-25] 스케일러(`scaler_*.pkl`) 재적합 3경로(08:45 `[EarlyWarmup]` · 장중 재기동 `[StartupWarmup]` · 거래소 CB 해제)가 휴면에서도 돌던 것을 막았다.
     🔴 **08:45 실시간 선행 구독은 `[EarlyWarmup]` 블록 안에 있다** — 휴면 분기가 구독만 따로 한다(끄면 08:45~ 프리장 봉·08:50 맥점이 빈다).

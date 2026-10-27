@@ -2,6 +2,19 @@
 
 ---
 
+## 2026-10-27 (MW0602 668차 — 661차 후속7: 미륵 휴면 중 앱 밖 재학습 진입점 차단 · Maitreya_EODretrain 제거 대신 비활성 유지) — 🟢 **배포**
+
+- **확인(10/26·10/27)**: 신동 EOD exit=0(맥점 캐시 `last_date` 당일 갱신 · 연결선물·7222 결손 0) · 신동2 장후 rc=0 · `\Maitreya_EODretrain` Disabled(10/23 이후 미실행).
+  `retrain_eod.py` 중 신동 몫(맥점 캐시·10100·7222 신선도)은 전부 신동 EOD 로 이관돼 있어 제거해도 잃는 기능은 없다.
+- **사용자 결정**: 제거하지 않고 Disabled 유지 + 진입점 휴면 차단. 이유 — 제거하면 미륵 부활 때 재등록(관리자·RunLevel Highest)이 필요하고
+  `-EnableMireukRetrain` 이 무동작이 된다. 반면 제거해도 `EOD_RETRAIN.bat` 손 실행은 막지 못한다 — 진짜 위험은 작업이 아니라 **진입점에 휴면 확인이 없던 것**.
+  작업 정의 XML 백업: `~/Claude/Scheduled/_backup_20261025_pre_D6/Maitreya_EODretrain.xml`.
+- **구현**: `utils/mireuk_dormant.py:should_block()` — `MIREUK_ENGINE="off"` 면 `[MireukDormant]` 한 줄 남기고 차단. `retrain_eod.py`(exit 0, 완료 마커·맥점·재학습 전) ·
+  `scripts/eod_retrain.py`(`--allow-dormant` 인자 신설) · `retrain_intraday.py`(결과 JSON `error=mireuk_dormant, skipped=true`, exit 1). 우회 `--allow-dormant` / `MIREUK_ALLOW_DORMANT_RETRAIN=1`.
+  설정을 못 읽으면 차단하지 않고 그 사실을 남긴다(종전 동작). `dev`(full)는 무영향.
+- **검증**: 데이터·모델 없는 worktree 에서 py310_64 로 세 진입점 실제 실행 — 모두 재학습 없이 종료, 콘솔 logging 오류 0(초판의 `—` cp949 오류 수정).
+  `tests/test_661_mireuk_dormant_retrain_guard.py` 5건 + 관련 23건 통과 · py37 문법 OK.
+
 ## 2026-10-27 (MW0602 667차 — MW0601 이식 수령: 720차 신동AI 「피터의 방법」·「기계 속도」(I9) 9a8296c) — ✅ **수령 · 섀도(판단 근거 아님)**
 
 - 수령: `9a8296c` `[MW0601] 720차 이식` — MW0601 이 `Sindong-V4` 에 직접 커밋(원 커밋 `Sindong2-V4` c36f4508 · 4a1e2862, 원 PC MW0601). fast-forward 로 로컬 동기화. 이유: 신동AI 해설에 피터 관점·P층 레벨·시가범위 상자·봉 신선도·기계 속도를 섀도로 붙이고 MW0602 데이터로 따로 판정하기 위함(이식메모 `docs/미륵이고도화3/피터2/피터방법_Sindong-V4_이식메모_MW0601-20261027.md` §3).

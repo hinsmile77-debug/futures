@@ -90,6 +90,18 @@ def main():
         sys.exit(1)
 
     result_json_path = sys.argv[1]
+    # [MW0602 661차 후속7] 미륵 휴면이면 재학습하지 않는다(앱은 이미 spawn 하지 않는다 — 손 실행 방어).
+    #   결과 JSON 은 남긴다: 호출자가 「실패」가 아니라 「휴면 생략」임을 읽을 수 있게.
+    from utils.mireuk_dormant import should_block as _dormant_block
+    if _dormant_block("retrain_intraday.py", log):
+        try:
+            os.makedirs(os.path.dirname(result_json_path) or ".", exist_ok=True)
+            with open(result_json_path, "w", encoding="utf-8") as _f:
+                json.dump({"ok": False, "error": "mireuk_dormant", "skipped": True, "elapsed_sec": 0.0},
+                          _f, ensure_ascii=False)
+        except Exception as _we:
+            log.error("결과 JSON 저장 실패: %s", _we)
+        sys.exit(1)
     force    = sys.argv[2].strip() == "1"
     intraday = sys.argv[3].strip() == "1"
     # [MW0602 457차] argv[4] = 교체 대상 호라이즌 CSV(선택). 없거나 빈 문자열이면

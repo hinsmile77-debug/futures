@@ -77,7 +77,15 @@ def main():
         "--no-campaign", dest="campaign", action="store_false",
         help="검증 캠페인 주간 스텝 실행 안 함",
     )
+    # [MW0602 661차 후속7] 미륵 휴면(Sindong-V4)에서 EOD_RETRAIN.bat 을 손으로 돌려도 휴면 모델을 덮지 않는다.
+    parser.add_argument(
+        "--allow-dormant", dest="allow_dormant", action="store_true", default=False,
+        help="미륵 휴면(MIREUK_ENGINE=off)이어도 재학습한다(의도적 수동 재학습)",
+    )
     args = parser.parse_args()
+    from utils.mireuk_dormant import should_block as _dormant_block
+    if _dormant_block("scripts/eod_retrain.py", logger):
+        return
 
     logger.info("=" * 60)
     logger.info("EOD GBM 재학습 시작 | weeks_back=%d | force=%s", args.weeks, args.force)
