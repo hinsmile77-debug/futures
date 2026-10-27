@@ -208,3 +208,23 @@ def test_render_block_marks_shadow_status():
                                     pos=0.5, break_side=None, break_t=None)})
     txt = "\n".join(PM.render(pl))
     assert "섀도" in txt and "B2 850–870" in txt and "합류 먼스리풋벽850" in txt
+
+
+# ── I9 기계 속도(KS-2026-10-27-v1) ───────────────────────────────────────
+def test_i9_speed_and_unmeasured():
+    from strategy.shindong2_ai.indicators import i9_machine_speed as K9
+    s = {"10:50": dict(na=100000), "11:00": dict(na=119350), "11:10": dict(na=89870)}
+    assert K9.speed(s, "11:00") == 193.5                 # (119350 − 100000) / 100
+    assert K9.speed(s, "11:10") == -294.8
+    assert K9.speed(s, "09:05") is None                  # 첫 바 09:02 + 10분 전 — 미측정
+    assert K9.value_at(s, "11:20") is None               # 행이 10분 묵었다 — 0 이 아니라 None
+    assert K9.speed({"11:00": dict(na=None)}, "11:10") is None
+
+
+def test_i9_prereg_frozen():
+    with open(os.path.join(ROOT, "docs", "미륵이고도화3", "피터2", "기계속도_사전등록_MW0601.json"), encoding="utf-8") as fh:
+        cfg = json.load(fh)
+    assert cfg["id"] == "KS-2026-10-27-v1" and cfg["status"].startswith("확정")
+    h = cfg["hypotheses"]
+    assert h["H-K2"]["X_eok"] == 500 and h["H-K2"]["Y_eok"] == 150
+    assert "2026-10-27" in h["H-K1"]["exclude_days"] and h["H-K1"]["primary_at"] == "10:00"

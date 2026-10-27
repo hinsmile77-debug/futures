@@ -1,0 +1,93 @@
+{
+  "id": "KS-2026-10-27-v1",
+  "status": "확정 — 사용자 승인(2026-10-27 장후) · 백필 전 고정",
+  "registered_at": "2026-10-27T19:40:09+09:00",
+  "title": "「기계 속도」 — 프로그램 비차익 위탁 순매수 속도(피터리 「기계매수·매도」의 계량화)",
+  "drafted_at": "2026-10-27T20:00:00+09:00",
+  "registered_before_backfill": true,
+  "pc": "MW0601",
+  "basis_docs": [
+    "docs/미륵이고도화3/피터2/피터_기계매수_정체_딥다이브_MW0601-20261027.md"
+  ],
+  "rule": "이 파일의 정의·문턱은 백필 결과를 본 뒤 바꾸지 않는다(458차 D6). 승인 시 status 만 「확정」으로 바꾸고 그때 시각을 registered_at 에 적는다. 바꾸려면 v2 로 재등록.",
+
+  "design_leakage": {
+    "design_day": "2026-10-27",
+    "rule": "정의와 문턱(X·Y)을 10-27 한 사례의 크기를 보고 정했다 — 10-27 은 모든 판정 표본에서 제외한다",
+    "also_seen_before_registration": "23거래일 일별 상관(외인 현물 ↔ 비차익 위탁 중앙 0.84 · 차익 0.05 · 23/23) — 이미 본 관측이라 가설로 쓰지 않고 K-OBS 전진 확인으로만 둔다"
+  },
+
+  "source": {
+    "table": "raw_data.db raw_program_trade (market='1' 거래소 · CpSvr8111 일중 누계 · 백만원 · 2026-08-10–)",
+    "fields": {
+      "na_cust": "idx35 비차익 순매수 위탁금액",
+      "na_buy": "idx31 비차익 매수 금액(위탁+자기)",
+      "na_sell": "idx25 비차익 매도 금액(위탁+자기)",
+      "arb": "idx19 차익 순매수 금액 — 대조용"
+    },
+    "forbidden": "idx17(차익 순매수 위탁금액) — 서버 결함으로 idx19 를 중복 반환(451차)",
+    "price": "regular_candles 미니 근월물(mini_code_for) — shindong2_research.forward_return 과 같은 원천",
+    "missing": "그 분 행이 없으면 직전 행. 10분 전 행이 없으면 값 None(미측정 — 0 금지). 첫 바 09:02 이전·15:10 이후(동시호가)는 쓰지 않는다"
+  },
+
+  "indicator": {
+    "id": "I9",
+    "name": "기계 속도",
+    "value": "I9(t) = (na_cust(t) − na_cust(t−10분)) / 100  [억원/10분]",
+    "sign": "follow",
+    "valid_window": "09:12–15:10",
+    "companions_display_only": {
+      "buy_speed": "(na_buy(t) − na_buy(t−10)) / 100",
+      "sell_speed": "(na_sell(t) − na_sell(t−10)) / 100",
+      "note": "표시 전용 — 판정에 쓰지 않는다. 10-27 11:00–11:10 매수 속도 1,001→757 · 매도 속도 818→1,055 같은 교차를 사람이 보게 한다"
+    },
+    "plugin_path": "strategy/shindong2_ai/indicators/i9_machine_speed.py"
+  },
+
+  "hypotheses": {
+    "H-K1": {
+      "desc": "기계 속도의 부호가 그 시각부터 15:09 까지의 방향을 맞힌다(기존 I1–I8 과 같은 검증기)",
+      "runner": "scripts/shindong2_research.py verify --id I9 --at <시각> --days 60",
+      "primary_at": "10:00",
+      "secondary_at": ["11:00", "13:30"],
+      "pass_primary": {"min_days": 20, "hit_min": 0.55, "p_max": 0.05, "ic": "> 0", "perm": 200},
+      "pass_secondary": "보조 두 시각은 p_max 0.05/3 = 0.0167 (본페로니) 를 넘어야만 인정. 주 판정을 대체하지 않는다",
+      "exclude_days": ["2026-10-27"]
+    },
+    "H-K1s": {
+      "desc": "짧은 지평 — 30분 격자(09:30, 10:00, …, 14:30, 하루 11점)에서 |I9| ≥ 100억이면 다음 30분 선물 변화(±0.5pt 보합 제외)의 부호를 맞힌다",
+      "min_abs_value": 100,
+      "flat_pt": 0.5,
+      "pass": {"min_n": 60, "hit_min": 0.55, "ci": "거래일 블록 부트스트랩 1,000회 95% 하한 > 0.50"},
+      "exclude_days": ["2026-10-27"]
+    },
+    "H-K2": {
+      "desc": "기계 전환 — 직전 30분 매수(또는 매도)가 이어지다 10분 속도가 뒤집힌 첫 시각은 그 방향 극값에 가깝다",
+      "event_buy_to_sell": "B30(t) = na_cust(t−10) − na_cust(t−40) ≥ +X 이고 I9(t) ≤ −Y 인 그날 첫 t (09:42–14:30)",
+      "event_sell_to_buy": "대칭 — B30(t) ≤ −X 이고 I9(t) ≥ +Y",
+      "X_eok": 500,
+      "Y_eok": 150,
+      "outcome": "매수→매도 전환: t 뒤 60분 최고가 − t 종가 ≤ 2.0pt 이고 t+60 종가 < t 종가 (매도→매수는 대칭)",
+      "null": "같은 날 B30 조건은 만족하지만 I9 가 뒤집히지 않은 분(매수 지속)의 같은 결과 비율",
+      "pass": {"min_events": 15, "min_edge_pp": 15.0, "max_p": 0.05, "test": "두 비율 단측 z"},
+      "sensitivity_report_only": "X 250/750 · Y 75/225 조합의 결과를 함께 적되 판정은 X=500 · Y=150 하나로만 한다",
+      "exclude_days": ["2026-10-27"]
+    },
+    "K-OBS": {
+      "desc": "정체 전진 확인(가설 아님) — 2026-10-28 이후 새 거래일에서 외인 현물(7222 kospi_spot net_amt) 10분 Δ 가 차익보다 비차익 위탁과 더 붙는가",
+      "metric": "일별 상관 중앙값(외인 현물 ↔ 비차익 위탁) · 비차익 > 차익 인 날의 비율",
+      "confirm": "새 20거래일에서 중앙값 ≥ 0.6 그리고 비차익 > 차익 ≥ 80%",
+      "use": "확인되면 보고서의 「비차익 위탁 = 외국인 바스켓」 추론에 실측 근거를 더한다. 거래 판단과 무관"
+    }
+  },
+
+  "backfill": {
+    "window": "2026-08-10 – 2026-10-26 (raw_program_trade 보유 구간, 10-27 제외)",
+    "expected_days": "약 55거래일",
+    "when": "장외 전용(456차 guard_intraday)",
+    "output": "docs/미륵이고도화3/피터2/기계속도_백필검증_MW0601-<날짜>.md · .json"
+  },
+
+  "promotion": "PASS 여도 자동 장착 없음 — I9 는 verify PASS + 사용자 확인 뒤에만 「장착」(snapshot AI 지표 블록). 레슨·전략 반영은 라이브 적용 3회·적중 우세 뒤(절대원칙 §6)",
+  "display_now": "판정과 무관하게 snapshot 「피터의 방법」 블록에 기계 속도(I9)와 매수·매도 속도를 표시만 하는 것은 승인 시 함께 결정 — 표시는 판단 근거가 아니다(L26 과 같은 취급)"
+}
