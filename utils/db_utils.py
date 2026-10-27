@@ -165,6 +165,61 @@ def is_plausible_futures_trade(
     return True
 
 
+MANUAL_EXIT_NOTE_MAX_LEN = 200
+
+
+def normalize_manual_exit_note(note) -> Optional[str]:
+    """[F-SD-4 · MW0602 666차 후속2 이식] 운영자 사유 정규화 — 줄바꿈 제거·길이 상한. 공백뿐이면 None(미입력)."""
+    s = " ".join(str(note or "").split())
+    if not s:
+        return None
+    return s[:MANUAL_EXIT_NOTE_MAX_LEN]
+
+
+def record_manual_exit_note(
+    percent: int,
+    kind: str,
+    direction: str,
+    send_qty: int,
+    note: Optional[str],
+    path: str = "button",
+    order_ret: Optional[int] = None,
+    ts: Optional[str] = None,
+    db_path: Optional[str] = None,
+) -> None:
+    """[F-SD-4] 수동청산 1건의 운영자 사유를 trades.db `manual_exit_notes`에 남긴다.
+
+    ⚠ 사유는 `trades.exit_reason`에 **섞지 않는다** — exit_reason 은 부분문자열(「스톱」
+    「익절」「강제청산」…)로 청산을 분류하는 소비처가 있어(MW0602 `classify_exit`),
+    자유 입력이 섞이면 수동청산이 하드스톱·TP로 오분류된다. 그래서 별도 테이블이다.
+    미입력은 note=''·note_given=0 으로 남긴다(계측 4원칙 ② — "사유 없음"과 "기록 안 함"을 가른다).
+    """
+    import datetime as _dt
+    note = normalize_manual_exit_note(note)
+    path_db = db_path or TRADES_DB
+    execute(path_db, """
+        CREATE TABLE IF NOT EXISTS manual_exit_notes (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts          TEXT NOT NULL,
+            percent     INTEGER,
+            kind        TEXT,
+            direction   TEXT,
+            send_qty    INTEGER,
+            path        TEXT,
+            order_ret   INTEGER,
+            note        TEXT NOT NULL,
+            note_given  INTEGER NOT NULL
+        )
+    """)
+    execute(path_db,
+            "INSERT INTO manual_exit_notes "
+            "(ts, percent, kind, direction, send_qty, path, order_ret, note, note_given) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (ts or _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+             int(percent or 0), str(kind or ""), str(direction or ""), int(send_qty or 0),
+             str(path or ""), order_ret, note or "", 1 if note else 0))
+
+
 def filter_plausible_trade_rows(rows: List[sqlite3.Row]) -> List[sqlite3.Row]:
     return [
         row for row in rows
