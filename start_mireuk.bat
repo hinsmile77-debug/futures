@@ -337,6 +337,33 @@ IF DEFINED SLACK_PC_NAME (
 IF NOT EXIST "logs" MKDIR "logs" 2>NUL
 
 REM ============================================================
+REM  3.9. Dormancy gate (MW0601 724cha port)
+REM  While config\settings.py says MIREUK_ENGINE="off" (Mireuk dormant)
+REM  this launcher must not start main.py. Same code, same settings:
+REM  it would trade as the Sindong principal but WITHOUT start_Sindong.bat's
+REM  STEP 3.9 check. On MW0601 2026-10-27 08:40 its Mireuk launcher task had been
+REM  re-enabled, both launchers started in the same second and both passed
+REM  GUARD - two live main.py processes with the same order settings.
+REM  Exit 0 = engine on (Mireuk revival) / 4 = dormant, refuse / 1 = unreadable, refuse.
+REM  Script missing = this checkout predates the gate (dev revival) - proceed.
+REM ============================================================
+IF EXIST "!WORKDIR!\scripts\sindong_launch_check.py" (
+    CALL :L "[STEP 3.9] 미륵 휴면 여부 확인 중..."
+    "!PY32!" "!WORKDIR!\scripts\sindong_launch_check.py" --mireuk-launcher >> "!_BLOG!" 2>&1
+    SET "_MD_ERR=!ERRORLEVEL!"
+    IF "!_MD_ERR!" NEQ "0" (
+        CALL :L "[FATAL] 미륵 엔진 휴면 중(MIREUK_ENGINE=off) 또는 설정 판독 실패 -- main.py 를 실행하지 않습니다. exit=!_MD_ERR!"
+        CALL :L "[HINT]  신동 주체는 start_Sindong.bat(작업 \Sindong)가 기동합니다. 이 런처의 예약작업은 사용 안 함이어야 합니다."
+        CALL :L "[HINT]  미륵 부활: 미륵 런처 예약작업 재활성 + settings 원복(MIREUK_ENGINE·PRINCIPAL_LOCK)."
+        TIMEOUT /T 30
+        EXIT /B 4
+    )
+    CALL :L "[OK] 미륵 엔진 활성 -- 계속 진행합니다."
+) ELSE (
+    CALL :L "[WARN] scripts\sindong_launch_check.py 없음 -- 휴면 확인 없이 진행"
+)
+
+REM ============================================================
 REM  4. Wait for API session. This launcher does NOT log in.
 REM
 REM  Login is LAUNCH_API.bat's job (task 'Cybos Plus', 08:35).
@@ -481,6 +508,7 @@ IF EXIST "data\_exit_normally" (
     DEL "data\_exit_normally" 2>NUL
     CALL :L "[INFO] 이전 세션 정상 종료 플래그 정리됨 (새 세션 시작)."
 )
+IF EXIST "data\_exit_duplicate" DEL "data\_exit_duplicate" 2>NUL
 
 REM ── 단일 인스턴스 보장 ────────────────────────────────────────────────
 CALL :L "[GUARD] 기존 main.py 프로세스 체크..."
@@ -625,6 +653,16 @@ CALL :L "============================================================"
 FOR /F "usebackq" %%T IN (`powershell -NoProfile -Command "(Get-Date).ToString('HHmm')"`) DO SET "_NOW=%%T"
 IF NOT DEFINED _NOW SET "_NOW=2400"
 IF "!_NOW!"=="" SET "_NOW=2400"
+
+REM [MW0601 724cha port] main.py single-instance mutex (utils\single_instance.py).
+REM  A main.py that finds the mutex held writes data\_exit_duplicate and exits.
+REM  Restarting it would only fail again - stop here. Checked BEFORE
+REM  _exit_normally on purpose: the duplicate never touches that flag.
+SET "_DUP_REASON="
+IF EXIST "data\_exit_duplicate" SET /P "_DUP_REASON=" < "data\_exit_duplicate"
+IF EXIST "data\_exit_duplicate" DEL "data\_exit_duplicate" 2>NUL
+IF DEFINED _DUP_REASON CALL :L "[SingleInstance] 중복 기동 거부로 종료 -- !_DUP_REASON! -- 재시작 안 함 (이미 실행 중인 main.py 가 있다)"
+IF DEFINED _DUP_REASON GOTO :restart_done
 
 REM 정상 종료 플래그 확인 (UI X 버튼 / 자동 종료 → 재시작 안 함)
 SET "_EXIT_REASON="

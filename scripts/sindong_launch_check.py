@@ -11,6 +11,12 @@ main.py 를 띄우는 사고를 막는다. 두 브랜치가 같은 작업 폴더
     git 브랜치     == Sindong-V4   (다르면 FATAL · 읽지 못하면 WARN — 미측정 ≠ 불일치, 계측 4원칙 ②)
 
 종료 코드: 0 = 통과 · 3 = 구성 불일치(main.py 실행 금지) · 1 = settings.py 판독 실패
+
+`--mireuk-launcher` [MW0601 724차 이식] — start_mireuk.bat 입구의 **역방향** 판정.
+    MIREUK_ENGINE == "off" 이면 미륵 런처는 main.py 를 띄우지 않는다(종료 4).
+    2026-10-27 MW0601 08:40 비활성이어야 할 미륵 런처 작업이 다시 켜져 있었고, 같은 main.py·같은 settings 라
+    신동 주체로 하나 더 떠 실주문이 두 벌 나갈 수 있었다 — 미륵 런처는 STEP 3.9 를 거치지 않는다.
+    종료 코드: 0 = 미륵 엔진 활성(부활) · 4 = 휴면 → 기동 거부 · 1 = 판독 실패(거부 — 런처가 처리)
 """
 import ast
 import io
@@ -78,5 +84,25 @@ def main(root=_ROOT):
     return 0 if bad == 0 else 3
 
 
+RC_MIREUK_DORMANT = 4
+
+
+def main_mireuk_launcher(root=_ROOT):
+    """start_mireuk.bat 입구 — 미륵 엔진이 휴면이면 기동 거부."""
+    try:
+        found = read_settings(os.path.join(root, "config", "settings.py"))
+    except Exception as exc:
+        print("[MireukGate] FATAL settings.py 판독 실패: {}".format(exc))
+        return 1
+    me = found.get("MIREUK_ENGINE", "<missing>")
+    if me == "off":
+        print("[MireukGate] REFUSE MIREUK_ENGINE='off' -- 미륵 휴면 중. 신동 주체는 start_Sindong.bat 가 기동한다")
+        return RC_MIREUK_DORMANT
+    print("[MireukGate] OK    MIREUK_ENGINE={!r} -- 미륵 엔진 활성, 미륵 런처 기동 허용".format(me))
+    return 0
+
+
 if __name__ == "__main__":
+    if "--mireuk-launcher" in sys.argv[1:]:
+        sys.exit(main_mireuk_launcher())
     sys.exit(main())
