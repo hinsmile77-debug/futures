@@ -60,8 +60,22 @@ def _method_src(name):
     src = io.open(os.path.join(ROOT, "main.py"), encoding="utf-8").read()
     for node in ast.walk(ast.parse(src)):
         if isinstance(node, ast.FunctionDef) and node.name == name:
-            return ast.get_source_segment(src, node)
+            if hasattr(ast, "get_source_segment"):          # 3.8+
+                return ast.get_source_segment(src, node)
+            return _segment_py37(src.splitlines(), node.lineno)
     raise AssertionError(name)
+
+
+def _segment_py37(lines, lineno):
+    """[MW0601] py37_32 런타임용 — `get_source_segment`·`end_lineno` 가 3.8+ 라 들여쓰기로 함수 끝을 찾는다."""
+    head = lines[lineno - 1]
+    ind = len(head) - len(head.lstrip())
+    out = [head[ind:]]
+    for ln in lines[lineno:]:
+        if ln.strip() and len(ln) - len(ln.lstrip()) <= ind:
+            break
+        out.append(ln[ind:] if ln.strip() else "")
+    return "\n".join(out).rstrip() + "\n"
 
 
 def _harness(tmp_path, note="버튼점검", note_raises=False, pending=False, qty=1):
