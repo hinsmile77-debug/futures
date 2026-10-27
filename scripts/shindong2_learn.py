@@ -1178,4 +1178,9 @@ def brief(day, now=None):
                                                           (" · 이후 %s" % i["then"]) if i.get("then") is not None else "")
                         for i in r["scenarios"]["items"]))
                     L.append("  명세: %s" % r["scenarios"]["spec"])
+    try:                                                     # [2026-10-27] 피터의 방법 — 전일 채점 · 전일 장후·오늘 장전 피터 관점(섀도)
+        import shindong2_pmethod as PM
+        L += [""] + PM.brief_lines(day)
+    except Exception as e:                                   # noqa: BLE001 — 브리핑 본체를 깨지 않는다
+        L += ["", "## 피터의 방법 — 읽기 실패: %s (미측정)" % type(e).__name__]
     return "\n".join(L)

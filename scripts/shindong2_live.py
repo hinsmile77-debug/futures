@@ -108,6 +108,14 @@ def _read_jsonl(path):
     return out
 
 
+def _read_json(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
 def _append_jsonl(path, rec):
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
@@ -457,6 +465,12 @@ def build_state(day, now=None):
         st["ai_indicators"] = RS.mounted_values(day, last[0] if live else None)
     except Exception as e:
         st["ai_indicators"] = [dict(id="?", title="지표 읽기 실패", value=None, lean=None, why=str(e)[:120])]
+    # [MW0601 2026-10-27] 「피터의 방법」 P층·상자·피터 관점 — 섀도(백필 FAIL · 참고 레벨). 실패해도 상태는 만든다(미측정).
+    try:
+        import shindong2_pmethod as PM
+        st["p_layer"] = PM.build(day, d, bars, last[0], day_dir(day), live)
+    except Exception as e:                                       # noqa: BLE001
+        st["p_layer"] = dict(why="%s: %s" % (type(e).__name__, str(e)[:120]))
     st["bars_n"] = len(bars)
     st["source_warnings"] = source_warnings(st, now)            # [640차 ⑤] 원천 경고 — snapshot 끝과 사다리 띠에 같이 뜬다
     return st, d
@@ -500,6 +514,9 @@ def detect_events(st, ai_trades=None):
         if tr.get("exit_t"):
             ev.append(dict(key="ai:exit:%s" % tr["entry_t"], t=tr["exit_t"], kind="재량 청산",
                            text="신동2-AI 청산 %s %s %+.2fpt" % (tr["exit_t"], tr["why"], tr["pnl"])))
+    if st.get("p_layer") and not st["p_layer"].get("why"):           # [2026-10-27] 피터 관점·매매 수신 · 상자 고정·이탈(섀도)
+        import shindong2_pmethod as PM
+        ev.extend(PM.events(st))
     return ev
 
 
@@ -654,6 +671,25 @@ def record(day, phase, action, direction, entry, stop, target, comment, now=None
             rec["vs_why"] = vs_why
     if strategy and variant == "live":                   # [640차 ③] 이 계획이 따른 AI 전략(S-n). 존재 검증은 장후 feedback 이 한다(장중 가벼운 경로)
         rec["strategy"] = strategy.strip()
+    fr_line = None
+    if variant == "live" and phase in ("premarket", "intraday", "position"):
+        # [2026-10-27 · 피터의 방법] 봉 신선도 — 10-26 09:09:02 기록이 완결 봉 09:03 snapshot 위에서 쓰여 868.06 스파이크를 놓쳤다.
+        #   기록은 막지 않는다(벽시계 원칙) — 사실만 남긴다. 조회 실패는 미측정(why).
+        import shindong2_pmethod as PM
+        try:
+            rec["fresh"] = PM.freshness(day, _read_json(os.path.join(day_dir(day), "state.json")))
+        except Exception as e:                           # noqa: BLE001
+            rec["fresh"] = dict(rec_bar=None, why="%s" % type(e).__name__)
+        fr_line = PM.freshness_line(rec["fresh"])
+        if fr_line:
+            print(fr_line)
+    if variant == "live":
+        import shindong2_pmethod as PM
+        vp, vpw = PM.parse_vs_peter_line(comment)       # 피터를 두 번째 상대로 — 「피터판단: 반대 | 이유」
+        if vp:
+            rec["vs_peter"] = vp
+            if vpw:
+                rec["vs_peter_why"] = vpw
     _append_jsonl(os.path.join(day_dir(day), "ai_log.jsonl"), rec)
     if variant == "live":                                # 섀도는 패널 최신 해설을 덮지 않는다
         _atomic_json(os.path.join(day_dir(day), "ai_latest.json"), rec)
@@ -672,6 +708,10 @@ def record(day, phase, action, direction, entry, stop, target, comment, now=None
         if rec.get("vs_main"):
             les += " · 상대 판단 **%s**%s%s" % (VS_MAIN_KO[rec["vs_main"]], ("(미기재 → 기권)" if rec.get("vs_main_missing") else ""),
                                             (" — " + rec["vs_why"]) if rec.get("vs_why") else "")
+        if rec.get("vs_peter"):
+            les += " · 피터 판단 **%s**" % VS_MAIN_KO[rec["vs_peter"]]
+        if fr_line:
+            comment = (comment or "").rstrip() + "\n\n> " + fr_line
         sc = ""
         if rec.get("scenarios"):
             sc = "\n\n> 채점용 시나리오: " + " · ".join("%s %s %d%% (목표 %s · 무효 %s%s)" % (
@@ -713,6 +753,9 @@ def _summary(st, new, ai):
         import shindong2_research as RS
         L.append("")
         L.extend(RS.values_lines(st["ai_indicators"]))
+    if st.get("p_layer") is not None:
+        import shindong2_pmethod as PM
+        L.extend(PM.render(st["p_layer"]))
     sm = st["sd2"]["summary"] or {}
     L.append("(사료) 신동2 기본·P·P2·P3 손익 — 기본 %s · P %s · P2 %s · P3 %s  ※ 2026-10-20 부터 대조군이 아니다(채점 제외)" % (
         sm.get("base"), sm.get("p"), sm.get("p2"), sm.get("p3")))
@@ -917,7 +960,18 @@ def main(argv=None):
     tr.add_argument("--last", type=int, default=10)
     br = sub.add_parser("brief", help="장전 브리핑 — 활성 레슨·전일 피드백·추이")
     br.add_argument("--date", default=_dt.date.today().isoformat())
+    pm = sub.add_parser("pmethod", help="[2026-10-27] 피터의 방법 장후 채점 — 상자·P맥점·피터 관점·신선도 → 피터2 폴더 추이")
+    pm.add_argument("--date", default=_dt.date.today().isoformat())
     a = ap.parse_args(argv)
+    if a.cmd == "pmethod":
+        from utils.analysis_db import guard_intraday
+        guard_intraday("shindong2_live pmethod")
+        import shindong2_pmethod as PM
+        row = PM.postmarket(a.date)
+        print(json.dumps({k: row[k] for k in ("date", "box", "p_reaction", "peter_views", "fresh", "vs_peter") if k in row},
+                         ensure_ascii=False, indent=1, default=str))
+        print("→ %s" % PM.trend_path())
+        return 0
     if a.cmd in ("evaluate", "feedback", "lesson", "strategy", "trend", "brief"):
         return _learn_cmd(a)
     if a.cmd == "gate":

@@ -64,18 +64,18 @@ def test_3_compute_one_lean_follows_sign():
 def test_4_registry_requires_source_and_verification_before_mount(tmp_path, monkeypatch):
     monkeypatch.setattr(RS, "LEARN_DIR", str(tmp_path))
     with pytest.raises(SystemExit):
-        RS.add("I9", "t", "", "h")
-    r = RS.add("I9", "헤지펀드 베이시스", "https://example.org/paper", "베이시스 확대 → 상승", formula="basis - ma20", inputs=["basis"])
+        RS.add("I99", "t", "", "h")
+    r = RS.add("I99", "헤지펀드 베이시스", "https://example.org/paper", "베이시스 확대 → 상승", formula="basis - ma20", inputs=["basis"])
     assert r["status"] == "후보" and r["implemented"] is False and "미구현" in r["history"][0]["why"]
     with pytest.raises(SystemExit):
-        RS.set_status("I9", status="장착")                       # 플러그인 없음
+        RS.set_status("I99", status="장착")                      # 플러그인 없음 — I9 는 2026-10-27 기계 속도로 실재
     r1 = RS.add("I1", "x", "내부: raw", "h")
     assert r1["implemented"] is True and r1["sign"] == "follow"
     with pytest.raises(SystemExit):
         RS.set_status("I1", status="장착")                       # 검증 PASS 없음
     md = open(os.path.join(str(tmp_path), RS.REG_MD), encoding="utf-8").read()
-    assert "| I9 | 후보 |" in md and "미구현" in md
-    assert "I9 [후보·미구현]" in RS.registry_text()
+    assert "| I99 | 후보 |" in md and "미구현" in md
+    assert "I99 [후보·미구현]" in RS.registry_text()
 
 
 def test_5_evaluate_pairs_stats_and_prereg():

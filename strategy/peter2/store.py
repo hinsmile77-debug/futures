@@ -428,7 +428,7 @@ _KO = {'TWEET': '트윗', 'ARM': '대기', 'ENTER': '진입', 'SET_STOP': '손�
        'EXIT': '청산주문', 'CLOSED': '청산완료', 'REJECT': '기각', 'DISARM': '대기해제',
        'EXPIRE': '만료', 'HALT': '정지', 'CONFIRM': '체결확인', 'SHADOW': '섀도',
        'EXIT_FAIL': '청산실패', 'FILL_OFFSET': '오프셋검산', 'IGNORE': '무시', 'SKIP': '건너뜀',
-       'KEEP': '유지'}
+       'KEEP': '유지', 'VIEW': '관점', 'NOFACT': '미해석'}
 _QUIET = {'IGNORE', 'SKIP', 'KEEP'}
 
 
@@ -459,6 +459,15 @@ def event_md(e):
     elif k == 'CLOSED':
         txt = '**%+.2fpt** (%s원) %s' % (float(e.get('pnl_pts') or 0), _f(e.get('pnl_krw')),
                                         e.get('reason') or '')
+    elif k in ('VIEW', 'NOFACT'):
+        body = (e.get('raw') or '').replace('|', '／')
+        extra = ''
+        if e.get('box'):
+            extra = ' → 상자 %s–%s' % (_f(e['box'][0]), _f(e['box'][1]))
+        if e.get('bias'):
+            extra += ' · 편향 %s%s' % ('풋/매도' if e['bias'] == 'short' else '콜/매수',
+                                     (' (%s 기준)' % _f(e.get('bias_level'))) if e.get('bias_level') is not None else '')
+        txt = '「%s」 [%s]%s' % (body, e.get('view') or e.get('why') or '-', extra)
     elif k == 'FILL_OFFSET':
         # 🔴 implied 는 **지금 가격** 기준이라 트윗이 늦으면 오프셋이 아니라
         #    「레벨이 현재가에서 얼마나 먼가」가 된다. 숫자를 적으면 사람이 오프셋이
