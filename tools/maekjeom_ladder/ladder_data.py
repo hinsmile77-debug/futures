@@ -1162,9 +1162,42 @@ def _derived_manifest():
 
 
 # ── 하루치 조립 ───────────────────────────────────────────────────────────
+_final_days = set()       # 정규봉 적재가 확인된 날 — 한 번 확정이면 다시 묻지 않는다
+
+
+def regular_final(day):
+    """[MW0601 723차] 그날 정규봉(15:10 이후 · 종가 단일가 포함)이 적재됐는가 — 장후 「확정」의 데이터 판정.
+
+    `collect_regular_futures.py` 는 장 마감 뒤(15:52)에만 적재하므로 행이 있으면 그날은 끝난 것이다.
+    15:15 이후 봉을 요구하는 이유: 만기일은 15:20 마감이라 15:44 를 기준으로 삼으면 영원히 확정이 안 된다."""
+    if day in _final_days:
+        return True
+    try:
+        con = _ro("regular_candles.db")
+        try:
+            code = mini_code_for(con, day)
+            r = con.execute("SELECT 1 FROM regular_candles WHERE code=? AND trade_date=? AND ts >= ? LIMIT 1",
+                            (code, day, day + " 15:15:00")).fetchone() if code else None
+        finally:
+            con.close()
+    except Exception:
+        return False
+    if r:
+        _final_days.add(day)
+    return bool(r)
+
+
 def is_live(day, now=None):
+    """장중이면 True — 덜 찬 마지막 봉을 빼고, 외인 경로를 완결 봉에서 자른다.
+
+    🔴 [MW0601 723차] 시계(16:15)만으로 판정하면 15:55 장후 실행이 「장중」으로 읽혀
+       raw_candles(15:08 끝) − 덜 찬 봉 = **15:07** 에서 하루를 잘랐다. 7221 외인 선물은 15:34 까지,
+       정규봉은 15:44 까지 적재돼 있었는데 읽지 않았다(10-12–10-27 매 거래일 · 10-15·10-19 외인 부호 반전).
+       15:15 이후 정규봉이 적재됐으면 시각과 무관하게 확정이다."""
     now = now or _dt.datetime.now()
     if day != now.date().isoformat():
+        return False
+    if now.strftime("%H:%M") >= "15:15" and regular_final(day):
         return False
     try:
         import sys
@@ -1189,6 +1222,10 @@ def build_day(day, now=None):
         cs, csrc = [], "실패: %s" % e
     if not cs:
         warn.append("1분봉 없음 (%s)" % csrc)
+    # [723차] 장 마감 뒤인데 정규봉이 없다 — 봉은 15:08, 외인 경로는 완결 봉에서 잘린 채다(계측 4원칙 ④)
+    if day == now.date().isoformat() and now.strftime("%H:%M") >= "15:35" and not str(csrc).startswith("regular"):
+        warn.append("정규봉 미적재(%s) — 봉 15:08·외인 선물 경로가 마감(15:34) 전에서 잘렸다. "
+                    "마감 수치로 읽지 말 것(collect_regular_futures 15:52 확인)" % csrc)
     try:
         lv, bands = levels(day)
     except Exception as e:
