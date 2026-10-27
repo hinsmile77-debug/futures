@@ -336,6 +336,34 @@ def principal_now(root):
         return "미측정(%s)" % e
 
 
+def px(v):
+    """[722차 / 10-27 G-7] 가격 표시 — 재생 원시 부동소수(예: 897.4499558212302)를 2자리로. 값은 바꾸지 않고 표기만.
+    None·빈 값은 「-」(미측정 ≠ 0)."""
+    if v is None or v == "":
+        return "-"
+    try:
+        return "%.2f" % float(v)
+    except (TypeError, ValueError):
+        return str(v)
+
+
+MANUAL_ORDER_PAT = r"\[주문요청\] 수동 "
+
+
+def manual_interventions(logs, sd_pos=None, pt_pos=None):
+    """[722차 / 10-27 G-8] 대시보드 수동 청산 — 로그 주문요청 줄 + trades 사유에 「수동」이 붙은 포지션.
+
+    → (주문요청 hits, [(출처, entry_ts, 사유들)]). 사유(왜 눌렀나)는 코드가 모른다 — 「사유 미기록」으로 표기한다."""
+    hits = dedup(grep(logs, MANUAL_ORDER_PAT))
+    pos = []
+    for lst in (sd_pos or [], pt_pos or []):
+        for p in lst:
+            rs = [r for r in p.get("reasons") or [] if "수동" in r]
+            if rs:
+                pos.append((p.get("src"), p.get("entry_ts"), rs))
+    return hits, pos
+
+
 def risk_window(root, day):
     rows = db_rows(root, "data/db/shindong.db",
                    "SELECT COUNT(DISTINCT trade_date), COUNT(*) FROM shindong_trades "
@@ -529,9 +557,9 @@ def build(root, day, phase, pcid, pclabel):
                     break
             es = (side * ((m["entry_px"] or 0) - (r[4] or 0))) if m else None
             a("| `%s` | %s | %s | %s | %s | %s | %s / %s | %s | %s·%s / %s | %s | %s |" % (
-                r[1], "LONG" if side > 0 else "SHORT", r[4], ("%.2f" % m["entry_px"]) if m else "-",
+                r[1], "LONG" if side > 0 else "SHORT", px(r[4]), px(m["entry_px"]) if m else "-",
                 ("%+.2f" % es) if es is not None else "-", (m["entry_qty"] or m["qty"]) if m else "-",
-                r[9] if r[9] else "-", r[14] if r[14] else "-",
+                px(r[9]) if r[9] else "-", px(r[14]) if r[14] else "-",
                 ("%.2f" % m["exit_px"]) if m and m.get("exit_px") else "-",
                 r[7] or "-", r[13] or "-", ",".join(m["reasons"]) if m else "-",
                 format(int(round(r[10] or 0)), ","), format(int(round(m["net"])), ",") if m else "-"))
@@ -539,6 +567,15 @@ def build(root, day, phase, pcid, pclabel):
             a("| (오늘 MAIN 실거래 없음) | | | | | | | | | | |")
         a("")
         a("- 손절 갱신 로그 %d줄 · 실 수량 1계약 거래는 규격 2레그가 아니라 「1차 목표 전량 익절」로 집행된다(685·711차)" % len(stp))
+        mh, mp = manual_interventions(logs, sd_pos, pt_pos)
+        a("- 수동 개입(대시보드 수동 청산): 주문요청 %d건 · 포지션 %d건 · 사유 미기록%s"
+          % (len(mh), len(mp), "".join(" — `%s`" % tr(h[1][11:], 110) for h in mh[:3])
+             + (" … 외 %d건" % (len(mh) - 3) if len(mh) > 3 else "")))
+        for src, ets, rs in mp:
+            a("  - %s `%s` 사유 %s" % (src, (ets or "?")[11:19], ",".join(rs)))
+        if mh or mp:
+            flags.append("수동 개입 %d건 — 규격 밖 청산(기회비용은 재생 대조로 따로 본다 · 사유는 사용자 확인)"
+                         % max(len(mh), len(mp)))
         a("")
         a("### 4-2. 섀도 대조 (같은 날 변형별 재생 net)")
         a("")
