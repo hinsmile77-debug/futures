@@ -478,6 +478,7 @@ IF EXIST "data\_exit_normally" (
     DEL "data\_exit_normally" 2>NUL
     CALL :L "[INFO] 이전 세션 정상 종료 플래그 정리됨 (새 세션 시작)."
 )
+IF EXIST "data\_exit_duplicate" DEL "data\_exit_duplicate" 2>NUL
 
 REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 REM
@@ -645,6 +646,16 @@ CALL :L "============================================================"
 FOR /F "usebackq" %%T IN (`powershell -NoProfile -Command "(Get-Date).ToString('HHmm')"`) DO SET "_NOW=%%T"
 IF NOT DEFINED _NOW SET "_NOW=2400"
 IF "!_NOW!"=="" SET "_NOW=2400"
+
+REM [MW0601 724cha] main.py single-instance mutex (utils\single_instance.py).
+REM  A main.py that finds the mutex held writes data\_exit_duplicate and exits.
+REM  Restarting it would only fail again - stop here. Checked BEFORE
+REM  _exit_normally on purpose: the duplicate never touches that flag.
+SET "_DUP_REASON="
+IF EXIST "data\_exit_duplicate" SET /P "_DUP_REASON=" < "data\_exit_duplicate"
+IF EXIST "data\_exit_duplicate" DEL "data\_exit_duplicate" 2>NUL
+IF DEFINED _DUP_REASON CALL :L "[SingleInstance] 중복 기동 거부로 종료 -- !_DUP_REASON! -- 재시작 안 함 (이미 실행 중인 main.py 가 있다)"
+IF DEFINED _DUP_REASON GOTO :restart_done
 
 REM  (Korean notes removed: cmd loses byte alignment on UTF-8 REM text -> see start_mireuk.bat)
 SET "_EXIT_REASON="

@@ -263,6 +263,60 @@ def win_tasks():
     return out
 
 
+def live_main_procs(root):
+    """[724차] 이 작업 폴더의 실행 중 main.py — 런처 GUARD 와 같은 판정(`scripts/guard_single_instance.scan`).
+
+    → (목록, None) 또는 (None, 미측정 사유). psutil 이 없거나 Windows 가 아니면 미측정(계측 4원칙 ②).
+    """
+    if os.name != "nt":
+        return None, "Windows 가 아님"
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "_gsi", os.path.join(root, "scripts", "guard_single_instance.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        res = mod.scan(root)
+    except Exception as e:
+        return None, "%s: %s" % (type(e).__name__, e)
+    if res.get("unreadable"):
+        return res["matched"], "명령줄 판독불가 %d건(권한/비트폭) — 수가 모자랄 수 있다" % len(res["unreadable"])
+    return res["matched"], None
+
+
+def mireuk_launcher_tasks():
+    """[724차] 실행 파일이 start_mireuk.bat 인 예약작업 — 이름(한글)이 아니라 동작으로 찾는다
+    (scripts/sindong_launcher_task.ps1 과 같은 방식). → [(이름, 상태)] 또는 None(미측정)."""
+    if os.name != "nt":
+        return None
+    ps = ("[Console]::OutputEncoding=[Text.Encoding]::UTF8; "
+          "Get-ScheduledTask | Where-Object { $_.Actions | Where-Object { $_.Execute -and "
+          "$_.Execute.ToLower().EndsWith('start_mireuk.bat') } } | "
+          "ForEach-Object { $_.TaskPath + $_.TaskName + '|' + $_.State }")
+    try:
+        p = subprocess.Popen(["powershell", "-NoProfile", "-Command", ps],
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        o, _e = p.communicate(timeout=60)
+        if p.returncode != 0:
+            return None
+        rows = [l.strip() for l in o.decode("utf-8", "replace").splitlines() if "|" in l]
+        return [tuple(r.rsplit("|", 1)) for r in rows]
+    except Exception:
+        return None
+
+
+def launcher_kinds(root, day):
+    """[724차] 당일 런처 로그를 머리말로 가른다 — `Sindong (` / `Mireuk (`.
+    → [(파일, 종류, 휴면거부여부)]. 미륵 런처가 떴다는 것 자체가 `\\미륵이` 작업이 켜져 있었다는 증거다."""
+    out = []
+    for n, lines in launcher_logs(root, day).items():
+        head = " ".join(lines[:4])
+        kind = "Sindong" if "Sindong (" in head else ("Mireuk" if "Mireuk (" in head else "?")
+        refused = any("[MireukGate] REFUSE" in l for l in lines)
+        out.append((n, kind, refused))
+    return out
+
+
 # ------------------------------------------------------------------ 신동 대사
 def positions(root, day):
     """trades.db 당일 행 → 포지션 단위(entry_ts·출처 묶음). → (신동, 피터, 그 밖) 또는 (None,)*3."""
@@ -488,6 +542,41 @@ def build(root, day, phase, pcid, pclabel):
     else:
         for k, v in t.items():
             a("- 예약작업 `%s`: %s" % (k, v))
+    a("")
+
+    # §3-b 단일 인스턴스 [724차 — 2026-10-27 08:40 이중 기동]
+    a("### 3-b. 단일 인스턴스 (main.py 1벌 · 미륵 런처 휴면)")
+    a("")
+    procs, why = live_main_procs(root)
+    if procs is None:
+        a("- 실행 중 main.py: 미측정(%s)" % why)
+    else:
+        a("- 실행 중 main.py: **%d개**%s" % (len(procs), (" — %s" % why) if why else ""))
+        for r in procs:
+            a("  - PID=%s started=%s" % (r.get("pid"), r.get("started")))
+        if len(procs) > 1:
+            flags.append("main.py 가 %d개 실행 중 — 신동 실주문 중복 위험. 늦게 뜬 쪽(런처 포함)을 즉시 종료할 것" % len(procs))
+        elif not procs and phase == "pre" and ok_td and day == now.date() and now.hour < 16:
+            flags.append("장전인데 실행 중 main.py 가 없다 — `\\Sindong` 기동 실패 여부 확인")
+    mt = mireuk_launcher_tasks()
+    if mt is None:
+        a("- 미륵 런처 예약작업(start_mireuk.bat): 미측정")
+    elif not mt:
+        a("- 미륵 런처 예약작업(start_mireuk.bat): 없음")
+    for nm, st in (mt or []):
+        a("- 미륵 런처 예약작업 `%s`: %s" % (nm, st))
+        if st.strip().lower() != "disabled":
+            flags.append("미륵 런처 예약작업 `%s` 상태가 `%s` — 휴면 중엔 Disabled 여야 한다(10-27 이중 기동 원인)" % (nm, st))
+    lk = launcher_kinds(root, day)
+    a("- 당일 런처 로그: %s" % (", ".join("%s=%s%s" % (n, k, "(휴면 거부)" if rf else "") for n, k, rf in lk) or "없음"))
+    for n, k, rf in lk:
+        if k == "Mireuk":
+            flags.append("미륵 런처가 떴다(`%s`)%s — `\\미륵이` 작업이 켜져 있었다"
+                         % (n, " · 휴면 게이트가 거부함" if rf else " · **main.py 까지 기동됐을 수 있다**"))
+    dup = dedup(grep(logs, r"\[SingleInstance\] 중복 기동 거부"))
+    a("- `[SingleInstance] 중복 기동 거부`: %d건%s" % (len(dup), (" — `%s`" % tr(dup[0][1][11:], 150)) if dup else ""))
+    if dup:
+        flags.append("main.py 중복 기동 시도 %d건 — 뮤텍스가 막았다. 어느 경로로 두 번 떴는지 확인할 것" % len(dup))
     a("")
 
     # §4 신동·피터 거래

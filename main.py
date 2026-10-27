@@ -24276,6 +24276,24 @@ def _rotate_crash_log(path, rotate_mb=None, keep=None):
 def main():
     import traceback as _tb
 
+    # ── [MW0601 724차] 단일 인스턴스 — 무엇보다 먼저(크래시 로그·DB·브로커 접속 전) ──
+    # 2026-10-27 08:40 두 런처가 같은 초에 떠 GUARD 프로브를 둘 다 통과했다(확인↔기동 사이 몇 초).
+    # 뮤텍스는 OS 가 원자적으로 판정한다. 근거: utils/single_instance.py docstring.
+    from utils.single_instance import acquire as _si_acquire, write_duplicate_flag as _si_flag, \
+        DUPLICATE_EXIT_CODE as _SI_EXIT
+    _si_ok, _si_measured, _si_detail = _si_acquire(BASE_DIR)
+    if not _si_ok:
+        _si_path = _si_flag(BASE_DIR)
+        _si_msg = ("[SingleInstance] 중복 기동 거부 — 이 작업 폴더의 main.py 가 이미 실행 중이다 "
+                   "(%s) | PID=%d | 런처 재시작 중지 플래그=%s" % (_si_detail, os.getpid(), _si_path or "기록 실패"))
+        print(_si_msg, flush=True)
+        logger.critical(_si_msg)
+        sys.exit(_SI_EXIT)
+    if _si_measured:
+        logger.info("[SingleInstance] 획득 %s | PID=%d", _si_detail, os.getpid())
+    else:
+        logger.warning("[SingleInstance] %s | PID=%d — 중복 기동을 막지 못할 수 있다", _si_detail, os.getpid())
+
     # ── [230차] faulthandler 크래시 핸들러 ────────────────────────────────
     # 목적: C 레벨 치명 예외(0xC0000409 STATUS_STACK_BUFFER_OVERRUN, SIGSEGV 등) 발생 시
     #       Python exception handler 도달 전 OS가 프로세스를 강제 종료해도
