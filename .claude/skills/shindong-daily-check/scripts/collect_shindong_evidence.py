@@ -543,8 +543,10 @@ def build(root, day, phase, pcid, pclabel):
     # §7 git
     a("## 7. 오늘 커밋")
     a("")
-    lg = CE.run_git(root, ["log", "--format=%ci %h %s", "--since=%s 00:00" % day.isoformat(),
-                           "--until=%s 00:00" % (day + timedelta(days=1)).isoformat()])
+    # [F-SD-3 확장 · 666차 후속3] 경계에 +0900 — 없으면 UTC 샌드박스가 KST 09:00~익일 09:00 을
+    # 「오늘」로 읽어 KST 00:00~09:00 커밋을 빠뜨린다(재현: Sindong2-V4 c36f450 04:55 KST 누락).
+    lg = CE.run_git(root, ["log", "--format=%ci %h %s", "--since=%s 00:00 +0900" % day.isoformat(),
+                           "--until=%s 00:00 +0900" % (day + timedelta(days=1)).isoformat()])
     for l in (lg.splitlines() if lg else [])[:20]:
         a("- %s" % tr(l, 160))
     if not lg:

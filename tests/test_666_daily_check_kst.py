@@ -58,6 +58,16 @@ def test_K3_skill_since_has_kst_offset():
         assert "+0900" in s, s
 
 
+def test_K5_collector_git_bounds_have_kst_offset():
+    """§7 「오늘 커밋」 --since/--until 경계에도 +0900 (666차 후속3)."""
+    with io.open(SRC, encoding="utf-8") as f:
+        src = f.read()
+    bounds = re.findall(r'"--(?:since|until)=([^"]*)"', src)
+    assert bounds, "git 경계 인자가 사라졌다"
+    for b in bounds:
+        assert "+0900" in b, b
+
+
 def test_K4_kst_fixed_offset():
     assert CSE.KST.utcoffset(None) == datetime.timedelta(hours=9)
     with io.open(SRC, encoding="utf-8") as f:
