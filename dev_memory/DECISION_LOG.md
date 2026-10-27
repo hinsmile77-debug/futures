@@ -2,6 +2,14 @@
 
 ---
 
+## 2026-10-27 (MW0602 666차 후속2 — 사용자 결정: 1-3 사유 확인 · F-SD-4 수동청산 사유 캡처 적용)
+
+- 1-3 판정: 14:49:47 `R60|10:50|+1` 수동 전량청산은 **사용자 실행 · 사유 「버튼점검」**(사용자 회신 2026-10-27). 리스크 판단·오조작이 아니라 버튼 동작 확인이었다 → 1-3 종결. 설계(15:05 시간청산 885.48) 대비 2.24pt 불리는 그 점검의 비용. 사전등록 판정(재생 MAIN 기준)은 무영향.
+- 결정: `F-SD-4`(C등급) 사용자 승인 「적용해」 → 구현. 대시보드 청산 패널(33/50/전량 버튼 아래)에 사유 입력칸 `manual_exit_note`. 33/50/전량 버튼과 진입 패널 「즉시청산」이 모두 `main._on_manual_exit_requested` 를 거치므로 그 한 곳에서 칸을 읽고 비운다. 기록: `[ManualExit] 사유='…'`/`사유=미입력` 로그 + trades.db `manual_exit_notes`(note·note_given·path·order_ret 등, 주문 송신 직후 1행). 외부 포지션 경로(`path=external`)도 같은 기록.
+- Why: 사유를 `reason`(=trades.exit_reason)에 붙이지 않았다 — `classify_exit()` 가 exit_reason 부분문자열(「스톱」「익절」「강제청산」…)로 트리거를 가르므로 자유 입력이 섞이면 수동청산이 하드스톱·TP 로 오분류된다. 모달 입력창도 쓰지 않았다 — 긴급 청산에 클릭·지연을 더한다. 사유는 계측이지 게이트가 아니다: 빈 칸·읽기 실패·DB 실패 어느 것도 청산을 막지 않는다. 미체결 보류로 청산이 안 나가면 칸을 소비하지 않는다(다시 누를 때 그대로).
+- How to apply: 수동청산 원인 확인은 로그 `[ManualExit] 사유=` 또는 `SELECT * FROM manual_exit_notes`. 미입력은 note=''·note_given=0 (계측 4원칙 ②). 주문 수량·kind·reason·pending 순서는 무변경.
+- 검증: `tests/test_666_manual_exit_note.py` 7건(정규화·DB·exit_reason 불변·핸들러 실행 3종·대시보드 offscreen) · 관련 기존 54 + 신동 회귀 58 passed · py37_32 `ast.parse` 3파일 · py37_32 offscreen ExitPanel 스모크(grab 포함) OK. ⚠ 라이브 확인은 다음 수동청산 때(O-9 b).
+
 ## 2026-10-27 (MW0602 666차 후속 — 장후 자동조치: F-SD-2·F-SD-3 점검 도구 KST 고정)
 
 - 증상: Cowork 샌드박스 시계가 UTC 라 (a) 장전(KST 08:51 = UTC 전일 23:51) 수집기가 `--date` 생략 시 전일을 오늘로 잡아 `evidence_sd_MW0602-20261026_pre_2.md` 를 오생성(664차), (b) SKILL.md 「배포 첫날」 git `--since` 가 9시간 늦게 잡혀 대상 커밋 0건 거짓음성(665차, 실제 `55375b5` 1건).

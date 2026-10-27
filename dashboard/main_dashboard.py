@@ -32,6 +32,7 @@ from PyQt5.QtWidgets import (
     QRadioButton, QButtonGroup,
     QDateEdit, QCalendarWidget,   # [날짜선택] 달력 팝업
     QScrollBar,                   # [590차] 1분봉 차트 하단 이동바
+    QLineEdit,                    # [F-SD-4] 수동청산 사유 입력
 )
 from PyQt5.QtCore import (
     Qt, QTimer, QThread, pyqtSignal, QPropertyAnimation,
@@ -2956,6 +2957,23 @@ class ExitPanel(QWidget):
             self.manual_exit_btns[pct] = btn
             btn_lay.addWidget(btn)
         lay.addLayout(btn_lay)
+        # [F-SD-4 · 666차 후속] 수동청산 사유 — 비워도 청산은 그대로 나간다(계측이지 게이트가 아니다).
+        # 위 33/50/전량 버튼과 진입 패널 「즉시청산」 모두 이 칸을 읽고 비운다.
+        # 로그 `[ManualExit] 사유=…` + trades.db manual_exit_notes.
+        self.manual_exit_note = QLineEdit()
+        self.manual_exit_note.setPlaceholderText("수동청산 사유(선택) — 예: 버튼점검 · 리스크 판단")
+        self.manual_exit_note.setMaxLength(200)
+        self.manual_exit_note.setToolTip(
+            "청산 버튼을 누르기 전에 적어 두면 로그·DB 에 남고 칸은 비워집니다.\n"
+            "비워 두면 「사유=미입력」으로 기록되며 청산은 막지 않습니다."
+        )
+        lay.addWidget(self.manual_exit_note)
+
+    def take_manual_exit_note(self):
+        """[F-SD-4] 사유 칸 값을 돌려주고 비운다. 비어 있으면 None."""
+        txt = self.manual_exit_note.text().strip()
+        self.manual_exit_note.clear()
+        return txt or None
 
     def _reset_display(self):
         """포지션 FLAT 상태: 모든 필드를 '——' 로 초기화"""
@@ -17182,6 +17200,7 @@ class DashboardAdapter:
         self.sig_auto_mode_changed        = self._win.entry_panel.sig_auto_mode_changed
         self.sig_tp1_protect_mode_changed = self._win.exit_panel.sig_tp1_protect_mode_changed
         self.sig_manual_exit_requested    = self._win.exit_panel.sig_manual_exit_requested
+        self.take_manual_exit_note        = self._win.exit_panel.take_manual_exit_note   # [F-SD-4]
         self.sig_max_qty_changed          = self._win.entry_panel.sig_max_qty_changed
         self.sig_layer2_gate_toggled      = self._win.entry_panel.sig_layer2_gate_toggled
         self.sig_apply_candidate_requested = self._win.feat_panel.sig_apply_candidate_requested

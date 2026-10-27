@@ -4316,10 +4316,44 @@ class TradingSystem:
             "WARNING",
         )
 
+    def _take_manual_exit_note(self):
+        """[F-SD-4 · 666차 후속] 대시보드 사유 입력칸을 읽고 비운다.
+
+        미입력·읽기 실패는 None — **청산 자체는 절대 막지 않는다**(사유는 계측이지 게이트가 아니다).
+        """
+        try:
+            from utils.db_utils import normalize_manual_exit_note
+            return normalize_manual_exit_note(self.dashboard.take_manual_exit_note())
+        except Exception as e:
+            log_manager.system(f"[ManualExit] 사유 입력칸 읽기 실패(사유 미입력으로 진행): {e}", "WARNING")
+            return None
+
+    def _record_manual_exit_note(self, note, *, percent, kind, direction, send_qty, path, order_ret=None):
+        """[F-SD-4] 사유 로그 1줄 + trades.db manual_exit_notes 1행. 실패해도 청산 흐름에 영향 없음."""
+        log_manager.system(
+            f"[ManualExit] 사유={note!r} path={path} pct={percent} kind={kind} qty={send_qty}"
+            if note else
+            f"[ManualExit] 사유=미입력 path={path} pct={percent} kind={kind} qty={send_qty}",
+            "WARNING",
+        )
+        try:
+            from utils.db_utils import record_manual_exit_note
+            record_manual_exit_note(
+                percent=percent, kind=kind, direction=direction, send_qty=send_qty,
+                note=note, path=path, order_ret=order_ret,
+            )
+        except Exception as e:
+            log_manager.system(f"[ManualExit] 사유 DB 기록 실패: {e}", "WARNING")
+
     def _on_manual_exit_requested(self, percent: int) -> None:
         percent = int(percent or 0)
         if (self.position.status == "FLAT" or self.position.quantity <= 0) and self._external_watch:
             # 실서버 외부 포지션(감시 전용) — 자동 청산은 안 하지만 사람이 누른 청산은 보낸다.
+            _note = self._take_manual_exit_note()
+            self._record_manual_exit_note(
+                _note, percent=percent, kind="EXTERNAL", direction="",
+                send_qty=0, path="external",
+            )
             _ts_operator_exit_external(self, percent)
             return
         if self.position.status == "FLAT" or self.position.quantity <= 0:
@@ -4366,6 +4400,9 @@ class TradingSystem:
         else:
             reason = f"수동 부분청산 {percent}%"
             kind = "EXIT_MANUAL_PARTIAL"
+        # [F-SD-4] 사유는 reason(=trades.exit_reason)에 섞지 않는다 — classify_exit 오분류 방지.
+        _note = self._take_manual_exit_note()
+        _note_dir = self.position.status
 
         # BlockRequest() 내부 메시지 펌프로 체결 콜백이 먼저 도착하는 race condition 방지:
         # pending을 주문 전송 전에 먼저 등록하고, 실패 시 롤백
@@ -4378,6 +4415,10 @@ class TradingSystem:
             stage=stage or None,
         )
         ret = self._send_broker_exit_order(send_qty)
+        self._record_manual_exit_note(
+            _note, percent=percent, kind=kind, direction=_note_dir,
+            send_qty=send_qty, path="button", order_ret=ret,
+        )
         if ret != 0:
             self._clear_pending_order()
             log_manager.system(
