@@ -12,7 +12,12 @@
                   an AI fill (exit 10), and no claude run in the last 8 minutes.
                   exit 11 = new events but nothing for position to manage -> no claude, "poll-ack" only;
                   the next intraday run sees them in snapshot "carry" lines (725 follow-up 6: on 2026-10-28
-                  13:50 and 14:00 position was called twice with no holding, 6 of 24 poll calls in 7 days).
+                  13:50 and 14:00 position was called twice with no holding, 5 of 24 poll calls in 7 days).
+                  On an intraday slot (10:30-14:30 at :00/:30, +1 min) poll YIELDS before the gate and the
+                  lock - no snapshot, no ack - and the intraday run takes the events (its step 2 already
+                  does manage/exit). Both start in the same second and poll used to win the lock: 7 days
+                  had 21 intraday lock waits, up to 114 s (2026-10-26 12:30) and 63 s (2026-10-28 14:00).
+                  The slot constants must match shindong2_tasks.ps1 New-WeekdayRepeat '10:30' 30 241.
                   After a successful position run the runner also calls "poll-ack" so the same events
                   do not wake claude again (position writes no record when there is nothing to manage).
       close       15:12        -> "/shindong2 position" (15:10 forced exit wrap-up)
@@ -125,6 +130,18 @@ function Find-Claude {
 }
 
 Log ("start (dry={0})" -f [bool]$DryRun)
+
+# 0) poll yields on an intraday slot (725 follow-up 8) - events stay un-acked, so if intraday fails
+#    the next poll (+10 min) still sees them. Must match shindong2_tasks.ps1 '10:30' 30 241.
+if ($Phase -eq 'poll') {
+    $slotFirst = 10 * 60 + 30; $slotStep = 30; $slotLast = 14 * 60 + 30
+    $nowT = Get-Date
+    $nowMin = $nowT.Hour * 60 + $nowT.Minute
+    if ($nowMin -ge $slotFirst -and $nowMin -le ($slotLast + 1) -and (($nowMin - $slotFirst) % $slotStep) -le 1) {
+        Log 'intraday slot -> poll yields (no snapshot, no ack - intraday takes the events)'
+        exit 0
+    }
+}
 
 # 1) trading day  (research runs Friday 17:00 after close - no gate, runs even on a holiday Friday; 640-4)
 if ($Phase -ne 'research') {

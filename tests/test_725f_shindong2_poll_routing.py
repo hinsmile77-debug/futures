@@ -142,3 +142,43 @@ def test_main_events_from_real_shindong_db_1028():
         pytest.skip("10-28 MAIN 행 없음")
     keys = [e["key"] for e in M.main_events(rv)]
     assert "main:entry:R3|09:46|+1" in keys and "main:exit:R3|09:46|+1" in keys
+
+
+# ── [725차 후속8] 장중 슬롯 양보 — poll 이 intraday 와 같은 초에 시작해 잠금을 먼저 잡던 문제 ─────────
+def _ps_text(name):
+    with open(os.path.join(_ROOT, "scripts", name), "rb") as f:
+        return f.read().decode("ascii")
+
+
+def _yield_minutes():
+    import re
+    s = _ps_text("shindong2_run.ps1")
+    m = re.search(r"\$slotFirst = (\d+) \* 60 \+ (\d+); \$slotStep = (\d+); \$slotLast = (\d+) \* 60 \+ (\d+)", s)
+    assert m, "슬롯 상수 줄을 찾지 못했다"
+    first, step, last = int(m[1]) * 60 + int(m[2]), int(m[3]), int(m[4]) * 60 + int(m[5])
+    # runner 판정식 그대로: first ≤ t ≤ last+1 그리고 (t−first) % step ≤ 1
+    return {t for t in range(24 * 60) if first <= t <= last + 1 and (t - first) % step <= 1}
+
+
+def test_poll_yield_slots_match_scheduled_intraday_trigger():
+    import re
+    m = re.search(r"New-WeekdayRepeat '(\d\d):(\d\d)' (\d+) (\d+)\)\) \}", _ps_text("shindong2_tasks.ps1"))
+    assert m, "Intraday 30분 트리거를 찾지 못했다"
+    start, every, dur = int(m[1]) * 60 + int(m[2]), int(m[3]), int(m[4])
+    slots = {start + k * every for k in range(dur // every + 1) if k * every < dur}
+    assert sorted(slots)[0] == 10 * 60 + 30 and sorted(slots)[-1] == 14 * 60 + 30 and len(slots) == 9
+    assert _yield_minutes() == slots | {t + 1 for t in slots}      # 시작 지연 +1분까지만 — 그 밖(:10·:20·:40·:50)은 poll 정상
+
+
+def test_poll_yield_examples_and_wiring():
+    y = _yield_minutes()
+    hm = lambda s: int(s[:2]) * 60 + int(s[3:])
+    for t in ("10:30", "12:30", "14:00", "14:31"):               # 10-26 12:30 (114s) · 10-28 14:00 (63s) 충돌 지점
+        assert hm(t) in y, t
+    for t in ("10:10", "10:20", "13:50", "14:40", "15:00", "10:29", "14:32"):
+        assert hm(t) not in y, t
+    s = _ps_text("shindong2_run.ps1")
+    i = s.index("intraday slot -> poll yields")
+    blk = s[s.rindex("if ($Phase -eq 'poll')", 0, i):s.index("exit 0", i)]
+    assert "poll-ack" not in blk                                  # 양보는 ack 하지 않는다 — intraday 실패 시 다음 poll 이 재시도
+    assert i < s.index("Run-Live @('gate')") < s.index("Try-Lock)")   # 거래일 확인·잠금 전에 빠진다(6s 대기도 없앤다)
