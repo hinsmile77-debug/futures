@@ -2,6 +2,24 @@
 
 > 검증 필요 항목, 예정된 작업, 알려진 잠재 이슈.
 
+### 725-1 [MW0601] 피터2 X 고정 탭 복원 중복 — 확장 1.2.0 · 수신기 TABS · 점검 §3-c (2026-10-28 장중 구현)
+
+배경: 10-27 19:21 장 마감 뒤 수집 탭에서 트윗 클릭 → 그 상태로 종료 → 10-28 08:44 Chrome 이 고정 탭 복원 →
+확장이 못 알아보고 08:45 새 고정 탭 생성 → X 고정 탭 2개(09:41 사람이 닫음). 수집 손실 0 · 주문 영향 0(shadow).
+변경: `background.js` ourTab ③ 고정 피터 탭 거두기 · 거두기→정리 순서 · reapStrays 확장 · `tabs.onUpdated` 클릭 넘겨주기(장 밖 포함, /home 은 30초 쓰로틀) ·
+`tabCensus` → 수신기 `collector.json.tabs` · `TABS` 로그 · 증거 수집기 §3-c(탭·`peter_paste` 정체·`eod_ids`).
+테스트 `tests/test_725_peter2_restored_pinned_tab.py`(Node 동작 8 + 구조 3, 수정 전 코드로 돌리면 고정 탭 2개 재현) · `test_611` test_2 를 「고정 create 1곳」으로 좁힘.
+⚠ 반영 시점: 장중에 확장을 다시 읽지 않았다(고아 content.js·80초 공백 회피). **10-29 08:44 Chrome 첫 기동 때 반영**, 수신기는 08:40 런처가 새로 띄울 때 반영.
+
+- [ ] 10-29 장전: `logs/peter2_receiver_20261029.log` 에 `TABS x=… peter_pinned=1` 1줄 · `collector.json.tabs` 존재 · 증거 §3-c 경보 없음.
+- [ ] 10-29 장전: Chrome History 에 08:44 복원 `/status/` 뒤 **새 검색 탭 생성 없이** 같은 탭이 검색으로 이동(START_PAGE → LINK).
+- [ ] 장 밖 클릭 1회 관측: 트윗이 **비고정 새 탭**으로 열리고 수집 탭은 검색 유지.
+- [x] **F 백필(10-28 16:03 장후 완료)**: `peter_paste` 10-20–10-28 7거래일 저장 — 오프셋 −1.52 · −1.63 · −1.23 · −1.54 · −0.17 · −0.21 · **+0.95**
+  (10-29 엔진 전일 오프셋 = +0.95, 종전 폴백 −1.82 해소). 7일 모두 체결 트윗 0건 → `_tr` 빈 채가 정상(지어내지 않음) · `peter2_eod` 7일 재생성 ·
+  `peter_feed_push` → origin/peter-feed `a4018c5d` 일치. ⚠ 「체결 없는 날은 오프셋이 안 남는다」는 의심은 **기각** — 채택 트윗이 있으면 측정된다.
+- [ ] 미측정 잔여: 10-26·27·28 장후 캡처(`--src eod`)·삭제 탐지 — 브라우저 조작이 필요해 미수행(`eod_ids` 없음). 정체 재발 방지로 peter-daily 장후를 신동 장후 흐름(16:0x)에 예약 편입할지 검토.
+- [ ] 문서 정정(E): peter-daily SKILL 「07:30 마흐디가 Chrome 을 연다」 → 실측 08:44 `\Mireuk\Mireuk_MaekjeomLadder` `webbrowser.open`. Chrome 기동을 런처 6-D 로 옮길지(D)는 사용자 판단.
+
 ### 724-1 [MW0601] 단일 인스턴스 3겹 — 라이브 첫날 확인 + 잔여 1건
 
 - [ ] 10-28 08:40: 런처 로그에 `[SingleInstance] 획득 Local\MireukFuturesMain_…` 1줄(SYSTEM.log) · 미륵 런처 로그 **없음**(작업 비활성).
