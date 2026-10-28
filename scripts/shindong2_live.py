@@ -412,6 +412,23 @@ def source_warnings(st, now=None):
     return W
 
 
+def foreign_cut_check(st, now=None):
+    """[F-SD-5] 외인 선물 마감 누계 반영 여부 — 경고가 없을 때도 장 마감 뒤 매 회 1줄(계측 4원칙 ④).
+    723차 「마감 누계 미반영」 경고는 문제가 있을 때만 떠서, 안 뜬 날이 「정상」인지 「검사 안 함」인지 로그로 못 갈랐다.
+    15:35 전에는 None(장중 절단은 의도된 것)."""
+    if st.get("empty") or now is None or now.strftime("%H:%M") < "15:35":
+        return None
+    fp = st.get("foreign") or {}
+    t_cut, db_last = fp.get("t_cut"), fp.get("db_last")
+    if not db_last:
+        ok = "미측정"                                              # 그날 적재 0행 — 「OK」로 위장하지 않는다(②)
+    elif t_cut and db_last > t_cut:
+        ok = "누락"
+    else:
+        ok = "OK"
+    return "[ForeignCutCheck] %s t_cut=%s db_last=%s 반영=%s" % (now.strftime("%H:%M:%S"), t_cut or "마감", db_last or "-", ok)
+
+
 def build_state(day, now=None):
     """사다리 데이터 계층으로 지금 상태를 만든다. 장중이면 완결 봉까지만 의미가 있다."""
     import ladder_data as L
@@ -495,6 +512,7 @@ def build_state(day, now=None):
         st["p_layer"] = dict(why="%s: %s" % (type(e).__name__, str(e)[:120]))
     st["bars_n"] = len(bars)
     st["source_warnings"] = source_warnings(st, now)            # [640차 ⑤] 원천 경고 — snapshot 끝과 사다리 띠에 같이 뜬다
+    st["foreign_cut_check"] = foreign_cut_check(st, now)        # [F-SD-5] 장후 매 회 1줄 — 경고 유무와 무관
     return st, d
 
 
@@ -896,6 +914,8 @@ def _summary(st, new, ai):
     if st.get("source_warnings"):
         L.append("🔴 원천 경고(해석에 쓰지 말 것):")
         L.extend("  · " + w for w in st["source_warnings"])
+    if st.get("foreign_cut_check"):
+        L.append(st["foreign_cut_check"])
     return "\n".join(L)
 
 
@@ -920,6 +940,9 @@ def cmd_snapshot(day, now=None):
         st["scen"] = scenario_sets(day, bars, log, final=not st["live"])   # 683차 — 직전 예측 → 지금까지 결과
     new = save_new_events(day, detect_events(st, ai["trades"] if ai else None), now)
     _atomic_json(os.path.join(day_dir(day), "state.json"), st)
+    if st.get("foreign_cut_check"):                             # [F-SD-5] state.json 은 덮어쓴다 — 회차 이력은 여기 누적
+        with open(os.path.join(day_dir(day), "foreign_cut_check.log"), "a", encoding="utf-8") as f:
+            f.write(st["foreign_cut_check"] + "\n")
     return st, new, ai
 
 
