@@ -32,7 +32,7 @@ def test_2_each_defect_is_detected():
     W = SL.source_warnings(_st(prev=dict(date="2026-10-08", high=1, low=0, close=1049.0)))
     assert any("전일 참조 고착" in w and "12일 전" in w for w in W)
     W = SL.source_warnings(_st(foreign=dict(kospi_spot_foreign=dict(t="10:30", qty=371, amt=-137665), fut_path=[dict(t="10:29")])))
-    assert any("부호 모순" in w for w in W)
+    assert any("부호 갈림" in w and "금액" in w for w in W)          # F3(e432cd27) — 방향은 금액 기준 문구
     W = SL.source_warnings(_st(foreign=dict(kospi_spot_foreign=None, fut_path=[dict(t="10:05")])))
     assert any("7221" in w and "25분" in w for w in W)
     W = SL.source_warnings(_st(flow=dict(mon_call=None, mon_put=None, wk_prod="wk_thu", wk_call=None, wk_put=None)))
