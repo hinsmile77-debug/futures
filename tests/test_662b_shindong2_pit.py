@@ -14,6 +14,7 @@ E. 피터 거래 줄 파서.
 import copy
 import os
 import sys
+import warnings
 
 import pytest
 
@@ -169,6 +170,22 @@ def test_p_is_unchanged_by_config_and_p2_is_separate():
         assert "touch60" in t                                       # S1 은 모든 진입에 기록
 
 
+# [MW0602 671차 후속3] 10/6 실데이터 고정값은 **PC별**이다 — 두 PC 는 별개 DB 라 같은 코드가 다른 값을 낸다.
+#   10.87/11.52 는 MW0601 DB 값. MW0602 는 이식 첫날(70a0432)부터 HEAD 까지 4개 코드 시점 모두 5.28/5.28 —
+#   로직이 아니라 데이터 차이다(3주간 「기존 결함」으로 넘겨진 실패). 모르는 PC 는 고정값만 건너뛰고 불변식은 돈다.
+_P_1006_BY_PC = {"MW0601": (10.87, 11.52), "MW0602": (5.28, 5.28)}
+
+
+def _check_p_1006(summary):
+    from utils.db_utils import pc_id
+    pc = pc_id()
+    exp = _P_1006_BY_PC.get(pc)
+    if exp is None:                                                  # 계측 4원칙 ③ — 건너뛴 사실을 남긴다
+        warnings.warn("10/6 P 고정값 미등록 PC(%s) — 고정값 검사 생략, 불변식만 검사" % pc)
+        return
+    assert (summary["p"], summary["p2"]) == exp                      # 사전등록 P·P2 드라이런 값 고정(이 PC DB 기준)
+
+
 def test_p2_real_days_invariants_and_p_unchanged():
     dbs = [os.path.join(R.DB, n) for n in ("regular_candles.db", "raw_data.db", "option_flow.db")]
     if not all(os.path.exists(p) for p in dbs):
@@ -177,7 +194,7 @@ def test_p2_real_days_invariants_and_p_unchanged():
     if not S["cs"]:
         pytest.skip("10/6 봉 없음")
     out = R.analyze(S)
-    assert out["summary"]["p"] == 10.87                              # 사전등록 P 드라이런 값 고정
+    _check_p_1006(out["summary"])
     _check_invariants(out["p2"])
     assert all(p["rule"].get("touch60") is not None for p in out["points"] if p["rule"]["dir"] != "관망")
 
@@ -220,7 +237,7 @@ def test_p3_differs_from_p_only_in_final_target():
     if not S["cs"]:
         pytest.skip("10/6 봉 없음")
     out = R.analyze(S)
-    assert out["summary"]["p"] == 10.87 and out["summary"]["p2"] == 11.52      # P·P2 고정
+    _check_p_1006(out["summary"])                                               # P·P2 고정(PC별)
     P, P3 = out["p"], out["p3"]
     _check_invariants(P3)
     assert [(t["entry_t"], t["fill"], t["stop"]) for t in P["trades"]] == [(t["entry_t"], t["fill"], t["stop"]) for t in P3["trades"]]
