@@ -262,6 +262,8 @@ def verify(iid: str, days: int = 60, at_hm: str = "10:00", perm: int = 200, unti
     r = _find(reg, iid)
     prereg = dict(DEFAULT_PREREG, **mod.META.get("prereg", {}))
     dl = trading_days(days, until)
+    if prereg.get("since"):                              # [670차 후속3] 정의를 바꾼 지표 — 탐색에 쓴 날은 판정 표본에서 뺀다(사후탐색 방지)
+        dl = [d for d in dl if d >= prereg["since"]]
     vals, fwd, rows = [], [], []
     for d in dl:
         v = mod.compute(d, at_hm)

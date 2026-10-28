@@ -1113,17 +1113,17 @@ function drawSD2Table(){
   { const vd = document.getElementById('sd2Ver'), st = SD.scoring_start, v1 = SD.v1_scored_days || [];
     const tag = (SD.base_ver || '').split('-').pop() || '—';
     const stt = !st ? ['버전 정보 없음 — 서버 재기동 필요', '--ink-3']
-      : v1.includes(D.date) ? [`이 날짜는 v1 으로 채점됐다(${SD.base_ver_prev || 'v1'}) — 화면은 ${tag} 재계산, 합산 제외`, '--o-break']
+      : v1.includes(D.date) ? [`이 날짜는 v1 으로 채점됐다(${SD.base_ver_v1 || 'v1'}) — 화면은 ${tag} 재계산, 합산 제외`, '--o-break']
       : D.date < st ? [`개시 전 날짜 — ${tag} 규칙으로 재계산한 참고값(채점 아님)`, '--ink-3']
       : [`${tag} 채점 대상일`, '--sd2'];
     vd.innerHTML = `<span class="vchip main">규칙 ${tag}</span><span class="vchip">개시 ${st || '—'}</span>` +
-      `<span class="vchip">기본 ${SD.base_ver || '—'}</span>` +
+      `<span class="vchip">기본 ${SD.base_ver || '—'}${SD.base_scoring_start ? ' · 개시 ' + SD.base_scoring_start + ' (현물 금액)' : ''}</span>` +
       [['P', SD.p], ['P2', SD.p2], ['P3', SD.p3]].map(([n, X]) => `<span class="vchip">${n} ${X ? X.ver : '—'}</span>`).join('') +
       `<span class="vchip">위클리 ${SD.wk ? (SD.wk.prod === 'mon' ? '기권(먼스리 만기주)' : SD.wk.prod) : '—'}</span><span class="vchip">옵션 단위 ${SD.flow_unit || '—'}</span>` +
       `<span class="vstate" style="color:var(${stt[1]})">${stt[0]}</span>`; }
   document.getElementById('sd2Cav').innerHTML = `<b>사전등록 채점 중 (v2).</b> ${SD.scoring_start || '2026-10-12'}부터 20거래일 동안 규칙을 바꾸지 않고 기본·P·P2·P3·피터를 나란히 채점한 뒤 판정한다. v1 채점일(10/7·10/8)은 합산하지 않는다 — 이 화면은 모든 날짜를 <b>v2 규칙으로 재계산</b>해 보여 준다. 그 이전 날짜는 참고용이다(P 는 그 기간 피터 기록을 보고 만들었다). ` +
     `위클리 원천 <b>${SD.wk ? (SD.wk.prod === 'mon' ? '기권(먼스리 만기주)' : SD.wk.prod) : '—'}</b> · 옵션 콜−풋 단위 <b>${SD.flow_unit || '—'}</b>. 손익은 1계약 환산 pt, 수수료·슬리피지 제외.`;
-  let h = '<thead><tr><th class="l">시각</th><th>기준가</th><th>선물외인 (Δ10)</th><th>먼스리 C−P 백만원 (Δ10)</th><th>위클리 C−P 백만원 (Δ10)</th><th>현물외인 (Δ10)</th><th>가격Δ10</th><th>점수</th><th class="l">방향</th><th>진입</th><th>접촉</th><th>앞길</th><th>손절</th><th>청산</th><th class="l">결과</th><th>손익pt</th></tr></thead><tbody>';
+  let h = '<thead><tr><th class="l">시각</th><th>기준가</th><th>선물외인 (Δ10)</th><th>먼스리 C−P 백만원 (Δ10)</th><th>위클리 C−P 백만원 (Δ10)</th><th>현물외인 백만원 (Δ10)</th><th>가격Δ10</th><th>점수</th><th class="l">방향</th><th>진입</th><th>접촉</th><th>앞길</th><th>손절</th><th>청산</th><th class="l">결과</th><th>손익pt</th></tr></thead><tbody>';
   (SD.points || []).forEach(p => { const o = p.obs, r = p.rule, g = p.grade, go = r.dir !== '관망';
     h += `<tr><td class="l mono">${o.T}</td><td class="mono">${o.px != null ? o.px.toFixed(2) : '—'}</td>` +
       `<td class="mono">${n2(o.fut_for)} (${n2(o.fut_for_d)})</td><td class="mono">${n2(o.mon_cp)} (${n2(o.mon_cp_d)})</td><td class="mono">${n2(o.wk_cp)} (${n2(o.wk_cp_d)})</td><td class="mono">${n2(o.spot)} (${n2(o.spot_d)})</td>` +

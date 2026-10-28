@@ -102,11 +102,12 @@ def test_option_cp_uses_amount_and_records_contracts_only():
 
 # ── D ────────────────────────────────────────────────────────────────────
 def test_preregistered_v2_values():
-    assert R.BASE_VER == "SD2B-2026-10-10-v2" and R.BASE_VER_PREV == "SD2B-2026-10-06-v1"
+    # [670차 후속3] 기본 규칙은 v3(S1 현물 금액)로 올랐다 — v2 이력 값은 BASE_VER_PREV 로 남는다(test_670_spot_foreign_amount_axis)
+    assert R.BASE_VER == "SD2B-2026-10-28-v3" and R.BASE_VER_PREV == "SD2B-2026-10-10-v2" and R.BASE_VER_V1 == "SD2B-2026-10-06-v1"
     assert (R.P_VER, R.P2_VER, R.P3_VER) == ("SD2P-2026-10-10-v2", "SD2P2-2026-10-10-v2", "SD2P3-2026-10-10-v2")
     assert R.SCORING_START_V2 == "2026-10-12" and R.V1_SCORED_DAYS == ("2026-10-07", "2026-10-08")
     assert R.P_BIAS == dict(O1L=1850, F2=300, O2L=750, PX=3.0)
-    assert R.DEAD == dict(F1=50, F2=300, O1=130, O2=150, S1=100, P1=1.0)
+    assert R.DEAD == dict(F1=50, F2=300, O1=130, O2=150, S1=9350, P1=1.0)        # S1 v3: 백만원(v2 까지 주식 수 100)
     assert R.P_BIAS_GO == 2 and R.FLOW_UNIT == "백만원"
 
 
