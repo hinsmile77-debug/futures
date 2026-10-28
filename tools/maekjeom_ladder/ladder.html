@@ -661,13 +661,16 @@ function drawLadder(){
       if (t0 > '15:45' || t1 <= t0) return;
       const x0 = xT(t0), x1 = xT(t1 > '15:45' ? '15:45' : t1);
       const line = (pv, stroke, dash, w) => { if (pv == null) return; el('line', { x1: x0, x2: x1, y1: y(pv), y2: y(pv), stroke, 'stroke-dasharray': dash, 'stroke-width': w, opacity: .95 }, gx); };
-      line(r.entry, col, '1 3', 2); line(r.stop, css('--neg'), '6 3', 1.4); line(r.target, col, '', 1.6);
+      const isM = r.action === 'manage', pe = isM && r.on === 'pending' ? r.pending_entry : null;   // [725차 후속10]
+      line(isM ? pe : r.entry, col, '1 3', 2); line(r.stop, css('--neg'), '6 3', 1.4); line(r.target, col, '', 1.6);
       if (r.entry != null || r.stop != null || r.target != null) {
         const yy = y(r.entry != null ? r.entry : (r.target != null ? r.target : r.stop));
-        el('text', { x: x0 + 3, y: yy - 4, 'font-size': 10, 'font-weight': 700, fill: col }, gx, 'AI ' + (r.dir || ''));
+        el('text', { x: x0 + 3, y: yy - 4, 'font-size': 10, 'font-weight': 700, fill: col }, gx,
+           isM ? 'AI ' + (r.on === 'pending' ? '대기 수정' : r.on === 'position' ? '보유 관리' : '관리') : 'AI ' + (r.dir || ''));
         const hb = el('rect', { x: x0, y: Math.min(...[r.entry, r.stop, r.target].filter(v => v != null).map(y)) - 6, width: Math.max(4, x1 - x0),
           height: Math.max(...[r.entry, r.stop, r.target].filter(v => v != null).map(y)) - Math.min(...[r.entry, r.stop, r.target].filter(v => v != null).map(y)) + 12, fill: 'transparent' }, gx);
-        hb.addEventListener('mousemove', ev => showTip(ev, `<b style="color:var(--sd2ai)">신동2-AI ${r.ts.slice(11, 16)} ${r.phase} · ${r.action}</b><br>${r.dir || ''} 진입 ${r.entry ?? '시장가'} · 손절 ${r.stop ?? '—'} · 청산 ${r.target ?? '—'}`));
+        hb.addEventListener('mousemove', ev => showTip(ev, `<b style="color:var(--sd2ai)">신동2-AI ${r.ts.slice(11, 16)} ${r.phase} · ${r.action}</b><br>${isM ? manageLabel(r) + ' · 손절 ' + (r.stop ?? '유지') + ' · 청산 ' + (r.target ?? '유지')
+          : (r.dir || '') + ' 진입 ' + (r.entry ?? '시장가') + ' · 손절 ' + (r.stop ?? '—') + ' · 청산 ' + (r.target ?? '—')}`));
         hb.addEventListener('mouseleave', hideTip);
       }
     });
@@ -1000,8 +1003,8 @@ function drawAI(){
   }
   if (L) {
     box += `<div class="meta">${L.ts.replace('T', ' ')} · ${PH[L.phase] || L.phase} · ${L.action}</div>`;
-    if (L.action === 'manage')
-      box += `<div class="plan"><span class="k-sd2ai">갱신</span><span>손절 <b>${L.stop ?? '유지'}</b></span><span>청산 <b>${L.target ?? '유지'}</b></span></div>`;
+    if (L.action === 'manage')   // [725차 후속10] 대기 주문 수정과 보유 관리를 구분 — 10-28 12:34 미체결 계획 수정이 보유처럼 읽혔다
+      box += `<div class="plan"><span class="k-sd2ai">${manageLabel(L)}</span><span>손절 <b>${L.stop ?? '유지'}</b></span><span>청산 <b>${L.target ?? '유지'}</b></span></div>`;
     else if (L.action === 'exit') box += `<div class="plan"><span class="k-sd2ai">즉시 청산</span></div>`;
     else if (L.dir && L.dir !== '관망' || L.entry != null || L.stop != null || L.target != null)
       box += `<div class="plan"><span class="k-sd2ai">${esc(L.dir)}</span><span>진입 <b>${L.entry ?? '시장가'}</b></span><span>손절 <b>${L.stop ?? '—'}</b></span><span>청산 <b>${L.target ?? '—'}</b></span></div>`;
@@ -1086,6 +1089,13 @@ function drawRival(){
       `<td class="l">${t.exit_t ? esc(t.exit_t) + ' ' + esc(t.reason_ko || '') : '보유 중 (평가 ' + (t.eval_pt != null ? fmt(t.eval_pt, 2) : '—') + ')'}</td><td class="mono ${t.net_pt > 0 ? 'win' : t.net_pt < 0 ? 'loss' : ''}">${t.net_pt != null ? fmt(t.net_pt, 2) : '—'}</td></tr>`; });
   });
   tb.innerHTML = h + '</tbody>';
+}
+
+// [725차 후속10] manage 기록의 대상 — scripts/shindong2_live.py manage_label 과 같은 규칙(대상 미기록 = 10-28 이전 기록)
+function manageLabel(r){
+  if (r.on === 'position') return '보유 관리';
+  if (r.on === 'pending') return `대기 주문 수정(미체결 · 진입 ${r.pending_entry ?? '시장가'} 대기)`;
+  return r.on === '미측정' ? '관리(대상 미측정)' : '관리(대상 미기록)';
 }
 
 function drawSD2Table(){

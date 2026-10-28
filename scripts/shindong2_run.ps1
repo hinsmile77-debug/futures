@@ -173,12 +173,31 @@ try {
                       'Bash(conda run --no-capture-output -n py310_64 python scripts/shindong2_research.py:*)')
         $denied = @('Edit', 'Write', 'NotebookEdit')
     }
-    $prompt = "/shindong2 $skillPhase"
+    # 725 follow-up 10: say "headless" in the prompt itself - the skill text alone did not stop
+    # 2026-10-28 15:12 from ending on a question to nobody, with no wrap-up note recorded.
+    $prompt = "/shindong2 $skillPhase (HEADLESS scheduled run - nobody will answer. Never end with a question; finish the phase and stop.)"
+    if ($Phase -eq 'close') {
+        $prompt = "/shindong2 position (HEADLESS 15:12 close run - nobody will answer. Record exactly one wrap-up note, even with 0 trades, then stop. Never end with a question.)"
+    }
     Log ("claude: {0} -p `"{1}`"" -f $claude, $prompt)
     if ($DryRun) { Log 'dry run -> claude not called'; exit 0 }
     $out = & $claude -p $prompt --allowedTools @allowed --disallowedTools @denied --output-format text 2>&1
     $rc = $LASTEXITCODE
     if ($out) { Append-Log @($out | ForEach-Object { "    > " + $_ }) }
+    # 725 follow-up 10: post-checks - observe only, never block (the record is already written or not)
+    $lastLine = @($out | ForEach-Object { "$_".Trim() } | Where-Object { $_ -ne '' }) | Select-Object -Last 1
+    if ($lastLine -and $lastLine.EndsWith('?')) { Log 'WARN ended with question (headless run - nobody answers)' }
+    if ($Phase -eq 'close' -and $rc -eq 0) {
+        $aiLog = Join-Path $liveDir (Join-Path $today 'ai_log.jsonl')
+        $wrap = $false
+        if (Test-Path $aiLog) {
+            foreach ($ln in [System.IO.File]::ReadAllLines($aiLog, [System.Text.Encoding]::UTF8)) {
+                try { $r = $ln | ConvertFrom-Json } catch { continue }
+                if ("$($r.ts)".Length -ge 16 -and "$($r.ts)".Substring(11, 5) -ge '15:10' -and $r.action -eq 'note') { $wrap = $true }
+            }
+        }
+        if (-not $wrap) { Log 'WARN no wrap-up note after 15:10 (close run recorded nothing)' }
+    }
     Set-Content -Path $lastClaude -Value (Get-Date -Format 'o') -Encoding ASCII
     Log ("claude rc={0}" -f $rc)
     exit $rc

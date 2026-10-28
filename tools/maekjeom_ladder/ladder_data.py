@@ -214,6 +214,40 @@ def _candles_live(day):
         return list(_live_cache["rows"]), "raw_candles(live)"
 
 
+def _live_open_fix(day, rows):
+    """[MW0601 725차 후속10] 라이브 08:45 봉 시가 → 08:50 맥점이 차트 TR 로 보정한 **개장 체결가**.
+
+    실시간 구독이 08:45:05–27 에 붙어 개장 단일가 체결을 놓친다(10-28: 첫 틱 905.34 vs 개장 904.68, 지연 23.6s).
+    메인은 08:50 에 차트로 보정하지만 맥점 계산 안에서만 쓰고 raw_candles 는 15:46 SessionBackfill 때 고친다 →
+    장중 화면·신동2 해설은 종일 첫 틱 시가, 장후 평가는 개장가(두 값). 정답값은 08:50 부터 premarket_levels 에 있다.
+    → (봉, 출처 꼬리표). 보정값이 아직 없으면(08:50 전) 「보정 전」을 꼬리표로 남긴다(계측 4원칙 ④)."""
+    if not rows or rows[0][0] != "08:45":
+        return rows, ""
+    r, note = None, ""
+    try:
+        con = _ro("premarket_levels.db")
+        try:
+            try:
+                r = con.execute("SELECT open_price FROM premarket_levels WHERE date=? AND stage='0850' AND open_bar_ts='08:45'",
+                                (day,)).fetchone()
+            except sqlite3.OperationalError:              # open_bar_ts 열이 없는 갈래(MW0601 534차 후속 미보유) — 어느 봉 시가인지 모른다
+                r = con.execute("SELECT open_price FROM premarket_levels WHERE date=? AND stage='0850'", (day,)).fetchone()
+                note = " · open_bar_ts 미기록"
+        finally:
+            con.close()
+    except sqlite3.Error:
+        r = None
+    if not r or r[0] is None:
+        return rows, " · 08:45 시가 보정 전(실시간 첫 틱)"
+    o = round(float(r[0]), 2)
+    b = rows[0]
+    if abs(b[1] - o) < 1e-6:
+        return rows, ""
+    rows = list(rows)
+    rows[0] = [b[0], o, max(b[2], o), min(b[3], o), b[4]]     # 고·저는 개장가를 포함하도록만 넓힌다(종가 유지)
+    return rows, " · 08:45 시가 차트 보정 %.2f→%.2f(08:50 맥점%s)" % (b[1], o, note)
+
+
 def candles(day, live):
     if not live:
         try:
@@ -222,7 +256,9 @@ def candles(day, live):
                 return rows, "regular_candles(%s)" % code
         except Exception:
             pass
-    return _candles_live(day)
+    rows, src = _candles_live(day)
+    rows, tag = _live_open_fix(day, rows)
+    return rows, src + tag
 
 
 # ── 맥점 ──────────────────────────────────────────────────────────────────
