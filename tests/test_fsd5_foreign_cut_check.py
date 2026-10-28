@@ -47,7 +47,7 @@ def test_summary_and_log_file_carry_line(tmp_path, monkeypatch):
     st = dict(date="2026-10-28", empty=True, foreign_cut_check=line)
     monkeypatch.setattr(M, "build_state", lambda day, now: (st, {}))
     monkeypatch.setattr(M, "save_new_events", lambda day, ev, now: [])
-    monkeypatch.setattr(M, "events_since_record", lambda day, use_ack=False: (None, []))
+    monkeypatch.setattr(M, "events_since_record", lambda day, use_ack=False: (None, []), raising=False)   # Sindong-V4 에는 없다
     monkeypatch.setattr(M, "detect_events", lambda st, t=None: [])
     M.cmd_snapshot("2026-10-28", now=POST)
     M.cmd_snapshot("2026-10-28", now=POST)
