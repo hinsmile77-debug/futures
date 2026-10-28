@@ -72,7 +72,7 @@ KOSPI200 미니선물에서 **최고의 수익률 진입·청산 타점**을 잡
 
 ```
 conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py snapshot          # 상태 + 새 이벤트 요약 (읽고 판단)
-conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py poll              # 마지막 기록 이후 새 이벤트 있으면 exit 10
+conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py poll              # 새 이벤트 + AI 보유·대기·재량 이벤트면 exit 10 · 그 밖이면 exit 11(미룸)
 conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py record --phase <단계> --action <plan|manage|exit|stand|note> \
       --dir <매수|매도|관망> [--entry X] [--stop Y] [--target Z] [--lessons L1,L9] [--variant legacy]       --scenarios "A|반등 후 1020 저항|45|1020|1030|1012 ; B|하락 재개|35|1000|1012 ; C|숏커버 랠리|20|1030|1012"       --comment-file - <<'EOF'
 해설 본문(마크다운)
@@ -112,8 +112,9 @@ conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py lesso
 
 - ⚠ **`--no-capture-output` 필수** — 빼면 conda(py37_32 의 conda)가 출력을 cp949 로 다시 찍다가 `−` 같은 문자에서
   `UnicodeEncodeError` 로 죽고 「ERROR REPORT」 프롬프트를 띄운다(스크립트는 정상이었다 — 2026-10-06 실측).
-- `poll` 의 **exit 10 은 오류가 아니다**(「Claude 호출 필요」). conda 가 `ERROR conda.cli.main_run … failed` 를 한 줄 찍는데
-  0 이 아닌 종료코드를 그렇게 표시할 뿐이다.
+- `poll` 의 **exit 10·11 은 오류가 아니다**(10 = position 호출 · 11 = 보유·대기 없음이라 Claude 없이 다음 intraday 로 미룸).
+  conda 가 `ERROR conda.cli.main_run … failed` 를 한 줄 찍는데 0 이 아닌 종료코드를 그렇게 표시할 뿐이다.
+  [725차 후속6] 넘겨준·미룬 이벤트는 runner 가 `poll-ack` 으로 기준점을 올린다 — 같은 이벤트로 다시 깨우지 않는다.
 - 🔴 **`--scenarios`**(683차) — 장전·장중·익일(overnight) **live** 의 plan/stand/note 에 **필수**(보유·관리·청산·legacy 는 면제).
   형식 `키|이름|확률|목표|무효[|이후] ; …` — 확률은 5% 단위 정수, **합 100**, 2개 이상.
   · **추세형**(`이후` 없음): 무효보다 목표에 먼저 닿으면 실현. 예 `B|하락 재개|35|1000|1012`.
@@ -263,6 +264,8 @@ conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py lesso
 1. `snapshot`. 직전 기록과 비교해 **무엇이 바뀌었나**만 본다 — **상대의 수**(MAIN·섀도의 새 진입·청산·보유 평가 · 신호원이 문턱에
    얼마나 가까운가 · 손절 방향 금지 발동), 전일 고저, 맥점 이탈, 수급 수준, 외인 동향 경로(직전 회차 이후 구간 변화 · 새 플래그).
    (사료) P 계열 세팅은 더 이상 보지 않는다.
+   **「이월 이벤트」 줄**(725차 후속6)이 있으면 그것도 이번 회차에서 받는다 — 무보유라 poll 이 position 을 부르지 않고 미룬
+   피터 관점·상자·구조 이벤트다(「새 이벤트」에는 안 뜬다). 피터 관점이면 `피터판단:` 을 이 기록에 넣는다.
 0. **분석이 길어졌으면 기록 직전에 `snapshot` 을 한 번 더 부른다**(L25 — 완결 봉이 2봉 넘게 지났거나 고·저가 갱신됐으면 그 극값을 반영).
 0-1. **09:15 회차(09:10 상자 고정 뒤 첫 회차)**: 「피터의 방법」 블록의 상자@09:10 B2 를 시나리오 표 레벨에 반영할지 판단한다 —
    쓰면 「상자 유지」·「상단 이탈」·「하단 이탈」 축의 목표·무효를 B2 변에서 고르되 확률은 기저율(추이 문서의 B0 대비 실측)을 넘기지 않는다(L26).
@@ -282,6 +285,10 @@ conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py lesso
 
 ### position (진입 뒤 — `poll` 이 exit 10 일 때, 10분마다 확인)
 
+[725차 후속6] runner 는 **AI 보유·미체결 대기가 있거나 재량 진입·청산 이벤트일 때만** 이 단계를 부른다.
+무보유·무대기에서 온 피터 관점·상자 이탈 등은 poll 이 exit 11 로 미루고 다음 intraday 가 「이월 이벤트」로 받는다
+(2026-10-28 13:50·14:00 무보유 헛호출 2회 · 같은 이벤트 재발화가 계기).
+
 1. `snapshot` 의 「재량(AI)」 줄로 보유·평가손익을 본다.
 2. 유지 / 손절 이동(`manage`) / 급청산(`exit`) — 급청산은 **세팅 변경 조건** 또는 손절선 1pt 안 접근 + 반대 구조 돌파일 때.
    만기일·피닝 구간에서 MFE ≥ 5pt 면 L10(본전 이동·부분청산 앞당김) 적용을 판단해 적는다.
@@ -293,6 +300,8 @@ conda run --no-capture-output -n py310_64 python scripts/shindong2_live.py lesso
 
 강제청산 직후다. `snapshot` 으로 재량·규칙 결과를 보고 오늘 재량 거래를 정리하는 `note` 하나만 남긴다
 (새 `plan` 금지 — 15:00 이후 진입은 채점되지 않는다).
+**재량 거래가 0건이어도** 그 사실과 이유 한 줄을 `note` 로 남긴다. 헤드리스 실행이다 — **사용자에게 질문으로 끝내지 않는다**
+(2026-10-28 15:12 「장후를 지금 돌릴까요?」로 끝남 — 받을 사람이 없다. 장후는 15:55 러너가 돈다).
 
 ### postmarket (15:55 — 정규선물 15:52 적재 뒤)
 

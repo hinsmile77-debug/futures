@@ -8,7 +8,13 @@
       premarket   08:52        -> claude "/shindong2 premarket"
       intraday    09:05-10:05 every 10 min, 10:30-14:30 every 30 min -> "/shindong2 intraday"
       poll        10:10-15:00 every 10 min -> shindong2_live.py poll; call "/shindong2 position"
-                  ONLY when new events exist (exit 10) and no claude run in the last 8 minutes
+                  ONLY when new events exist AND the AI holds a position / has a pending plan / the event is
+                  an AI fill (exit 10), and no claude run in the last 8 minutes.
+                  exit 11 = new events but nothing for position to manage -> no claude, "poll-ack" only;
+                  the next intraday run sees them in snapshot "carry" lines (725 follow-up 6: on 2026-10-28
+                  13:50 and 14:00 position was called twice with no holding, 6 of 24 poll calls in 7 days).
+                  After a successful position run the runner also calls "poll-ack" so the same events
+                  do not wake claude again (position writes no record when there is nothing to manage).
       close       15:12        -> "/shindong2 position" (15:10 forced exit wrap-up)
       postmarket  15:55        -> "/shindong2 postmarket"
 
@@ -103,7 +109,7 @@ function Run-Live([string[]]$liveArgs) {
     # conda run prints "ERROR conda.cli.main_run ... failed" for ANY non-zero exit.
     # gate=3 (holiday) and poll=10 (new events) are designed codes, not failures
     # (675 follow-up: 2026-10-09 check misread this line as a cp949 crash).
-    if (($liveArgs[0] -eq 'gate' -and $code -eq 3) -or ($liveArgs[0] -eq 'poll' -and $code -eq 10)) {
+    if (($liveArgs[0] -eq 'gate' -and $code -eq 3) -or ($liveArgs[0] -eq 'poll' -and ($code -eq 10 -or $code -eq 11))) {
         Append-Log @(("    | (designed rc={0} for {1} - conda ERROR line above is not a failure)" -f $code, $liveArgs[0]))
     }
     return $code
@@ -157,6 +163,11 @@ try {
             if ($mins -lt 8) { Log ("claude ran {0:N1} min ago -> skip poll" -f $mins); exit 0 }
         }
         $p = Run-Live @('poll')
+        if ($p -eq 11) {
+            if (-not $DryRun) { $null = Run-Live @('poll-ack') }      # a dry run must not move the real watermark
+            Log 'new events but no AI holding/pending -> deferred to next intraday (rc=11, no claude)'
+            exit 0
+        }
         if ($p -ne 10) { Log ("no new events (rc={0}) -> no claude" -f $p); exit 0 }
         $skillPhase = 'position'
     }
@@ -187,6 +198,8 @@ try {
     if ($out) { Append-Log @($out | ForEach-Object { "    > " + $_ }) }
     Set-Content -Path $lastClaude -Value (Get-Date -Format 'o') -Encoding ASCII
     Log ("claude rc={0}" -f $rc)
+    # handed-over events are done - without this a no-record position run is woken again by the same events
+    if ($Phase -eq 'poll' -and $rc -eq 0) { $null = Run-Live @('poll-ack') }
     exit $rc
 }
 finally {

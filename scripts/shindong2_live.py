@@ -4,7 +4,9 @@
 `shindong2` 스킬(.claude/skills/shindong2/SKILL.md)이 부르는 도구다. 주문은 하지 않는다(절대원칙 §6).
 
     python scripts/shindong2_live.py snapshot [--date D]     # 지금 상태 + 새 이벤트 → 요약 출력
-    python scripts/shindong2_live.py poll [--date D]         # snapshot 후, 마지막 AI 기록 뒤 새 이벤트가 있으면 exit 10
+    python scripts/shindong2_live.py poll [--date D]         # snapshot 후 기준점 뒤 새 이벤트 — AI 보유·대기·재량 이벤트면 exit 10(position),
+                                                             #   그 밖이면 exit 11(Claude 없이 다음 intraday 로 미룸) [725차 후속6]
+    python scripts/shindong2_live.py poll-ack [--date D]     # poll 이 넘겨준/미룬 이벤트까지 기준점 확정(runner 전용)
     python scripts/shindong2_live.py record --phase intraday --action plan --dir 매도 \\
            --entry 1104 --stop 1108.5 --target 1098.2 --comment-file c.md   # 재량 제안 기록(시각 = 지금)
     python scripts/shindong2_live.py score [--date D]        # 재량 제안 채점(장중이면 잠정)
@@ -23,6 +25,7 @@
                                  ai_log.jsonl    재량 기록(append-only — 고치지 않는다)
                                  ai_latest.json  사다리 「신동2 해설」 패널이 읽는 최신 해설
                                  ai_score.json   채점 결과
+                                 poll_ack.json   poll 기준점(candidate → upto) — 무보유 재발화 방지
 문서 (커밋 대상)
     docs/미륵이고도화3/신동2/live/신동2_해설_MW0601-YYYYMMDD.md   기록마다 덧붙인다
 
@@ -518,6 +521,64 @@ def load_ai_log(day):
     return _read_jsonl(os.path.join(day_dir(day), "ai_log.jsonl"))
 
 
+# ── poll 라우팅 [MW0601 725차 후속6] ─────────────────────────────────────────
+# 2026-10-28 13:50·14:00 — 무보유·무대기인데 피터 관점 2건으로 `position` 이 두 번 불렸다. 무보유면 position 은
+# 기록을 남기지 않아 기준점(마지막 재량 기록)이 그대로였고, 14:00 이 같은 2건으로 다시 깨웠다(재발화).
+# 7거래일(10-20–10-28) 24회 중 6회가 이 꼴이었다. 그래서 (1) 보유·대기·재량 이벤트일 때만 position,
+# (2) 나머지는 다음 intraday 로 미루고(rc 11), (3) 넘겨준/미룬 이벤트는 poll_ack 로 기준점을 올린다.
+RELIC_KEY_PREFIXES = ("base:", "p:", "p2:", "p3:")   # 사료 대조군(신동2 기본·P·P2·P3) — 2026-10-20 부터 채점 제외
+POLL_POSITION, POLL_DEFER = 10, 11
+
+
+def _poll_ack_path(day):
+    return os.path.join(day_dir(day), "poll_ack.json")
+
+
+def ai_engaged(ai):
+    """AI 가 보유 중이거나 미체결 대기 계획이 있나 — 있으면 어떤 이벤트든 position 이 봐야 한다."""
+    return bool(ai) and (bool(ai.get("pending")) or any(t.get("open") for t in ai.get("trades") or []))
+
+
+def events_since_record(day, log=None, use_ack=True):
+    """마지막 재량 기록(+ poll_ack) 이후 감지된 이벤트. use_ack=False 면 재량 기록만 기준(이월 표시용)."""
+    log = load_ai_log(day) if log is None else log
+    base = max((r["ts"] for r in log), default="")
+    if use_ack:
+        base = max(base, (_read_json(_poll_ack_path(day)) or {}).get("upto", ""))
+    ev = _read_jsonl(os.path.join(day_dir(day), "events.jsonl"))
+    return base, [e for e in ev if e.get("detected_at", "") > base]
+
+
+def poll_route(fresh, ai):
+    """→ (rc, 사유). 10 = position 호출 · 11 = Claude 없이 미룸(ack) · 0 = 새 이벤트 없음."""
+    if not fresh:
+        return 0, "새 이벤트 없음"
+    if any(e["key"].startswith("ai:") for e in fresh) or ai_engaged(ai):
+        return POLL_POSITION, "재량 보유·대기 또는 재량 이벤트 → position"
+    if all(e["key"].startswith(RELIC_KEY_PREFIXES) for e in fresh):
+        return POLL_DEFER, "사료 대조군 이벤트뿐 · 재량 보유·대기 없음 → 호출 안 함"
+    return POLL_DEFER, "재량 보유·대기 없음 → 다음 intraday 로 미룸"
+
+
+def poll_stage(day, fresh):
+    """poll 이 본 기준점 후보를 적어 둔다 — runner 가 처리(또는 미룸) 뒤 `poll-ack` 으로 확정한다.
+    Claude 가 실패하면 ack 하지 않으므로 다음 poll 이 다시 시도한다(유실 없음)."""
+    path = _poll_ack_path(day)
+    cur = _read_json(path) or {}
+    cur["candidate"] = max((e.get("detected_at", "") for e in fresh), default="")
+    _atomic_json(path, cur)
+
+
+def poll_ack(day):
+    path = _poll_ack_path(day)
+    cur = _read_json(path) or {}
+    cand = cur.get("candidate") or ""
+    if cand > (cur.get("upto") or ""):
+        cur["upto"] = cand
+        _atomic_json(path, cur)
+    return cur.get("upto") or ""
+
+
 def simulate_ai(day, cs, records, live=False):
     """재량 기록을 1분봉에 대 본다. 1계약 · 같은 봉 손절 우선 · 15:10 강제청산. 효력은 기록 다음 분 봉부터."""
     recs = []
@@ -751,6 +812,15 @@ def _summary(st, new, ai):
     L.append("새 이벤트 %d건" % len(new))
     for e in new:
         L.append("  · [%s] %s" % (e["kind"], e["text"]))
+    # [725차 후속6] 이월 — 이전 poll 이 감지했지만(그래서 「새 이벤트」에는 안 뜬다) 아직 재량 기록이 받지 않은 것.
+    # 무보유라 poll 이 position 을 부르지 않고 미룬 피터 관점·상자·구조 이벤트가 다음 intraday 에 여기로 온다.
+    carry = st.get("carry") or []
+    if carry:
+        L.append("이월 이벤트(마지막 재량 기록 이후 · 이미 감지됨 · 사료 제외) %d건 — 이번 기록에서 받을 것" % len(carry))
+        for e in carry[:8]:
+            L.append("  · %s [%s] %s" % (e.get("detected_at", "")[11:16], e["kind"], e["text"]))
+        if len(carry) > 8:
+            L.append("  · … 외 %d건" % (len(carry) - 8))
     if st.get("warnings"):
         L.append("경고: " + " · ".join(st["warnings"]))
     if st.get("source_warnings"):
@@ -779,6 +849,9 @@ def cmd_snapshot(day, now=None):
         st["ai"] = ai
         st["scen"] = scenario_sets(day, bars, log, final=not st["live"])   # 683차 — 직전 예측 → 지금까지 결과
     new = save_new_events(day, detect_events(st, ai["trades"] if ai else None), now)
+    new_keys = {e["key"] for e in new}
+    st["carry"] = [e for e in events_since_record(day, use_ack=False)[1]
+                   if e["key"] not in new_keys and not e["key"].startswith(RELIC_KEY_PREFIXES)]
     _atomic_json(os.path.join(day_dir(day), "state.json"), st)
     return st, new, ai
 
@@ -871,6 +944,8 @@ def main(argv=None):
     for c in ("snapshot", "poll", "score"):
         s = sub.add_parser(c)
         s.add_argument("--date", default=_dt.date.today().isoformat())
+    pa = sub.add_parser("poll-ack", help="[725차 후속6] poll 이 넘겨준(또는 미룬) 이벤트까지 기준점을 올린다 — runner 전용")
+    pa.add_argument("--date", default=_dt.date.today().isoformat())
     r = sub.add_parser("record")
     r.add_argument("--date", default=_dt.date.today().isoformat())
     r.add_argument("--for-date", help="장후에 다음 거래일 계획을 그 날짜 파일로 미리 적는다")
@@ -953,6 +1028,9 @@ def main(argv=None):
         return 0
     if a.cmd in ("evaluate", "feedback", "lesson", "strategy", "trend", "brief"):
         return _learn_cmd(a)
+    if a.cmd == "poll-ack":
+        print("poll_ack upto %s" % (poll_ack(a.date) or "없음"))
+        return 0
     if a.cmd == "gate":
         try:
             from utils.time_utils import is_trading_day
@@ -1001,12 +1079,15 @@ def main(argv=None):
         return 0
     print(_summary(st, new, ai))
     if a.cmd == "poll":
-        log = load_ai_log(a.date)
-        last = max((r["ts"] for r in log), default="")
-        ev = _read_jsonl(os.path.join(day_dir(a.date), "events.jsonl"))
-        fresh = [e for e in ev if e.get("detected_at", "") > last]
-        print("\n마지막 재량 기록 %s 이후 이벤트 %d건 → %s" % (last or "없음", len(fresh), "Claude 호출 필요" if fresh else "호출 불필요"))
-        return 10 if fresh else 0
+        base, fresh = events_since_record(a.date)
+        rc, why = poll_route(fresh, ai)
+        if fresh:
+            poll_stage(a.date, fresh)
+        kinds = sorted({e["kind"] for e in fresh})
+        print("\n기준점(마지막 재량 기록·poll_ack) %s 이후 이벤트 %d건%s · AI 보유·대기 %s → rc %d · %s" % (
+            base or "없음", len(fresh), (" (" + "·".join(kinds) + ")") if kinds else "",
+            "있음" if ai_engaged(ai) else "없음", rc, why))
+        return rc
     return 0
 
 
