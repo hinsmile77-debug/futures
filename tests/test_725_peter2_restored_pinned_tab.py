@@ -60,7 +60,8 @@ const chrome = {
     onUpdated: { addListener: (f) => L.updated.push(f) } },
   alarms: { create: () => {}, onAlarm: { addListener: (f) => L.alarm.push(f) } },
   runtime: { onInstalled: { addListener: () => {} }, onStartup: { addListener: () => {} },
-             onMessage: { addListener: (f) => L.msg.push(f) } },
+             onMessage: { addListener: (f) => L.msg.push(f) },
+             getManifest: () => ({ version: scen.ext_ver || '0.0.0-test' }) },
 };
 let now = scen.now;
 const RealDate = Date;

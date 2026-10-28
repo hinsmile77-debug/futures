@@ -121,6 +121,8 @@ def _heartbeat(meta, n_new):
         'rl': meta.get('rl') if isinstance(meta.get('rl'), dict) else None,
         # [2026-10-28] X 탭 계수(확장 1.2.0+). peter_pinned>1 = 고정 탭 복원 중복. 없으면 None — 미측정.
         'tabs': meta.get('tabs') if isinstance(meta.get('tabs'), dict) else None,
+        # [2026-10-28 G-10] 확장 판(1.2.1+ 가 보낸다). None = 1.2.0 이하가 실려 있다 — 미측정이지 판이 없다는 뜻이 아니다.
+        'ext_ver': meta.get('ext_ver') or None,
         'posts': _stat['posts'],
         'new_total': _stat['new_total'],
         'new_last': n_new,
@@ -175,6 +177,19 @@ def _log_tabs(tabs):
         ' — 고정 피터 탭 중복' if isinstance(key[2], int) and key[2] > 1 else ''))
 
 
+def _log_ext_ver(ver):
+    """[2026-10-28 G-10] 확장 판이 바뀔 때만 `EXT ver=1.2.1` 한 줄(수신기 기동 뒤 첫 게시 포함).
+
+    10-28 V-1028-9: 확장 1.2.0(탭 중복 거두기)이 실제로 재로드됐는지 로그로 알 길이 없어
+    점검이 「미측정」으로만 이월했다. 판을 보내지 않는 구판은 `EXT ver=미보고` 로 적는다.
+    """
+    key = ver or None
+    if '_ext_ver_key' in _stat and key == _stat['_ext_ver_key']:
+        return
+    _stat['_ext_ver_key'] = key
+    _log('EXT ver=%s' % (key if key else '미보고(1.2.0 이하 확장 — 재로드 전)'))
+
+
 def ingest(payload):
     tweets = payload.get('tweets') or []
     meta = payload.get('meta') or {}
@@ -210,7 +225,8 @@ def ingest(payload):
         _log('PAGE_ERROR %s' % ' '.join(str(meta.get('error')).split())[:80])
     _log_rate(meta.get('rl'))
     _log_tabs(meta.get('tabs'))
-    off = bool(meta.get('off_search'))
+    _log_ext_ver(meta.get('ext_ver'))
+    off =bool(meta.get('off_search'))
     if off != _stat.get('off_search'):          # 상태가 바뀔 때만 적는다 — 30초마다 도배하지 않는다
         _stat['off_search'] = off
         _log('OFF_SEARCH %s url=%s' % ('진입(검색 이탈 — 수집 중단)' if off else '해소(검색 복귀)',

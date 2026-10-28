@@ -238,7 +238,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         await chrome.storage.local.set({ backoffUntil: now + backoffMsFor(msg.meta, now) });
       }
     }
-    const meta = Object.assign({}, msg.meta || {}, { tabs: await tabCensus() });
+    // [2026-10-28 G-10] ext_ver — 수신기가 「지금 Chrome 에 실린 확장이 몇 판인가」를 로그로 남긴다.
+    // 없으면(1.2.0 이하) 재로드 반영 여부를 chrome://extensions 를 열어 봐야만 알 수 있었다.
+    const meta = Object.assign({}, msg.meta || {}, {
+      tabs: await tabCensus(),
+      ext_ver: chrome.runtime.getManifest().version,
+    });
     try {
       const r = await fetch(RECEIVER, {
         method: "POST",
