@@ -223,11 +223,16 @@ def _live_open_fix(day, rows):
     → (봉, 출처 꼬리표). 보정값이 아직 없으면(08:50 전) 「보정 전」을 꼬리표로 남긴다(계측 4원칙 ④)."""
     if not rows or rows[0][0] != "08:45":
         return rows, ""
+    r, note = None, ""
     try:
         con = _ro("premarket_levels.db")
         try:
-            r = con.execute("SELECT open_price FROM premarket_levels WHERE date=? AND stage='0850' AND open_bar_ts='08:45'",
-                            (day,)).fetchone()
+            try:
+                r = con.execute("SELECT open_price FROM premarket_levels WHERE date=? AND stage='0850' AND open_bar_ts='08:45'",
+                                (day,)).fetchone()
+            except sqlite3.OperationalError:              # open_bar_ts 열이 없는 갈래(MW0601 534차 후속 미보유) — 어느 봉 시가인지 모른다
+                r = con.execute("SELECT open_price FROM premarket_levels WHERE date=? AND stage='0850'", (day,)).fetchone()
+                note = " · open_bar_ts 미기록"
         finally:
             con.close()
     except sqlite3.Error:
@@ -240,7 +245,7 @@ def _live_open_fix(day, rows):
         return rows, ""
     rows = list(rows)
     rows[0] = [b[0], o, max(b[2], o), min(b[3], o), b[4]]     # 고·저는 개장가를 포함하도록만 넓힌다(종가 유지)
-    return rows, " · 08:45 시가 차트 보정 %.2f→%.2f(08:50 맥점)" % (b[1], o)
+    return rows, " · 08:45 시가 차트 보정 %.2f→%.2f(08:50 맥점%s)" % (b[1], o, note)
 
 
 def candles(day, live):

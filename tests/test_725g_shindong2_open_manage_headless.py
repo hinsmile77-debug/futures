@@ -71,6 +71,17 @@ def test_live_open_unfixed_is_tagged_not_silent(tmp_path, monkeypatch):
     assert L._live_open_fix(DAY, [["08:46", 1, 1, 1, 1]])[1] == ""        # 08:45 봉이 없으면 손대지 않는다
 
 
+def test_live_open_fix_without_open_bar_ts_column(tmp_path, monkeypatch):
+    # Sindong-V4(MW0602) premarket_levels 에는 open_bar_ts 열이 없다 — 「보정 전」으로 떨어지지 말고 표기를 달아 보정한다
+    con = sqlite3.connect(str(tmp_path / "premarket_levels.db"))
+    con.execute("CREATE TABLE premarket_levels (date TEXT, stage TEXT, open_price REAL)")
+    con.execute("INSERT INTO premarket_levels VALUES (?,?,?)", (DAY, "0850", 904.68))
+    con.commit(); con.close()
+    monkeypatch.setattr(L, "DB", str(tmp_path))
+    out, tag = L._live_open_fix(DAY, [["08:45", 905.34, 905.68, 904.18, 904.18]])
+    assert out[0][1] == 904.68 and "open_bar_ts 미기록" in tag
+
+
 def test_candles_live_path_carries_tag(tmp_path, monkeypatch):
     _levels_db(tmp_path)
     monkeypatch.setattr(L, "DB", str(tmp_path))
