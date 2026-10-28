@@ -26,7 +26,8 @@
     O1 먼스리 외인 (콜−풋) Δ10   ×1   (|Δ|<130백만원 이면 0)   콜 매수·풋 매도 = 상방
     O2 위클리 외인 (콜−풋) Δ10   ×1   (|Δ|<150백만원 이면 0)   위클리 = 만기 최근접, 먼스리 만기주는 기권
        [v2 2026-10-10] 옵션 콜−풋은 금액(백만원). v1 은 계약수(100·200)·`wk_mon` 고정이었다 — DEAD 주석 참조
-    S1 현물 외인 Δ10            ×1   (|Δ|<100 이면 0)   7222 kospi_spot
+    S1 현물 외인 Δ10            ×1   (|Δ|<9,350백만원 이면 0)   7222 kospi_spot
+       [v3 2026-10-28] 현물은 금액(백만원). v2 까지 주식 수(|Δ|<100) — BASE_VER 주석 참조
     P1 가격 Δ10                 ×1   (|Δ|<1.0pt 이면 0)
   방향: 점수 ≥ +3 → 매수, ≤ −3 → 매도, 그 외 관망
   가격:
@@ -75,13 +76,24 @@ DB = os.path.join(ROOT, "data", "db")
 #   데드밴드는 **계약수 문턱의 투표 건수를 보존**하는 금액 문턱(9/21–10/8 체크포인트 분위 대응, 손익 미참조)을
 #   가장 가까운 50 단위로 둔 값이다. 선물(F1·F2)·현물(S1)·가격(P1) 항은 무변경.
 #   v1 데드밴드(계약): O1=100, O2=200, O1L=1000, O2L=1000.
-BASE_VER = "SD2B-2026-10-10-v2"
-BASE_VER_PREV = "SD2B-2026-10-06-v1"      # v1 은 버전 문자열 없이 운용됐다 — 이력 식별용으로 소급 명명
-SCORING_START_V2 = "2026-10-12"           # 기본·P·P2·P3 모두 v2 첫 거래일부터 다시 센다(20거래일)
+# [v3 · 2026-10-28 개정 · MW0602 670차 후속3 · F3] 기본 규칙 S1(현물 외인 Δ10) 단위 = 금액(백만원).
+#   v2 까지 net_qty(주식 수)였다 — 주식은 종목마다 가격이 달라 수량 부호가 방향을 말하지 않는다
+#   (9/21–10/28 외인 장중 행 32% 부호 갈림 · 10-28 주식 수 −2,618 인 13:00 에 금액 +7,221억 매수).
+#   금액은 정규장 보도와 일치(10-13 −4.53조 vs 보도 −4.58조 · 10-19 −365억 vs 정규장 −360억).
+#   데드밴드 S1=9,350 = 수량 문턱 100 의 **투표율(90.0%) 보존** 금액 문턱(9/21–10/28 PIT 체크포인트 분위, 손익 미참조,
+#   v2 옵션 개정과 같은 방법). 장중 체크포인트 교차 9,450 — 안정. 손익축 검증(선정에 미사용): 수량 49.1% vs 금액 0–10,000
+#   62–63% 평탄, 일 단위 부트스트랩 95% 구간이 50% 를 포함(24일) — 금액 축 우위는 v3 표본으로 판정한다.
+#   v3 은 기본(S1)만 바꾼다 — P·P2·P3 는 S1 을 쓰지 않으므로 v2 그대로이고 채점 창도 이어진다.
+#   v2 데드밴드: S1=100(주식 수).
+BASE_VER = "SD2B-2026-10-28-v3"
+BASE_VER_PREV = "SD2B-2026-10-10-v2"
+BASE_VER_V1 = "SD2B-2026-10-06-v1"        # v1 은 버전 문자열 없이 운용됐다 — 이력 식별용으로 소급 명명
+SCORING_START_V2 = "2026-10-12"           # P·P2·P3 채점 창(v2 첫 거래일부터 — v3 에서 무변경)
+SCORING_START_V3 = "2026-10-29"           # 기본 규칙 채점 창 — v3 첫 거래일부터 다시 센다(20거래일)
 V1_SCORED_DAYS = ("2026-10-07", "2026-10-08")   # v1 로 채점된 날 — 합산하지 않는다(이력 보존용)
-FLOW_UNIT = "백만원"                       # 옵션 콜−풋 단위
+FLOW_UNIT = "백만원"                       # 옵션 콜−풋 · 현물(v3) 단위
 W = dict(F1=2, F2=1, O1=1, O2=1, S1=1, P1=1)
-DEAD = dict(F1=50, F2=300, O1=130, O2=150, S1=100, P1=1.0)
+DEAD = dict(F1=50, F2=300, O1=130, O2=150, S1=9350, P1=1.0)   # S1 은 v3 부터 백만원(위 주석)
 SCORE_GO = 3
 LOOK = 10            # Δ 창(분)
 NEAR_ENTRY = 3.0     # 진입 지정가 탐색 폭(pt)
@@ -250,7 +262,9 @@ def observe(S, T):
     else:
         o["wk_c"], o["wk_p"], o["wk_cp"], o["wk_cp_d"] = ocd(wk, fa)
         o["wk_cp_q"] = ocd(wk, S["flow"])[2]
-    o["spot"], o["spot_d"] = _d(S["flow"].get(("kospi_spot", "foreign"), []), T)
+    # [v3] 현물은 금액(백만원)으로 판정 — 주식 수는 기록용(spot_q)
+    o["spot"], o["spot_d"] = _d(S["flow_amt"].get(("kospi_spot", "foreign"), []), T)
+    o["spot_q"] = _d(S["flow"].get(("kospi_spot", "foreign"), []), T)[0]
 
     sn = [s for s in S["snaps"] if _hm(s[0]) <= _hm(T)]
     cmap = {c[0]: c[4] for c in cs}
@@ -719,6 +733,7 @@ def analyze(S, live=False, start="08:55", end="09:55", step=10):
     P3 = run_p(S, live=live, cfg=P3_CFG)
     done = [p["grade"].get("pnl") for p in pts if isinstance(p["grade"].get("pnl"), (int, float))]
     return dict(ver=P_VER, base_ver=BASE_VER, base_ver_prev=BASE_VER_PREV, scoring_start=SCORING_START_V2,
+                base_scoring_start=SCORING_START_V3, base_ver_v1=BASE_VER_V1,
                 v1_scored_days=list(V1_SCORED_DAYS), flow_unit=FLOW_UNIT,
                 wk=dict(prod=S.get("wk_prod"), exp=S.get("wk_exp"), why=S.get("wk_why")),
                 live=live, last_bar=last, points=pts, p=P, p2=P2, p3=P3,

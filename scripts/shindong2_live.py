@@ -129,13 +129,24 @@ def _prev_day_mini(day):
                 low=round(min(x[2] for x in rows), 2), close=round(rows[-1][3], 2))
 
 
+SPOT_AMT_DEAD = 9350      # [670차 후속3 · F3] 현물 외인 금액(백만원) 방향 문턱 — foreign_flow_pit_review DEAD["S1"] 과 같은 값
+
+
+def _eok(mn):
+    """백만원 → 「+8,434억」 표기."""
+    v = int(round(mn / 100.0))
+    return ("+" if v > 0 else "−" if v < 0 else "") + format(abs(v), ",") + "억"
+
+
 def _spot_foreign(day, t):
-    """현물(KOSPI) 외인 누계 — 7222 kospi_spot. 사다리 flow1m 에는 없는 상품이라 직접 읽는다(작은 DB)."""
+    """현물(KOSPI) 외인 누계 **금액(백만원)** — 7222 kospi_spot. 사다리 flow1m 에는 없는 상품이라 직접 읽는다(작은 DB).
+    [670차 후속3 · F3] 종전 net_qty(주식 수)였다 — 주식은 종목마다 가격이 달라 수량 부호가 방향을 말하지 않는다
+    (10-28: 주식 수 −2,618 인 13:00 에 금액 +7,221억 매수). 금액은 정규장 보도와 일치(10-13 −4.53조 · 10-19 −365억)."""
     import sqlite3
     p = os.path.join(ROOT, "data", "db", "option_flow.db").replace("\\", "/")
     try:
         con = sqlite3.connect("file:%s?mode=ro" % p, uri=True, timeout=5.0)
-        r = con.execute("SELECT net_qty FROM option_investor_flow WHERE trade_date=? AND product='kospi_spot' AND investor='foreign'"
+        r = con.execute("SELECT net_amt FROM option_investor_flow WHERE trade_date=? AND product='kospi_spot' AND investor='foreign'"
                         " AND bar_time<=? ORDER BY bar_time DESC LIMIT 1", (day, t)).fetchone()
         con.close()
         return r[0] if r else None
@@ -249,16 +260,18 @@ def _foreign_profile(day, t_cut, prev_days=3):
     # 해석 플래그 — 판정이 아니라 「확인할 것」 목록. 근거 수치를 함께 남긴다.
     flags = []
     fp = out.get("fut_path") or []
+    # [670차 후속3 · F3] 현물 방향은 **금액**(백만원) 부호로 판정한다 — 수량은 주식 수라 종목 구성에 따라 부호가 갈린다.
+    #   |금액| < SPOT_AMT_DEAD 면 방향 없음(PIT 복기 S1 데드존과 같은 값 — 수량 문턱 100 의 투표율 보존 분위, 손익 미참조).
     sf, si = out.get("kospi_spot_foreign"), out.get("kospi_spot_institution")
-    if fp and sf and fp[-1]["foreign"] is not None and sf["qty"] is not None:
+    if fp and sf and fp[-1]["foreign"] is not None and sf["amt"] is not None and abs(sf["amt"]) >= SPOT_AMT_DEAD:
         ff = fp[-1]["foreign"]
-        if ff > 0 > sf["qty"]:
-            flags.append("선물 외인 매수(%+d) · 현물 외인 매도(%+d) — 방향 베팅보다 현선 교체·헤지 가능성" % (ff, sf["qty"]))
-        elif ff < 0 < sf["qty"]:
-            flags.append("선물 외인 매도(%+d) · 현물 외인 매수(%+d) — 현물 헤지 매도 가능성" % (ff, sf["qty"]))
-        if si and si["qty"] is not None and fp[-1]["inst"] is not None and (fp[-1]["inst"] > 0) != (si["qty"] > 0) \
-                and (fp[-1]["inst"] > 0) != (ff > 0):
-            flags.append("기관 선물(%+d)·현물(%+d) 반대 — 외인 선물의 반대편이 차익거래일 수 있다" % (fp[-1]["inst"], si["qty"]))
+        if ff > 0 > sf["amt"]:
+            flags.append("선물 외인 매수(%+d) · 현물 외인 매도(%s) — 방향 베팅보다 현선 교체·헤지 가능성" % (ff, _eok(sf["amt"])))
+        elif ff < 0 < sf["amt"]:
+            flags.append("선물 외인 매도(%+d) · 현물 외인 매수(%s) — 현물 헤지 매도 가능성" % (ff, _eok(sf["amt"])))
+        if si and si["amt"] is not None and abs(si["amt"]) >= SPOT_AMT_DEAD and fp[-1]["inst"] is not None \
+                and (fp[-1]["inst"] > 0) != (si["amt"] > 0) and (fp[-1]["inst"] > 0) != (ff > 0):
+            flags.append("기관 선물(%+d)·현물(%s) 반대 — 외인 선물의 반대편이 차익거래일 수 있다" % (fp[-1]["inst"], _eok(si["amt"])))
     if len(fp) >= 2 and fp[0]["oi"] and fp[-1]["oi"]:
         d_oi = fp[-1]["oi"] - fp[0]["oi"]
         flags.append("미결제 %+d (%+.0f%%) — %s" % (d_oi, d_oi * 100.0 / fp[0]["oi"],
@@ -311,7 +324,12 @@ def _render_foreign(fp):
     for prod, ko in (("mon_call", "먼스리 콜"), ("mon_put", "먼스리 풋"), ("kospi_spot", "현물")):
         for inv, iko in (("foreign", "외인"), ("institution", "기관")):
             x = fp.get("%s_%s" % (prod, inv))
-            cells.append("%s %s %s" % (ko, iko, ("수량 %+d · 금액 %+d백만" % (x["qty"], x["amt"])) if x and x["qty"] is not None and x["amt"] is not None else "미측정"))
+            if not (x and x["qty"] is not None and x["amt"] is not None):
+                cells.append("%s %s 미측정" % (ko, iko))
+            elif prod == "kospi_spot":                       # [F3] 현물은 금액이 방향 — 수량(주식 수)은 참고
+                cells.append("%s %s **금액 %s** (주식 수 %+d · 참고)" % (ko, iko, _eok(x["amt"]), x["qty"]))
+            else:
+                cells.append("%s %s 수량 %+d · 금액 %+d백만" % (ko, iko, x["qty"], x["amt"]))
     L.append("옵션·현물: " + " / ".join(cells))
     if fp.get("flags"):
         L.append("확인할 것:")
@@ -336,7 +354,9 @@ def source_warnings(st, now=None):
     fp = st.get("foreign") or {}
     sf = fp.get("kospi_spot_foreign")
     if sf and sf.get("qty") not in (None, 0) and sf.get("amt") not in (None, 0) and (sf["qty"] > 0) != (sf["amt"] > 0):
-        W.append("현물 외인 수량(%+d)·금액(%+d백만) 부호 모순 — 금액 열 스케일/부호 오류 의심. 수량 부호만 쓸 것" % (sf["qty"], sf["amt"]))
+        # [670차 후속3 · F3] 종전 문구 「금액 열 오류 의심 · 수량 부호만 쓸 것」은 **거꾸로**였다 — 금액이 정규장 보도와 일치한다.
+        W.append("ℹ 현물 외인 주식 수(%+d)·금액(%s) 부호 갈림 — 종목 구성 차이(싼 종목 매도·비싼 종목 매수 등). 방향은 **금액** 기준"
+                 % (sf["qty"], _eok(sf["amt"])))
     if st.get("live") and fp.get("fut_path"):
         try:
             lag = _hm(st["last_bar"]) - _hm(fp["fut_path"][-1]["t"])
@@ -717,7 +737,7 @@ def _summary(st, new, ai):
     L.append("옵션 외인(%s) — 먼스리 콜 %s 풋 %s (콜−풋 %s, Δ10 %s) · 위클리[%s] 콜 %s 풋 %s (콜−풋 %s) · 현물 외인 %s" % (
         f.get("unit", "—"), f["mon_call"], f["mon_put"], cp(f["mon_call"], f["mon_put"]),
         d10(cp(f["mon_call"], f["mon_put"]), cp(f["mon_call_10"], f["mon_put_10"])),
-        f.get("wk_why", "—"), f["wk_call"], f["wk_put"], cp(f["wk_call"], f["wk_put"]), f["spot"]))
+        f.get("wk_why", "—"), f["wk_call"], f["wk_put"], cp(f["wk_call"], f["wk_put"]), _eok(f["spot"]) if f["spot"] is not None else None))
     L.extend(_render_foreign(st.get("foreign")))
     L.append("")
     L.append("맥점 위 %s · 아래 %s · 벽 %s" % (st["levels"]["above"], st["levels"]["below"], st["walls"]))
