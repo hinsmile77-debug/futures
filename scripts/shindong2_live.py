@@ -726,6 +726,48 @@ def parse_vs_main_line(comment):
     return None, None
 
 
+def manage_label(rec):
+    """manage 기록의 표기 — 대상이 기록되기 전(10-28 이전) 기록은 「대상 미기록」(소급 추정하지 않는다)."""
+    on = rec.get("on")
+    if on == "position":
+        return "**보유 관리**"
+    if on == "pending":
+        pe = rec.get("pending_entry")
+        return "**대기 주문 수정**(미체결 · 진입 %s 대기)" % (pe if pe is not None else "시장가")
+    if on == "미측정":
+        return "**관리**(대상 미측정)"
+    return "**관리**(대상 미기록)"
+
+
+def manage_target(day, log, now=None, cs=None):
+    """[725차 후속10] manage 가 고치는 대상 — (on, pending_entry). on = position | pending | none | 미측정.
+    2026-10-28 12:34 manage 는 미체결 11:03 계획(932.9 대기)의 목표를 고친 것인데, 기록에 대상이 없어 문서가
+    「진입 시장가 · 손절 929.5 · 청산 950」 — 보유 관리처럼 읽혔다. 엔진(simulate_ai)은 pos or pend 에 적용하므로 채점은 정상.
+    재생 기준은 완결 봉까지 — 방금 쓴 plan(효력 다음 분)이 아직 봉에 안 닿았으면 그 plan 을 대기로 본다."""
+    now = now or _dt.datetime.now()
+    if cs is None:
+        try:
+            import ladder_data as L
+            live = L.is_live(day, now)
+            cs, _src = L.candles(day, live)
+            cs = cs[:-1] if live and cs else cs
+        except Exception:                                # noqa: BLE001 — 봉을 못 읽으면 판정하지 않는다(미측정)
+            return "미측정", None
+    ai = simulate_ai(day, cs, log, live=True)
+    if any(t.get("open") for t in ai["trades"]):
+        return "position", None
+    if ai.get("pending"):
+        return "pending", ai["pending"].get("entry")
+    last_bar = cs[-1][0] if cs else "08:44"
+    for r in reversed(log):                              # 봉에 아직 안 닿은 최신 결정 기록
+        if r.get("backfill") or (r.get("variant") or "live") != "live" or r.get("action") not in ("plan", "stand", "exit"):
+            continue
+        if r["ts"][:10] == day and r["ts"][11:16] >= last_bar and r.get("action") == "plan" and r.get("dir") in ("매수", "매도"):
+            return "pending", r.get("entry")
+        break
+    return "none", None
+
+
 def record(day, phase, action, direction, entry, stop, target, comment, now=None, variant="live", lessons=None, scenarios=None,
            vs_main=None, vs_why=None, strategy=None):
     now = now or _dt.datetime.now()
@@ -740,9 +782,18 @@ def record(day, phase, action, direction, entry, stop, target, comment, now=None
     if variant == "legacy" and (phase not in ("overnight", "premarket") or action not in ("plan", "stand")):
         raise SystemExit("legacy(기존방식 섀도)는 overnight/premarket 의 plan·stand 만 — 장중 관리는 live 하나다")
     log = load_ai_log(day)
+    on = pend_entry = None
+    if action == "manage" and variant == "live":         # [725차 후속10] 대상(보유·대기)을 기록 — 없으면 manage 가 아니다
+        on, pend_entry = manage_target(day, log, now)
+        if on == "none":
+            raise SystemExit("manage 대상 없음 — 재량 보유도 미체결 대기 계획도 없다. 새 계획은 plan, 판단 기록은 note 로")
     rid = "%s-%02d" % (now.strftime("%H%M%S"), len(log) + 1)
     rec = dict(id=rid, ts=now.isoformat(timespec="seconds"), date=day, phase=phase, action=action, dir=direction,
                entry=entry, stop=stop, target=target, comment=comment, variant=variant, lessons=sorted(set(lessons or [])))
+    if on is not None:
+        rec["on"] = on
+        if on == "pending":
+            rec["pending_entry"] = pend_entry
     if scenarios:                                        # 683차 — 확률·경로 시나리오(채점 대상). 명세 검증은 parse_spec
         import shindong2_scenario as SC
         rec["scenarios"] = dict(spec=scenarios, horizon=SC.HORIZON, items=SC.parse_spec(scenarios))
@@ -787,7 +838,9 @@ def record(day, phase, action, direction, entry, stop, target, comment, now=None
                     "> 주문 없음(절대원칙 §6). 별개 주체 「신동2-AI」 — 경쟁자는 신동 MAIN·섀도(「상대의 수」, 640차). "
                     "같은 단위(pt/계약·수수료 포함)로 채점한다.\n\n" % day)
         plan = ""
-        if direction in ("매수", "매도") or entry is not None or stop is not None or target is not None:
+        if action == "manage":                           # [725차 후속10] 진입가 없는 manage 를 「시장가」로 찍지 않는다
+            plan = " · %s · 손절 %s · 청산 %s" % (manage_label(rec), stop if stop is not None else "유지", target if target is not None else "유지")
+        elif direction in ("매수", "매도") or entry is not None or stop is not None or target is not None:
             plan = " · **%s** 진입 %s · 손절 %s · 청산 %s" % (direction or "—", entry if entry is not None else "시장가", stop, target)
         tag = " 〔기존방식 섀도 — 채점 비교용〕" if variant == "legacy" else ""
         les = (" · 레슨 " + ", ".join(rec["lessons"])) if rec["lessons"] else ""
