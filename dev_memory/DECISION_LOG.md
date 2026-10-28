@@ -2,6 +2,15 @@
 
 ---
 
+## 2026-10-28 (MW0602 670차 후속2 — 신동AI 봉 신선도: 기록 직전 `delta` · 3단계 등급 · 기록 시점 보정) — 🟢 **배포(P1–P3·P5) · P4 보류**
+
+- **계기**: 10-28 「신선도 위반 13/18」 — snapshot→record 2–5분이 구조적이고, 경고는 기록 뒤에만 떠 그 기록을 못 고쳤다. 실측 분해: moved 6(고가 갱신 · 그중 plan 2: 09:52·09:58) · lag 7(지연만, 무해) · ok 5.
+- **P1** `shindong2_live.py delta [--entry --stop --target]` — 기준 이후 봉만 읽는 경량 대조 · 결과가 새 기준(`fresh_seen.json`, snapshot 이 더 늦으면 snapshot). SKILL.md 장전·장중·보유 절차에 「record 직전 delta」.
+- **P2** `shindong2_pmethod.freshness` 등급 ok/lag/moved + `level_hit`(이 기록의 진입·손절·청산·시나리오 레벨 관통). `stale` 종전 정의는 유지 · 도입 전 행은 저장 극값으로 소급(`fresh_grade`, 레벨 관통 미측정 → moved 과소 가능). 장후 추이·brief 를 moved/lag 로 분리. ⚠ 추이 표 지표 정의가 이날부터 바뀌었다.
+- **P3** moved 면 해설 문서에 「⏱ 기록 시점 보정」 줄 자동 · 사다리 패널 「AI 생각」에 ⏱ 표기. **기록은 막지 않는다**(벽시계 원칙 유지).
+- **P4 보류(사용자 결정)** — plan 한정 되돌려보내기는 moved 비율 1–2주 관찰 뒤 판단(NEXT_TODO 670 후속, 기한 2026-11-11).
+- 회귀: `tests/test_670_shindong2_freshness_delta.py`(15건) · 신동2 관련 7파일 82건 통과(base anaconda pytest) · py310_64 실데이터 delta·pmethod 재집계(6/7/18 일치) · py37_32 패널 import 스모크.
+
 ## 2026-10-28 (MW0602 669차 후속 — MW0601 724차 후속3 이식 수령: 신동 일일 점검 §3-V 「변경 반영 검증」 루틴) — 🟢 **수령**
 
 - **수령**: `4adc97d`(원 작업 Sindong2-V4 `ec6f211b`, MW0601) fast-forward. SKILL.md rev 2026-10-28a §3-V · 수집기 §8 대장 · `tests/test_724c_change_ledger.py`.

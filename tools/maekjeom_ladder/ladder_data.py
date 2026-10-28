@@ -660,9 +660,15 @@ def plain_lines(day, cs, live, st, latest, sim):
         else:
             plan = " 관망(들어가지 않는다)"
         first = ((latest.get("comment") or "").strip().splitlines() or [""])[0][:140]
-        out["ai"] = "AI 는 %s 기준으로%s%s. 한 줄 이유: %s%s" % (
+        fr = latest.get("fresh") or {}
+        stale = ""                                   # [670차 후속 P3] 판단 근거가 기록 시점에 이미 낡았으면 그 사실을 같이 보인다
+        if fr.get("grade") == "moved" or (not fr.get("grade") and (fr.get("new_hi") or fr.get("new_lo"))):
+            bits = [s for s in (("고 %.2f" % fr["new_hi"]) if fr.get("new_hi") else "", ("저 %.2f" % fr["new_lo"]) if fr.get("new_lo") else "",
+                                ("레벨 " + ", ".join(fr["level_hit"])) if fr.get("level_hit") else "") if s]
+            stale = " ⏱ 이 판단은 %s 봉을 보고 썼다 — 기록 때(%s)는 이미 %s" % (fr.get("snap_bar"), fr.get("rec_bar"), " · ".join(bits))
+        out["ai"] = "AI 는 %s 기준으로%s%s. 한 줄 이유: %s%s%s" % (
             latest["ts"][11:16], plan, (" · " + vs + ((" — " + latest["vs_why"]) if latest.get("vs_why") else "")) if vs else "", first,
-            (" · 오늘 AI 재량 %+.2fpt" % sim["pnl"]) if sim else "")
+            (" · 오늘 AI 재량 %+.2fpt" % sim["pnl"]) if sim else "", stale)
     return out
 
 

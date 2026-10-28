@@ -244,10 +244,21 @@ def events(st):
 
 
 # ── 기록 신선도 · 피터판단 ────────────────────────────────────────────────
-def freshness(day, snap_state):
-    """record 시점 신선도 — 마지막 snapshot 완결 봉 vs 지금 완결 봉. 봉 조회 실패면 None(미측정)."""
+FRESH_LAG_BARS = 2          # 이 봉 수 이상 늦으면 「지연」 — 판단을 바꿀 사건(극값·레벨 관통)이 없으면 lag 로만 남긴다
+
+
+def freshness(day, snap_state, levels=None):
+    """record 시점 신선도 — 기준 완결 봉(마지막 snapshot 또는 `delta`) vs 지금 완결 봉. 봉 조회 실패면 rec_bar=None(미측정).
+
+    [2026-10-28 670차 후속] 등급 3단계 — 10-28 실측 「위반 13/18」 중 7건은 고·저가 그대로인 지연뿐이었다(계측 4원칙 ③):
+      ok    — 기준 이후 FRESH_LAG_BARS 미만
+      lag   — 늦었지만 그 사이 당일 고·저 갱신도, 이 기록 레벨 관통도 없다(판단 근거는 그대로)
+      moved — 그 사이 당일 고·저가 갱신됐거나 새 봉 범위가 이 기록의 레벨(levels)을 건드렸다(판단 근거가 낡았다)
+    levels = [(이름, 가격), …] — 이 기록의 진입·손절·청산·시나리오 목표/무효/이후. 기준 이전에 지나간 레벨은 세지 않는다.
+    `stale`(= lag 또는 moved)은 종전 정의 그대로 남긴다 — 2026-10-27·28 행과 이어 보기 위해서다."""
     snap_bar = (snap_state or {}).get("last_bar")
     hi0, lo0 = (snap_state or {}).get("hi"), (snap_state or {}).get("lo")
+    base = (snap_state or {}).get("base") or "snapshot"
     try:
         sys.path.insert(0, os.path.join(ROOT, "tools", "maekjeom_ladder"))
         import ladder_data as L
@@ -255,36 +266,97 @@ def freshness(day, snap_state):
         cs, _src = L.candles(day, live)
         bars = cs[:-1] if live and cs else cs
     except Exception as e:                                   # noqa: BLE001
-        return dict(snap_bar=snap_bar, rec_bar=None, why="봉 조회 실패: %s" % type(e).__name__)
+        return dict(snap_bar=snap_bar, base=base, rec_bar=None, grade="unmeasured", why="봉 조회 실패: %s" % type(e).__name__)
     if not bars:
-        return dict(snap_bar=snap_bar, rec_bar=None, why="봉 없음")
+        return dict(snap_bar=snap_bar, base=base, rec_bar=None, grade="unmeasured", why="봉 없음")
     rec_bar = bars[-1][0]
-    out = dict(snap_bar=snap_bar, rec_bar=rec_bar,
+    out = dict(snap_bar=snap_bar, base=base, rec_bar=rec_bar, px=round(bars[-1][4], 2),
                lag_bars=(_hm(rec_bar) - _hm(snap_bar)) if snap_bar else None)
+    after = [b for b in bars if _hm(b[0]) > _hm(snap_bar)] if snap_bar else []
+    nh = max((b[2] for b in after), default=None)
+    nl = min((b[3] for b in after), default=None)
+    out["after_hi"] = round(nh, 2) if nh is not None else None
+    out["after_lo"] = round(nl, 2) if nl is not None else None
     if snap_bar and hi0 is not None:
-        after = [b for b in bars if _hm(b[0]) > _hm(snap_bar)]
-        nh = max((b[2] for b in after), default=None)
-        nl = min((b[3] for b in after), default=None)
         out["new_hi"] = round(nh, 2) if nh is not None and nh > hi0 else None
         out["new_lo"] = round(nl, 2) if nl is not None and nl < lo0 else None
-    out["stale"] = bool((out.get("lag_bars") or 0) >= 2 or out.get("new_hi") or out.get("new_lo"))
+    hits = []
+    if after:
+        for name, p in levels or []:
+            if p is not None and nl <= p <= nh:
+                hits.append("%s %g" % (name, p))
+    out["level_hit"] = hits
+    out["stale"] = bool((out.get("lag_bars") or 0) >= FRESH_LAG_BARS or out.get("new_hi") or out.get("new_lo") or hits)
+    out["grade"] = "moved" if (out.get("new_hi") or out.get("new_lo") or hits) else "lag" if out["stale"] else "ok"
     return out
 
 
-def freshness_line(fr):
+def fresh_grade(fr):
+    """기록의 신선도 등급. 등급 도입 전 행(10-27·28)은 저장된 극값으로 소급 분류한다 — 레벨 관통은 그때 안 쟀으므로 moved 가 과소일 수 있다."""
     if not fr:
         return None
+    if fr.get("grade"):
+        return fr["grade"]
     if fr.get("rec_bar") is None:
-        return "⚪ 봉 신선도 미측정 — %s" % fr.get("why")
-    if not fr.get("stale"):
-        return None
+        return "unmeasured"
+    if fr.get("new_hi") or fr.get("new_lo"):
+        return "moved"
+    return "lag" if fr.get("stale") else "ok"
+
+
+def _fresh_bits(fr):
     bits = []
     if fr.get("new_hi"):
         bits.append("고 %.2f 갱신" % fr["new_hi"])
     if fr.get("new_lo"):
         bits.append("저 %.2f 갱신" % fr["new_lo"])
-    return "🔴 봉 신선도 — snapshot 완결 봉 %s · 기록 시점 완결 봉 %s(%s봉 뒤)%s — 이 기록은 그 사이 봉을 반영하지 않았을 수 있다" % (
-        fr.get("snap_bar"), fr["rec_bar"], fr.get("lag_bars"), (" · " + " · ".join(bits)) if bits else "")
+    if fr.get("level_hit"):
+        bits.append("레벨 관통 " + ", ".join(fr["level_hit"]))
+    return bits
+
+
+def freshness_line(fr):
+    if not fr:
+        return None
+    g = fresh_grade(fr)
+    if g == "unmeasured":
+        return "⚪ 봉 신선도 미측정 — %s" % fr.get("why")
+    if g == "ok":
+        return None
+    src = "delta" if fr.get("base") == "delta" else "snapshot"
+    if g == "lag":
+        return "🟡 봉 신선도(지연만) — %s 완결 봉 %s · 기록 시점 %s(%s봉 뒤) · 고·저 갱신·레벨 관통 없음" % (
+            src, fr.get("snap_bar"), fr["rec_bar"], fr.get("lag_bars"))
+    return "🔴 봉 신선도 — %s 완결 봉 %s · 기록 시점 완결 봉 %s(%s봉 뒤)%s — 이 기록은 그 사이 봉을 반영하지 않았을 수 있다" % (
+        src, fr.get("snap_bar"), fr["rec_bar"], fr.get("lag_bars"), (" · " + " · ".join(_fresh_bits(fr))) if _fresh_bits(fr) else "")
+
+
+def correction_line(fr):
+    """[670차 후속 P3] moved 기록에 붙는 「기록 시점 보정」 — 기록은 막지 않고(벽시계 원칙) 그 시점의 사실을 함께 남긴다."""
+    if fresh_grade(fr) != "moved":
+        return None
+    return "⏱ 기록 시점 보정: 완결 봉 %s · 현재가 %s · %s" % (fr["rec_bar"], fr.get("px"), " · ".join(_fresh_bits(fr)))
+
+
+def delta_lines(fr, levels=None):
+    """[670차 후속 P1] `delta` 출력 — 기록 직전 몇 줄. snapshot 을 다시 부르지 않고 그 사이 봉만 본다."""
+    g = fresh_grade(fr)
+    if g == "unmeasured":
+        return ["⚪ delta 미측정 — %s" % fr.get("why")]
+    L = ["## 신동2 delta — 기준 %s 완결 봉 %s → 지금 %s (%s봉 뒤) · 현재가 %s" % (
+        "delta" if fr.get("base") == "delta" else "snapshot", fr.get("snap_bar"), fr["rec_bar"], fr.get("lag_bars"), fr.get("px"))]
+    if fr.get("after_hi") is not None:
+        L.append("- 그 사이 범위 %s–%s%s" % (fr["after_lo"], fr["after_hi"],
+                                          (" · " + " · ".join(_fresh_bits(fr))) if _fresh_bits(fr) else " · 당일 고·저 갱신 없음"))
+    else:
+        L.append("- 그 사이 새 봉 없음")
+    if levels:
+        L.append("- 대조 레벨: " + ", ".join("%s %g" % (n, p) for n, p in levels if p is not None))
+    L.append("- 판정: %s" % {"ok": "✅ 신선 — 그대로 기록해도 된다",
+                             "lag": "🟡 지연만 — 근거 레벨은 그대로다. 숫자만 현재가로 맞춰 기록",
+                             "moved": "🔴 움직였다 — 위 갱신·관통을 해설과 진입·손절·청산·시나리오에 반영한 뒤 기록"}[g])
+    L.append("- 이 delta 가 새 기준이 된다(다음 record 의 신선도는 %s 봉부터 잰다)" % fr["rec_bar"])
+    return L
 
 
 VS_PARSE = {"동의": "agree", "반대": "disagree", "기권": "abstain", "agree": "agree", "disagree": "disagree", "abstain": "abstain"}
@@ -314,8 +386,10 @@ def brief_lines(day):
         bx = " · ".join("@%s B2 %g–%g %s" % (T, b["B2"]["box"][0], b["B2"]["box"][1], "유지" if b["B2"]["held"] else "이탈")
                         for T, b in sorted((r.get("box") or {}).items()))
         pv = " · ".join("%s %s" % (x["hm"], x["result"]) for x in r.get("peter_views") or []) or "없음"
-        L.append("- 직전 채점 %s — 상자 %s · 피터 관점 %s · 신선도 위반 %s/%s" % (
-            r["date"], bx or "—", pv, (r.get("fresh") or {}).get("stale", 0), (r.get("fresh") or {}).get("n", 0)))
+        f = r.get("fresh") or {}
+        fs = ("🔴moved %s · 🟡lag %s / %s" % (f["moved"], f.get("lag", 0), f.get("n", 0)) if "moved" in f
+              else "위반 %s/%s" % (f.get("stale", 0), f.get("n", 0)))
+        L.append("- 직전 채점 %s — 상자 %s · 피터 관점 %s · 신선도 %s (기록 직전 `delta` 로 줄인다)" % (r["date"], bx or "—", pv, fs))
     else:
         L.append("- 직전 채점 없음 — 장후 `pmethod` 가 아직 돌지 않았다(미기록 ≠ 문제없음)")
     pdays = sorted(f[:10] for f in os.listdir(RAW_DIR) if f.endswith(".jsonl") and f[:10] < day) if os.path.isdir(RAW_DIR) else []
@@ -388,8 +462,11 @@ def postmarket(day, now=None):
     # 신동AI 기록 신선도 · 피터판단
     log = SL.load_ai_log(day)
     live = [r for r in log if (r.get("variant") or "live") == "live"]
-    row["fresh"] = dict(n=sum(1 for r in live if r.get("fresh")), stale=sum(1 for r in live if (r.get("fresh") or {}).get("stale")),
-                        unmeasured=sum(1 for r in live if "fresh" not in r))
+    gs = [fresh_grade(r.get("fresh")) for r in live if r.get("fresh")]
+    row["fresh"] = dict(n=len(gs), stale=sum(1 for r in live if (r.get("fresh") or {}).get("stale")),
+                        moved=gs.count("moved"), lag=gs.count("lag"),                      # [670차 후속] 3단계 — stale = moved + lag
+                        delta_base=sum(1 for r in live if (r.get("fresh") or {}).get("base") == "delta"),
+                        unmeasured=sum(1 for r in live if "fresh" not in r) + gs.count("unmeasured"))
     vp = [r.get("vs_peter") for r in live if r.get("vs_peter")]
     row["vs_peter"] = dict(agree=vp.count("agree"), disagree=vp.count("disagree"), abstain=vp.count("abstain"))
     os.makedirs(PDOC_DIR, exist_ok=True)
@@ -436,9 +513,12 @@ def render_trend(rows, cfg):
         va, vd, _pct(va, va + vd),
         " · 🔴 80%% 초과 — 이 창의 「피터 대비 능가」 판정은 무효(복사본)" if va + vd and va > 0.8 * (va + vd) else ""))
     fr = [r.get("fresh") or {} for r in rows]
-    L.append("- 신동AI 기록 신선도 위반 %d / 측정 %d (미측정 %d)" % (sum(x.get("stale", 0) for x in fr), sum(x.get("n", 0) for x in fr),
-                                                         sum(x.get("unmeasured", 0) for x in fr)))
-    L += ["", "## 일별", "", "| 날짜 | 상자@09:10 B2 | 유지 | 상자@09:30 B2 | 유지 | P맥점 반응 | 피터 관점 | 신선도 위반 | 피터판단 동/반/기 |",
+    L.append("- 신동AI 기록 신선도 🔴moved %d · 🟡lag %d / 측정 %d (미측정 %d · delta 기준 %d)" % (
+        sum(x.get("moved", 0) for x in fr), sum(x.get("lag", 0) for x in fr), sum(x.get("n", 0) for x in fr),
+        sum(x.get("unmeasured", 0) for x in fr), sum(x.get("delta_base", 0) for x in fr)))
+    L.append("  · ⚠ 2026-10-28 장후부터 3단계(moved/lag) — 그 전 행은 저장된 극값으로 소급 분류했고 레벨 관통은 안 쟀다(moved 과소 가능). "
+             "P4(plan 되돌려보내기)는 moved 비율 1–2주 관찰 뒤 판단")
+    L += ["", "## 일별", "", "| 날짜 | 상자@09:10 B2 | 유지 | 상자@09:30 B2 | 유지 | P맥점 반응 | 피터 관점 | 신선도 moved/lag/측정 | 피터판단 동/반/기 |",
           "|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
         cells = []
@@ -454,7 +534,10 @@ def render_trend(rows, cfg):
         cells.append(" ".join("%s %s" % (x["hm"], x["result"]) for x in r.get("peter_views") or []) or
                      ("—" if r.get("peter_source") else "미측정"))
         f = r.get("fresh") or {}
-        cells.append("%d/%d" % (f.get("stale", 0), f.get("n", 0)))
+        if "moved" in f:
+            cells.append("%d/%d/%d" % (f["moved"], f.get("lag", 0), f.get("n", 0)))
+        else:                                                      # 3단계 도입 전 저장 행 — 종전 위반 수만 있다
+            cells.append("위반 %d/%d" % (f.get("stale", 0), f.get("n", 0)))
         v = r.get("vs_peter") or {}
         cells.append("%d/%d/%d" % (v.get("agree", 0), v.get("disagree", 0), v.get("abstain", 0)))
         L.append("| %s | %s |" % (r["date"], " | ".join(cells)))

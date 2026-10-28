@@ -8,6 +8,7 @@
     python scripts/shindong2_live.py record --phase intraday --action plan --dir 매도 \\
            --entry 1104 --stop 1108.5 --target 1098.2 --comment-file c.md   # 재량 제안 기록(시각 = 지금)
     python scripts/shindong2_live.py score [--date D]        # 재량 제안 채점(장중이면 잠정)
+    python scripts/shindong2_live.py delta [--entry X --stop Y --target Z]   # [670차 후속] 기록 직전 경량 대조 — 기준 이후 봉·극값·레벨 관통
 
 [672차 학습 사이클 — scripts/shindong2_learn.py]
     python scripts/shindong2_live.py evaluate [--date D]     # 그날 계획(익일계획·장전계획, live/legacy)을 단독 시뮬 — 적중·손익·MFE/MAE·포착률
@@ -22,6 +23,7 @@
                                  events.jsonl    이벤트(키 단위 1회)
                                  ai_log.jsonl    재량 기록(append-only — 고치지 않는다)
                                  ai_latest.json  사다리 「신동2 해설」 패널이 읽는 최신 해설
+                                 fresh_seen.json 마지막 `delta` 기준 봉(신선도 기준 — snapshot 보다 늦을 때만 쓴다)
                                  ai_score.json   채점 결과
 문서 (커밋 대상)
     docs/미륵이고도화3/신동2/live/신동2_해설_<PC>-YYYYMMDD.md   기록마다 덧붙인다
@@ -638,6 +640,46 @@ def parse_vs_main_line(comment):
     return None, None
 
 
+def fresh_base(day):
+    """[670차 후속 P1] 신선도 기준 — 마지막 snapshot(state.json)과 마지막 `delta`(fresh_seen.json) 중 완결 봉이 늦은 쪽.
+    같은 봉이면 snapshot(정보가 더 많다). 둘 다 없으면 None — freshness 가 기준 없음으로 잰다."""
+    d = day_dir(day)
+    st = _read_json(os.path.join(d, "state.json")) or {}
+    seen = _read_json(os.path.join(d, "fresh_seen.json")) or {}
+    if seen.get("last_bar") and (not st.get("last_bar") or _hm(seen["last_bar"]) > _hm(st["last_bar"])):
+        return seen
+    return st or None
+
+
+def record_levels(entry, stop, target, scen_items=None):
+    """신선도 레벨 관통 대조용 — 이 기록의 진입·손절·청산과 시나리오 목표·무효·이후."""
+    lv = [("진입", entry), ("손절", stop), ("청산", target)]
+    for i in scen_items or []:
+        lv += [("%s목표" % i["key"], i.get("target")), ("%s무효" % i["key"], i.get("invalid")), ("%s이후" % i["key"], i.get("then"))]
+    return [(n, float(p)) for n, p in lv if p is not None]
+
+
+def cmd_delta(day, entry=None, stop=None, target=None, now=None):
+    """[670차 후속 P1] 기록 직전 경량 대조 — snapshot 을 다시 부르지 않고 기준 이후 봉만 본다.
+    대조 레벨: 명령행 진입·손절·청산(이번에 적으려는 값) + 직전 live 기록의 레벨·시나리오. 결과가 새 기준(fresh_seen.json)이 된다."""
+    import shindong2_pmethod as PM
+    base = fresh_base(day)
+    log = [r for r in load_ai_log(day) if (r.get("variant") or "live") == "live"]
+    prev = log[-1] if log else {}
+    levels = record_levels(entry, stop, target)
+    levels += [("직전" + n, p) for n, p in record_levels(prev.get("entry"), prev.get("stop"), prev.get("target"),
+                                                       (prev.get("scenarios") or {}).get("items"))]
+    fr = PM.freshness(day, base, levels)
+    if fr.get("rec_bar") is not None:
+        hs = [x for x in ((base or {}).get("hi"), fr.get("after_hi")) if x is not None]
+        ls = [x for x in ((base or {}).get("lo"), fr.get("after_lo")) if x is not None]
+        hi, lo = (max(hs) if hs else None), (min(ls) if ls else None)
+        _atomic_json(os.path.join(day_dir(day), "fresh_seen.json"),
+                     dict(base="delta", last_bar=fr["rec_bar"], hi=hi, lo=lo, px=fr.get("px"),
+                          at=(now or _dt.datetime.now()).isoformat(timespec="seconds"), from_bar=fr.get("snap_bar")))
+    return fr, levels
+
+
 def record(day, phase, action, direction, entry, stop, target, comment, now=None, variant="live", lessons=None, scenarios=None,
            vs_main=None, vs_why=None, strategy=None):
     now = now or _dt.datetime.now()
@@ -675,14 +717,18 @@ def record(day, phase, action, direction, entry, stop, target, comment, now=None
     if variant == "live" and phase in ("premarket", "intraday", "position"):
         # [2026-10-27 · 피터의 방법] 봉 신선도 — 10-26 09:09:02 기록이 완결 봉 09:03 snapshot 위에서 쓰여 868.06 스파이크를 놓쳤다.
         #   기록은 막지 않는다(벽시계 원칙) — 사실만 남긴다. 조회 실패는 미측정(why).
+        #   [670차 후속] 기준은 snapshot 또는 그 뒤의 `delta` 중 늦은 것 · 이 기록의 레벨 관통까지 본다(moved/lag/ok).
         import shindong2_pmethod as PM
         try:
-            rec["fresh"] = PM.freshness(day, _read_json(os.path.join(day_dir(day), "state.json")))
+            rec["fresh"] = PM.freshness(day, fresh_base(day), record_levels(entry, stop, target, (rec.get("scenarios") or {}).get("items")))
         except Exception as e:                           # noqa: BLE001
-            rec["fresh"] = dict(rec_bar=None, why="%s" % type(e).__name__)
+            rec["fresh"] = dict(rec_bar=None, grade="unmeasured", why="%s" % type(e).__name__)
         fr_line = PM.freshness_line(rec["fresh"])
         if fr_line:
             print(fr_line)
+            cl = PM.correction_line(rec["fresh"])        # P3 — moved 면 기록 시점의 사실을 문서에 함께 남긴다(기록은 막지 않는다)
+            if cl:
+                fr_line += "\n> " + cl
     if variant == "live":
         import shindong2_pmethod as PM
         vp, vpw = PM.parse_vs_peter_line(comment)       # 피터를 두 번째 상대로 — 「피터판단: 반대 | 이유」
@@ -892,6 +938,11 @@ def main(argv=None):
     for c in ("snapshot", "poll", "score"):
         s = sub.add_parser(c)
         s.add_argument("--date", default=_dt.date.today().isoformat())
+    dl = sub.add_parser("delta", help="[670차 후속] 기록 직전 경량 대조 — 기준(snapshot/delta) 이후 봉만 · 새 기준이 된다")
+    dl.add_argument("--date", default=_dt.date.today().isoformat())
+    dl.add_argument("--entry", type=float)
+    dl.add_argument("--stop", type=float)
+    dl.add_argument("--target", type=float)
     r = sub.add_parser("record")
     r.add_argument("--date", default=_dt.date.today().isoformat())
     r.add_argument("--for-date", help="장후에 다음 거래일 계획을 그 날짜 파일로 미리 적는다")
@@ -974,6 +1025,11 @@ def main(argv=None):
         return 0
     if a.cmd in ("evaluate", "feedback", "lesson", "strategy", "trend", "brief"):
         return _learn_cmd(a)
+    if a.cmd == "delta":
+        import shindong2_pmethod as PM
+        fr, levels = cmd_delta(a.date, a.entry, a.stop, a.target)
+        print("\n".join(PM.delta_lines(fr, levels)))
+        return 0
     if a.cmd == "gate":
         try:
             from utils.time_utils import is_trading_day
