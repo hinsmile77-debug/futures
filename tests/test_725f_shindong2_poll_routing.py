@@ -94,3 +94,51 @@ def test_runner_wires_defer_and_ack():
     assert "if ($p -eq 11)" in s and s.count("Run-Live @('poll-ack')") == 2
     assert "$Phase -eq 'poll' -and $rc -eq 0" in s       # position 성공 뒤에만 ack
     assert "if (-not $DryRun) { $null = Run-Live @('poll-ack') }" in s
+
+
+# ── [725차 후속7] 상대(MAIN) 진입·청산 이벤트 ─────────────────────────────────
+def _rv(*trades):
+    return dict(present=True, main=dict(trades=list(trades)))
+
+
+def _mt(status="CLOSED", exit_t="10:11", net=5.37, stop_now=None):
+    return dict(rule="R3", side=1, side_ko="매수", entry_t="09:46", entry_px=919.86, stop_init=916.16, stop_now=stop_now,
+                status=status, exit_t=exit_t, reason_ko="1차/트레일" if exit_t else None,
+                net_pt=net if status == "CLOSED" else None, key="R3|09:46|+1")
+
+
+def test_main_trade_becomes_entry_and_exit_events_keyed_once():
+    ev = M.main_events(_rv(_mt()))                       # 2026-10-28 MAIN R3 09:46 → 10:11 +5.37 (종전엔 이벤트 0건)
+    assert [(e["kind"], e["key"]) for e in ev] == [("상대 진입", "main:entry:R3|09:46|+1"), ("상대 청산", "main:exit:R3|09:46|+1")]
+    assert "@919.86" in ev[0]["text"] and "+5.37pt" in ev[1]["text"]
+
+
+def test_main_open_with_first_leg_out_is_partial_and_open_has_entry_only():
+    part = M.main_events(_rv(_mt(status="OPEN", exit_t="09:49", stop_now=920.56)))
+    assert [e["kind"] for e in part] == ["상대 진입", "상대 1차 청산"] and "920.56" in part[1]["text"]
+    assert [e["kind"] for e in M.main_events(_rv(_mt(status="OPEN", exit_t=None)))] == ["상대 진입"]
+
+
+def test_main_unmeasured_gives_no_events_and_net_none_is_not_zero():
+    assert M.main_events(None) == [] and M.main_events(dict(present=False, why="x")) == []
+    ev = M.main_events(_rv(_mt(net=None)))
+    assert "손익 미측정" in ev[1]["text"]                 # 계측 4원칙 ② — 미측정 ≠ 0
+
+
+def test_main_events_route_position_when_engaged_else_defer():
+    ev = M.main_events(_rv(_mt()))
+    hold = dict(trades=[dict(entry_t="09:50", open=True, pnl=1.0)], pending=None, pnl=0)
+    assert M.poll_route(ev, hold)[0] == M.POLL_POSITION
+    rc, why = M.poll_route(ev, _NO_AI)
+    assert rc == M.POLL_DEFER and "MAIN" in why
+
+
+def test_main_events_from_real_shindong_db_1028():
+    import shindong2_rival as RV
+    if not os.path.exists(RV.SD_DB):
+        pytest.skip("shindong.db 없음(다른 PC)")
+    rv = RV.read_day("2026-10-28")
+    if not rv.get("present"):
+        pytest.skip("10-28 MAIN 행 없음")
+    keys = [e["key"] for e in M.main_events(rv)]
+    assert "main:entry:R3|09:46|+1" in keys and "main:exit:R3|09:46|+1" in keys

@@ -499,6 +499,32 @@ def detect_events(st, ai_trades=None):
     if st.get("p_layer") and not st["p_layer"].get("why"):           # [2026-10-27] 피터 관점·매매 수신 · 상자 고정·이탈(섀도)
         import shindong2_pmethod as PM
         ev.extend(PM.events(st))
+    ev.extend(main_events(st.get("rival")))
+    return ev
+
+
+def main_events(rv):
+    """[725차 후속7] 상대(신동 MAIN) 진입·1차 청산·청산 → 이벤트. 2026-10-28 MAIN R3 09:46 진입이 events.jsonl 에
+    없었다 — 이벤트는 사료(신동2 기본·P 계열)·피터·상자·AI 뿐이라 「상대의 수」가 바뀌어도 poll 이 몰랐다.
+    키는 shindong.db trade_key(「R3|09:46|+1」) — 같은 거래는 한 번만. 섀도는 snapshot 에만 둔다(하루 수십 건)."""
+    if not rv or not rv.get("present"):
+        return []
+    ev = []
+    for t in (rv.get("main") or {}).get("trades") or []:
+        k = t.get("key") or "%s|%s|%+d" % (t["rule"], t["entry_t"], t["side"])
+        ev.append(dict(key="main:entry:%s" % k, t=t["entry_t"], kind="상대 진입",
+                       text="MAIN %s %s %s @%.2f · 손절 %s" % (t["rule"], t["entry_t"], t["side_ko"], t["entry_px"],
+                                                              t.get("stop_init") if t.get("stop_init") is not None else "—")))
+        if t["status"] == "CLOSED":
+            ev.append(dict(key="main:exit:%s" % k, t=t.get("exit_t") or t["entry_t"], kind="상대 청산",
+                           text="MAIN %s %s %s 청산 %s %s %s" % (t["rule"], t["entry_t"], t["side_ko"], t.get("exit_t") or "—",
+                                                                 t.get("reason_ko") or "—",
+                                                                 "%+.2fpt" % t["net_pt"] if t.get("net_pt") is not None else "손익 미측정")))
+        elif t.get("exit_t"):                                       # 2계약 중 1차만 나갔다 — 나머지 보유
+            ev.append(dict(key="main:part:%s" % k, t=t["exit_t"], kind="상대 1차 청산",
+                           text="MAIN %s %s %s 1차 청산 %s %s · 나머지 보유 손절 %s" % (
+                               t["rule"], t["entry_t"], t["side_ko"], t["exit_t"], t.get("reason_ko") or "—",
+                               t.get("stop_now") if t.get("stop_now") is not None else "—")))
     return ev
 
 
@@ -557,6 +583,8 @@ def poll_route(fresh, ai):
         return POLL_POSITION, "재량 보유·대기 또는 재량 이벤트 → position"
     if all(e["key"].startswith(RELIC_KEY_PREFIXES) for e in fresh):
         return POLL_DEFER, "사료 대조군 이벤트뿐 · 재량 보유·대기 없음 → 호출 안 함"
+    if any(e["key"].startswith("main:") for e in fresh):        # [725차 후속7] 겨룰 내 수가 없다 — 판단은 다음 intraday 가
+        return POLL_DEFER, "상대(MAIN) 이벤트 · 재량 보유·대기 없음 → 다음 intraday 「이월 이벤트」로"
     return POLL_DEFER, "재량 보유·대기 없음 → 다음 intraday 로 미룸"
 
 
