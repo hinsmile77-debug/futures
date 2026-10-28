@@ -119,6 +119,8 @@ def _heartbeat(meta, n_new):
         'cycle': meta.get('cycle'),
         # [2026-10-16] X 타임라인 응답의 한도 헤더(ratelimit_hook.js). 없으면 None — 미측정이지 0 이 아니다.
         'rl': meta.get('rl') if isinstance(meta.get('rl'), dict) else None,
+        # [2026-10-28] X 탭 계수(확장 1.2.0+). peter_pinned>1 = 고정 탭 복원 중복. 없으면 None — 미측정.
+        'tabs': meta.get('tabs') if isinstance(meta.get('tabs'), dict) else None,
         'posts': _stat['posts'],
         'new_total': _stat['new_total'],
         'new_last': n_new,
@@ -157,6 +159,22 @@ def _log_rate(rl):
         _fmt_reset(rl.get('reset')), rl.get('phase'), rl.get('n_page')))
 
 
+def _log_tabs(tabs):
+    """[2026-10-28] X 탭 계수가 바뀔 때만 `TABS x=2 x_pinned=2 peter_pinned=2` 한 줄.
+
+    10-28 08:45–09:41 X 고정 탭이 둘이었으나 어떤 로그에도 남지 않아 사람 눈으로만 발견됐다.
+    """
+    if not isinstance(tabs, dict):
+        return
+    key = (tabs.get('x'), tabs.get('x_pinned'), tabs.get('peter_pinned'))
+    if key == _stat.get('tabs_key'):
+        return
+    _stat['tabs_key'] = key
+    _log('TABS x=%s x_pinned=%s peter_pinned=%s%s' % (
+        key[0], key[1], key[2],
+        ' — 고정 피터 탭 중복' if isinstance(key[2], int) and key[2] > 1 else ''))
+
+
 def ingest(payload):
     tweets = payload.get('tweets') or []
     meta = payload.get('meta') or {}
@@ -191,6 +209,7 @@ def ingest(payload):
         # 오류 문구는 본문 칸 innerText 라 여러 줄이다(Top/Latest/…) — 한 줄로 접어 로그 한 건 = 한 줄로 둔다
         _log('PAGE_ERROR %s' % ' '.join(str(meta.get('error')).split())[:80])
     _log_rate(meta.get('rl'))
+    _log_tabs(meta.get('tabs'))
     off = bool(meta.get('off_search'))
     if off != _stat.get('off_search'):          # 상태가 바뀔 때만 적는다 — 30초마다 도배하지 않는다
         _stat['off_search'] = off

@@ -77,6 +77,14 @@ function isOurUrl(u) {
       && /since_time(%3A|:)\d+/.test(u);
 }
 
+// 피터 페이지(우리 검색·그의 프로필·트윗 상세)인가. 고정 탭 거두기(③)와 탭 계수에 쓴다.
+// 사람이 피터 페이지를 손으로 **고정**해 둘 일은 드물다 — 고정 + 피터 = 우리 탭이었던 것.
+function isPeterUrl(u) {
+  u = u || "";
+  return u.indexOf("https://x.com/") === 0
+      && (/from(%3A|:)PeterLeejoa/i.test(u) || /^https:\/\/x\.com\/PeterLeejoa(\/|\?|#|$)/i.test(u));
+}
+
 // 지금 세션의 검색 페이지에 제대로 서 있는가
 function onStation(t) {
   const want = searchUrl();
@@ -108,23 +116,33 @@ async function ourTab() {
   for (const t of await chrome.tabs.query({ url: "https://x.com/search*" })) {
     if (onStation(t)) { await setTabId(t.id); return t; }
   }
+  // ③ [2026-10-28] Chrome 은 시작 설정과 무관하게 **고정 탭을 복원한다.** 어제 그 탭이 검색이 아니라
+  //    트윗 상세(`/PeterLeejoa/status/…`)에 서 있었으면 ①(id 는 재시작으로 바뀜)·②(search* 만 조회)가
+  //    못 알아보고 새로 만들어 **X 고정 탭이 둘**이 됐다(10-27 19:21 클릭 → 10-28 08:44 복원 · 08:45 신규).
+  //    고정된 피터 탭을 거두어 쓴다 — ensureTab() 이 제자리로 되돌린다.
+  for (const t of await chrome.tabs.query({ pinned: true, url: "https://x.com/*" })) {
+    if (isPeterUrl(t.url || t.pendingUrl)) { await setTabId(t.id); return t; }
+  }
   return null;
 }
 
 // 우리 것이 확실한 여분 탭을 거둔다. 사람이 연 검색 탭(`since_time` 없음)은 건드리지 않는다.
+// [2026-10-28] 고정된 피터 탭(③과 같은 표식)도 여분이면 거둔다 — 복원이 두 장을 살린 경우.
 async function reapStrays() {
   const keep = await getTabId();
-  for (const t of await chrome.tabs.query({ url: "https://x.com/search*" })) {
+  for (const t of await chrome.tabs.query({ url: "https://x.com/*" })) {
     if (t.id === keep) continue;
-    if (!isOurUrl(t.url || t.pendingUrl || "")) continue;
+    const u = t.url || t.pendingUrl || "";
+    if (!isOurUrl(u) && !(t.pinned && isPeterUrl(u))) continue;
     try { await chrome.tabs.remove(t.id); } catch (e) { /* 이미 닫혔다 */ }
   }
 }
 
 async function ensureTab() {
   if (!inSession()) return null;
-  await reapStrays();
+  // 거두기(③)가 정리보다 먼저다 — 먼저 정리하면 복원된 어제 검색 탭을 닫고 새로 만든다(헛 교체)
   let t = await ourTab();
+  await reapStrays();
   if (!t) {
     t = await chrome.tabs.create({ url: searchUrl().url, active: false, pinned: true });
     await setTabId(t.id);
@@ -160,6 +178,50 @@ chrome.runtime.onInstalled.addListener(arm);
 chrome.runtime.onStartup.addListener(arm);
 chrome.alarms.onAlarm.addListener((a) => { if (a.name === "peter2") tick(); });
 
+// [2026-10-28] 수집 탭 안에서 사람이 누르면 그 탭이 딴 데로 빠진다(실측 10-20 12:18 · 10-21 08:56 ·
+//   10-27 19:21 · 10-28 09:41). 장중엔 이탈 신고로 되돌아왔지만 **장 밖엔 아무도 안 되돌려**
+//   그 상태로 밤새 종료 → 다음 날 Chrome 이 그 고정 탭을 복원했다(→ ourTab ③).
+//   ⇒ 누른 페이지는 **일반 탭으로 따로 열어 주고**, 수집 탭은 장 시간과 무관하게 검색으로 되돌린다.
+//   `/home` 은 사람이 아니라 X SPA 가 스스로 미는 주소다(10-08) — 새 탭을 만들지 않는다(증식 금지).
+const HANDOFF_MIN_MS = 3000;     // 같은 클릭의 연쇄 갱신(주소가 두세 번 바뀐다)을 한 번으로
+const RETURN_MIN_MS = 30000;     // 되돌리기도 검색 한도를 먹는다 — X 가 계속 밀어도 30초에 한 번만
+let lastHandoff = 0;
+let lastReturn = 0;
+
+function isHandoffUrl(u) {
+  if ((u || "").indexOf("https://x.com/") !== 0) return false;
+  const path = u.slice("https://x.com".length).split(/[?#]/)[0];
+  return !(path === "/" || path === "" || path.indexOf("/home") === 0 || path.indexOf("/search") === 0);
+}
+
+chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
+  if (!info.url) return;
+  if (tabId !== await getTabId()) return;
+  if (!tab || !tab.pinned) return;          // 사람이 고정을 풀었다 — 그 탭은 사람 것이다
+  if (onStation(tab)) return;               // 우리가 되돌린 결과(또는 정상 이동)
+  const now = Date.now();
+  if (isHandoffUrl(info.url) && now - lastHandoff >= HANDOFF_MIN_MS) {
+    lastHandoff = now;
+    // 일반(비고정) 탭이라 reapStrays·ourTab ③ 의 대상이 아니다 — 사람이 닫을 때까지 그대로 둔다
+    try { await chrome.tabs.create({ url: info.url, active: true, pinned: false, index: tab.index + 1 }); }
+    catch (e) { /* 창이 닫히는 중 */ }
+  }
+  if (now - lastReturn < RETURN_MIN_MS) return;   // 나머지는 다음 틱의 ensureTab() 이 맡는다
+  lastReturn = now;
+  try { await chrome.tabs.update(tabId, { url: searchUrl().url }); } catch (e) { await setTabId(null); }
+});
+
+// [2026-10-28] X 탭 계수 — 하트비트에 실어 「X 가 두 개 떴다」를 사람 눈이 아니라 점검이 잡게 한다.
+//   peter_pinned 가 1 을 넘으면 복원 중복이다. 조회 실패는 null(미측정 ≠ 0, 계측 4원칙 ②).
+async function tabCensus() {
+  try {
+    const xs = await chrome.tabs.query({ url: "https://x.com/*" });
+    return { x: xs.length,
+             x_pinned: xs.filter((t) => t.pinned).length,
+             peter_pinned: xs.filter((t) => t.pinned && isPeterUrl(t.url || t.pendingUrl)).length };
+  } catch (e) { return null; }
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || msg.type !== "peter2_tweets") return false;
   (async () => {
@@ -176,11 +238,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         await chrome.storage.local.set({ backoffUntil: now + backoffMsFor(msg.meta, now) });
       }
     }
+    const meta = Object.assign({}, msg.meta || {}, { tabs: await tabCensus() });
     try {
       const r = await fetch(RECEIVER, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tweets: msg.tweets || [], meta: msg.meta || {} }),
+        body: JSON.stringify({ tweets: msg.tweets || [], meta: meta }),
       });
       sendResponse({ ok: r.ok, status: r.status });
     } catch (e) {

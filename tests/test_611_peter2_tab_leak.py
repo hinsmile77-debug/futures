@@ -46,10 +46,16 @@ class TestPeter2TabLeak(unittest.TestCase):
     def test_2_drifted_tab_is_restored_not_duplicated(self):
         """주소가 밀리면 **되돌려야** 한다. 새로 만들면 거기서 증식이 시작된다."""
         self.assertIn('chrome.tabs.update(', self.bg, '복귀 경로(tabs.update)가 없다')
-        self.assertEqual(1, self.bg.count('chrome.tabs.create('),
-                         'tabs.create 호출이 1곳을 넘는다 — 증식 경로가 늘었다')
-        # create 는 「탭이 아예 없을 때」만이어야 한다 — update 보다 뒤에 조건 없이 서면 안 된다
-        self.assertLess(self.bg.index('chrome.tabs.create('), self.bg.index('chrome.tabs.update('),
+        # [2026-10-28] 클릭 넘겨주기(일반 탭, pinned: false)가 create 를 하나 더 쓴다 — 증식 경로는
+        #   **고정 탭** 생성이므로 그것만 1곳으로 묶는다. 일반 탭은 reap·거두기 대상이 아니다.
+        creates = re.findall(r'chrome\.tabs\.create\(\{[^}]*\}', self.bg)
+        pinned = [c for c in creates if 'pinned: true' in c]
+        self.assertEqual(1, len(pinned), '고정 탭 생성이 1곳이 아니다 — 증식 경로가 늘었다: %r' % creates)
+        for c in creates:
+            self.assertTrue('pinned: true' in c or 'pinned: false' in c,
+                            'pinned 를 밝히지 않은 tabs.create 가 있다: %s' % c)
+        # 고정 create 는 「탭이 아예 없을 때」만이어야 한다 — update 보다 뒤에 조건 없이 서면 안 된다
+        self.assertLess(self.bg.index(pinned[0]), self.bg.index('chrome.tabs.update('),
                         'create 와 update 의 분기 순서가 뒤집혔다')
 
     def test_3_strays_are_reaped(self):

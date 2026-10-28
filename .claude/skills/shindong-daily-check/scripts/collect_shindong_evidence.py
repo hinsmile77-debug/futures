@@ -427,6 +427,58 @@ def risk_window(root, day):
 
 
 # ------------------------------------------------------------------ 렌더
+def peter2_collector(root, day, prev):
+    """[725차 후속] 피터2 수집기 — 하트비트 · X 탭 계수 · 수신기 로그 · 장후 사료 확정. → (줄들, 경보들).
+
+    10-28 X 고정 탭 2개(08:45–09:41)가 사람 눈으로만 발견됐고, 같은 날 장후 오프셋 확정
+    (`peter_paste`)이 10-19 에서 멈춘 채 6거래일이 지나 있었다 — 둘 다 어떤 점검에도 안 걸렸다.
+    """
+    L, F = [], []
+    p = os.path.join(root, "data", "peter2_live", day.isoformat(), "collector.json")
+    try:
+        with io.open(p, encoding="utf-8") as f:
+            cj = json.load(f)
+    except Exception:
+        cj = None
+    if cj is None:
+        L.append("- `collector.json`: 없음(수집기 미기동 또는 미측정)")
+    else:
+        L.append("- 하트비트: last_post=`%s` · last_ok=`%s` · articles=%s · off_search=%s · error=%s"
+                 % (cj.get("last_post"), cj.get("last_ok"), cj.get("articles"), cj.get("off_search"),
+                    tr(str(cj.get("error")), 60)))
+        tb = cj.get("tabs")
+        if not isinstance(tb, dict):
+            L.append("- X 탭 계수: 미측정(확장 1.2.0 이전이거나 수신기 미갱신)")
+        else:
+            L.append("- X 탭 계수: x=%s · x_pinned=%s · peter_pinned=%s"
+                     % (tb.get("x"), tb.get("x_pinned"), tb.get("peter_pinned")))
+            if isinstance(tb.get("peter_pinned"), int) and tb["peter_pinned"] > 1:
+                F.append("X 고정 피터 탭이 %d개 — Chrome 복원 중복(10-28 유형). 확장 ourTab ③ 이 거두지 못했다"
+                         % tb["peter_pinned"])
+    lines = _read_lines(os.path.join(root, "logs", "peter2_receiver_%s.log" % day.strftime("%Y%m%d")))
+    if lines:
+        n_err = sum(1 for x in lines if " PAGE_ERROR " in x)
+        n_off = sum(1 for x in lines if "OFF_SEARCH 진입" in x)
+        n_new = sum(1 for x in lines if " NEW " in x)
+        dup = [x for x in lines if " TABS " in x and "중복" in x]
+        L.append("- 수신기 로그: NEW %d · PAGE_ERROR %d · OFF_SEARCH 진입 %d · TABS 중복 %d"
+                 % (n_new, n_err, n_off, len(dup)))
+        if dup:
+            F.append("수신기 로그에 고정 피터 탭 중복 %d회 — 첫 `%s`" % (len(dup), tr(dup[0], 90)))
+    else:
+        L.append("- 수신기 로그: 없음")
+    r = db_rows(root, "data/db/peter_levels.db", "SELECT MAX(date) FROM peter_paste WHERE offset IS NOT NULL")
+    last = r[0][0] if r else None
+    L.append("- 장후 사료 확정 `peter_paste` 최근일: %s" % (("`%s`" % last) if last else "미측정"))
+    if last and prev and last < prev.isoformat():
+        F.append("피터 장후 사료(`peter_paste`)가 %s 에서 멈췄다 — 직전 거래일 %s 미확정. "
+                 "엔진 「전일 오프셋」이 낡은 값으로 폴백한다(peter-daily 장후 실행 필요)" % (last, prev.isoformat()))
+    if prev:
+        ei = os.path.join(root, "data", "peter_feed", "_raw", "%s.eod_ids.json" % prev.isoformat())
+        L.append("- 직전 거래일 삭제 탐지 `%s.eod_ids.json`: %s" % (prev.isoformat(), "있음" if os.path.exists(ei) else "**없음**"))
+    return L, F
+
+
 def build(root, day, phase, pcid, pclabel):
     A = []
     a = A.append
@@ -577,6 +629,14 @@ def build(root, day, phase, pcid, pclabel):
     a("- `[SingleInstance] 중복 기동 거부`: %d건%s" % (len(dup), (" — `%s`" % tr(dup[0][1][11:], 150)) if dup else ""))
     if dup:
         flags.append("main.py 중복 기동 시도 %d건 — 뮤텍스가 막았다. 어느 경로로 두 번 떴는지 확인할 것" % len(dup))
+    a("")
+
+    # §3-c 피터2 수집기 [725차 후속 — 2026-10-28 X 고정 탭 2개 · peter_paste 10-19 정체]
+    a("### 3-c. 피터2 수집기 (하트비트 · X 탭 · 장후 사료)")
+    a("")
+    pl, pf = peter2_collector(root, day, prev)
+    A.extend(pl)
+    flags.extend(pf)
     a("")
 
     # §4 신동·피터 거래
