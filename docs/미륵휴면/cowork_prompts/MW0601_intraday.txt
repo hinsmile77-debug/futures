@@ -28,12 +28,16 @@
 ```
 git --no-optional-locks log --since="<직전 거래일> 15:40" --name-only --format="%h %s" -- main.py strategy/shindong strategy/runtime safety collection/broker collection/cybos config/settings.py
 ```
-- **대상 커밋 0건** → 리포트에 `# 장중(intra)` 절을 **한 줄**만 쓰고 끝낸다:
-  「장중 점검 생략 — 주문·청산 경로 배포 없음(대상 커밋 0건). 장중 대응은 긴급 알림 메일이 맡는다.」 dev_memory 갱신도 생략.
+- **대상 커밋 0건** → 본 점검은 생략한다. 단 **변경 반영 검증(스킬 §3-V)** 은 따로 본다:
+  오늘 리포트 장전 절 `0-V` 에 「장중」 배정 행이 있거나 장전 이후 새 커밋이 있으면
+  `python .claude/skills/shindong-daily-check/scripts/collect_shindong_evidence.py --phase intra --pc MW0601 --out-auto` 의 §8 을 보고
+  `# 장중(intra)` 절에 `변경 반영 검증` 소절**만** 쓴다(원본 로그를 좁게 — DB 전수 스캔 금지).
+  그것도 없을 때만 **한 줄**로 끝낸다:
+  「장중 점검 생략 — 주문·청산 경로 배포 없음(대상 커밋 0건) · 장중 판정 대장 0건. 장중 대응은 긴급 알림 메일이 맡는다.」 dev_memory 갱신도 생략.
 - **있으면**(주문·청산 경로가 바뀐 첫날 — ⚠ 2026-10-26 휴면 전환 첫날은 반드시 본 점검):
   1. `cd <repo> && python .claude/skills/shindong-daily-check/scripts/collect_shindong_evidence.py --phase intra --pc MW0601 --out-auto`
   2. 바꾼 경로가 라이브에서 설계대로 도는가를 본다 — 휴면 감시 항목 · 신동 진입·청산·대사 · 경량 패스 지연.
-  3. 리포트에 `# 장중(intra)` 절 append — 장전 항목 처분(✅🔄⬆️⬇️↩️) 뒤 이상점 · Fix 계획 · `사용자 조치`.
+  3. 리포트에 `# 장중(intra)` 절 append — 장전 항목 처분(✅🔄⬆️⬇️↩️) 뒤 `변경 반영 검증`(§3-V 장중 배정분) · 이상점 · Fix 계획 · `사용자 조치`.
 
 ## 🔴 금지 — 라이브 프로세스가 돌고 있다
 
@@ -58,4 +62,5 @@ git --no-optional-locks log --since="<직전 거래일> 15:40" --name-only --for
 - [ ] 휴면 미륵 항목을 결함으로 올리지 않았나 · 휴면 감시 항목을 다 봤나
 - [ ] 리포트 **한 파일** `MW0601-<YYYYMMDD>-점검리포트.md` 에 썼나 · 앞 국면 절을 고치지 않았나
 - [ ] 절 제목 규약(스킬 §3 — `한 줄 결론`·`Fix 작업 구현계획`·`고도화 방안`·`수익률 향상방안`·`사용자 조치`·`다음 거래일 관측`)을 지켰나
+- [ ] `변경 반영 검증`(스킬 §3-V) 소절을 썼나 · 근거가 관측인가
 - [ ] 코드를 변경하지 않았나 · 커밋하지 않았나

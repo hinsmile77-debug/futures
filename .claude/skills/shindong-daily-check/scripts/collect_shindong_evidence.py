@@ -747,6 +747,9 @@ def build(root, day, phase, pcid, pclabel):
         a("- 없음")
     a("")
 
+    # §8 변경 반영 검증 — 대장 후보(스킬 §3-V). 판정은 점검 세션이 한다 — 여기서는 대상만 기계적으로 모은다.
+    _change_ledger(A, root, day, prev)
+
     head_ = ["## 0. 자동 적신호 (출발점이지 결론이 아니다)", ""]
     if not ok_td:
         head_.append("- 휴장일(%s) — 당일 로그·거래 부재에서 파생되는 항목은 결함이 아니다" % why_td)
@@ -754,6 +757,95 @@ def build(root, day, phase, pcid, pclabel):
     head_.append("")
     i = A.index("## 1. 설정 (config/settings.py — 엔진·주체는 기동 시 1회 읽힌다)")
     return "\n".join(A[:i] + head_ + A[i:]) + "\n"
+
+
+# [MW0601 724차 후속3] 변경 반영 검증 대장(스킬 §3-V) — 경로 구분. 위에서부터 처음 맞는 것.
+_LEDGER_KINDS = (
+    ("실행경로", ("main.py", "strategy/", "safety/", "collection/", "config/", "start_", "TASK_")),
+    ("도구·화면·점검", ("tools/", "scripts/", "dashboard/", ".claude/", "utils/", "tests/")),
+    ("문서·산출물", ("docs/", "dev_memory/", "CLAUDE.md", "CORE.md", "ROADMAP.md")),
+)
+_LEDGER_OPEN_MARKS = ("❌", "⏳", "🔄", "미결", "미확인")
+
+
+def _ledger_kind(paths):
+    kinds = []
+    for p in paths:
+        k = next((nm for nm, pre in _LEDGER_KINDS if p.startswith(pre)), "기타")
+        if k not in kinds:
+            kinds.append(k)
+    order = [nm for nm, _ in _LEDGER_KINDS] + ["기타"]
+    return sorted(kinds, key=order.index)
+
+
+def _ledger_open_rows(path):
+    """리포트에서 **마지막** 「변경 반영 검증」 절의 `| V-` 행 중 아직 닫히지 않은 것(✅ 아닌 것)."""
+    lines = _read_lines(path)
+    if not lines:
+        return None                                   # 파일 없음 — 미측정(빈 목록과 다르다)
+    starts = [i for i, l in enumerate(lines) if l.startswith("#") and "변경 반영 검증" in l]
+    if not starts:
+        return []
+    i0 = starts[-1]
+    lvl = len(lines[i0]) - len(lines[i0].lstrip("#"))
+    out = []
+    for l in lines[i0 + 1:]:
+        if l.startswith("#") and len(l) - len(l.lstrip("#")) <= lvl:
+            break
+        if l.lstrip().startswith("| V-") and any(m in l for m in _LEDGER_OPEN_MARKS):
+            out.append(l.strip())
+    return out
+
+
+def _change_ledger(A, root, day, prev):
+    a = A.append
+    a("## 8. 변경 반영 검증 — 대장 후보 (스킬 §3-V)")
+    a("")
+    if prev is None:
+        a("- 직전 거래일 미측정 — 대상 창을 정하지 못했다")
+        a("")
+        return
+    since = "%s 15:40:00 +0900" % prev.isoformat()
+    lg = CE.run_git(root, ["log", "--reverse", "--name-only", "--format=@@%h|%ci|%s", "--since=" + since,
+                           "--until=" + CE.kst_day_bound((day + timedelta(days=1)).isoformat())])
+    commits = []
+    for l in (lg or "").splitlines():
+        if l.startswith("@@"):
+            h, ci, s = (l[2:].split("|", 2) + ["", ""])[:3]
+            commits.append(dict(h=h, ci=ci[5:16], s=s, paths=[]))
+        elif l.strip() and commits:
+            commits[-1]["paths"].append(l.strip().strip('"'))
+    a("- 창: 직전 거래일 %s 15:40 KST 이후 — 어제 장후 자동조치(17:23)·저녁·밤·오늘 커밋을 모두 덮는다" % prev.isoformat())
+    if not commits:
+        a("- 대상 커밋 0건" + ("" if lg is not None else " (git 미측정)"))
+    else:
+        tgt = [c for c in commits if _ledger_kind(c["paths"]) != ["문서·산출물"]]
+        a("- 커밋 %d건 · 검증 대상(코드·도구 포함) **%d건** · 문서·산출물만 %d건(대장 제외 — 점검 산출물 커밋 등)"
+          % (len(commits), len(tgt), len(commits) - len(tgt)))
+        a("")
+        a("| 커밋 | 시각 | 구분 | 제목 | 바꾼 파일(코드) |")
+        a("|---|---|---|---|---|")
+        for c in tgt:
+            code = [p for p in c["paths"] if not p.startswith(("docs/", "dev_memory/"))]
+            shown = ", ".join("`%s`" % p for p in code[:3]) + (" … 외 %d개" % (len(code) - 3) if len(code) > 3 else "")
+            a("| %s | %s | %s | %s | %s |" % (c["h"], c["ci"], "·".join(_ledger_kind(c["paths"])),
+                                             tr(c["s"], 90).replace("|", "/"), shown or "—"))
+    a("")
+    rep = os.path.join(root, "docs", "정기점검", "매일점검")
+    for label, d in (("직전 거래일", prev), ("오늘 앞 국면", day)):
+        p = os.path.join(rep, "MW0601-%s-점검리포트.md" % d.strftime("%Y%m%d"))
+        rows = _ledger_open_rows(p)
+        if rows is None:
+            a("- %s(%s) 리포트 없음 — 이월 미결 미측정" % (label, d.isoformat()))
+        elif not rows:
+            a("- %s(%s) 「변경 반영 검증」 열린 행 0건" % (label, d.isoformat()))
+        else:
+            a("- %s(%s) 「변경 반영 검증」 **열린 행 %d건** — 오늘 대장에 이월해 다시 판정한다" % (label, d.isoformat(), len(rows)))
+            for r in rows[:15]:
+                a("  - %s" % tr(r, 200))
+            if len(rows) > 15:
+                a("  - … 외 %d건" % (len(rows) - 15))
+    a("")
 
 
 def main(argv=None):
