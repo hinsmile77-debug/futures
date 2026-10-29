@@ -52,15 +52,44 @@ function Write-Head($t) {
     Write-Host ('=' * 70)
 }
 
+# A power-off command: shutdown /s /p /h (any order of switches), Stop-Computer, or rundll32 SetSuspendState.
+$PowerRx = '(?i)\bshutdown(\.exe)?"?\s+(\S+\s+)*[/-][shp]\b|Stop-Computer|SetSuspendState'
+$HiberRx = '(?i)\bshutdown(\.exe)?"?\s+(\S+\s+)*[/-]h\b|SetSuspendState'
+
+function Get-ActionText($a) {
+    # Execute + Arguments, plus the CONTENT of any .bat/.cmd/.ps1 the action runs (2026-10-30 MW0602:
+    # the real power-off task ran a batch file, so matching the command line alone found nothing).
+    # Comment lines (REM / :: / #) are dropped - a patched batch keeps the old command in a comment.
+    $exe = [string]$a.Execute; $arg = [string]$a.Arguments; $wd = [string]$a.WorkingDirectory
+    $text = $exe + ' ' + $arg
+    $paths = New-Object System.Collections.Generic.List[string]
+    foreach ($m in [regex]::Matches($text, '"([^"]+\.(?:bat|cmd|ps1))"|(\S+\.(?:bat|cmd|ps1))')) {
+        $p = if ($m.Groups[1].Success) { $m.Groups[1].Value } else { $m.Groups[2].Value }
+        $p = [Environment]::ExpandEnvironmentVariables($p.Trim('"'))
+        if (-not [IO.Path]::IsPathRooted($p) -and $wd) { $p = Join-Path ([Environment]::ExpandEnvironmentVariables($wd)) $p }
+        $paths.Add($p)
+    }
+    foreach ($p in $paths) {
+        try {
+            if (Test-Path -LiteralPath $p) {
+                $body = (Get-Content -LiteralPath $p -ErrorAction Stop | Where-Object {
+                    $_ -notmatch '^\s*(@?rem\b|::|#)' }) -join "`n"
+                $text += "`n" + $body
+            }
+        } catch { }
+    }
+    return $text
+}
+
 function Find-OldShutdownTasks {
     @(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object {
-        $_.TaskName -ne $TaskName -and @($_.Actions | Where-Object {
-            $exe = [string]$_.Execute; $arg = [string]$_.Arguments
-            ($exe -match '(?i)(^|\\)shutdown(\.exe)?"?$' -and $arg -match '(?i)(^|\s)[/-][sp](\s|$)') -or
-            ($exe -match '(?i)powershell|pwsh' -and $arg -match '(?i)Stop-Computer') -or
-            ($exe -match '(?i)cmd(\.exe)?$' -and $arg -match '(?i)shutdown(\.exe)?\s+[/-][sp]\b')
-        }).Count -gt 0
+        $_.TaskName -ne $TaskName -and @($_.Actions | Where-Object { (Get-ActionText $_) -match $PowerRx }).Count -gt 0
     })
+}
+
+function Get-OldMode($tasks) {
+    foreach ($t in $tasks) { foreach ($a in $t.Actions) { if ((Get-ActionText $a) -match $HiberRx) { return 'hibernate' } } }
+    return 'shutdown'
 }
 
 # ------------------------------------------------------------------ uninstall
@@ -88,6 +117,18 @@ if (-not (Test-Path -LiteralPath $Guard)) { Write-Host "[FAIL] guard not found: 
 $old = Find-OldShutdownTasks
 if ($old.Count -eq 0) {
     Write-Host '[1/5] old shutdown task : none found'
+    # Show what runs batch/script files so a missed power-off task can be spotted by eye.
+    $cand = @(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object {
+        $_.TaskPath -notmatch '(?i)^\\Microsoft\\' -and @($_.Actions | Where-Object {
+            ([string]$_.Execute + ' ' + [string]$_.Arguments) -match '(?i)\.(bat|cmd|ps1)\b|shutdown|powrprof' }).Count -gt 0 })
+    if ($cand.Count) {
+        Write-Host '        tasks that run batch/script files (check if one of them powers the PC off):'
+        foreach ($c in $cand) {
+            $a = $c.Actions | Select-Object -First 1
+            $tb = ($c.Triggers | Select-Object -First 1).StartBoundary
+            Write-Host ('          {0}{1}  [{2}]  {3} {4}  start={5}' -f $c.TaskPath, $c.TaskName, $c.State, $a.Execute, $a.Arguments, $tb)
+        }
+    }
 } else {
     Write-Host ('[1/5] old shutdown task : {0} found' -f $old.Count)
     foreach ($o in $old) {
@@ -120,6 +161,10 @@ if ($first.StartBoundary) {
 }
 
 # ------------------------------------------------------------------ 3. register
+# Power-off mode follows the old task (MW0601 patched its batch to hibernate - shutdown /h keeps Claude sessions alive).
+$mode = if ($old.Count -gt 0) { Get-OldMode $old } else { 'shutdown' }
+if ($GuardArgs -notmatch '(?i)-Mode\b') { $GuardArgs = ('-Mode {0} {1}' -f $mode, $GuardArgs).Trim() }
+Write-Host ('[3/5] mode    : {0}' -f $(if ($GuardArgs -match '(?i)-Mode\s+(\w+)') { $Matches[1] } else { $mode }))
 $arg = ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" {1}' -f $Guard, $GuardArgs).Trim()
 $action    = New-ScheduledTaskAction -Execute $PS -Argument $arg -WorkingDirectory $Root
 $settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `

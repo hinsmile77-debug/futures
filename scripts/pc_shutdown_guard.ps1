@@ -36,6 +36,8 @@
   KEEP THIS FILE PURE ASCII, CRLF (Windows PowerShell 5.1 reads BOM-less files as ANSI).
 #>
 param(
+    [ValidateSet('shutdown', 'hibernate')]
+    [string]$Mode        = 'shutdown',
     [switch]$DryRun,
     [double]$Hold        = 0,
     [switch]$Release,
@@ -187,8 +189,8 @@ function Get-BusyReasons {
 
 # ------------------------------------------------------------------ main loop
 $dl = [datetime]::Today.Add([timespan]::Parse($Deadline))
-Log ('[Start] dry={0} retry={1}m deadline={2} idle={3}m cpu>={4}% clear-gap={5}s grace={6}s' -f `
-     [bool]$DryRun, $RetryMin, $Deadline, $IdleMin, $CpuPct, $ClearGapSec, $GraceSec)
+Log ('[Start] mode={7} dry={0} retry={1}m deadline={2} idle={3}m cpu>={4}% clear-gap={5}s grace={6}s' -f `
+     [bool]$DryRun, $RetryMin, $Deadline, $IdleMin, $CpuPct, $ClearGapSec, $GraceSec, $Mode)
 
 while ($true) {
     $busy = Get-BusyReasons
@@ -201,10 +203,23 @@ while ($true) {
         Start-Sleep -Seconds $ClearGapSec
         $busy = Get-BusyReasons
         if ($busy.Count -eq 0) {
-            Log ('[Shutdown] clear (2/2) - shutdown /s /t {0}  (abort: shutdown /a)' -f $GraceSec)
-            & shutdown.exe /s /t $GraceSec /c ("Guarded auto shutdown in {0}s. Abort: shutdown /a" -f $GraceSec)
-            Log ('[Shutdown] shutdown.exe rc={0}' -f $LASTEXITCODE)
-            exit 0
+            if ($Mode -eq 'hibernate') {
+                # shutdown /h takes no /t - wait the grace period here, then re-check once more
+                # (abort during the wait: pc_shutdown_guard.ps1 -Hold 1).
+                Log ('[Shutdown] clear (2/2) - hibernate in {0}s  (abort: pc_shutdown_guard.ps1 -Hold 1)' -f $GraceSec)
+                Start-Sleep -Seconds $GraceSec
+                $busy = Get-BusyReasons
+                if ($busy.Count -eq 0) {
+                    & shutdown.exe /h
+                    Log ('[Shutdown] shutdown.exe /h rc={0}' -f $LASTEXITCODE)
+                    exit 0
+                }
+            } else {
+                Log ('[Shutdown] clear (2/2) - shutdown /s /t {0}  (abort: shutdown /a)' -f $GraceSec)
+                & shutdown.exe /s /t $GraceSec /c ("Guarded auto shutdown in {0}s. Abort: shutdown /a" -f $GraceSec)
+                Log ('[Shutdown] shutdown.exe rc={0}' -f $LASTEXITCODE)
+                exit 0
+            }
         }
         Log ('[Check] busy again on 2nd check - ' + ($busy -join ' | '))
     } else {
