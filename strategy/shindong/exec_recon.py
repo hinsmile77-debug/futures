@@ -25,6 +25,7 @@
 ⚠ 사전등록 채점(MAIN 재생, RETRACTED 제외)은 이 모듈이 바꾸지 않는다 — 실집행 누적은 **참고 행**이다.
 """
 import datetime as _dt
+import math
 import os
 import sqlite3
 from typing import Any, Dict, List, Optional
@@ -273,7 +274,7 @@ def slip_stats(xs: List[float]) -> Optional[Dict[str, float]]:
     n = len(xs)
     if not n:
         return None
-    m = sum(xs) / n
+    m = math.fsum(xs) / n                      # 버전 무관 정확 합(3.12 미만 sum 은 누적 오차) — MW0602 673차 후속9
     sd = (sum((x - m) ** 2 for x in xs) / (n - 1)) ** 0.5 if n > 1 else None
     t = (m / (sd / n ** 0.5)) if (sd and sd > 0) else None
     return {"n": n, "mean": m, "sd": sd, "t": t, "worst": max(xs)}
