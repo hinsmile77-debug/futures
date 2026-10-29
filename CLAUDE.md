@@ -180,6 +180,11 @@ dt.strftime("GP진입 %H:%M")     # ← UnicodeEncodeError → paintEvent → �
 - **장중 확인 항목은 장후에 판정한다** — 등록 때 `[로그]`/`[경보]`/`[화면]` 태그, 3거래일 연속 표본 없음은 「구조적 미발생 의심」으로 격상.
 - Cowork 예약의 **시각(cron)은 Cowork 앱에 등록돼 있어 파일로 바뀌지 않는다** — 장전 ≈08:51 로 당기는 것은 앱에서 한다.
 - 점검 메일이 안 오면: `logs/shindong_daily_mail_<날짜>.log`. 점검 리포트가 없던 날은 제목에 「점검 리포트 없음」이 붙는다(폴백).
+- **PC 자동 종료는 가드형이다** [2026-10-29 MW0602] — `\Mireuk\PC_Shutdown_Guarded`(`TASK_PC_SHUTDOWN_INSTALL.bat` → `scripts/pc_shutdown_guard.ps1`).
+  Claude Code CLI · Claude 데스크톱 CPU(Cowork 실행) · 이 저장소/py37_32·py310_64 python · git · `\Mireuk`·`\Sindong` 작업 실행 중 · 사용자 입력(15분) ·
+  평일 08:00~15:50 중 하나라도 있으면 10분 뒤 재확인, **연속 2회 깨끗할 때만** `shutdown /s /t 120`(취소 `shutdown /a`), 23:30 까지 바쁘면 그날은 끄지 않는다.
+  설치 시 기존 단순 종료 작업은 XML 백업 후 **비활성화**(삭제 아님). 로그 `logs/pc_shutdown_<날짜>.log`.
+  🔴 **Claude 세션이 PC 에서 오래 걸리는 작업을 시작하면** `powershell -File scripts\pc_shutdown_guard.ps1 -Hold <시간>` 으로 보류를 걸고 끝나면 `-Release`.
 
 ## 멀티PC 작업 컨벤션
 
