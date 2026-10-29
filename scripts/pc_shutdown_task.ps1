@@ -146,11 +146,29 @@ if ($Time) {
     $triggers = @(New-ScheduledTaskTrigger -Daily -At ([datetime]::Today.AddHours([int]$hh).AddMinutes([int]$mm)))
     Write-Host ('[2/5] trigger : Daily {0} (from -Time)' -f $Time)
 } elseif ($old.Count -gt 0) {
-    # Copy the schedule of an ENABLED old task - a disabled one is not the schedule in use.
-    $src = @($old | Where-Object { $_.State -ne 'Disabled' } | Select-Object -First 1)
-    if (-not $src.Count) { $src = @($old[0]) }
-    $triggers = @($src[0].Triggers)
-    Write-Host ('[2/5] trigger : copied from {0}{1} (same schedule as before)' -f $src[0].TaskPath, $src[0].TaskName)
+    # Schedule = UNION of every old task in use: enabled now, or disabled earlier by this installer
+    # (listed in the restore file). Copying only the first one dropped Friday on 2026-10-29
+    # (MW0602: Mon-Thu task + a separate Friday task -> the guarded task got Mon-Thu only).
+    $ours = @()
+    if (Test-Path -LiteralPath $StateFile) { $ours = @(Get-Content -LiteralPath $StateFile -Encoding UTF8 | Where-Object { $_.Trim() }) }
+    $src = @($old | Where-Object { $_.State -ne 'Disabled' -or $ours -contains ($_.TaskPath + $_.TaskName) })
+    if (-not $src.Count) { $src = @($old) }
+    $all    = @($src | ForEach-Object { $_.Triggers })
+    $weekly = @($all | Where-Object { $_.CimClass.CimClassName -eq 'MSFT_TaskWeeklyTrigger' -and $_.DaysOfWeek })
+    $tods   = @($weekly | ForEach-Object { ([datetime]$_.StartBoundary).ToString('HH:mm') } | Sort-Object -Unique)
+    if ($all.Count -gt 0 -and $weekly.Count -eq $all.Count -and $tods.Count -eq 1) {
+        $mask = 0
+        foreach ($w in $weekly) { $mask = $mask -bor [int]$w.DaysOfWeek }
+        $names = @('Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday')
+        $days  = @(for ($k = 0; $k -lt 7; $k++) { if ($mask -band (1 -shl $k)) { $names[$k] } })
+        $triggers = @(New-ScheduledTaskTrigger -Weekly -WeeksInterval 1 -DaysOfWeek $days -At ([datetime]$weekly[0].StartBoundary))
+        Write-Host ('[2/5] trigger : Weekly {0} at {1} (union of {2} old task(s))' -f ($days -join ','), $tods[0], $src.Count)
+    } else {
+        # Mixed kinds or times - keep every trigger as is rather than guess a merge.
+        $triggers = $all
+        Write-Host ('[2/5] trigger : {0} trigger(s) copied as is from {1} old task(s) (mixed schedules - not merged)' -f $all.Count, $src.Count)
+    }
+    foreach ($s in $src) { Write-Host ('          from {0}{1} [{2}]' -f $s.TaskPath, $s.TaskName, $s.State) }
 } else {
     Write-Host '[FAIL] no old shutdown task to copy the schedule from - pass -Time "HH:mm"' -ForegroundColor Red
     exit 1
@@ -198,7 +216,9 @@ if ($old.Count -gt 0 -and -not $KeepOld) {
         try {
             Disable-ScheduledTask -TaskPath $o.TaskPath -TaskName $o.TaskName | Out-Null
             # UTF8: task names can be non-ASCII (2026-10-30 MW0602: the old task is named in Korean)
-            Add-Content -LiteralPath $StateFile -Value $full -Encoding UTF8
+            # once per task - a re-install after an outside re-enable would list it twice (2026-10-29)
+            $listed = (Test-Path -LiteralPath $StateFile) -and (@(Get-Content -LiteralPath $StateFile -Encoding UTF8) -contains $full)
+            if (-not $listed) { Add-Content -LiteralPath $StateFile -Value $full -Encoding UTF8 }
             Write-Host "[4/5] disabled: $full"
         } catch {
             Write-Host "[WARN] could not disable $full ($($_.Exception.Message))" -ForegroundColor Yellow
@@ -219,9 +239,16 @@ Write-Host '[5/5] verify  :'
 Write-Host ("        state      : {0}" -f $t.State)
 Write-Host ("        next run   : {0}" -f $i.NextRunTime)
 Write-Host ("        arguments  : {0}" -f $t.Actions[0].Arguments)
+foreach ($tr in $t.Triggers) {
+    Write-Host ("        trigger    : {0} start={1} days={2}" -f $tr.CimClass.CimClassName, $tr.StartBoundary, $tr.DaysOfWeek)
+}
 $still = @(Find-OldShutdownTasks | Where-Object { $_.State -ne 'Disabled' })
+$rc = 0
 if ($still.Count -and -not $KeepOld) {
+    # Not a success: an enabled old task powers the PC off unguarded at the same time (2026-10-29 MW0602).
     Write-Host ('        UNGUARDED  : {0} old shutdown task(s) still enabled - see WARN above' -f $still.Count) -ForegroundColor Red
+    foreach ($s in $still) { Write-Host ('                     {0}{1}' -f $s.TaskPath, $s.TaskName) -ForegroundColor Red }
+    $rc = 2
 }
 
 Write-Head 'DONE'
@@ -230,4 +257,4 @@ Write-Host '  hold      : powershell -File scripts\pc_shutdown_guard.ps1 -Hold 4
 Write-Host '  abort     : shutdown /a   (during the grace countdown)'
 Write-Host '  log       : logs\pc_shutdown_<YYYYMMDD>.log'
 Write-Host ''
-exit 0
+exit $rc
