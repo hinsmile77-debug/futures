@@ -203,6 +203,71 @@ def entry_slips(rc: Optional[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
     return out
 
 
+_STOP_REASONS = ("TR", "BE", "SL")
+_MANUAL_MARK = ("수동", "manual", "exit_full")
+
+
+def cadence_phase(day: str) -> Optional[int]:
+    """[MW0602 673차 후속6 이식 · R4] 그날 신동 재생이 가장 자주 돈 초(秒) = 손절 갱신 위상. None = 기록 없음(미측정).
+
+    원천: main `_sd_cadence_note` 가 쓰는 `shindong_cadence.json` {"sec_hist": {초: 횟수}}. 재시도(R2)는 제외돼 있다.
+    """
+    try:
+        from strategy.runtime import trade_principal as TP
+        c = TP.read_json(day, "shindong_cadence.json", None)
+    except Exception:
+        return None
+    h = (c or {}).get("sec_hist") if isinstance(c, dict) else None
+    if not h:
+        return None
+    return int(max(h.items(), key=lambda kv: (int(kv[1]), -int(kv[0])))[0])
+
+
+def exit_slips(rc: Optional[Dict[str, Any]], phase_sec: Optional[int] = None) -> Optional[List[Dict[str, Any]]]:
+    """[MW0602 673차 후속6 이식 · R4] 실거래 청산 슬립 — 재생 청산가 대비. + = 불리.
+
+    대상 = MATCH 중 재생·실거래 둘 다 닫힌 거래. **수동 청산은 제외**(집행 품질이 아니라 사람의 결정 — 따로 센다).
+    MW0601 맞춤: 재생 다리(1차·최종)가 따로 닫힐 수 있다 — 재생 청산가 = 닫힌 다리 가격 평균, 실청산가 = 청산 레그 가격
+    평균(레그 수량 미기록 — 단순 평균). kind = 다리 사유가 전부 TR·BE·SL 이면 stop · 전부 TP 면 target ·
+    전부 TIME 이면 time · 섞이면 mixed. window 는 stop 만 — 실청산 초 < 그날 갱신 위상이면 "in"(직전 분 손절을 쓰던 구간).
+    위상 미측정이면 None. 근거: docs/정기점검/매일점검/MW0602-20261029-청산슬립-딥다이브.md.
+    None = 대사 원천 없음 · [] = 해당 거래 없음.
+    """
+    if rc is None:
+        return None
+    out: List[Dict[str, Any]] = []
+    for it in rc.get("items") or []:
+        p, r = it.get("real"), it.get("replay")
+        if it.get("kind") != "MATCH" or not p or not r:
+            continue
+        rl = [g for g in (r.get("legs") or []) if g and len(g) > 2 and g[1] is not None]
+        pl = [g for g in (p.get("legs") or []) if g and g[1]]
+        if not rl or not pl or len(rl) < len(r.get("legs") or []):
+            continue                      # 재생 다리 일부가 아직 열려 있다 — 비교 보류
+        why = " ".join(str(g[2] or "") for g in pl).lower()
+        manual = any(m in why for m in _MANUAL_MARK)
+        rs = {str(g[2] or "") for g in rl}
+        if rs <= set(_STOP_REASONS):
+            kind = "stop"
+        elif all(x.startswith("TP") for x in rs):
+            kind = "target"
+        elif rs == {"TIME"}:
+            kind = "time"
+        else:
+            kind = "mixed"
+        rp = sum(float(g[1]) for g in rl) / len(rl)
+        xp = sum(float(g[1]) for g in pl) / len(pl)
+        side = int(r["side"])
+        win = None
+        xs = str(p.get("exit_ts") or "")
+        if kind == "stop" and phase_sec is not None and len(xs) >= 19:
+            win = "in" if int(xs[17:19]) < int(phase_sec) else "out"
+        out.append({"key": it.get("key"), "side": side, "reason": "/".join(sorted(rs)), "kind": kind,
+                    "replay_px": rp, "real_px": xp, "exit_ts": xs, "manual": manual,
+                    "window": win, "qty": int(p.get("qty") or 0), "slip_pt": side * (rp - xp)})
+    return out
+
+
 def slip_stats(xs: List[float]) -> Optional[Dict[str, float]]:
     """n · 평균 · 표준편차 · t(평균/표준오차) · 최악(최대 불리). 빈 목록 = None(미측정 — 0 이 아니다)."""
     n = len(xs)
@@ -247,6 +312,7 @@ def collect_recons(sd_db: str, trades_db: str, since: str, until: str,
         ev = TP.read_jsonl(day, "shindong_exec.jsonl") or events_from_exec_json(
             TP.read_json(day, "shindong_exec.json", {}))
         rc = reconcile(main_rows, pos, ev)
+        rc["phase_sec"] = cadence_phase(day)       # [R4] 청산 갱신창 판정용 — None = 미측정
         out.append((day, rc))
     return out, unmeasured
 

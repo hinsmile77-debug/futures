@@ -7873,6 +7873,20 @@ PRINCIPAL_SHINDONG_ENABLED = True
 #   장시작 실측이 없을 때(조회 실패·재기동 후 미보유 등)만 min(최대허용수량, 이 값)을 쓴다.
 #   ProfitGuard 원화 임계 배율 = max(1, 계획 수량 ÷ PROFIT_GUARD_QTY_BASE). 20거래일 재생 MDD ≈ −288만(N=3, 현행 규칙).
 SHINDONG_LIVE_QTY = 3
+# [MW0602 673차 후속6 · R1/R2 → MW0601 이식 2026-10-29] 신동 재생·집행 주기를 봉 마감 직후로 정렬한다.
+#   신동 재생(진입·손절 갱신)은 60초 수급 타이머(`_investor_timer`)에 얹혀 도는데, 그 타이머의 초(秒) 위상이
+#   앱 기동 시각으로 정해져 10/26~29 는 매분 :33~:35 였다 — 손절 갱신이 봉 마감 뒤 30초 넘게 늦게 도착해
+#   MW0602 10/29 청산 −2.66pt 중 −2.32pt 가 「낡은 손절」로 청산된 몫이었다(docs/정기점검/매일점검/MW0602-20261029-청산슬립-딥다이브.md).
+#   MW0601 도 같은 구조다 — live_legs.sync 의 손절 조이기가 매분 1회, 같은 수급 타이머 위상에 묶여 있다.
+#   R1: 기동 시 다음 :ALIGN_SEC 까지 기다렸다가 타이머를 시작하고(PreciseTimer), 매 틱 위상이 ±DRIFT 초를
+#       넘게 벗어나면 그 틱을 건너뛰고 다시 정렬한다. False = 종전(기동 시각 위상).
+#   R2: 정렬 뒤 재생 기준분이 직전 분에 못 미치면(7222·1분봉이 아직 안 들어옴) 같은 분 RETRY_SEC 초 뒤 1회만
+#       7222 를 다시 받아 재생한다(55초 간격 가드 시각은 건드리지 않는다). False = 다음 분까지 기다림.
+SHINDONG_TIMER_ALIGN_ENABLED = True
+SHINDONG_TIMER_ALIGN_SEC = 2
+SHINDONG_TIMER_ALIGN_DRIFT_SEC = 5
+SHINDONG_FLOW_RETRY_ENABLED = True
+SHINDONG_FLOW_RETRY_SEC = 8
 # [MW0601 711차 / 사용자 결정 2026-10-25] 신동 **손절거리 위험 수량**(거래당 위험 동일화) — 실주문 수량의 네 번째 상한.
 #   수량 = min(계획 수량(최대허용 ∧ 장시작 가능), floor(위험자본 × X% ÷ ((그 거래 손절 거리 + 버퍼) × 1pt 원)), 진입 직전 가능), 최소 1.
 #   위험자본 = capital.risk_capital(시가 예탁금) = min(LIVE_OPERATING_CAPITAL_KRW 3,000만, 예탁금).
