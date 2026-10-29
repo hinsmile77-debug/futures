@@ -25,6 +25,7 @@
 ⚠ 사전등록 채점(MAIN 재생, RETRACTED 제외)은 이 모듈이 바꾸지 않는다 — 실집행 누적은 **참고 행**이다.
 """
 import datetime as _dt
+import math
 import os
 import sqlite3
 from typing import Any, Dict, List, Optional
@@ -271,7 +272,7 @@ def be_slip_verdict(xs: List[float]) -> Dict[str, Any]:
     """사전등록 V4 §3-2 판정(한 구간). state ∈ 대기 · 재검토 · 유지. 문턱은 spec 단일 출처."""
     from strategy.shindong import spec as S
     n = len(xs)
-    m = (sum(xs) / n) if n else None
+    m = (math.fsum(xs) / n) if n else None    # fsum — 문턱 경계(0.8×20)가 파이썬 버전 합산 방식에 따라 갈리지 않게
     if n < S.V4_BE_SLIP_MIN_N:
         state = "대기"
     elif m > S.V4_BE_SLIP_REVIEW_PT:
@@ -334,7 +335,7 @@ def slip_stats(xs: List[float]) -> Optional[Dict[str, float]]:
     n = len(xs)
     if not n:
         return None
-    m = sum(xs) / n
+    m = math.fsum(xs) / n                      # 버전 무관 정확 합(3.12 미만 sum 은 누적 오차)
     sd = (sum((x - m) ** 2 for x in xs) / (n - 1)) ** 0.5 if n > 1 else None
     t = (m / (sd / n ** 0.5)) if (sd and sd > 0) else None
     return {"n": n, "mean": m, "sd": sd, "t": t, "worst": max(xs)}

@@ -221,3 +221,14 @@ def test_ms_to_second_math():
     t = _d.datetime(2026, 10, 30, 10, 0, 33, 0)
     assert f(2, t) == 29000 and f(32, t) == 59000 and f(34, t) == 1000
     assert f(33, _d.datetime(2026, 10, 30, 10, 0, 32, 900000)) == 60100   # 200ms 이내 → 다음 분
+
+
+def test_s5_verdict_mean_is_exact_sum_not_version_dependent():
+    # 2026-10-30 MW0602 base(파이썬 3.12 미만)에서 sum([0.8]*20)=16.000000000000004 → 「재검토」 오판이 실측됐다.
+    src = _src(os.path.join(_ROOT, "strategy", "shindong", "exec_recon.py"))
+    assert "math.fsum(xs) / n" in _body(src, "be_slip_verdict") and "math.fsum(xs) / n" in _body(src, "slip_stats")
+    acc = 0.0
+    for x in [0.8] * 20:
+        acc += x                                   # 3.12 미만 sum() 과 같은 순차 합
+    assert acc / 20 > 0.8                          # 순차 합이면 경계를 넘는다(이 테스트의 전제)
+    assert XR.be_slip_verdict([0.8] * 20)["state"] == "유지"
