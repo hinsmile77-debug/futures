@@ -5264,15 +5264,33 @@ class TradingSystem:
         if self._investor_align_pending:
             return
         sec = int(getattr(runtime_settings, "SHINDONG_TIMER_ALIGN_SEC", 2) or 0) % 60
-        now = datetime.datetime.now()
-        target = now.replace(second=sec, microsecond=0)
-        if target <= now + datetime.timedelta(milliseconds=200):
-            target += datetime.timedelta(minutes=1)
-        delay_ms = max(0, int((target - now).total_seconds() * 1000))
+        delay_ms = self._ms_to_second(sec)
         self._investor_align_pending = True
         QTimer.singleShot(delay_ms, self._investor_timer_aligned_start)
-        logger.info("[TimerAlign] 수급 타이머 %s 정렬 — %s 에 시작(위상 :%02d · %dms 뒤)",
-                    why, target.strftime("%H:%M:%S"), sec, delay_ms)
+        logger.info("[TimerAlign] 수급 타이머 %s 정렬 — :%02d 에 시작(%dms 뒤)", why, sec, delay_ms)
+
+    @staticmethod
+    def _ms_to_second(sec: int, now: Optional[datetime.datetime] = None) -> int:
+        """지금부터 다음 :sec 초까지 ms(200ms 이내면 다음 분)."""
+        now = now or datetime.datetime.now()
+        target = now.replace(second=int(sec) % 60, microsecond=0)
+        if target <= now + datetime.timedelta(milliseconds=200):
+            target += datetime.timedelta(minutes=1)
+        return max(0, int((target - now).total_seconds() * 1000))
+
+    def _start_timer_at_second(self, timer: QTimer, sec: int, why: str) -> None:
+        """[673차 후속8] 60초 타이머를 다음 :sec 에 시작한다 — 수급 타이머 정렬(R1) 뒤 위상 분리 유지용."""
+        delay = self._ms_to_second(sec)
+
+        def _go(_t=timer, _w=why):
+            # Qt 진입점 — 예외를 밖으로 내보내지 않는다(617차)
+            try:
+                if not _t.isActive():
+                    _t.start()
+            except Exception:
+                logger.exception("[TimerAlign] %s 타이머 시작 예외", _w)
+        QTimer.singleShot(delay, _go)
+        logger.info("[TimerAlign] %s 타이머 :%02d 정렬 시작 예약(%dms 뒤) — 수급 타이머와 위상 분리", why, int(sec) % 60, delay)
 
     def _investor_timer_aligned_start(self) -> None:
         # Qt 가 부르는 진입점 — 예외가 새면 qFatal 로 무흔적 종료된다(617차). 전부 여기서 막는다.
@@ -17068,7 +17086,14 @@ class TradingSystem:
         # [MW0601 622차] 위상 분리 — 수급 타이머(60s)와 같은 순간에 시작하면 매분 같은
         # 초에 둘 다 발화해 한쪽의 펌프 안에서 다른 쪽이 재진입한다(2026-09-23 13:38
         # 동결: 둘 다 :05 에 발화). 시작을 30초 늦춰 반 주기 어긋나게 둔다.
-        QTimer.singleShot(30_000, lambda: self._kospi200_index_timer.start())
+        # [673차 후속8] 수급 타이머를 :ALIGN_SEC 로 정렬(R1)하면 「기동 +30초」는 더 이상 반 주기 차이가 아니다 —
+        #   기동 초에 따라 두 타이머가 다시 같은 초에 설 수 있다(622차 동결 조건). 정렬 모드면 현물지수 타이머를
+        #   :(ALIGN_SEC+30) 에 맞춰 반 주기 어긋남을 유지한다.
+        if bool(getattr(runtime_settings, "SHINDONG_TIMER_ALIGN_ENABLED", False)):
+            _k_sec = (int(getattr(runtime_settings, "SHINDONG_TIMER_ALIGN_SEC", 2) or 0) + 30) % 60
+            self._start_timer_at_second(self._kospi200_index_timer, _k_sec, "현물지수")
+        else:
+            QTimer.singleShot(30_000, lambda: self._kospi200_index_timer.start())
         # [612차 후속5] 재기동 직후 즉시 1회 — VKOSPI·현물지수가 60초간 비는 것을
         # 막는다. 이 둘이 없으면 RV-IV 스프레드 카드와 옵션 ATM 기준가도 함께 빈다.
         QTimer.singleShot(8_000, self._poll_kospi200_index)

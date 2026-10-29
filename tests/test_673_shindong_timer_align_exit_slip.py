@@ -199,3 +199,25 @@ def test_s4_script_and_collector_use_split():
     assert "XR.be_slips_by_align" in sc and "XR.be_slip_verdict" in sc
     col = _src(os.path.join(_ROOT, ".claude", "skills", "shindong-daily-check", "scripts", "collect_shindong_evidence.py"))
     assert "def aligned_days" in col and "본전청산 슬립 구간" in col
+
+
+# ── [673차 후속8] R1 뒤 622차 위상 분리 유지 ──────────────────────────────────────
+def test_r1_keeps_622_phase_split_with_kospi200_timer():
+    m = _src(_MAIN)
+    i = m.index("self._kospi200_index_timer = QTimer()")
+    blk = m[i:i + 2500]
+    assert "SHINDONG_TIMER_ALIGN_SEC" in blk and "+ 30) % 60" in blk
+    assert 'self._start_timer_at_second(self._kospi200_index_timer, _k_sec, "현물지수")' in blk
+    assert "QTimer.singleShot(30_000, lambda: self._kospi200_index_timer.start())" in blk   # 정렬 꺼짐 = 종전
+
+
+def test_ms_to_second_math():
+    import datetime as _d
+    src = _body(_src(_MAIN), "_ms_to_second")
+    import typing
+    ns = {"datetime": _d, "Optional": typing.Optional}
+    exec("def _ms_to_second" + __import__("textwrap").dedent(src), ns)   # 정적 메서드 본문을 그대로 실행
+    f = ns["_ms_to_second"]
+    t = _d.datetime(2026, 10, 30, 10, 0, 33, 0)
+    assert f(2, t) == 29000 and f(32, t) == 59000 and f(34, t) == 1000
+    assert f(33, _d.datetime(2026, 10, 30, 10, 0, 32, 900000)) == 60100   # 200ms 이내 → 다음 분
