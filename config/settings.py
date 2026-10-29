@@ -8058,6 +8058,19 @@ SHINDONG_DAILY_MAIL_ENABLED = True
 # 🔴 15:10 강제청산·15:18 안전망·CB 즉시청산은 신동 포지션에도 그대로 적용된다.
 SHINDONG_LIVE_QTY = 2              # 2계약(사용자 결정 2026-10-21, 10-13 실거래 전환 때 2→1 → 다시 2) — 청산은 전량 1회(live_exec.manage)
 SHINDONG_LIVE_MAX_AGE_MIN = 2      # 진입봉이 끝난 뒤 이 분 수가 지나면 쫓지 않는다(재기동·지연)
+# [MW0602 673차 후속6 · R1/R2] 신동 재생·집행 주기를 봉 마감 직후로 정렬한다.
+#   신동 재생(진입·손절 갱신)은 60초 수급 타이머(`_investor_timer`)에 얹혀 도는데, 그 타이머의 초(秒) 위상이
+#   앱 기동 시각으로 정해져 10/26~29 는 매분 :33~:35 였다 — 손절 갱신이 봉 마감 뒤 30초 넘게 늦게 도착해
+#   10/29 청산 −2.66pt 중 −2.32pt 가 「낡은 손절」로 청산된 몫이었다(docs/정기점검/매일점검/MW0602-20261029-청산슬립-딥다이브.md).
+#   R1: 기동 시 다음 :ALIGN_SEC 까지 기다렸다가 타이머를 시작하고(PreciseTimer), 매 틱 위상이 ±DRIFT 초를
+#       넘게 벗어나면 그 틱을 건너뛰고 다시 정렬한다. False = 종전(기동 시각 위상).
+#   R2: 정렬 뒤 재생 기준분이 직전 분에 못 미치면(7222·1분봉이 아직 안 들어옴) 같은 분 RETRY_SEC 초 뒤 1회만
+#       7222 를 다시 받아 재생한다(55초 간격 가드 시각은 건드리지 않는다). False = 다음 분까지 기다림.
+SHINDONG_TIMER_ALIGN_ENABLED = True
+SHINDONG_TIMER_ALIGN_SEC = 2
+SHINDONG_TIMER_ALIGN_DRIFT_SEC = 5
+SHINDONG_FLOW_RETRY_ENABLED = True
+SHINDONG_FLOW_RETRY_SEC = 8
 
 # ── [MW0602 신동 주체 리뉴얼] 미륵 휴면 스위치 ─────────────────────────────────
 # 계획: docs/신동거래_V4/신동주체_리뉴얼_구현계획_미륵휴면_MW0602-20261024.md

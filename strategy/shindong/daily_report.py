@@ -534,7 +534,7 @@ def build(trade_date: str, raw_db: str, flow_db: str, levels_db: str, sd_db: str
     # 2-1. 실거래 대사 [705차]
     w("## 2-1. 실거래 대사 — 실제 체결 vs 재생 MAIN")
     w("")
-    lines.extend(_recon_section(recon, _entry_slip_cum(sd_db, trades_db, trade_date) if recon is not None else None))
+    lines.extend(_recon_section(recon, *(_slip_cums(sd_db, trades_db, trade_date) if recon is not None else (None, None))))
     w("")
 
     # 3. 섀도 흐름
@@ -652,6 +652,7 @@ def _recon(trade_date, trades_db, main_rows, exec_events):
             exec_events = XR.events_from_exec_json(TP.read_json(trade_date, "shindong_exec.json", {}))
     rc = XR.reconcile(main_rows, pos, exec_events)
     rc["broker"] = XR.broker_net(trades_db, trade_date)
+    rc["phase_sec"] = XR.cadence_phase(trade_date)          # [673차 후속6 · R4] None = 미측정
     rc["other"] = XR.other_sources(trades_db, trade_date)
     return rc
 
@@ -738,20 +739,75 @@ def _recon_headline(rc, replay_main):
 ENTRY_SLIP_SINCE = "2026-10-13"
 
 
-def _entry_slip_cum(sd_db, trades_db, until):
-    """누적 진입 슬립 통계(+ = 불리). None = 원천 없음 · 실패(미측정)."""
+def _slip_cums(sd_db, trades_db, until):
+    """누적 (진입 슬립, 청산 슬립) 통계(+ = 불리). 각각 None = 원천 없음 · 실패(미측정).
+
+    청산 누적은 수동 청산 제외 · 손절 청산을 그날 갱신 위상 기준 창 안/밖으로 나눠 함께 낸다(R4).
+    """
     if not trades_db:
-        return None
+        return None, None
     try:
         recons, unmeasured = XR.collect_recons(sd_db, trades_db, ENTRY_SLIP_SINCE, until)
     except Exception:
-        return None
+        return None, None
     xs = [x["slip_pt"] for _d, rc in recons for x in (XR.entry_slips(rc) or [])]
     st = XR.slip_stats(xs)
     if st is not None:
         st["days"] = sum(1 for _d, rc in recons if XR.entry_slips(rc))
         st["unmeasured"] = len(unmeasured)
-    return st
+    ex = [x for _d, rc in recons for x in (XR.exit_slips(rc, rc.get("phase_sec")) or []) if not x["manual"]]
+    xt = XR.slip_stats([x["slip_pt"] for x in ex])
+    if xt is not None:
+        xt["days"] = len({_d for _d, rc in recons if any(not x["manual"] for x in (XR.exit_slips(rc) or []))})
+        xt["in"] = XR.slip_stats([x["slip_pt"] for x in ex if x["window"] == "in"])
+        xt["out"] = XR.slip_stats([x["slip_pt"] for x in ex if x["window"] == "out"])
+    return st, xt
+
+
+def _entry_slip_cum(sd_db, trades_db, until):
+    """누적 진입 슬립 통계 — `_slip_cums` 의 첫 값(하위호환)."""
+    return _slip_cums(sd_db, trades_db, until)[0]
+
+
+def _win_txt(st) -> str:
+    return "-" if st is None else "%d건 평균 %+.2f" % (st["n"], st["mean"])
+
+
+def _exit_slip_line(rc, cum=None) -> Optional[str]:
+    """§2-1 청산 슬립 한 줄 — 오늘(일치·수동 제외) · 손절 청산 갱신창 안/밖 · 그날 위상 · 누적. + = 불리."""
+    ph = (rc or {}).get("phase_sec")
+    sl = XR.exit_slips(rc, ph)
+    if sl is None:
+        return None
+    man = [x for x in sl if x["manual"]]
+    sl = [x for x in sl if not x["manual"]]
+    head = "- 청산 슬립(재생 청산가 − 실청산, + = 불리 · 수동 제외)"
+    if not sl:
+        s = head + ": 오늘 일치 청산 없음"
+    else:
+        st = XR.slip_stats([x["slip_pt"] for x in sl])
+        s = (head + ": 오늘 %d건 평균 %+.2fpt · 최악 %+.2fpt · 합 %s(실수량)"
+             % (st["n"], st["mean"], st["worst"],
+                _man(sum(x["slip_pt"] * x["qty"] for x in sl) * S.PT_VALUE_KRW)))
+        stop = [x for x in sl if x["kind"] == "stop"]
+        if stop:
+            if ph is None:
+                s += " · 손절 청산 %d건(갱신 위상 미측정 — 창 판정 불가)" % len(stop)
+            else:
+                s += " · 손절 청산 갱신창(:00~:%02d) 안 %s / 밖 %s" % (
+                    ph, _win_txt(XR.slip_stats([x["slip_pt"] for x in stop if x["window"] == "in"])),
+                    _win_txt(XR.slip_stats([x["slip_pt"] for x in stop if x["window"] == "out"])))
+    s += " · 그날 갱신 위상 %s" % ("미측정" if ph is None else ":%02d" % ph)
+    if man:
+        s += " · 수동 청산 %d건 제외" % len(man)
+    if cum is None:
+        s += " · 누적 미측정"
+    else:
+        s += (" · 누적(%s~) %d건/%d일 평균 %+.3fpt%s · 창 안 %s / 밖 %s"
+              % (ENTRY_SLIP_SINCE, cum["n"], cum["days"], cum["mean"],
+                 "" if cum["t"] is None else " · t=%+.2f" % cum["t"],
+                 _win_txt(cum.get("in")), _win_txt(cum.get("out"))))
+    return s
 
 
 def _entry_slip_line(rc, cum=None) -> Optional[str]:
@@ -776,7 +832,7 @@ def _entry_slip_line(rc, cum=None) -> Optional[str]:
     return s
 
 
-def _recon_section(rc, entry_cum=None):
+def _recon_section(rc, entry_cum=None, exit_cum=None):
     if rc is None:
         return ["- 대사 원천 없음(trades_db 미지정 또는 DB 없음) — 실거래 0 이 아니라 **미측정**이다."]
     out = ["| # | 구분 | 신호 | 실거래 | 재생 MAIN | 비고 |", "|---|---|---|---|---|---|"]
@@ -825,6 +881,9 @@ def _recon_section(rc, entry_cum=None):
     _es = _entry_slip_line(rc, entry_cum)
     if _es:
         out.append(_es)
+    _xs = _exit_slip_line(rc, exit_cum)
+    if _xs:
+        out.append(_xs)
     out.append("- 재생은 장후 최종 흐름으로 다시 돌린 값이라, 장중에 나왔다가 정정으로 사라진 신호(철회)는 빠지고 "
                "보유 중·늦음으로 못 친 신호는 들어간다. **실거래 손익은 이 절의 「실거래」 열이다.**")
     return out

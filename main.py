@@ -755,6 +755,13 @@ class TradingSystem:
         self._sd_last_horizon_dt = None            # 마지막으로 성공한 재생의 기준분(datetime). None = 오늘 미측정
         self._sd_hold_stale_since = None           # 보유 중 지연 구간 시작 시각
         self._sd_hold_stale_max = 0                # 그 구간의 최대 지연(분)
+        # [673차 후속6 · R1] 수급 타이머 위상 정렬 — 재정렬 대기 중이면 True(중복 예약 방지).
+        self._investor_align_pending = False
+        self._investor_drift_n = 0                 # 연속 위상 이탈 틱 수(2 연속이면 재정렬)
+        # [673차 후속6 · R2] 기준분 미달 재시도 — 마지막으로 재시도한 분(HH:MM). None = 오늘 없음.
+        self._sd_flow_retry_minute = None
+        # [673차 후속6 · R4] 신동 재생이 돈 초(秒) 분포 — 청산 슬립의 「갱신창」 판정 원천(shindong_cadence.json).
+        self._sd_cadence = None
         if self._principal_state.get("locked"):
             logger.warning("[Principal] PRINCIPAL_LOCK — 거래주체 %s 고정(파일·대시보드 전환 무시)",
                            principal_mod.label(self._principal_state["principal"]))
@@ -5230,6 +5237,81 @@ class TradingSystem:
         )
         return True
 
+    # ── [MW0602 673차 후속6 · R1] 수급 타이머 위상 정렬 ─────────────────────────
+    #   타이머는 두 곳에서 만들어진다 — 기동 설정(여기)과 브로커 연결(`broker_runtime_service` 가 새 QTimer 로
+    #   교체 후 장 시작 시 start). 두 곳 모두 아래 wire/begin 을 거쳐 같은 정렬 경로를 탄다.
+    def _investor_timer_wire(self) -> None:
+        """수급 타이머 슬롯 연결. 정렬 모드면 정밀 타이머 + 위상 감시 슬롯(_investor_timer_tick)."""
+        self._investor_timer.setInterval(60_000)
+        if bool(getattr(runtime_settings, "SHINDONG_TIMER_ALIGN_ENABLED", False)):
+            self._investor_timer.setTimerType(Qt.PreciseTimer)
+            self._investor_timer.timeout.connect(self._investor_timer_tick)
+        else:
+            self._investor_timer.timeout.connect(self._fetch_investor_data)
+
+    def _investor_timer_begin(self, why: str) -> bool:
+        """타이머 시작. 정렬 모드면 다음 :ALIGN_SEC 로 예약하고 True(즉시 수집하지 않는다 — 곧 정렬 시작이
+        수집하며, 지금 수집하면 7222 55초 간격 가드에 걸려 정렬 첫 분의 신동 재생이 빠진다).
+        정렬 모드가 아니면 바로 start 하고 False(즉시 수집 여부는 호출부 종전대로)."""
+        if bool(getattr(runtime_settings, "SHINDONG_TIMER_ALIGN_ENABLED", False)):
+            self._investor_timer_align(why)
+            return True
+        self._investor_timer.start(60_000)
+        return False
+
+    def _investor_timer_align(self, why: str) -> None:
+        """다음 :SHINDONG_TIMER_ALIGN_SEC 에 타이머를 (재)시작하도록 예약한다. 그 순간 한 번 바로 수집한다."""
+        if self._investor_align_pending:
+            return
+        sec = int(getattr(runtime_settings, "SHINDONG_TIMER_ALIGN_SEC", 2) or 0) % 60
+        now = datetime.datetime.now()
+        target = now.replace(second=sec, microsecond=0)
+        if target <= now + datetime.timedelta(milliseconds=200):
+            target += datetime.timedelta(minutes=1)
+        delay_ms = max(0, int((target - now).total_seconds() * 1000))
+        self._investor_align_pending = True
+        QTimer.singleShot(delay_ms, self._investor_timer_aligned_start)
+        logger.info("[TimerAlign] 수급 타이머 %s 정렬 — %s 에 시작(위상 :%02d · %dms 뒤)",
+                    why, target.strftime("%H:%M:%S"), sec, delay_ms)
+
+    def _investor_timer_aligned_start(self) -> None:
+        # Qt 가 부르는 진입점 — 예외가 새면 qFatal 로 무흔적 종료된다(617차). 전부 여기서 막는다.
+        try:
+            self._investor_align_pending = False
+            self._investor_timer.start()
+            self._fetch_investor_data()
+        except Exception:
+            logger.exception("[TimerAlign] 정렬 시작 예외")
+
+    def _investor_timer_tick(self) -> None:
+        """정렬 모드의 타이머 슬롯 — 위상이 ±DRIFT 를 **2틱 연속** 넘으면 그 틱은 건너뛰고 다시 맞춘다.
+
+        한 틱만 늦은 것은 이벤트 루프가 바빴던 것(Cybos 대기 펌프 등)일 수 있고, 정밀 타이머는 다음 틱을
+        원래 위상으로 돌려놓으므로 재정렬하지 않는다(재정렬은 한 분 수집을 거른다).
+
+        건너뛰는 이유: 이 틱에서 수집하고 곧 정렬 시작에서 또 수집하면 7222 55초 간격 가드에 걸려
+        정렬된 첫 분의 신동 재생이 빠진다. 펌프 연기 재시도(`_defer_if_pump_busy`)는 이 슬롯을 거치지 않으므로
+        연기로 늦어진 수집이 정렬을 흔들지 않는다.
+        """
+        try:
+            now = datetime.datetime.now()
+            sec = int(getattr(runtime_settings, "SHINDONG_TIMER_ALIGN_SEC", 2) or 0) % 60
+            tol = float(getattr(runtime_settings, "SHINDONG_TIMER_ALIGN_DRIFT_SEC", 5) or 5)
+            d = ((now.second + now.microsecond / 1e6) - sec + 30.0) % 60.0 - 30.0
+            if abs(d) > tol:
+                self._investor_drift_n += 1
+            else:
+                self._investor_drift_n = 0
+            if self._investor_drift_n >= 2:
+                self._investor_drift_n = 0
+                self._investor_timer.stop()
+                logger.warning("[TimerAlign] 수급 타이머 위상 어긋남 %+.1f초(허용 ±%.0f) — 이 틱 건너뛰고 재정렬", d, tol)
+                self._investor_timer_align("재")
+                return
+            self._fetch_investor_data()
+        except Exception:
+            logger.exception("[TimerAlign] 타이머 틱 예외")
+
     def _fetch_investor_data(self) -> None:
         """수급 TR 수집 — QTimer에서 호출 (COM 콜백 체인 외부)."""
         now = datetime.datetime.now()
@@ -5398,6 +5480,8 @@ class TradingSystem:
             # [MW0601 626차] 신동 가상거래 — 방금 적재한 흐름으로 하루치를 재생한다.
             # 수집이 성공한 틱에서만 돈다(같은 분에 두 번 돌 이유가 없다).
             self._run_shindong(now)
+            # [673차 후속6 · R2] 기준분이 직전 분에 못 미치면 같은 분 안에서 1회 재시도.
+            self._shindong_flow_retry_maybe(now)
         except Exception as e:
             # 첫 실패만 남긴다 — 매분 반복이라 폭주를 막는다.
             if not self._wof_warned:
@@ -5455,7 +5539,7 @@ class TradingSystem:
                 self._sif_warned = True
                 logger.warning("[StrikeInvestor] 수집기 기동 실패(이후 로그 억제): %s", e)
 
-    def _run_shindong(self, now: datetime.datetime) -> None:
+    def _run_shindong(self, now: datetime.datetime, retry: bool = False) -> None:
         """[MW0601 626차] 신동(개인 위클리 흐름 + 맥점) **가상거래** 재생·기록·차트 push.
 
         🔴 주문을 내지 않는다(절대원칙 §6). 결과는 `shindong.db` 와 차트 레이어뿐이다.
@@ -5482,6 +5566,8 @@ class TradingSystem:
                 now=now, live=True)
             # [신동 주체 리뉴얼] 입력 지연 계측(D3 — 기본 shadow: 로그만). 집행 단계보다 먼저 — live 면 관문이 읽는다.
             self._shindong_flow_stale_check(payload, now)
+            # [673차 후속6 · R4] 재생이 돈 초(秒) — 청산 슬립 「갱신창」 판정 원천
+            self._sd_cadence_note(now, retry)
             # [V4] 집행 단계(아래 `_shindong_exec_step`)보다 먼저 갱신한다 — 진입 수량이 이 ATR 을 쓴다.
             _atr_new = (payload.get("atr14_v4"), payload.get("atr14_v4_src"))
             if _atr_new != self._sd_atr_v4:
@@ -5543,6 +5629,77 @@ class TradingSystem:
                 self._sd_warned = True
                 logger.warning("[Shindong] 가상거래 재생 실패(이후 로그 억제): %s", e,
                                exc_info=True)
+
+    # ── [MW0602 673차 후속6 · R2/R4] 기준분 재시도 · 재생 주기 기록 ─────────────────
+    def _shindong_flow_retry_maybe(self, now: datetime.datetime) -> None:
+        """재생 기준분(horizon)이 직전 분보다 늦으면 RETRY_SEC 뒤 1회만 7222 재수집 + 재생."""
+        try:
+            if not bool(getattr(runtime_settings, "SHINDONG_FLOW_RETRY_ENABLED", False)):
+                return
+            if not (datetime.time(9, 2) <= now.time() <= datetime.time(15, 5)):
+                return
+            hz = self._sd_last_horizon_dt
+            cur = now.replace(second=0, microsecond=0) - datetime.timedelta(minutes=1)
+            if hz is None or hz.date() != now.date() or hz >= cur:
+                return
+            minute = now.strftime("%H:%M")
+            if self._sd_flow_retry_minute == minute:
+                return
+            self._sd_flow_retry_minute = minute
+            sec = float(getattr(runtime_settings, "SHINDONG_FLOW_RETRY_SEC", 8) or 8)
+            QTimer.singleShot(int(sec * 1000), self._shindong_flow_retry)
+            logger.info("[FlowRetry] 신동 기준분 %s < 직전 분 %s — %.0f초 뒤 7222 1회 재시도",
+                        hz.strftime("%H:%M"), cur.strftime("%H:%M"), sec)
+        except Exception:
+            logger.exception("[FlowRetry] 재시도 예약 예외")
+
+    def _shindong_flow_retry(self) -> None:
+        # Qt 가 부르는 진입점 — 예외를 밖으로 내보내지 않는다(617차).
+        try:
+            now = datetime.datetime.now()
+            if self._defer_if_pump_busy("sd_flow_retry", self._shindong_flow_retry):
+                return
+            flow = self._weekly_option_flow
+            if flow is None:
+                return
+            before = self._sd_last_horizon_dt
+            flow.fetch_and_store()
+            # ⚠ `_wof_last_ts` 는 갱신하지 않는다 — 갱신하면 다음 정렬 틱이 55초 간격 가드에 걸려 빠진다.
+            self._run_shindong(now, retry=True)
+            after = self._sd_last_horizon_dt
+            logger.info("[FlowRetry] 재시도 완료 — 기준분 %s → %s",
+                        before.strftime("%H:%M") if before else "-", after.strftime("%H:%M") if after else "-")
+        except Exception:
+            logger.exception("[FlowRetry] 재시도 예외")
+
+    def _sd_cadence_note(self, now: datetime.datetime, retry: bool = False) -> None:
+        """신동 재생 시각의 초 분포를 그날 파일에 남긴다(`shindong_cadence.json`).
+
+        리포트가 최빈 초를 「그날 손절 갱신 위상」으로 읽어 청산을 갱신창 안/밖으로 나눈다
+        (`exec_recon.exit_slips`). 재시도(R2)는 위상이 아니므로 따로 센다. 파일은 새 초가 나오거나
+        10회마다만 쓴다(매분 쓰기 회피). 실패해도 재생을 막지 않는다.
+        """
+        try:
+            day = now.date().isoformat()
+            c = self._sd_cadence
+            if c is None or c.get("date") != day:
+                c = principal_mod.read_json(day, "shindong_cadence.json", None)
+                if not (isinstance(c, dict) and c.get("date") == day):
+                    c = {"date": day, "sec_hist": {}, "runs": 0, "retries": 0}
+                self._sd_cadence = c
+            if retry:
+                c["retries"] = int(c.get("retries", 0)) + 1
+                new = True
+            else:
+                k = str(now.second)
+                new = k not in c["sec_hist"]
+                c["sec_hist"][k] = int(c["sec_hist"].get(k, 0)) + 1
+                c["runs"] = int(c.get("runs", 0)) + 1
+            c["align"] = bool(getattr(runtime_settings, "SHINDONG_TIMER_ALIGN_ENABLED", False))
+            if new or c["runs"] % 10 == 1:
+                principal_mod.write_json(day, "shindong_cadence.json", c)
+        except Exception as _e:
+            logger.debug("[Shindong] 재생 주기 기록 실패(무해): %s", _e)
 
     # ── [MW0602 거래주체분리] 신동 V2(FLOWC) 실집행 ─────────────────────────────
     def _sd_exec_load(self, day: str) -> None:
@@ -16901,9 +17058,8 @@ class TradingSystem:
 
         # 수급 TR 주기 폴링 — 60초 (COM 콜백 외부에서 안전하게 실행)
         self._investor_timer = QTimer()
-        self._investor_timer.setInterval(60_000)
-        self._investor_timer.timeout.connect(self._fetch_investor_data)
-        self._investor_timer.start()
+        self._investor_timer_wire()
+        self._investor_timer_begin("기동")
 
         # [260704 감사 P2] KOSPI200 현물지수 주기 폴링 — 60초 (베이시스 계산용)
         self._kospi200_index_timer = QTimer()

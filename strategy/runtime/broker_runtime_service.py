@@ -117,7 +117,11 @@ class BrokerRuntimeService:
         system.broker.probe_investor_ticker(extra_codes=[code])
 
         system._investor_timer = QTimer()
-        system._investor_timer.timeout.connect(system._fetch_investor_data)
+        # [MW0602 673차 후속6 · R1] 슬롯 연결은 system 이 정한다(봉 마감 정렬 모드면 위상 감시 슬롯).
+        if hasattr(system, "_investor_timer_wire"):
+            system._investor_timer_wire()
+        else:
+            system._investor_timer.timeout.connect(system._fetch_investor_data)
 
         system._option_chain_timer = QTimer()
         system._option_chain_timer.timeout.connect(system._poll_option_chain)
@@ -142,14 +146,28 @@ class BrokerRuntimeService:
 
         investor_timer = getattr(system, "_investor_timer", None)
         if investor_timer is not None and not investor_timer.isActive():
-            investor_timer.start(60_000)
-            logger.info(
-                "[System] %s investor timer start triggered (%s) code=%s interval=60s",
-                system.broker.name,
-                reason,
-                getattr(system, "_futures_code", ""),
-            )
-            system._fetch_investor_data()
+            # [MW0602 673차 후속6 · R1] 봉 마감 정렬 모드면 system 이 다음 :02 로 예약한다(즉시 수집 없음 —
+            #   곧 정렬 시작이 수집한다). 이미 예약돼 있으면 그대로 둔다. 정렬 모드가 아니면 종전과 같다.
+            if bool(getattr(system, "_investor_align_pending", False)):
+                aligned = True
+            elif hasattr(system, "_investor_timer_begin"):
+                aligned = bool(system._investor_timer_begin(reason))
+            else:
+                aligned = False
+            if aligned:
+                logger.info(
+                    "[System] %s investor timer aligned start scheduled (%s) code=%s",
+                    system.broker.name, reason, getattr(system, "_futures_code", ""))
+            else:
+                if not investor_timer.isActive():
+                    investor_timer.start(60_000)
+                logger.info(
+                    "[System] %s investor timer start triggered (%s) code=%s interval=60s",
+                    system.broker.name,
+                    reason,
+                    getattr(system, "_futures_code", ""),
+                )
+                system._fetch_investor_data()
 
         option_chain_timer = getattr(system, "_option_chain_timer", None)
         if option_chain_timer is not None and not option_chain_timer.isActive():
