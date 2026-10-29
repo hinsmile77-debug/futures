@@ -255,6 +255,42 @@ def cadence_phase(day: str) -> Optional[int]:
     return int(max(h.items(), key=lambda kv: (int(kv[1]), -int(kv[0])))[0])
 
 
+def cadence_aligned(day: str) -> Optional[bool]:
+    """[673차 후속7] 그날 신동 재생이 R1(봉 마감 정렬) 아래 돌았는가. None = 기록 없음(R1 이전 날 포함)."""
+    try:
+        from strategy.runtime import trade_principal as TP
+        c = TP.read_json(day, "shindong_cadence.json", None)
+    except Exception:
+        return None
+    if not isinstance(c, dict) or "align" not in c:
+        return None
+    return bool(c["align"])
+
+
+def be_slip_verdict(xs: List[float]) -> Dict[str, Any]:
+    """사전등록 V4 §3-2 판정(한 구간). state ∈ 대기 · 재검토 · 유지. 문턱은 spec 단일 출처."""
+    from strategy.shindong import spec as S
+    n = len(xs)
+    m = (sum(xs) / n) if n else None
+    if n < S.V4_BE_SLIP_MIN_N:
+        state = "대기"
+    elif m > S.V4_BE_SLIP_REVIEW_PT:
+        state = "재검토"
+    else:
+        state = "유지"
+    return {"n": n, "mean": m, "worst": (max(xs) if n else None), "state": state}
+
+
+def be_slips_by_align(recons) -> Dict[str, List[Dict[str, Any]]]:
+    """collect_recons 결과 → {"post": 정렬 후 표본, "pre": 정렬 전 표본}. 표본에 day 를 붙인다."""
+    out: Dict[str, List[Dict[str, Any]]] = {"pre": [], "post": []}
+    for day, rc in recons:
+        seg = "post" if rc.get("aligned") is True else "pre"
+        for x in be_exit_slips(rc) or []:
+            out[seg].append(dict(x, day=day))
+    return out
+
+
 def exit_slips(rc: Optional[Dict[str, Any]], phase_sec: Optional[int] = None) -> Optional[List[Dict[str, Any]]]:
     """[673차 후속6 · R4] 실거래 청산 슬립 — 재생 청산가 대비. + = 불리.
 
@@ -338,6 +374,7 @@ def collect_recons(sd_db: str, trades_db: str, since: str, until: str,
             TP.read_json(day, "shindong_exec.json", {}))
         rc = reconcile(main_rows, pos, ev)
         rc["phase_sec"] = cadence_phase(day)       # [R4] 청산 갱신창 판정용 — None = 미측정
+        rc["aligned"] = cadence_aligned(day)       # [673차 후속7] 본전청산 슬립 구간(R1 정렬 전/후)
         out.append((day, rc))
     return out, unmeasured
 

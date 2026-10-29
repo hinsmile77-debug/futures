@@ -534,7 +534,8 @@ def build(trade_date: str, raw_db: str, flow_db: str, levels_db: str, sd_db: str
     # 2-1. 실거래 대사 [705차]
     w("## 2-1. 실거래 대사 — 실제 체결 vs 재생 MAIN")
     w("")
-    lines.extend(_recon_section(recon, *(_slip_cums(sd_db, trades_db, trade_date) if recon is not None else (None, None))))
+    lines.extend(_recon_section(recon, *(_slip_cums(sd_db, trades_db, trade_date) if recon is not None else (None, None)),
+                                be_cum=(_be_slip_cum(sd_db, trades_db, trade_date) if recon is not None else None)))
     w("")
 
     # 3. 섀도 흐름
@@ -653,6 +654,7 @@ def _recon(trade_date, trades_db, main_rows, exec_events):
     rc = XR.reconcile(main_rows, pos, exec_events)
     rc["broker"] = XR.broker_net(trades_db, trade_date)
     rc["phase_sec"] = XR.cadence_phase(trade_date)          # [673차 후속6 · R4] None = 미측정
+    rc["aligned"] = XR.cadence_aligned(trade_date)          # [673차 후속7] 본전청산 슬립 구간
     rc["other"] = XR.other_sources(trades_db, trade_date)
     return rc
 
@@ -764,6 +766,25 @@ def _slip_cums(sd_db, trades_db, until):
     return st, xt
 
 
+def _be_slip_cum(sd_db, trades_db, until):
+    """[673차 후속7] 본전청산 슬립 누적 — R1 정렬 전/후 구간별 판정. None = 원천 없음 · 실패(미측정)."""
+    if not trades_db:
+        return None
+    try:
+        recons, _um = XR.collect_recons(sd_db, trades_db, S.SCORING_START, until, S.SPEC_VERSION)
+    except Exception:
+        return None
+    segs = XR.be_slips_by_align(recons)
+    return {k: XR.be_slip_verdict([x["slip_pt"] for x in v]) for k, v in segs.items()}
+
+
+def _be_seg_txt(v) -> str:
+    if not v["n"]:
+        return "0건"
+    return "%d건 평균 %+.2fpt · %s" % (v["n"], v["mean"],
+                                    "%s %d/%d" % (v["state"], v["n"], S.V4_BE_SLIP_MIN_N) if v["state"] == "대기" else v["state"])
+
+
 def _entry_slip_cum(sd_db, trades_db, until):
     """누적 진입 슬립 통계 — `_slip_cums` 의 첫 값(하위호환)."""
     return _slip_cums(sd_db, trades_db, until)[0]
@@ -832,7 +853,7 @@ def _entry_slip_line(rc, cum=None) -> Optional[str]:
     return s
 
 
-def _recon_section(rc, entry_cum=None, exit_cum=None):
+def _recon_section(rc, entry_cum=None, exit_cum=None, be_cum=None):
     if rc is None:
         return ["- 대사 원천 없음(trades_db 미지정 또는 DB 없음) — 실거래 0 이 아니라 **미측정**이다."]
     out = ["| # | 구분 | 신호 | 실거래 | 재생 MAIN | 비고 |", "|---|---|---|---|---|---|"]
@@ -878,6 +899,11 @@ def _recon_section(rc, entry_cum=None, exit_cum=None):
                    % (len(xs), sum(xs) / len(xs), max(xs), S.V4_BE_SLIP_REVIEW_PT, S.V4_BE_SLIP_MIN_N))
     elif sl is not None and hasattr(S, "V4_BE_SLIP_REVIEW_PT"):
         out.append("- [v4] 본전청산 실측 슬립: 오늘 본전청산 일치 거래 없음")
+    if be_cum is not None and sl is not None:
+        # [673차 후속7 · 사용자 결정] R1 정렬 전/후 구간별 판정 — 문턱 동일, 합치지 않는다. 기준 구간 = 정렬 후.
+        out.append("  - 누적 판정(R1 정렬 전/후 구간별 · 기준 구간 = 정렬 후): 정렬 후 %s · 정렬 전(참고) %s · 오늘 %s"
+                   % (_be_seg_txt(be_cum["post"]), _be_seg_txt(be_cum["pre"]),
+                      {True: "정렬 후", False: "정렬 전(스위치 꺼짐)", None: "정렬 전"}[rc.get("aligned")]))
     _es = _entry_slip_line(rc, entry_cum)
     if _es:
         out.append(_es)

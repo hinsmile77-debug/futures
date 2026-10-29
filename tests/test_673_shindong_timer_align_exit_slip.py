@@ -148,3 +148,54 @@ def test_r4_cadence_phase_mode(monkeypatch):
     assert XR.cadence_phase("2026-10-30") == 2
     fake.read_json = lambda day, name, default=None: default
     assert XR.cadence_phase("2026-10-30") is None
+
+
+# ── [673차 후속7 · 사용자 결정 2026-10-29] 본전청산 슬립 R1 정렬 전/후 구간별 판정 ──────────────
+from strategy.shindong import spec as S  # noqa: E402
+
+
+def _be_rc(slip_pts, aligned):
+    items = []
+    for i, sp in enumerate(slip_pts):
+        items.append(dict(kind="MATCH", key="K%d" % i,
+                          real=dict(qty=1, side=-1, entry_px=944.32, net=0.0, entry_ts="2026-10-30 10:00:03", exit_ts="2026-10-30 10:00:10",
+                                    legs=[("10:00", 944.32 + sp, "하드스톱(틱)")]),
+                          replay=dict(side=-1, entry_px=944.32, net=0.0, entry_ts="10:00",
+                                      legs=[("10:00", 944.32, "BE"), ("10:00", 944.32, "BE")])))
+    return {"items": items, "aligned": aligned}
+
+
+def test_s1_split_by_cadence_align_not_date():
+    recons = [("2026-10-29", _be_rc([1.82], None)),      # R1 이전(파일 없음) → 정렬 전
+              ("2026-10-30", _be_rc([0.1, 0.0], True)),   # R1 아래 → 정렬 후
+              ("2026-10-31", _be_rc([0.5], False))]       # 스위치 끈 날 → 정렬 전
+    segs = XR.be_slips_by_align(recons)
+    assert [round(x["slip_pt"], 2) for x in segs["post"]] == [0.1, 0.0]
+    assert [round(x["slip_pt"], 2) for x in segs["pre"]] == [1.82, 0.5]
+    assert segs["post"][0]["day"] == "2026-10-30"
+
+
+def test_s2_verdict_thresholds_unchanged_and_per_segment():
+    assert S.V4_BE_SLIP_REVIEW_PT == 0.8 and S.V4_BE_SLIP_MIN_N == 20 and S.V4_BE_SLIP_SPLIT_BY_ALIGN
+    assert XR.be_slip_verdict([])["state"] == "대기"
+    assert XR.be_slip_verdict([1.0] * 19)["state"] == "대기"
+    assert XR.be_slip_verdict([0.81] * 20)["state"] == "재검토"
+    assert XR.be_slip_verdict([0.8] * 20)["state"] == "유지"
+
+
+def test_s3_report_line_shows_both_segments_post_first():
+    be_cum = {"post": XR.be_slip_verdict([0.1, 0.0]), "pre": XR.be_slip_verdict([1.82, -0.5])}
+    rc = _be_rc([0.1], True)
+    out = "\n".join(DR._recon_section(dict(rc, totals={k: {"real": (0, 0), "replay": (0, 0)} for k in
+                                                         ("MATCH", "EXEC_RETRACTED", "EXEC_UNKEYED", "REPLAY_ONLY")},
+                                           real_total=0, replay_total=0, broker=None, other={}),
+                                      be_cum=be_cum))
+    assert "누적 판정(R1 정렬 전/후 구간별 · 기준 구간 = 정렬 후): 정렬 후 2건 평균 +0.05pt · 대기 2/20" in out
+    assert "정렬 전(참고) 2건 평균 +0.66pt · 대기 2/20 · 오늘 정렬 후" in out
+
+
+def test_s4_script_and_collector_use_split():
+    sc = _src(os.path.join(_ROOT, "scripts", "shindong_v4_be_slip.py"))
+    assert "XR.be_slips_by_align" in sc and "XR.be_slip_verdict" in sc
+    col = _src(os.path.join(_ROOT, ".claude", "skills", "shindong-daily-check", "scripts", "collect_shindong_evidence.py"))
+    assert "def aligned_days" in col and "본전청산 슬립 구간" in col

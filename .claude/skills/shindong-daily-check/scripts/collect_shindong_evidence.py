@@ -346,6 +346,26 @@ def flow_arrival(root, day):
             "max": s[-1], "ge120": sum(1 for x in s if x >= 120)}
 
 
+def aligned_days(root, day):
+    """V4 채점 시작~오늘 중 R1 정렬 아래 신동 재생이 돈 날(shindong_cadence.json align=True)."""
+    base = os.path.join(root, "data", "principal")
+    out = []
+    try:
+        names = sorted(os.listdir(base))
+    except Exception:
+        return out
+    for n in names:
+        if not (V4_START <= n <= day.isoformat()):
+            continue
+        try:
+            with io.open(os.path.join(base, n, "shindong_cadence.json"), encoding="utf-8") as f:
+                if json.load(f).get("align") is True:
+                    out.append(n)
+        except Exception:
+            continue
+    return out
+
+
 def prereg_progress(root, day):
     rows = CE.db_rows(root, "data/db/shindong.db",
                       "SELECT COUNT(DISTINCT trade_date), "
@@ -624,6 +644,11 @@ def build(root, day, phase, pcid, pclabel):
         if pg:
             a("- 사전등록 진행: V4 실거래 %s거래일 / 판정 창 %d거래일 · MAIN live %s거래 · 본전청산 %s건 / 슬립 판정 %d건"
               % (pg[0] or 0, V4_JUDGE_DAYS, pg[2] or 0, pg[1] or 0, BE_SLIP_N))
+        # [673차 후속7 · 사용자 결정 2026-10-29] 본전청산 슬립은 R1(수급 타이머 정렬) 전/후 구간별로 판정한다 —
+        #   구간 표본·판정은 `python scripts/shindong_v4_be_slip.py` 와 신동 일일 리포트 §2-1 이 정본이다.
+        al = aligned_days(root, day)
+        a("- 본전청산 슬립 구간: R1 정렬 후 기록일 %d일%s — 판정은 구간별(정렬 후가 기준 · 합치지 않음), 상세 `scripts/shindong_v4_be_slip.py`"
+          % (len(al), (" (첫날 %s)" % al[0]) if al else ""))
         a("")
     # §6 미결 관측
     a("## 6. 미결 관측 · 장중 확인 항목")
