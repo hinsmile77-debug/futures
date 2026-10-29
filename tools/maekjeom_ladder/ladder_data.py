@@ -248,6 +248,55 @@ def _live_open_fix(day, rows):
     return rows, " · 08:45 시가 차트 보정 %.2f→%.2f(08:50 맥점%s)" % (b[1], o, note)
 
 
+OPEN_FIX_LOG_DIR = os.path.join(ROOT, "data", "shindong2_live")    # 날짜 폴더 아래 open_fix.log (foreign_cut_check.log 와 같은 자리)
+_open_fix_seen = set()                                             # (day, 상태) — 이 프로세스에서 이미 남긴 것
+_open_fix_lock = threading.Lock()
+
+
+def _open_fix_state(rows, tag):
+    """08:45 시가 보정의 상태 — 적용 | 차이없음 | 보정전 | None(08:45 봉 없음 = 판정 대상 아님)."""
+    if "차트 보정" in tag:
+        return "적용"
+    if "보정 전" in tag:
+        return "보정전"
+    if rows and rows[0][0] == "08:45":
+        return "차이없음"
+    return None
+
+
+def _note_open_fix(day, rows, tag, now=None):
+    """[MW0602 673차 후속 / F-SD-6] 08:45 시가 보정 상태를 날짜별 open_fix.log 에 상태마다 1줄 남긴다.
+    종전엔 꼬리표가 화면 src 문자열에만 있어, 보정이 실제 적용됐는지를 함수를 직접 불러야만 알 수 있었다(계측 4원칙 ④).
+    동작 무변경 — 봉·꼬리표는 그대로 반환하고, 기록 실패는 삼킨다. 같은 (날짜, 상태)는 프로세스·파일 기준으로 한 번만."""
+    st = _open_fix_state(rows, tag)
+    if st is None:
+        return None
+    key = (day, st)
+    try:
+        with _open_fix_lock:
+            if key in _open_fix_seen:
+                return None
+            d = os.path.join(OPEN_FIX_LOG_DIR, day.replace("-", ""))
+            p = os.path.join(d, "open_fix.log")
+            mark = "상태=%s " % st
+            if os.path.exists(p):
+                with open(p, encoding="utf-8") as f:
+                    if any(mark in ln for ln in f):              # 다른 프로세스(사다리 서버 ↔ 신동2)가 이미 남겼다
+                        _open_fix_seen.add(key)
+                        return None
+            now = now or _dt.datetime.now()
+            o = rows[0][1] if rows else None
+            line = "%s [OpenFix] day=%s 상태=%s 08:45시가=%s%s" % (
+                now.strftime("%H:%M:%S"), day, st, "-" if o is None else "%.2f" % o, tag)
+            os.makedirs(d, exist_ok=True)
+            with open(p, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+            _open_fix_seen.add(key)
+            return line
+    except Exception:                                            # noqa: BLE001 — 계측 실패가 봉 반환을 막으면 안 된다
+        return None
+
+
 def candles(day, live):
     if not live:
         try:
@@ -258,6 +307,8 @@ def candles(day, live):
             pass
     rows, src = _candles_live(day)
     rows, tag = _live_open_fix(day, rows)
+    if live:
+        _note_open_fix(day, rows, tag)
     return rows, src + tag
 
 

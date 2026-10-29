@@ -86,6 +86,8 @@ def test_candles_live_path_carries_tag(tmp_path, monkeypatch):
     _levels_db(tmp_path)
     monkeypatch.setattr(L, "DB", str(tmp_path))
     monkeypatch.setattr(L, "_candles_live", lambda d: ([["08:45", 905.34, 905.68, 904.18, 904.18]], "raw_candles(live)"))
+    monkeypatch.setattr(L, "OPEN_FIX_LOG_DIR", str(tmp_path / "live"))   # [673차 후속 F-SD-6] 실데이터 폴더에 쓰지 않는다
+    monkeypatch.setattr(L, "_open_fix_seen", set())
     rows, src = L.candles(DAY, live=True)
     assert rows[0][1] == 904.68 and src.startswith("raw_candles(live)") and "차트 보정" in src
 
