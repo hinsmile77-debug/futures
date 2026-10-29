@@ -442,7 +442,9 @@ def build(trade_date: str, raw_db: str, flow_db: str, levels_db: str, sd_db: str
     w("> **%s 리포트** · 생성 %s · 규격 `%s` · 상품 `%s` (%s)" % (pc, now.strftime("%Y-%m-%d %H:%M"), S.SPEC_VERSION,
                                              day["product"], day["product_note"]))
     w("> **아래 변형 손익은 엔진 재생(가상)이다** — 장후 최종 흐름으로 하루를 다시 돌린 값. "
-      "미니선물 2계약 · CYBOS 요율 · 1틱 슬리피지 기준. **실제 체결 손익은 §2-1 실거래 대사.**")
+      "미니선물 %d계약 · CYBOS 요율 · 1틱 슬리피지 기준. **실제 체결 손익은 §2-1 실거래 대사.** "
+      "실주문 수량은 X%%위험 규칙(ATR14)으로 이보다 적을 수 있다 — 아래 「실거래」 줄이 차이를 수량·체결로 나눈다."
+      % S.LEGS)
     w("")
     if not day["ok"]:
         w("**판정 불가 — %s.**" % day["why"])
@@ -489,8 +491,9 @@ def build(trade_date: str, raw_db: str, flow_db: str, levels_db: str, sd_db: str
     if recon is not None:
         w("**실거래(실제 체결)** — %s" % _recon_headline(recon, sums["MAIN"]["net"]))
         w("")
-    w("**오늘의 한 줄** — MAIN %s(%d거래 %d승)%s." % (
-        _man(sums["MAIN"]["net"]), sums["MAIN"]["n"], sums["MAIN"]["win"],
+    w("**오늘의 한 줄** — %sMAIN %s(%d거래 %d승%s)%s." % (
+        _recon_oneliner(recon), _man(sums["MAIN"]["net"]), sums["MAIN"]["n"], sums["MAIN"]["win"],
+        _recon_scaled_note(recon),
         "" if best == "MAIN" else ", 최선은 %s %s(MAIN 대비 %s)" % (
             VLABEL[best], _man(sums[best]["net"]), _man(sums[best]["net"] - sums["MAIN"]["net"]))))
     if any(v not in live_vs for v in S.VARIANTS):
@@ -636,8 +639,62 @@ def _recon(trade_date, trades_db, main_rows, exec_events):
     return rc
 
 
+def _qty_desc(rc) -> str:
+    """실거래 포지션 수량 분포 — 「1계약×4」 · 「1계약×2 · 2계약×1」."""
+    cnt: Dict[int, int] = {}
+    for it in rc["items"]:
+        if it["real"] is not None:
+            q = int(it["real"].get("qty") or 0)
+            cnt[q] = cnt.get(q, 0) + 1
+    return " · ".join("%d계약×%d" % (q, n) for q, n in sorted(cnt.items()))
+
+
+def _recon_split(rc) -> Dict[str, Any]:
+    """재생 MAIN(S.LEGS 계약 가정) → 실거래 손익 차를 세 몫으로 나눈다. 합은 정확히 real_total − replay_total.
+
+    size   : 일치 거래의 재생 손익을 실거래 수량으로 환산했을 때 빠지는 몫(X%위험 규칙 등 수량 차).
+    exec   : 같은 수량 기준 실거래 − 재생 = 체결가(진입 지연·청산 슬립) + 비용 모델 차(재생 CYBOS·1틱 vs 실요율).
+    signal : 짝이 없는 거래(실거래만 · 재생만) — 철회·늦음·기각 등 신호 구성 차.
+    scaled : 재생 MAIN 을 실거래 수량으로 환산한 값(일치 거래만 환산 · 재생만 거래는 그대로).
+    """
+    size = ex = sig = 0.0
+    scaled = 0.0
+    for it in rc["items"]:
+        p, r = it["real"], it["replay"]
+        rn = float(r["net"] or 0) if r is not None else 0.0
+        if p is not None and r is not None:
+            k = float(p.get("qty") or 0) / float(S.LEGS)
+            size += rn * k - rn
+            ex += float(p["net"] or 0) - rn * k
+            scaled += rn * k
+        else:
+            sig += (float(p["net"] or 0) if p is not None else 0.0) - rn
+            scaled += rn
+    return {"size": size, "exec": ex, "signal": sig, "scaled": scaled,
+            "same_qty": all(int(it["real"].get("qty") or 0) == S.LEGS
+                            for it in rc["items"] if it["real"] is not None and it["replay"] is not None)}
+
+
+def _recon_oneliner(rc) -> str:
+    """「오늘의 한 줄」 앞머리 — 메일 요약(report_mail._summary)이 이 줄만 읽으므로 실거래를 여기에도 둔다."""
+    if rc is None:
+        return ""
+    return "실거래 %s(%s) · 재생 " % (_man(rc["real_total"]), _qty_desc(rc) or "체결 없음")
+
+
+def _recon_scaled_note(rc) -> str:
+    if rc is None or not rc["items"]:
+        return ""
+    sp = _recon_split(rc)
+    if sp["same_qty"]:
+        return ""
+    return " · %d계약 가정, 실거래 수량 환산 %s" % (S.LEGS, _man(sp["scaled"]))
+
+
 def _recon_headline(rc, replay_main):
     s = "%d포지션 %s" % (rc["n_real"], _man(rc["real_total"]))
+    if rc["n_real"]:
+        s += " (%s · 재생은 %d계약 가정)" % (_qty_desc(rc), S.LEGS)
     b = rc.get("broker")
     o = rc.get("other") or {}
     if b is not None:
@@ -645,7 +702,17 @@ def _recon_headline(rc, replay_main):
                                    " (계좌 전체 — 다른 출처 %d레그 %s 포함)" % (o["legs"], _man(o["net"])))
     else:
         s += " · 브로커 net 미기록"
-    s += " · 재생 MAIN 과 차 %s → §2-1" % _man(rc["real_total"] - replay_main)
+    s += " · 재생 MAIN 과 차 %s" % _man(rc["real_total"] - replay_main)
+    if rc["items"]:
+        sp = _recon_split(rc)
+        parts = []
+        if not sp["same_qty"]:
+            parts.append("수량 %s" % _man(sp["size"]))
+        parts.append("체결·비용 %s" % _man(sp["exec"]))
+        if abs(sp["signal"]) >= 0.5 or any(it["kind"] != "MATCH" for it in rc["items"]):
+            parts.append("신호 구성 %s" % _man(sp["signal"]))
+        s += " = " + " + ".join(parts)
+    s += " → §2-1"
     return s
 
 
@@ -659,6 +726,10 @@ def _recon_section(rc):
                                           _man(p["net"]))) if p else "-"
         rp = ("%s %s @%.2f · %s" % (r["entry_ts"], _side(r["side"]), r["entry_px"], _man(r["net"]))) if r else "-"
         note = it.get("note") or ("차 %s" % _man(p["net"] - (r["net"] or 0)) if (p and r) else "")
+        if p and r and not it.get("note") and int(p.get("qty") or 0) != S.LEGS:
+            # 수량이 재생 가정과 다르면 같은 수량으로 환산한 차(=체결·비용 몫)를 함께 둔다
+            note += " (%d계약 환산 차 %s)" % (int(p.get("qty") or 0),
+                                          _man(p["net"] - (r["net"] or 0) * int(p.get("qty") or 0) / float(S.LEGS)))
         key = ("`%s`" % it["key"].replace("|", "\\|")) if it["key"] else "-"   # 표 칸 구분자와 겹친다
         out.append("| %d | %s | %s | %s | %s | %s |" % (n, KIND_LABEL[it["kind"]], key, real, rp, note))
     if not rc["items"]:
