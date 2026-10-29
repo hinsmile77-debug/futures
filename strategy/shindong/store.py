@@ -42,7 +42,7 @@ _SCHEMA = (
         leg2_exit_ts TEXT, leg2_exit_px REAL, leg2_reason TEXT, leg2_pts REAL, leg2_net REAL,
         net_krw      REAL,                   -- 닫힌 다리 합(2계약). 보유 중 다리는 미포함
         detected_at  TEXT,                   -- 처음 기록한 벽시계(라이브). 백필은 NULL
-        detect_px    REAL,                   -- 처음 기록 시점의 최신 종가 — 실현가능가
+        detect_px    REAL,                   -- 처음 기록 시점의 최신 종가. ⚠ 진입봉 종가와 구조적으로 같다 — 실현가능가 아님(673차 후속3, 실측은 exec_recon.entry_slips)
         source       TEXT,                   -- live | backfill
         spec_version TEXT,
         updated_at   TEXT NOT NULL,

@@ -78,3 +78,67 @@ def test_d_same_qty_no_size_noise():
     assert "수량 " not in h.split("차 ")[-1] and "체결·비용" in h
     assert DR._recon_scaled_note(rc) == ""
     assert DR._recon_oneliner(None) == "" and DR._recon_scaled_note(None) == ""
+
+
+# ── [673차 후속3] A·B — 진입 슬립 실측 · 진입봉 종가 표기 ──────────────────────────
+from strategy.shindong import exec_recon as XR  # noqa: E402
+
+
+def _rc_slip():
+    # 10/29 R60 매도 3건: 규칙가 944.32/944.52/936.20 · 실체결 945.44/943.32/934.48
+    items = []
+    for i, (rule, real) in enumerate(((944.32, 945.44), (944.52, 943.32), (936.20, 934.48))):
+        items.append(dict(kind="MATCH", key="K%d" % i,
+                          real=dict(qty=1, net=0.0, entry_px=real, side=-1, entry_ts="2026-10-29 10:0%d:00" % i),
+                          replay=dict(net=0.0, entry_px=rule, side=-1, entry_ts="10:0%d" % i)))
+    items.append(dict(kind="REPLAY_ONLY", key="R", real=None,
+                      replay=dict(net=0.0, entry_px=900.0, side=1, entry_ts="11:00")))
+    return dict(items=items)
+
+
+def test_e_entry_slip_sign_and_scope():
+    sl = XR.entry_slips(_rc_slip())
+    assert [round(x["slip_pt"], 2) for x in sl] == [-1.12, 1.20, 1.72]   # + = 불리(매도를 싸게 팜)
+    assert XR.entry_slips(None) is None and XR.entry_slips({"items": []}) == []
+    st = XR.slip_stats([x["slip_pt"] for x in sl])
+    assert st["n"] == 3 and st["worst"] == pytest.approx(1.72) and st["t"] is not None
+    assert XR.slip_stats([]) is None                                     # 미측정 ≠ 0
+
+
+def test_f_entry_slip_line_in_recon_section():
+    line = DR._entry_slip_line(_rc_slip(), {"n": 20, "days": 6, "mean": 0.057, "sd": 0.71, "t": 0.36})
+    assert "오늘 3건 평균 +0.60pt · 최악 +1.72pt" in line and "합 +9.0만" in line
+    assert "누적(2026-10-13~) 20건/6일 평균 +0.057pt · 표준편차 0.71 · t=+0.36" in line
+    assert DR._entry_slip_line(_rc_slip(), None).endswith("누적 미측정")
+    assert DR._entry_slip_line(None) is None
+
+
+def test_g_dead_detect_lag_metric_removed():
+    src = open(DR.__file__, encoding="utf-8").read()
+    assert '"**탐지 지연**' not in src            # 구조적 +0 지표를 다시 그리지 않는다
+
+
+def test_h_entry_label_is_bar_close():
+    assert DR._entry_label("10:16", 936.2, "10:17") == "10:16봉 종가 936.20 (확정 10:17)"
+    assert DR._entry_label("10:16", 936.2, "10:19") == "10:16봉 종가 936.20 (확정 10:17 · 탐지 10:19)"
+    assert DR._entry_label("10:59", 1.0) == "10:59봉 종가 1.00 (확정 11:00)"
+
+
+def test_i_collect_recons_walks_days(monkeypatch):
+    import types
+    fake = types.ModuleType("strategy.runtime.trade_principal")      # 실제 모듈은 PyQt5 를 끌어온다
+    fake.read_jsonl = lambda day, name: [{"kind": "ENTER", "trade_key": "K", "side": -1,
+                                          "entered_at": day + " 10:17:03"}]
+    fake.read_json = lambda day, name, default=None: default
+    pkg = types.ModuleType("strategy.runtime")
+    pkg.trade_principal = fake
+    monkeypatch.setitem(sys.modules, "strategy.runtime", pkg)
+    monkeypatch.setitem(sys.modules, "strategy.runtime.trade_principal", fake)
+    rows = {"2026-10-28": [dict(key="K", side=-1, entry_ts="10:16", entry_px=936.2, net=0.0, legs=[])],
+            "2026-10-29": [dict(key="K", side=-1, entry_ts="10:16", entry_px=936.2, net=0.0, legs=[])]}
+    monkeypatch.setattr(XR, "stored_main_rows", lambda sd, day, sv=None: rows.get(day, []))
+    monkeypatch.setattr(XR, "real_positions", lambda db, day: None if day == "2026-10-28" else [
+        dict(entry_ts=day + " 10:17:03", side=-1, qty=1, entry_px=934.48, net=0.0, legs=[])])
+    recons, um = XR.collect_recons("sd", "tr", "2026-10-27", "2026-10-29")
+    assert um == ["2026-10-28"] and [d for d, _ in recons] == ["2026-10-29"]
+    assert round(XR.entry_slips(recons[0][1])[0]["slip_pt"], 2) == 1.72

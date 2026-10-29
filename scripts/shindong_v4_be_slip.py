@@ -18,39 +18,18 @@ sys.path.insert(0, ROOT)
 os.chdir(ROOT)
 
 from config.settings import SHINDONG_DB, TRADES_DB          # noqa: E402
-from strategy.shindong import exec_recon as XR, spec as S, store   # noqa: E402
+from strategy.shindong import exec_recon as XR, spec as S   # noqa: E402
 
 
 def _main_rows(sd_db, day):
-    rows = []
-    for t in store.load_trades(sd_db, day, "MAIN"):
-        if t.get("spec_version") != S.SPEC_VERSION:
-            continue                                 # v4 규격 행만(그 전 규격은 다른 규칙)
-        rows.append(dict(key=t["trade_key"], side=int(t["side"]), entry_ts=str(t["entry_ts"])[11:16],
-                         entry_px=float(t["entry_px"]), net=t.get("net_krw"),
-                         legs=[(t.get("leg1_exit_ts"), t.get("leg1_exit_px"), t.get("leg1_reason")),
-                               (t.get("leg2_exit_ts"), t.get("leg2_exit_px"), t.get("leg2_reason"))]))
-    return rows
+    return XR.stored_main_rows(sd_db, day, S.SPEC_VERSION)     # v4 규격 행만(그 전 규격은 다른 규칙)
 
 
 def collect(since, until, sd_db=SHINDONG_DB, trades_db=TRADES_DB):
-    from strategy.runtime import trade_principal as TP
-    out, unmeasured = [], []
-    d = _dt.date.fromisoformat(since)
-    end = _dt.date.fromisoformat(until)
-    while d <= end:
-        day = d.isoformat()
-        d += _dt.timedelta(days=1)
-        main_rows = _main_rows(sd_db, day)
-        if not main_rows:
-            continue
-        pos = XR.real_positions(trades_db, day)
-        if pos is None:
-            unmeasured.append(day)
-            continue
-        ev = TP.read_jsonl(day, "shindong_exec.jsonl") or XR.events_from_exec_json(
-            TP.read_json(day, "shindong_exec.json", {}))
-        for x in XR.be_exit_slips(XR.reconcile(main_rows, pos, ev)) or []:
+    out = []
+    recons, unmeasured = XR.collect_recons(sd_db, trades_db, since, until, S.SPEC_VERSION)
+    for day, rc in recons:
+        for x in XR.be_exit_slips(rc) or []:
             out.append(dict(x, day=day))
     return out, unmeasured
 
