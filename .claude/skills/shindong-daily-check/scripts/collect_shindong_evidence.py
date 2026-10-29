@@ -265,6 +265,82 @@ def launcher_kinds(root, day):
 
 
 # ------------------------------------------------------------------ 신동 대사
+# [673차 후속12 · 2026-10-29 사용자 지시] 커밋 반영 — 실행 중인 main.py 가 최신 실행경로 커밋을 물고 있나.
+#   §3-V(변경 반영 검증)는 「효과가 보이는가」를 판정한다. 그 전제인 「그 코드가 프로세스에 올라갔는가」를
+#   먼저 기계적으로 가른다 — 장중 수정 후 재기동을 안 했으면 효과가 없는 게 당연하고, 그걸 ❌(미반영 결함)로
+#   판정하면 틀린다. 프로세스가 새로 읽는 코드만 센다: 별도 프로세스로 매번 새로 뜨는 scripts/·tools/ 와
+#   tests/·.claude/·docs/ 는 제외.
+_RUNTIME_EXCLUDE = ("tests/", "scripts/", "tools/", ".claude/", "docs/", "dev_memory/", "_archive/", "_to_delete/")
+_BOOT_LOG_RX = r"\[Notify\] .*기동 완료"
+
+
+def _is_runtime_path(p):
+    return p.endswith(".py") and not p.startswith(_RUNTIME_EXCLUDE)
+
+
+def _kst_str(epoch):
+    return datetime.fromtimestamp(epoch, KST).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _git_ok(s):
+    return s is not None and not s.startswith("(git ")
+
+
+def runtime_commits(root, n=80):
+    """최근 n커밋 중 실행경로(.py) 를 바꾼 것 → [dict(h, ct, ci, s, paths)] (최신 먼저) 또는 None(미측정)."""
+    lg = CE.run_git(root, ["log", "-%d" % n, "--name-only", "--format=@@%h|%ct|%ci|%s"])
+    if not _git_ok(lg):
+        return None
+    out = []
+    for l in lg.splitlines():
+        if l.startswith("@@"):
+            h, ct, _ci, s = (l[2:].split("|", 3) + ["", "", ""])[:4]
+            # 표시는 epoch → KST. %ci 를 잘라 쓰면 안 된다 — 커밋이 +0000 으로 기록된 날이 있다(2026-10-29: 19:25 KST 커밋이 `10:25 +0000`)
+            out.append(dict(h=h, ct=int(ct or 0), ci=_kst_str(int(ct or 0)), s=s, paths=[]))
+        elif l.strip() and out:
+            out[-1]["paths"].append(l.strip().strip('"'))
+    return [c for c in out if any(_is_runtime_path(p) for p in c["paths"])]
+
+
+def boot_time(root, day, procs, logs):
+    """실행 중 main.py 의 기동 시각 → (epoch, 출처) 또는 (None, 사유).
+    psutil 프로세스 시각이 정본, 못 재면(샌드박스·명령줄 판독불가) 당일 마지막 「기동 완료」 로그로 대신한다."""
+    if procs:
+        ts = []
+        for r in procs:
+            try:
+                ts.append(datetime.strptime(r["started"], "%Y-%m-%d %H:%M:%S"))
+            except Exception:
+                pass
+        if ts:
+            t = min(ts)                                   # 여러 벌이면 가장 오래된 쪽(보수적)
+            return t.replace(tzinfo=KST).timestamp(), "프로세스 시각(PID %s)" % ",".join(str(r["pid"]) for r in procs)
+    h = dedup(grep(logs, _BOOT_LOG_RX, files=("_SYSTEM",)))
+    if h:
+        try:
+            t = datetime.strptime(h[-1][1][:19], "%Y-%m-%d %H:%M:%S")
+            return t.replace(tzinfo=KST).timestamp(), "당일 마지막 「기동 완료」 로그(%s · 프로세스 미측정)" % h[-1][1][11:19]
+        except Exception:
+            pass
+    return None, "실행 중 프로세스·당일 기동 로그 모두 없음"
+
+
+def dirty_runtime(root):
+    """커밋 안 된 실행경로 .py 변경 → [줄] 또는 None(미측정). 샌드박스 마운트는 CRLF 차이로 수백 건 오탐이라 Windows 에서만 잰다."""
+    if os.name != "nt":
+        return None
+    st = CE.run_git(root, ["status", "--porcelain", "--untracked-files=all"])
+    if not _git_ok(st):
+        return None
+    out = []
+    for l in st.splitlines():
+        # `XY path` — run_git 이 출력 전체를 strip 해 첫 줄의 앞 공백(` M`)이 사라진다. 고정 오프셋으로 자르지 말 것.
+        m = re.match(r"^\s*\S{1,2}\s+(?:.* -> )?(.+)$", l)
+        if m and _is_runtime_path(m.group(1).strip().strip('"')):
+            out.append(l.strip())
+    return out
+
+
 def shindong_positions(root, day):
     """trades.db 신동 행 → 포지션 단위(entry_ts 묶음). None = 미측정."""
     rows = CE.db_rows(root, "data/db/trades.db",
@@ -540,6 +616,7 @@ def build(root, day, phase, pcid, pclabel):
     if dup:
         flags.append("main.py 중복 기동 시도 %d건 — 뮤텍스가 막았다. 어느 경로로 두 번 떴는지 확인할 것" % len(dup))
     a("")
+    _commit_reflection(A, flags, root, day, phase, now, procs, logs)
     # §4 신동 거래·대사
     if phase in ("intra", "post"):
         a("## 4. 신동 거래 — 3원 대사 (포지션 단위)")
@@ -682,10 +759,11 @@ def build(root, day, phase, pcid, pclabel):
     a("")
     # [F-SD-3 확장 · 666차 후속3] 경계에 +0900 — 없으면 UTC 샌드박스가 KST 09:00~익일 09:00 을
     # 「오늘」로 읽어 KST 00:00~09:00 커밋을 빠뜨린다(재현: Sindong2-V4 c36f450 04:55 KST 누락).
-    lg = CE.run_git(root, ["log", "--format=%ci %h %s", "--since=%s 00:00 +0900" % day.isoformat(),
+    lg = CE.run_git(root, ["log", "--format=%ct %h %s", "--since=%s 00:00 +0900" % day.isoformat(),
                            "--until=%s 00:00 +0900" % (day + timedelta(days=1)).isoformat()])
     for l in (lg.splitlines() if lg else [])[:20]:
-        a("- %s" % tr(l, 160))
+        ct, _, rest = l.partition(" ")
+        a("- %s %s" % (_kst_str(int(ct)) + " KST" if ct.isdigit() else ct, tr(rest, 160)))
     if not lg:
         a("- 없음")
     a("")
@@ -707,6 +785,71 @@ def build(root, day, phase, pcid, pclabel):
     head_.append("")
     i = A.index("## 1. 설정 (config/settings.py — 기동 시 1회 읽힌다)")
     return "\n".join(A[:i] + head_ + A[i:]) + "\n"
+
+
+def _commit_reflection(A, flags, root, day, phase, now, procs, logs):
+    """§3-c 커밋 반영(스킬 §3-R) — 실행 코드 = HEAD 인가. 판정 전제를 기계적으로 가른다."""
+    a = A.append
+    a("### 3-c. 커밋 반영 — 실행 중 main.py 가 최신 실행경로 커밋을 물고 있나 (스킬 §3-R)")
+    a("")
+    bt, src = boot_time(root, day, procs, logs)
+    a("- 기동 시각: %s" % (("%s KST · 출처 %s" % (datetime.fromtimestamp(bt, KST).strftime("%Y-%m-%d %H:%M:%S"), src))
+                         if bt else "미측정 — %s" % src))
+    rc = runtime_commits(root)
+    if rc is None:
+        a("- 실행경로 커밋: git 미측정")
+    elif not rc:
+        a("- 실행경로 커밋: 최근 80커밋 중 없음")
+    else:
+        last = rc[0]
+        a("- 마지막 실행경로 커밋: `%s` %s — %s" % (last["h"], last["ci"], tr(last["s"], 100)))
+        if bt:
+            pend = [c for c in rc if c["ct"] > bt]
+            if not pend:
+                a("- **반영됨** — 기동이 마지막 실행경로 커밋보다 뒤다(실행 코드 = HEAD 의 실행경로)")
+            else:
+                # 장후 판정 기준 시각 15:10 — 그 뒤 커밋은 오늘 반영될 수 없다(다음 기동 때 반영, 정상)
+                cut = datetime(day.year, day.month, day.day, 15, 10, tzinfo=KST).timestamp()
+                late = [c for c in pend if c["ct"] >= cut and phase == "post"]
+                miss = [c for c in pend if c not in late]
+                a("- 기동 뒤 실행경로 커밋 %d건 — 미반영 %d건 · 15:10 이후(다음 기동 반영 예정, 정상) %d건"
+                  % (len(pend), len(miss), len(late)))
+                a("")
+                a("| 커밋 | 시각 | 상태 | 제목 | 실행경로 파일 |")
+                a("|---|---|---|---|---|")
+                for c in pend:
+                    rp = [p for p in c["paths"] if _is_runtime_path(p)]
+                    a("| %s | %s | %s | %s | %s |" % (
+                        c["h"], c["ci"][5:16], "다음 기동" if c in late else "**미반영**", tr(c["s"], 80).replace("|", "/"),
+                        ", ".join("`%s`" % p for p in rp[:3]) + (" … 외 %d개" % (len(rp) - 3) if len(rp) > 3 else "")))
+                a("")
+                if miss:
+                    flags.append("실행 중 main.py(기동 %s)가 실행경로 커밋 %d건(%s) 이전 코드다 — %s"
+                                 % (datetime.fromtimestamp(bt, KST).strftime("%m-%d %H:%M"), len(miss),
+                                    ", ".join(c["h"] for c in miss[:5]),
+                                    "FLAT 확인 후 재기동이 필요하다(신동 엔진 스위치는 기동 시 1회만 읽힌다)" if phase != "post"
+                                    else "오늘 장중 그 변경은 돌지 않았다. §3-V 해당 행은 ❌ 가 아니라 「미기동」(↩ 다음 기동 뒤 재판정)"))
+    dr = dirty_runtime(root)
+    if dr is None:
+        a("- 커밋 안 된 실행경로 변경: 미측정(Windows 가 아님 — 샌드박스 CRLF 오탐)")
+    else:
+        a("- 커밋 안 된 실행경로 변경: %d건" % len(dr))
+        for l in dr[:10]:
+            a("  - `%s`" % tr(l, 150))
+        if len(dr) > 10:
+            a("  - … 외 %d건" % (len(dr) - 10))
+        if dr:
+            flags.append("커밋 안 된 실행경로 .py 변경 %d건 — 실행 코드가 HEAD 와 다를 수 있다(기동 뒤 수정이면 미반영, 기동 전이면 미커밋 코드로 거래 중)" % len(dr))
+    ab = CE.run_git(root, ["rev-list", "--left-right", "--count", "HEAD...@{u}"])
+    if _git_ok(ab) and len(ab.split()) == 2:
+        ahead, behind = (int(x) for x in ab.split())
+        a("- 원격 대비(로컬 추적 참조 기준 · fetch 안 함): 앞섬 %d · 뒤짐 %d%s"
+          % (ahead, behind, " — **push 안 된 커밋**" if ahead else ""))
+        if behind:
+            flags.append("로컬 브랜치가 추적 원격보다 %d커밋 뒤다 — 다른 세션의 push 를 받지 않은 채 기동했을 수 있다" % behind)
+    else:
+        a("- 원격 대비: 미측정(%s)" % tr(ab or "", 80))
+    a("")
 
 
 # [MW0601 724차 후속3 이식] 변경 반영 검증 대장(스킬 §3-V) — 경로 구분. 위에서부터 처음 맞는 것.
@@ -756,13 +899,13 @@ def _change_ledger(A, root, day, prev, pcid):
         a("")
         return
     since = "%s 15:40:00 +0900" % prev.isoformat()
-    lg = CE.run_git(root, ["log", "--reverse", "--name-only", "--format=@@%h|%ci|%s", "--since=" + since,
+    lg = CE.run_git(root, ["log", "--reverse", "--name-only", "--format=@@%h|%ct|%s", "--since=" + since,
                            "--until=%s 00:00 +0900" % (day + timedelta(days=1)).isoformat()])
     commits = []
     for l in (lg or "").splitlines():
         if l.startswith("@@"):
-            h, ci, s = (l[2:].split("|", 2) + ["", ""])[:3]
-            commits.append(dict(h=h, ci=ci[5:16], s=s, paths=[]))
+            h, ct, s = (l[2:].split("|", 2) + ["", ""])[:3]
+            commits.append(dict(h=h, ci=_kst_str(int(ct or 0))[5:16] if ct.isdigit() else "?", s=s, paths=[]))
         elif l.strip() and commits:
             commits[-1]["paths"].append(l.strip().strip('"'))
     a("- 창: 직전 거래일 %s 15:40 KST 이후 — 어제 장후 자동조치(17:23)·저녁·밤·오늘 커밋을 모두 덮는다" % prev.isoformat())
