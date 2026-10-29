@@ -99,7 +99,7 @@ if ($Uninstall) {
     if ($null -eq $t) { Write-Host "[SKIP] not found: $FullName" }
     else { Unregister-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -Confirm:$false; Write-Host "[OK] removed: $FullName" }
     if (Test-Path -LiteralPath $StateFile) {
-        foreach ($line in (Get-Content -LiteralPath $StateFile)) {
+        foreach ($line in (Get-Content -LiteralPath $StateFile -Encoding UTF8)) {
             if (-not $line.Trim()) { continue }
             $p = $line.Substring(0, $line.LastIndexOf('\') + 1); $n = $line.Substring($line.LastIndexOf('\') + 1)
             try { Enable-ScheduledTask -TaskPath $p -TaskName $n | Out-Null; Write-Host "[OK] re-enabled old task: $line" }
@@ -146,8 +146,11 @@ if ($Time) {
     $triggers = @(New-ScheduledTaskTrigger -Daily -At ([datetime]::Today.AddHours([int]$hh).AddMinutes([int]$mm)))
     Write-Host ('[2/5] trigger : Daily {0} (from -Time)' -f $Time)
 } elseif ($old.Count -gt 0) {
-    $triggers = @($old[0].Triggers)
-    Write-Host ('[2/5] trigger : copied from {0}{1} (same schedule as before)' -f $old[0].TaskPath, $old[0].TaskName)
+    # Copy the schedule of an ENABLED old task - a disabled one is not the schedule in use.
+    $src = @($old | Where-Object { $_.State -ne 'Disabled' } | Select-Object -First 1)
+    if (-not $src.Count) { $src = @($old[0]) }
+    $triggers = @($src[0].Triggers)
+    Write-Host ('[2/5] trigger : copied from {0}{1} (same schedule as before)' -f $src[0].TaskPath, $src[0].TaskName)
 } else {
     Write-Host '[FAIL] no old shutdown task to copy the schedule from - pass -Time "HH:mm"' -ForegroundColor Red
     exit 1
@@ -162,7 +165,8 @@ if ($first.StartBoundary) {
 
 # ------------------------------------------------------------------ 3. register
 # Power-off mode follows the old task (MW0601 patched its batch to hibernate - shutdown /h keeps Claude sessions alive).
-$mode = if ($old.Count -gt 0) { Get-OldMode $old } else { 'shutdown' }
+$live = @($old | Where-Object { $_.State -ne 'Disabled' })
+$mode = if ($live.Count -gt 0) { Get-OldMode $live } elseif ($old.Count -gt 0) { Get-OldMode $old } else { 'shutdown' }
 if ($GuardArgs -notmatch '(?i)-Mode\b') { $GuardArgs = ('-Mode {0} {1}' -f $mode, $GuardArgs).Trim() }
 Write-Host ('[3/5] mode    : {0}' -f $(if ($GuardArgs -match '(?i)-Mode\s+(\w+)') { $Matches[1] } else { $mode }))
 $arg = ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" {1}' -f $Guard, $GuardArgs).Trim()
@@ -186,9 +190,15 @@ if ($old.Count -gt 0 -and -not $KeepOld) {
         $xml  = Join-Path $BackupDir (('{0}_{1}.xml' -f ($full.Trim('\') -replace '[\\/:*?"<>|]', '_'), $stamp))
         try { Export-ScheduledTask -TaskPath $o.TaskPath -TaskName $o.TaskName | Set-Content -LiteralPath $xml -Encoding Unicode; Write-Host "[4/5] backup  : $xml" }
         catch { Write-Host "[WARN] backup failed for $full : $($_.Exception.Message)" -ForegroundColor Yellow }
+        if ($o.State -eq 'Disabled') {
+            # Already off before install - do NOT record it, or -Uninstall would switch it ON.
+            Write-Host "[4/5] skipped : $full (already disabled - left as is, not restored on uninstall)"
+            continue
+        }
         try {
             Disable-ScheduledTask -TaskPath $o.TaskPath -TaskName $o.TaskName | Out-Null
-            Add-Content -LiteralPath $StateFile -Value $full -Encoding ASCII
+            # UTF8: task names can be non-ASCII (2026-10-30 MW0602: the old task is named in Korean)
+            Add-Content -LiteralPath $StateFile -Value $full -Encoding UTF8
             Write-Host "[4/5] disabled: $full"
         } catch {
             Write-Host "[WARN] could not disable $full ($($_.Exception.Message))" -ForegroundColor Yellow
