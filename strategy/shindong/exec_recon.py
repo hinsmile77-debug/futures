@@ -179,6 +179,78 @@ def reconcile(main_rows: List[Dict[str, Any]], positions: List[Dict[str, Any]],
             "n_real": len(positions)}
 
 
+def entry_slips(rc: Optional[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
+    """[MW0602 673차 후속3 → MW0601 이식] 실거래 진입 슬립 — 「탐지 지연」 계측의 대체.
+
+    대상 = MATCH 전부. 규칙가 = 재생 진입가(**진입봉 종가** — 봉 마감 = 다음 분 :00 에 확정).
+    실주문은 그 뒤 수급 타이머 위상만큼 늦게 시장가로 나간다. 슬립 = side × (실진입 평균가 − 규칙가) pt, **+ = 불리**.
+    None = 대사 원천 없음(미측정) · [] = 일치 거래 없음.
+
+    ⚠ 종전 `detect_px`(store) 는 「처음 본 시점의 마지막 완결 봉 종가」라 진입봉 종가와 **구조적으로 같다** —
+      MW0602 일일 리포트 19개 전부 +0 이었다(MW0602-20261029-진입지연슬립-딥다이브). 실현가능가로 쓰지 말 것.
+    """
+    if rc is None:
+        return None
+    out: List[Dict[str, Any]] = []
+    for it in rc.get("items") or []:
+        p, r = it.get("real"), it.get("replay")
+        if it.get("kind") != "MATCH" or not p or not r or not p.get("entry_px") or r.get("entry_px") is None:
+            continue
+        side = int(r["side"])
+        out.append({"key": it.get("key"), "side": side, "rule_px": float(r["entry_px"]),
+                    "real_px": float(p["entry_px"]), "qty": int(p.get("qty") or 0),
+                    "slip_pt": side * (float(p["entry_px"]) - float(r["entry_px"]))})
+    return out
+
+
+def slip_stats(xs: List[float]) -> Optional[Dict[str, float]]:
+    """n · 평균 · 표준편차 · t(평균/표준오차) · 최악(최대 불리). 빈 목록 = None(미측정 — 0 이 아니다)."""
+    n = len(xs)
+    if not n:
+        return None
+    m = sum(xs) / n
+    sd = (sum((x - m) ** 2 for x in xs) / (n - 1)) ** 0.5 if n > 1 else None
+    t = (m / (sd / n ** 0.5)) if (sd and sd > 0) else None
+    return {"n": n, "mean": m, "sd": sd, "t": t, "worst": max(xs)}
+
+
+def stored_main_rows(sd_db: str, day: str, spec_version: Optional[str] = None) -> List[Dict[str, Any]]:
+    """shindong.db 에 저장된 그날 MAIN 재생 행 → reconcile() 입력. spec_version 을 주면 그 규격 행만."""
+    from strategy.shindong import store
+    rows = []
+    for t in store.load_trades(sd_db, day, "MAIN"):
+        if spec_version is not None and t.get("spec_version") != spec_version:
+            continue
+        rows.append(dict(key=t["trade_key"], side=int(t["side"]), entry_ts=str(t["entry_ts"])[11:16],
+                         entry_px=float(t["entry_px"]), net=t.get("net_krw"),
+                         legs=[(t.get("leg1_exit_ts"), t.get("leg1_exit_px"), t.get("leg1_reason")),
+                               (t.get("leg2_exit_ts"), t.get("leg2_exit_px"), t.get("leg2_reason"))]))
+    return rows
+
+
+def collect_recons(sd_db: str, trades_db: str, since: str, until: str,
+                   spec_version: Optional[str] = None):
+    """since~until 각 거래일의 reconcile 결과 → ([(day, rc)], 대사 원천 없는 날 목록)."""
+    from strategy.runtime import trade_principal as TP
+    out, unmeasured = [], []
+    d, end = _dt.date.fromisoformat(since), _dt.date.fromisoformat(until)
+    while d <= end:
+        day = d.isoformat()
+        d += _dt.timedelta(days=1)
+        main_rows = stored_main_rows(sd_db, day, spec_version)
+        if not main_rows:
+            continue
+        pos = real_positions(trades_db, day)
+        if pos is None:
+            unmeasured.append(day)
+            continue
+        ev = TP.read_jsonl(day, "shindong_exec.jsonl") or events_from_exec_json(
+            TP.read_json(day, "shindong_exec.json", {}))
+        rc = reconcile(main_rows, pos, ev)
+        out.append((day, rc))
+    return out, unmeasured
+
+
 def events_from_exec_json(d: Any) -> List[Dict[str, Any]]:
     """`shindong_exec.json`(신호별 상태 dict) → reconcile() 이 읽는 이벤트 목록.
 

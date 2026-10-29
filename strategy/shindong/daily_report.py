@@ -296,11 +296,8 @@ def observations(day: Dict[str, Any], rows: Dict[str, List[Dict]], sums: Dict[st
     if notgt:
         obs.append("**목표 없는 진입 %d건** — 가격이 08:50 맥점 범위 밖이라 손절·15:05 로만 끝날 수 있었다(%s)."
                    % (len(notgt), ", ".join("%s %s" % (r["entry_ts"], _man(r["net"])) for r in notgt)))
-    lag = [r for r in main if r["detect_px"] is not None and r["detected_at"]]
-    if lag:
-        cost = sum(r["side"] * (r["entry_px"] - float(r["detect_px"])) * S.PT_VALUE_KRW * S.LEGS for r in lag)
-        obs.append("**탐지 지연** — 재생 진입 %d건, 규칙가 대비 실현가능가 차 %s(음수 = 늦게 알아채 손해)."
-                   % (len(lag), _won(cost)))
+    # [MW0602 673차 후속3 이식] 종전 「탐지 지연」(detect_px − 규칙가)은 구조적으로 항상 +0 이라 뺐다 —
+    #   detect_px 가 진입봉 종가와 같다(exec_recon.entry_slips 주석). 실측 진입 슬립은 §2-1 이 보인다.
     best = max(sums, key=lambda v: sums[v]["net"])
     if best != "MAIN":
         obs.append("**오늘 최선은 %s** (%s, MAIN 대비 %s). 하루 결과다 — 판정은 사전등록 창(10거래일)으로만."
@@ -407,14 +404,33 @@ def svg_chart(day: Dict[str, Any], rows: Dict[str, List[Dict]], title: str) -> s
 
 
 # ── 조립 ────────────────────────────────────────────────────────────────
+def _bar_close_hm(hm: str) -> str:
+    """진입봉 시작 「HH:MM」 → 그 봉이 확정되는 시각(다음 분 :00)."""
+    try:
+        t = _dt.datetime.strptime(str(hm)[:5], "%H:%M") + _dt.timedelta(minutes=1)
+        return t.strftime("%H:%M")
+    except ValueError:
+        return "?"
+
+
+def _entry_label(hm: str, px: float, detected_at: Optional[str] = None) -> str:
+    """[MW0602 673차 후속3 · B 이식] 「10:16 936.20 (탐지 10:17)」이 「1분 늦게 들어갔다」로 읽혔다.
+    규칙가는 **10:16 봉의 종가**이고 그 값은 10:17:00 에 확정된다 — 실주문은 그 뒤 수급 타이머 위상만큼 뒤다.
+    탐지가 확정 시각보다 늦은 날(원천 지연)만 탐지 시각을 따로 적는다.
+    """
+    close = _bar_close_hm(hm)
+    s = "%s봉 종가 %.2f (확정 %s" % (hm, px, close)
+    if detected_at and str(detected_at)[:5] != close:
+        s += " · 탐지 %s" % str(detected_at)[:5]
+    return s + ")"
+
+
 def _timeline(rows: List[Dict], live: bool) -> List[str]:
     out = ["| # | 규칙 | 방향 | 진입 | 맥점 | 손절 | 1차 · 최종 | 청산(다리별) | MFE | 손익 | 누적 |",
            "|---|---|---|---|---|---|---|---|---|---|---|"]
     for n, r in enumerate(rows, 1):
         legs = " · ".join("%s %s %.2f" % (REASON.get(g[2], g[2]), g[0], g[1]) if g[0] else "보유" for g in r["legs"])
-        ent = "%s %.2f" % (r["entry_ts"], r["entry_px"])
-        if live and r["detected_at"]:
-            ent += " (탐지 %s)" % r["detected_at"]
+        ent = _entry_label(r["entry_ts"], r["entry_px"], r["detected_at"] if live else None)
         out.append("| %d | %s | %s | %s | %s | %.2f | %s · %s | %s | %.1f | **%s** | %s |" % (
             n, r["rule"], _side(r["side"]), ent, ("%.1f" % r["level"]) if r["level"] else "-", r["stop"],
             ("%.2f" % r["t1"]) if r["t1"] else "-", ("%.2f" % r["t2"]) if r["t2"] else "-", legs,
@@ -443,7 +459,8 @@ def build(trade_date: str, raw_db: str, flow_db: str, levels_db: str, sd_db: str
                                              day["product"], day["product_note"]))
     w("> **아래 변형 손익은 엔진 재생(가상)이다** — 장후 최종 흐름으로 하루를 다시 돌린 값. "
       "미니선물 %d계약 · CYBOS 요율 · 1틱 슬리피지 기준. **실제 체결 손익은 §2-1 실거래 대사.** "
-      "실주문 수량은 실전 자본 3층(최대허용수량·증거금)·손절거리 위험 수량으로 정해져 이와 다를 수 있다 — 아래 「실거래」 줄이 차이를 수량·체결로 나눈다."
+      "실주문 수량은 실전 자본 3층(최대허용수량·증거금)·손절거리 위험 수량으로 정해져 이와 다를 수 있다 — 아래 「실거래」 줄이 차이를 수량·체결로 나눈다. "
+      "진입가는 **진입봉 종가**(봉 마감 = 다음 분 :00 확정)이고 실주문은 그 뒤 시장가로 나간다."
       % S.LEGS)
     w("")
     if not day["ok"]:
@@ -515,7 +532,7 @@ def build(trade_date: str, raw_db: str, flow_db: str, levels_db: str, sd_db: str
     # 2-1. 실거래 대사 [705차]
     w("## 2-1. 실거래 대사 — 실제 체결 vs 재생 MAIN")
     w("")
-    lines.extend(_recon_section(recon))
+    lines.extend(_recon_section(recon, *(_slip_cums(sd_db, trades_db, trade_date) if recon is not None else (None, None))))
     w("")
 
     # 2-2. 철회 섀도 [708차]
@@ -737,7 +754,50 @@ def _recon_headline(rc, replay_main):
     return s
 
 
-def _recon_section(rc):
+# [MW0602 673차 후속3 이식] 진입 슬립 누적 시작일 — 신동 실거래 전환일(2026-10-13, 양 PC 같은 날).
+#   진입가 정의(진입봉 종가)는 규격 버전과 무관하므로 채점 시작(SCORING_START)이 아니라 실거래 시작부터 센다.
+ENTRY_SLIP_SINCE = "2026-10-13"
+
+
+def _slip_cums(sd_db, trades_db, until):
+    """누적 (진입 슬립, 청산 슬립) 통계(+ = 불리). 각각 None = 원천 없음 · 실패(미측정)."""
+    if not trades_db:
+        return None, None
+    try:
+        recons, unmeasured = XR.collect_recons(sd_db, trades_db, ENTRY_SLIP_SINCE, until)
+    except Exception:
+        return None, None
+    xs = [x["slip_pt"] for _d, rc in recons for x in (XR.entry_slips(rc) or [])]
+    st = XR.slip_stats(xs)
+    if st is not None:
+        st["days"] = sum(1 for _d, rc in recons if XR.entry_slips(rc))
+        st["unmeasured"] = len(unmeasured)
+    return st, None
+
+
+def _entry_slip_line(rc, cum=None) -> Optional[str]:
+    """§2-1 진입 슬립 한 줄 — 오늘(일치 거래) + 누적. + = 불리."""
+    sl = XR.entry_slips(rc)
+    if sl is None:
+        return None
+    if not sl:
+        s = "- 진입 슬립(실거래 − 진입봉 종가, + = 불리): 오늘 일치 거래 없음"
+    else:
+        st = XR.slip_stats([x["slip_pt"] for x in sl])
+        s = ("- 진입 슬립(실거래 − 진입봉 종가, + = 불리): 오늘 %d건 평균 %+.2fpt · 최악 %+.2fpt · 합 %s(실수량)"
+             % (st["n"], st["mean"], st["worst"],
+                _man(sum(x["slip_pt"] * x["qty"] for x in sl) * S.PT_VALUE_KRW)))
+    if cum is None:
+        s += " · 누적 미측정"
+    else:
+        s += (" · 누적(%s~) %d건/%d일 평균 %+.3fpt%s%s"
+              % (ENTRY_SLIP_SINCE, cum["n"], cum["days"], cum["mean"],
+                 "" if cum["sd"] is None else " · 표준편차 %.2f" % cum["sd"],
+                 "" if cum["t"] is None else " · t=%+.2f" % cum["t"]))
+    return s
+
+
+def _recon_section(rc, entry_cum=None, exit_cum=None):
     if rc is None:
         return ["- 대사 원천 없음(trades_db 미지정 또는 DB 없음) — 실거래 0 이 아니라 **미측정**이다."]
     out = ["| # | 구분 | 신호 | 실거래 | 재생 MAIN | 비고 |", "|---|---|---|---|---|---|"]
@@ -745,7 +805,7 @@ def _recon_section(rc):
         p, r = it["real"], it["replay"]
         real = ("%s %s %d계약 @%.2f · %s" % (p["entry_ts"][11:16], _side(p["side"]), p["qty"], p["entry_px"],
                                           _man(p["net"]))) if p else "-"
-        rp = ("%s %s @%.2f · %s" % (r["entry_ts"], _side(r["side"]), r["entry_px"], _man(r["net"]))) if r else "-"
+        rp = ("%s봉 %s @%.2f · %s" % (r["entry_ts"], _side(r["side"]), r["entry_px"], _man(r["net"]))) if r else "-"
         note = it.get("note") or ("차 %s" % _man(p["net"] - (r["net"] or 0)) if (p and r) else "")
         if p and r and not it.get("note") and int(p.get("qty") or 0) != S.LEGS:
             # 수량이 재생 가정과 다르면 같은 수량으로 환산한 차(=체결·비용 몫)를 함께 둔다
@@ -774,6 +834,9 @@ def _recon_section(rc):
                       "" if not o.get("legs") else " — 다른 출처 %d레그 %s 가 섞여 있다" % (o["legs"], _man(o["net"]))))
     else:
         out.append("- 브로커 실측 net 미기록(미측정)")
+    _es = _entry_slip_line(rc, entry_cum)
+    if _es:
+        out.append(_es)
     out.append("- 재생은 장후 최종 흐름으로 다시 돌린 값이라, 장중에 나왔다가 정정으로 사라진 신호(철회)는 빠지고 "
                "보유 중·늦음으로 못 친 신호는 들어간다. **실거래 손익은 이 절의 「실거래」 열이다.**")
     return out
