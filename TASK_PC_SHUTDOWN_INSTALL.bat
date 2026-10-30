@@ -5,12 +5,12 @@ REM
 REM  Replaces the plain shutdown task: powers off only when no Claude
 REM  (Code CLI / desktop Cowork run), repo python, git, Mireuk task or
 REM  user activity is seen in two checks in a row. Retries until the
-REM  deadline (default 23:30), otherwise skips that evening.
+REM  PC is idle - no deadline (optional: -GuardArgs "-Deadline 23:30").
 REM  The old shutdown task is backed up to XML and DISABLED (not deleted).
 REM
 REM  install    TASK_PC_SHUTDOWN_INSTALL.bat
 REM  time       TASK_PC_SHUTDOWN_INSTALL.bat -Time "19:00"
-REM  options    TASK_PC_SHUTDOWN_INSTALL.bat -GuardArgs "-Deadline 23:00"
+REM  options    TASK_PC_SHUTDOWN_INSTALL.bat -GuardArgs "-IdleMin 20"
 REM  uninstall  TASK_PC_SHUTDOWN_INSTALL.bat -Uninstall   (re-enables the old task)
 REM
 REM  If the old task was created as administrator, run this as administrator.

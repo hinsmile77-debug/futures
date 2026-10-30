@@ -13,7 +13,7 @@
     name     \Mireuk\PC_Shutdown_Guarded
     action   powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File pc_shutdown_guard.ps1
     settings NO StartWhenAvailable (a missed evening must not power the PC off at next logon),
-             IgnoreNew, 8 h limit (the guard retries until its deadline), allow on battery
+             IgnoreNew, no time limit (the guard retries until the PC is idle), allow on battery
     run as   logged-on user, Interactive, Limited (idle detection needs the user session;
              shutdown.exe needs no admin for the interactive user)
 
@@ -190,11 +190,11 @@ Write-Host ('[3/5] mode    : {0}' -f $(if ($GuardArgs -match '(?i)-Mode\s+(\w+)'
 $arg = ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" {1}' -f $Guard, $GuardArgs).Trim()
 $action    = New-ScheduledTaskAction -Execute $PS -Argument $arg -WorkingDirectory $Root
 $settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-    -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 8)
+    -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero)   # PT0S = no limit
 $principal = New-ScheduledTaskPrincipal -UserId ("{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME) `
     -LogonType Interactive -RunLevel Limited
 $desc = 'Guarded PC shutdown (MW0602): powers off only when no Claude / repo python / git / Mireuk task / ' +
-        'user activity, two clear checks in a row; retries until the deadline, else skips. Log: logs\pc_shutdown_*.log'
+        'user activity, two clear checks in a row; retries until idle (no deadline). Log: logs\pc_shutdown_*.log'
 Register-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -Action $action -Trigger $triggers `
     -Settings $settings -Principal $principal -Description $desc -Force | Out-Null
 Write-Host "[3/5] task    : $FullName  (registered)"
