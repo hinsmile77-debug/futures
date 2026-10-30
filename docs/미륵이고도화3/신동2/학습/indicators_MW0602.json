@@ -85,6 +85,23 @@
     "noise_95": 0.283,
     "verdict": "FAIL",
     "why": "적중 0.615 (p=0.1263) · IC 0.208 (순열 p=0.125, 노이즈95 0.283)"
+   },
+   {
+    "ts": "2026-10-30T17:02:58",
+    "days": 60,
+    "at": "10:00",
+    "perm": 200,
+    "first": "2026-08-03",
+    "last": "2026-10-30",
+    "n": 60,
+    "n_all": 60,
+    "hit_rate": 0.6,
+    "p_binom": 0.155,
+    "ic": 0.259,
+    "p_perm": 0.055,
+    "noise_95": 0.289,
+    "verdict": "FAIL",
+    "why": "적중 0.6 (p=0.155) · IC 0.259 (순열 p=0.055, 노이즈95 0.289)"
    }
   ],
   "mounted_at": null,
@@ -255,6 +272,57 @@
     "noise_95": 0.449,
     "verdict": "FAIL",
     "why": "적중 0.429 (p=0.6636) · IC -0.505 (순열 p=0.02, 노이즈95 0.449)"
+   },
+   {
+    "ts": "2026-10-30T17:03:00",
+    "days": 60,
+    "at": "10:00",
+    "perm": 200,
+    "first": "2026-10-29",
+    "last": "2026-10-30",
+    "n": 2,
+    "n_all": 2,
+    "hit_rate": null,
+    "p_binom": null,
+    "ic": null,
+    "p_perm": null,
+    "noise_95": null,
+    "verdict": "UNMEASURED",
+    "why": "표본 2 < 20"
+   },
+   {
+    "ts": "2026-10-30T17:03:16",
+    "days": 60,
+    "at": "10:00",
+    "perm": 200,
+    "first": "2026-10-29",
+    "last": "2026-10-30",
+    "n": 2,
+    "n_all": 2,
+    "hit_rate": null,
+    "p_binom": null,
+    "ic": null,
+    "p_perm": null,
+    "noise_95": null,
+    "verdict": "UNMEASURED",
+    "why": "표본 2 < 20"
+   },
+   {
+    "ts": "2026-10-30T17:03:17",
+    "days": 60,
+    "at": "14:00",
+    "perm": 200,
+    "first": "2026-10-29",
+    "last": "2026-10-30",
+    "n": 2,
+    "n_all": 2,
+    "hit_rate": null,
+    "p_binom": null,
+    "ic": null,
+    "p_perm": null,
+    "noise_95": null,
+    "verdict": "UNMEASURED",
+    "why": "표본 2 < 20"
    }
   ],
   "mounted_at": null,
@@ -411,6 +479,36 @@
     "ts": "2026-10-27T19:57:59",
     "status": "검증",
     "why": "verify 실행 — FAIL"
+   }
+  ]
+ },
+ {
+  "id": "I10",
+  "title": "오전 모멘텀 / 오후 반전 체제",
+  "source": "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=4192163 (Xu and Zhu 2022, A Tale of One Day) · 내부: raw_candles 1분봉",
+  "hypothesis": "오전(09:00-11:30) 누적수익률은 오후(13:00-종가)에 음의 예측력(contra). 오전 상승을 오후까지 고집하면 반전에 깔린다. MAIN 의 모닝롱 to 오후숏 레짐전환을 숫자로 — AI 가 반복해 틀린 방향축의 핵심.",
+  "formula": "value = minus sign(r_morning), r_morning = (price_1130 - open) / open. 오후 종가방향 예측은 오전수익률의 반대부호",
+  "inputs": [
+   "close",
+   "open",
+   "price_1130"
+  ],
+  "status": "후보",
+  "implemented": false,
+  "sign": null,
+  "prereg": {
+   "min_days": 20,
+   "hit_min": 0.55,
+   "p_max": 0.05
+  },
+  "origin": "2026-10-30",
+  "verifications": [],
+  "mounted_at": null,
+  "history": [
+   {
+    "ts": "2026-10-30T17:02:47",
+    "status": "후보",
+    "why": "신설 — 플러그인 미구현(후보 메모)"
    }
   ]
  }
