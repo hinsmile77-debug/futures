@@ -17779,9 +17779,8 @@ class TradingSystem:
             _threading.Thread(target=_run_daily_close, daemon=True, name="DailyClose").start()
 
         # [MW0602 2026-10-17] S-06 해소 — 연결이 돌아왔으면 끊김 에피소드를 닫는다
-        if self.broker.is_connected and self._alert_broker_lost_at is not None:
-            self._alert_broker_lost_at = None
-            _ts_alert_resolve(self, "S-06", note="브로커 재연결")
+        #   [2026-10-30 F-SD-7] 재기동 뒤에도 닫히도록 영속 상태까지 본다(_ts_alert_broker_resolve)
+        _ts_alert_broker_resolve(self)
         # 연결 감시 — 끊김 시 슬랙 CRITICAL 알림 후 재연결
         if not self.broker.is_connected:
             logger.error("[System] 키움 연결 끊김 — 재연결 시도")
@@ -18979,6 +18978,24 @@ def _ts_alert_is_open(code: str, key: str = "") -> bool:
         return _am.is_open(code, key)
     except Exception:
         return False
+
+
+def _ts_alert_broker_resolve(self) -> None:
+    """[MW0602 2026-10-30 F-SD-7] S-06 해소 — 브로커가 연결돼 있으면 끊김 에피소드를 닫는다.
+
+    인메모리 `_alert_broker_lost_at` 만 보면 해소가 영영 안 불리는 경로가 있다: 끊김의 실제 복구 경로가
+    프로세스 재기동이면 새 프로세스의 그 값은 None 이다. 2026-10-30 실측 — 12:59 S-06 열림 → 13:23 재기동으로
+    복구됐는데 해소 없이 재알림이 13:29·13:59·14:59 에 계속 나갔다. 그래서 인메모리 값은 「이 프로세스가 끊김을
+    겪었나」에만 쓰고, 열림 여부는 영속 상태(`alert_mail.is_open`)로도 확인한다. 알림 전용 — 판정·주문 무영향.
+    """
+    if not self.broker.is_connected:
+        return
+    _was_lost = self._alert_broker_lost_at is not None
+    self._alert_broker_lost_at = None
+    if _was_lost:
+        _ts_alert_resolve(self, "S-06", note="브로커 재연결")
+    elif _ts_alert_is_open("S-06"):
+        _ts_alert_resolve(self, "S-06", note="브로커 재연결(재기동 뒤 동기화)")
 
 
 def _ts_alert_state_tick(self, now=None) -> None:
